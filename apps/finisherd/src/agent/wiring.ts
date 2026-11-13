@@ -55,6 +55,7 @@ import type { AclBroker } from "../sandbox/broker.ts";
 import { claudeProviderInfo } from "./claude/detect.ts";
 import { type ClaudeAccess, ClaudeModelCache, claudeAccess, withClaudePricing } from "./claude/models.ts";
 import { type SessionSandboxDeps, sessionSandboxes } from "./sandbox.ts";
+import { launcherServer } from "./sandbox-input.ts";
 import { readAgentSettings, resolveFinPath } from "./settings.ts";
 import type { AgentStore } from "./store.ts";
 import { reviewPort } from "./review-link.ts";
@@ -341,7 +342,10 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
     const dirOf = (projectId: string) => d.registry.dirOf(projectId) ?? d.registry.indexedDirOf?.(projectId);
     const rules = new LayeredRules({ serverData, store: ruleStore, roles, dirOf });
     const hooks = new HookConfig({ serverData, trustOf: (id) => ruleStore.trustOf(id), dirOf });
-    const hookWiring = buildHooks({ config: hooks, serverData: realpathSync(serverData), audit: d.audit, log, process: d.acl === undefined ? {} : { acl: d.acl }, ...(d.options?.hooks === undefined ? {} : { options: d.options.hooks }) });
+    // `fin` hooks (7F Task 5): their own credentials through 5A's, `fin` and its endpoint as the session sandbox's.
+    const finServer = (launcher: boolean) => (launcher ? launcherServer(sandboxDeps, process.platform) : Promise.resolve({ env: d.endpoint }));
+    const hookProcess = { finPath, finServer, ...(d.acl === undefined ? {} : { acl: d.acl }), ...(d.allowPipe === undefined ? {} : { allowPipe: d.allowPipe }) };
+    const hookWiring = buildHooks({ config: hooks, serverData: realData, audit: d.audit, log, credentials: core.credentials.base, process: hookProcess, ...(d.options?.hooks === undefined ? {} : { options: d.options.hooks }) });
     yield* Effect.addFinalizer(() => Effect.promise(() => hookWiring.close()));
     const key = approvalKey(serverData);
     const permissions = providerPermissions({ rules, dirOf });

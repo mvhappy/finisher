@@ -17,7 +17,10 @@
 //   --read <path>        observes whether <path> can be read
 //   --write <path>       observes whether <path> can be written
 //   --connect <port>     observes whether TCP 127.0.0.1:<port> connects
-import { spawn } from "node:child_process";
+//   --connects <p,q>     observes, per port, whether TCP 127.0.0.1:<port> connects
+//   --fin <json args>    runs `fin` (found on its `PATH`) with the JSON array's arguments and
+//                        observes its exit code and its error's code and message
+import { spawn, spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import { networkInterfaces } from "node:os";
@@ -100,22 +103,43 @@ for (let i = 0; i < args.length; i++) {
       break;
     }
     case "--connect": {
-      const port = Number(next());
-      seen.connect = await new Promise((resolve) => {
-        const s = connect({ host: "127.0.0.1", port });
-        const done = (v) => {
-          s.destroy();
-          resolve(v);
-        };
-        s.once("connect", () => done("ok"));
-        s.once("error", (e) => done(e.code ?? String(e)));
-        setTimeout(() => done("timeout"), 3_000).unref();
-      });
+      seen.connect = await tcp(Number(next()));
+      break;
+    }
+    case "--connects": {
+      seen.connects = {};
+      for (const p of next().split(",")) seen.connects[p] = await tcp(Number(p));
+      break;
+    }
+    case "--fin": {
+      const r = spawnSync("fin", JSON.parse(next()), { encoding: "utf8", timeout: 20_000 });
+      let out;
+      try {
+        out = JSON.parse(r.stdout);
+      } catch {
+        // Not JSON.
+      }
+      // Kept small (a context text is at most 16 KiB): the exit, the error's code and message.
+      seen.fin = { code: r.status, ...(out?.error === undefined ? {} : { error: out.error.code, message: out.error.message }), ...(r.error === undefined ? {} : { spawn: r.error.code ?? String(r.error) }), ...(out === undefined ? { stderr: String(r.stderr ?? "").slice(0, 400) } : {}) };
       break;
     }
     default:
       throw new Error(`unknown argument ${a}`);
   }
+}
+
+/** Whether TCP 127.0.0.1:<port> connects: `ok`, the error's code or `timeout`. */
+function tcp(port) {
+  return new Promise((resolve) => {
+    const s = connect({ host: "127.0.0.1", port });
+    const done = (v) => {
+      s.destroy();
+      resolve(v);
+    };
+    s.once("connect", () => done("ok"));
+    s.once("error", (e) => done(e.code ?? String(e)));
+    setTimeout(() => done("timeout"), 3_000).unref();
+  });
 }
 
 if (raw !== undefined) process.stdout.write(raw);

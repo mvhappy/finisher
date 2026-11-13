@@ -7,10 +7,19 @@
 //   Under the launcher the process gets `LaunchRequest {profile: "hook", input: HookInput}`
 //   (`sandbox/launch.ts`, the one place `hooks/` reaches `child_process`): the project
 //   read-only, its own file, the toolchain base plus its program (and `node`'s install
-//   directory), its private temp the only write root, no network (`fin`: Task 5), and
-//   `timeoutMs` as `Limits.wall_ms`. On Windows the launch's table (`sandboxHookGrants`) is
-//   granted through the ACL broker under owner `call:<ulid>` before the start and revoked at the
-//   exit and on a failed start.
+//   directory), its private temp the only write root, no network, and `timeoutMs` as
+//   `Limits.wall_ms`. On Windows the launch's table (`sandboxHookGrants`) is granted through
+//   the ACL broker under owner `call:<ulid>` before the start and revoked at the exit and on a
+//   failed start.
+// - **`fin: true`** (Task 5, Decision 11): after the re-check the hook's credential file
+//   (`credential`, `hooks/credential.ts`: minted on first use) and `FIN_SERVER` (`finServer`:
+//   under the launcher the agent listener on Linux, `fin.sock` on macOS, the pipe on Windows, as
+//   `launcherServer` answers them; else the local endpoint) are added: `HookInput.fin
+//   {credential, endpoint}` (the listener's port is then its only network), `FIN_CREDENTIAL`,
+//   `FIN_SERVER`, and `FIN_PROJECT_DIR` (the event's project: under an agent credential `fin`
+//   trusts no other folder); `fin` itself (`finPath`) is readable through `toolchains` and its
+//   folder ends `PATH`. On Windows under the launcher the project's container is allowed on
+//   the pipe (`allowPipe`). A hook without `fin` gets none of these.
 // - **The process:** argv `[program, ...run.slice(1)]` without a shell (boundaries kept); the
 //   environment cleared to `PATH` (the toolchain base's folders), `HOME` and
 //   `TMPDIR`/`TEMP`/`TMP` (the private temp), `LANG=C.UTF-8`, `FIN_HOOK_EVENT` (Windows adds
@@ -43,8 +52,8 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, posix, win32 } from "node:path";
 import { decodeHookReply, HOOK_LIMITS, type HookReply } from "@finisher/contracts";
-import type { AclGrant, HookInput, HookRequest } from "@finisher/core-types";
-import { sandboxHookCheck, sandboxHookGrants, sandboxToolchainBase } from "@finisher/fin-node";
+import type { AclGrant, FinEndpoint, HookInput, HookRequest } from "@finisher/core-types";
+import { sandboxContainerSid, sandboxHookCheck, sandboxHookGrants, sandboxProjectContainer, sandboxToolchainBase } from "@finisher/fin-node";
 import { Effect, Exit } from "effect";
 import { canonical, type SandboxMode, sandboxMode, within } from "../agent/sandbox-input.ts";
 import { hashOf } from "../agent/file-cache.ts";
@@ -111,6 +120,21 @@ export interface HookProcessDeps {
   readonly timeoutMs?: number;
   /** The server stopping: nothing starts after it, a running process is killed (`unavailable`). */
   readonly signal?: AbortSignal;
+  /** A `fin` hook's credential file (the engine's, per hook and project; minted on first use). */
+  readonly credential?: () => string;
+  /** `FIN_SERVER` and, under the launcher, the policy's endpoint. */
+  readonly finServer?: (launcher: boolean) => Promise<{ readonly env: string; readonly fin?: FinEndpoint | undefined }>;
+  /** The `fin` a `fin` hook runs. */
+  readonly finPath?: string;
+  /** Windows: admits a container SID on the server's pipe (`PipeServer.allow`). */
+  readonly allowPipe?: (sid: string) => void;
+}
+
+/** What a `fin` hook's run adds (Decision 11). */
+interface FinGrant {
+  readonly credential: string;
+  readonly server: { readonly env: string; readonly fin?: FinEndpoint | undefined };
+  readonly finPath: string;
 }
 
 /** At most `n` hook processes at once (Decision 10): FIFO, a waiter gives up at its deadline. */
@@ -193,19 +217,31 @@ async function runOnce(h: ResolvedHook, req: HookRequest, deps: HookProcessDeps)
       const copies = await verifiedCopies(h, tmp);
       if (!(copies instanceof Map)) return copies;
       await deps.onStage?.("copied");
+      const granted = h.spec?.fin === true ? await finGrant(deps, mode === "launcher") : undefined;
+      if (granted !== undefined && "kind" in granted) return granted;
       const program = copies.get(found) ?? found;
       const file = h.file === undefined ? undefined : (copies.get(h.file) ?? h.file);
       const named = h.spec?.file;
       const argv = [program, ...h.run.slice(1).map((a) => (named !== undefined && file !== undefined && a === named ? file : a))];
       const env = hookEnv(tmp, req.event, base, platform);
+      if (granted !== undefined) {
+        env.PATH = [env.PATH, dirname(granted.finPath)].filter((p) => p !== "").join(platform === "win32" ? ";" : ":");
+        Object.assign(env, { FIN_CREDENTIAL: granted.credential, FIN_SERVER: granted.server.env, FIN_PROJECT_DIR: req.project.dir });
+      }
       let via: LaunchVia | undefined;
       let owner: string | undefined;
       const acl = platform === "win32" && deps.acl?.active === true ? deps.acl : undefined;
       try {
         if (mode === "launcher") {
-          const input = await hookInput(h, program, file ?? program, req, tmp, deps.serverData, base, Math.max(1, deadline - Date.now()));
+          const input = await hookInput(h, program, file ?? program, req, tmp, deps.serverData, base, Math.max(1, deadline - Date.now()), granted);
           const reason = sandboxHookCheck(input);
           if (reason !== null) return fail("unavailable", `the hook sandbox cannot be built: ${reason}`);
+          if (acl !== undefined && granted !== undefined) {
+            // The project's container reaches `fin` over the pipe (spec §8.11): its SID is allowed there.
+            const sid = (deps.containerSid ?? sandboxContainerSid)(sandboxProjectContainer(input.projectDir));
+            if (sid === null || deps.allowPipe === undefined) return fail("unavailable", "the project's container cannot be admitted on the server's pipe");
+            deps.allowPipe(sid);
+          }
           if (acl !== undefined) {
             owner = `call:${id}`;
             await grantTable(acl, (deps.hookGrants ?? sandboxHookGrants)(input), { owner, ...(deps.containerSid === undefined ? {} : { containerSid: deps.containerSid }) });
@@ -235,6 +271,13 @@ async function runOnce(h: ResolvedHook, req: HookRequest, deps: HookProcessDeps)
 }
 
 const changed = (detail: string): HookNotRun => ({ notRun: "changed", detail });
+
+/** A `fin` hook's credential and endpoint, or why it gets none (`unavailable`). */
+async function finGrant(deps: HookProcessDeps, launcher: boolean): Promise<FinGrant | HookFailure> {
+  if (deps.credential === undefined || deps.finServer === undefined || deps.finPath === undefined) return fail("unavailable", "fin is not available to hooks on this server");
+  const credential = deps.credential();
+  return { credential, server: await deps.finServer(launcher), finPath: deps.finPath };
+}
 /** A run refused or ended because the server stops. */
 const STOPPING = "the server is stopping";
 
@@ -320,21 +363,24 @@ function hookEnv(tmp: string, event: string, base: readonly string[], platform: 
 }
 
 /** The `hook` profile's input: canonical paths, the program (and `node`'s folder) readable. */
-async function hookInput(h: ResolvedHook, program: string, file: string, req: HookRequest, tmp: string, serverData: string, base: readonly string[], timeoutMs: number): Promise<HookInput> {
+async function hookInput(h: ResolvedHook, program: string, file: string, req: HookRequest, tmp: string, serverData: string, base: readonly string[], timeoutMs: number, granted?: FinGrant): Promise<HookInput> {
   const projectDir = await canonical(req.project.dir);
   const prog = await canonical(program);
   const hookFile = await canonical(file);
   // The program is read through `toolchains` unless it is the hook's own file or project content.
   const own = prog === hookFile || within(prog, projectDir) ? [] : [prog];
   const node = "node" in h.program ? [dirname(prog)] : [];
+  const fin = granted === undefined ? [] : [await canonical(granted.finPath)];
+  const endpoint = granted?.server.fin;
   return {
     projectDir,
     hookFile,
-    toolchains: [...new Set([...base, ...own, ...node])],
+    toolchains: [...new Set([...base, ...own, ...node, ...fin])],
     tmp,
     serverData: await canonical(serverData),
     home: await canonical(homedir()),
     timeoutMs,
+    ...(granted === undefined || endpoint === undefined ? {} : { fin: { credential: await canonical(granted.credential), endpoint } }),
   };
 }
 

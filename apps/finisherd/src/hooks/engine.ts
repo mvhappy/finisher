@@ -38,6 +38,12 @@
 //   it is older), and a trusted project file whose hooks do not apply as trusted (a bound script
 //   changed: re-checked at each dispatch until it is restored or re-trusted). A project script
 //   edited while the index is kept is caught by the re-check before its process starts.
+// - **The `fin` credential** (Task 5, Decision 11): a `fin: true` command hook's run takes its
+//   credential from `credentials` (minted on first use, one per hook and project); every
+//   resolution tells `credentials.retain` what applies now, so a hook that changed or is gone has
+//   its credential ended at the next dispatch that sees it. **Recursion guard:** an event whose
+//   principal is a hook credential held now runs no hook (`fire` answers `{ran: 0}`, `observe`
+//   queues nothing).
 // - **Sandbox warning:** a hook that runs unconfined (`direct`) is logged once per server start
 //   (`server.status` lists the `hook` profile's warning all along).
 // - **Closing** (`close`, at server stop): the queue is dropped, running processes are killed
@@ -57,6 +63,7 @@ import { globMatch } from "../agent/glob.ts";
 import type { AuditInput } from "../control/audit.ts";
 import { finError } from "../errors.ts";
 import type { ConfiguredHook, HookConfig } from "./config.ts";
+import type { HookCredentialPort } from "./credential.ts";
 import { type HookFailure, type HookFailureKind, type HookProcessDeps, type HookRun, HookSlots, isCommandHook, isNotRun, runCommandHook } from "./process.ts";
 
 /** Where an event happens and whose it is. */
@@ -142,8 +149,10 @@ export interface HookEngineDeps {
   readonly audit: { append(e: AuditInput): void };
   readonly notices?: SessionNotices;
   readonly plugins?: PluginHookPort;
+  /** `fin` hooks' credentials and the recursion guard (absent: a `fin` hook fails `unavailable`). */
+  readonly credentials?: HookCredentialPort;
   /** The process's other deps (the sandbox status, launcher, ACL broker; tests). */
-  readonly process?: Partial<Omit<HookProcessDeps, "serverData" | "slots" | "recheck" | "onStart">>;
+  readonly process?: Partial<Omit<HookProcessDeps, "serverData" | "slots" | "recheck" | "onStart" | "credential">>;
   /** The server's process slots (default: `HOOK_LIMITS.processes`). */
   readonly slots?: HookSlots;
   /** A configuration file's key, `undefined` when there is none (tests count calls). */
@@ -215,13 +224,14 @@ class Engine implements HookEngineImpl {
 
   fire(event: HookEvent, at: HookAt, payload: unknown): Effect.Effect<HookOutcome> {
     return Effect.suspend(() => {
+      if (this.#d.credentials?.isHook(at.principal) === true) return Effect.succeed({ ran: 0 });
       const hooks = this.#applying(event, at);
       return hooks.length === 0 ? Effect.succeed({ ran: 0 }) : Effect.promise(() => this.#chain(event, at, payload, hooks));
     });
   }
 
   observe(event: HookEvent, at: HookAt, payload: unknown): void {
-    if (this.#closed) return;
+    if (this.#closed || this.#d.credentials?.isHook(at.principal) === true) return;
     // No hook for it now: it takes no queue slot (a hook added meanwhile does not see it).
     if (this.#applying(event, at).length === 0) return;
     if (this.#draining !== undefined) {
@@ -313,6 +323,7 @@ class Engine implements HookEngineImpl {
     const kept = this.#memo.get(slot);
     if (kept?.key === key) return kept.index;
     const resolved = this.#d.config.resolve(projectId);
+    this.#d.credentials?.retain(projectId, resolved.hooks);
     const index = new Map<HookEvent, ConfiguredHook[]>();
     for (const h of resolved.hooks) {
       const list = index.get(h.event);
@@ -417,6 +428,7 @@ class Engine implements HookEngineImpl {
         serverData: this.#d.serverData,
         slots: this.#slots,
         signal: this.#stopping.signal,
+        ...(h.spec?.fin === true && this.#d.credentials !== undefined ? { credential: () => this.#d.credentials!.forRun(h, at.projectId) } : {}),
         recheck: () => this.#d.config.applies(at.projectId, h),
         onStart: ({ warning }) => {
           if (warning === undefined || this.#warned) return;

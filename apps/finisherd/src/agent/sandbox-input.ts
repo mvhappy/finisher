@@ -169,7 +169,7 @@ export function within(p: string, dir: string): boolean {
 }
 
 /** `FIN_SERVER` and the policy's `fin` endpoint under the launcher, per OS. */
-export async function launcherServer(deps: SessionSandboxDeps, platform: NodeJS.Platform): Promise<{ env: string; fin: FinEndpoint | undefined }> {
+export async function launcherServer(deps: Pick<SessionSandboxDeps, "localEndpoint" | "agentListener">, platform: NodeJS.Platform): Promise<{ env: string; fin: FinEndpoint | undefined }> {
   if (platform === "win32") return { env: deps.localEndpoint, fin: { kind: "pipe" } };
   if (platform === "darwin") {
     // Resolved, as the handshake binds it: a sandboxed `fin` may not resolve a link on the way
