@@ -1,4 +1,4 @@
-//! `fin agent spawn|wait|ls|send|stop|rollback|resume` under an agent session's credential (plan 7B Task 6,
+//! `fin agent spawn|wait|ls|send|stop|rollback|resume|interrupt` under an agent session's credential (plan 7B Task 6,
 //! Decisions 16–21; spec §6.3, §11.2): a spawn answers `{session, branch}` at once, a wait
 //! answers each child's status, branch and summary or exits 5 `WAIT_TIMEOUT` (repeatable), and a
 //! session reaches its own children only. Against a real `finisherd` whose sessions run on the
@@ -284,7 +284,18 @@ fn resume_a_child_the_parent_interrupted_only() {
         host.request(req)["statusReason"].clone()
     };
     host.request(json!({ "op": "waitNode", "sessionId": c, "kind": "notice" }));
-    assert_eq!(interrupt(Some(&p.id)), "parentInterrupt");
+    // Another session's interrupt is refused (its own children only); the parent's is its own.
+    assert_error(
+        &host.agent(&q, &wq, &["agent", "interrupt", &c]),
+        3,
+        "SESSION_NOT_FOUND",
+    );
+    let stopped = ok(host.agent(&p, &wp, &["agent", "interrupt", &c]));
+    assert_eq!(
+        (&stopped["status"], &stopped["reason"]),
+        (&json!("interrupted"), &json!("parentInterrupt")),
+        "{stopped}"
+    );
     // Text and --resend-returned are one or the other.
     assert_error(
         &host.agent(&p, &wp, &["agent", "resume", &c, "x", "--resend-returned"]),
@@ -337,7 +348,10 @@ fn map_lists_agent_and_stays_under_budget() {
         .iter()
         .find(|l| l.as_str().is_some_and(|l| l.starts_with("agent:")))
         .unwrap();
-    assert_eq!(line, "agent: spawn wait ls send stop rollback resume");
+    assert_eq!(
+        line,
+        "agent: spawn wait ls send stop rollback resume interrupt"
+    );
     let help = support::fin(&tmp.path().join("sd"), tmp.path(), &["help", "agent"]);
     assert_eq!(help.code, 0, "{}", help.stdout);
 }

@@ -309,6 +309,11 @@ pub const ROWS: &[Row] = &[
     ),
     // 7B Decision 16 as amended (2026-11-13): a resume of a child the parent interrupted.
     row!("agent.resume", rpc!("agent.session.resume"), &["sessionId"]),
+    row!(
+        "agent.interrupt",
+        rpc!("agent.session.interrupt"),
+        &["sessionId"]
+    ),
     row!("help", rpc!(), NONE),
     row!("whoami", rpc!(), NONE),
     row!("schema", rpc!(), NONE),

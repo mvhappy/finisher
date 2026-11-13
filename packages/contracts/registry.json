@@ -2300,6 +2300,20 @@
     },
     {
       "argKinds": {},
+      "group": "agent",
+      "identity": [
+        "sessionId"
+      ],
+      "name": "agent.interrupt",
+      "rpcs": [
+        {
+          "method": "agent.session.interrupt"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
       "group": "batch",
       "identity": [
         "projectId",

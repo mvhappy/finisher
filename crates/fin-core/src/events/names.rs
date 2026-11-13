@@ -58,6 +58,7 @@ impl NameTable {
 pub static CLI_COMMANDS: NameTable = NameTable::new(
     "CLI_COMMANDS",
     &[
+        "agent.interrupt",
         "agent.ls",
         "agent.resume",
         "agent.rollback",

@@ -1,4 +1,4 @@
-//! `fin agent spawn|wait|ls|send|stop|rollback|resume` (plan 7B Tasks 6, 8, Decisions 16–23; spec §5.3, §6.3, §11.2): a
+//! `fin agent spawn|wait|ls|send|stop|rollback|resume|interrupt` (plan 7B Tasks 6, 8, Decisions 16–23; spec §5.3, §6.3, §11.2): a
 //! running session's children. Each child is its own session on a child branch of the parent's
 //! current branch, with its own credential, a mode at most the parent's and a role the parent's
 //! role may spawn; the parent composes by `fin merge <child branch>` into its own branch.
@@ -24,6 +24,10 @@
 //!   Under an agent credential: a direct child only, and only one the parent interrupted itself
 //!   (7B Decision 16 as amended by the owner decision 2026-11-13; `SCOPE_DENIED` otherwise: a
 //!   person resumes it). A person's `fin` resumes any session in reach.
+//! - `fin agent interrupt <id>`: interrupts the child (its run stops, its branch stays); a
+//!   parent's interrupt is recorded as its own (`reason: parentInterrupt`), so it may resume the
+//!   child later. Under an agent credential a direct child only (`SESSION_NOT_FOUND`); a person's
+//!   `fin` interrupts any session in reach.
 //!
 //! All are `agent.session.*` RPCs: offline they are `SERVER_UNAVAILABLE`.
 use std::path::Path;
@@ -64,6 +68,8 @@ pub enum AgentCmd {
     Rollback(RollbackArgs),
     /// Resumes a child it interrupted (a person: any session), with text or the steers handed back.
     Resume(ResumeArgs),
+    /// Interrupts a child; its branch stays, and its parent may resume it.
+    Interrupt(InterruptArgs),
 }
 
 #[derive(Debug, Clone, Args, Deserialize, Serialize, JsonSchema)]
@@ -148,6 +154,13 @@ pub struct ResumeArgs {
     #[arg(long = "resend-returned", conflicts_with = "text")]
     #[serde(default, rename = "resendReturned")]
     pub resend_returned: bool,
+}
+
+#[derive(Debug, Clone, Args, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct InterruptArgs {
+    /// The child's session id.
+    pub id: String,
 }
 
 /// The `agent.session.resume` payload: the texts joined by a blank line (as held steers are).
@@ -283,6 +296,7 @@ pub fn run(
             AgentCmd::Stop(_) => "agent.session.end",
             AgentCmd::Rollback(_) => "agent.session.rollback",
             AgentCmd::Resume(_) => "agent.session.resume",
+            AgentCmd::Interrupt(_) => "agent.session.interrupt",
         };
         return Err(offline(op));
     }
@@ -345,6 +359,10 @@ pub fn run(
                 out["run"] = run["id"].clone();
             }
             Ok(out)
+        }
+        AgentCmd::Interrupt(a) => {
+            let r = backend.server_call("agent.session.interrupt", json!({ "sessionId": a.id }))?;
+            Ok(brief_view(&r["session"]))
         }
     }
 }
