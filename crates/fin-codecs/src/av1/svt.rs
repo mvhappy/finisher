@@ -142,24 +142,52 @@ impl SvtEncoder {
 
 impl VideoEncoder for SvtEncoder {
     fn send(&mut self, frame: &RawFrame, pts: i64, force_key: bool) -> Result<(), CoreError> {
-        if frame.format != PixelFormat::I420 || frame.size != self.size {
-            return Err(CoreError::new(
-                "ENCODE_FAILED",
-                "the encoder takes 8-bit 4:2:0 at its configured size",
-            )
-            .with_details(json!({ "backend": "svt-av1" })));
+        let refuse = |message: &str| {
+            Err(CoreError::new("ENCODE_FAILED", message.to_string())
+                .with_details(json!({ "backend": "svt-av1" })))
+        };
+        if frame.size != self.size {
+            return refuse("the encoder takes pictures of its configured size");
         }
-        let [y, u, v] = &frame.planes;
-        if y.stride != self.size.width as usize || u.stride != self.size.width.div_ceil(2) as usize
-        {
-            return Err(
-                CoreError::new("ENCODE_FAILED", "the encoder takes tight planes")
-                    .with_details(json!({ "backend": "svt-av1" })),
-            );
+        let (w, cw, ch) = (
+            self.size.width as usize,
+            self.size.width.div_ceil(2) as usize,
+            self.size.height.div_ceil(2) as usize,
+        );
+        let [y, a, b] = &frame.planes;
+        if y.stride != w || y.data.len() < w * self.size.height as usize {
+            return refuse("the encoder takes tight planes");
         }
-        self.enc
-            .send([&y.data, &u.data, &v.data], self.size, pts, force_key)
-            .map_err(|e| failed(e, "take a picture"))?;
+        match frame.format {
+            PixelFormat::I420 => {
+                if a.stride != cw
+                    || b.stride != cw
+                    || a.data.len() < cw * ch
+                    || b.data.len() < cw * ch
+                {
+                    return refuse("the encoder takes tight planes");
+                }
+                self.enc
+                    .send([&y.data, &a.data, &b.data], self.size, pts, force_key)
+                    .map_err(|e| failed(e, "take a picture"))?;
+            }
+            PixelFormat::Nv12 => {
+                if a.stride != 2 * cw || a.data.len() < 2 * cw * ch {
+                    return refuse("the encoder takes tight planes");
+                }
+                // SVT-AV1 reads planar chroma: split the interleaved pairs.
+                let (u, v): (Vec<u8>, Vec<u8>) = a.data[..2 * cw * ch]
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|&[u, v]| (u, v))
+                    .unzip();
+                self.enc
+                    .send([&y.data, &u, &v], self.size, pts, force_key)
+                    .map_err(|e| failed(e, "take a picture"))?;
+            }
+            _ => return refuse("the encoder takes 8-bit 4:2:0 (I420 or NV12)"),
+        }
         self.collect(false)
     }
 

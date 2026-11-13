@@ -48,7 +48,8 @@ pub use layout::{
     decode_header, encode_header,
 };
 pub use open::{
-    checked_open, commit_output, commit_output_copy, create_new_output, create_output, write_input,
+    checked_open, commit_output, commit_output_copy, create_new_output, create_output,
+    create_output_dir, write_input,
 };
 pub use ring::{RingReader, RingWriter, SlotState};
 

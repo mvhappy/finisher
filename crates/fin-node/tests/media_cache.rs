@@ -106,6 +106,7 @@ fn meta_for(input: &KeyInput, files: &[(&str, &[u8])]) -> EntryMeta {
             })
             .collect(),
         media: None,
+        tone_mapped: None,
         created_at: 7,
     }
 }

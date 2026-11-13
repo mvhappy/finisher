@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use crate::blend;
 use crate::gpu::{ACC, OUT};
 use crate::ingest;
+use crate::scale::gpu as scale;
 
 const COMMON: &str = include_str!("shaders/common.wgsl");
 
@@ -24,6 +25,10 @@ pub enum Stage {
     /// `blend.wgsl` for mode `index` (`blend::index`).
     Blend(u32),
     Output,
+    /// Proxies and thumbnails (`scale.wgsl`): bilinear from one box level, then NV12's planes.
+    Scale,
+    Luma,
+    Chroma,
 }
 
 pub(crate) struct Pipelines {
@@ -32,6 +37,7 @@ pub(crate) struct Pipelines {
     mip: wgpu::ShaderModule,
     layer: wgpu::ShaderModule,
     blend: wgpu::ShaderModule,
+    scale: wgpu::ShaderModule,
     pub(crate) map: HashMap<Stage, wgpu::RenderPipeline>,
     pub(crate) created: usize,
 }
@@ -52,6 +58,7 @@ impl Pipelines {
             mip: module(device, "mip", include_str!("shaders/mip.wgsl")),
             layer: module(device, "layer", include_str!("shaders/layer.wgsl")),
             blend: module(device, "blend", include_str!("shaders/blend.wgsl")),
+            scale: module(device, "scale", include_str!("shaders/scale.wgsl")),
             map: HashMap::new(),
             created: 0,
         }
@@ -82,6 +89,9 @@ impl Pipelines {
                 &[("MODE", f64::from(m))],
             ),
             Stage::Output => (&self.blend, "fs_output", OUT, None, &[]),
+            Stage::Scale => (&self.scale, "fs_scale", scale::SCALED, None, &[]),
+            Stage::Luma => (&self.scale, "fs_luma", scale::LUMA, None, &[]),
+            Stage::Chroma => (&self.scale, "fs_chroma", scale::CHROMA, None, &[]),
         };
         let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some(entry),

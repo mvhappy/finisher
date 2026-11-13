@@ -13,6 +13,7 @@ mod blend;
 mod ingest;
 mod layer;
 mod mipchain;
+pub mod scale;
 
 use std::convert::Infallible;
 

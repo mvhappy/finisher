@@ -55,11 +55,13 @@ pub fn gpu_or_skip(test: &str) -> bool {
     }
 }
 
-/// The environment a host would give the worker: `FIN_GPU` when set.
+/// The environment a host would give the worker: `FIN_GPU` when set, and the Vulkan loader's
+/// `VK_ICD_FILENAMES` when the test run names a driver (a software one on a host without a GPU).
 pub fn worker_env() -> Vec<(&'static str, String)> {
-    std::env::var("FIN_GPU")
-        .map(|v| vec![("FIN_GPU", v)])
-        .unwrap_or_default()
+    ["FIN_GPU", "VK_ICD_FILENAMES"]
+        .into_iter()
+        .filter_map(|k| std::env::var(k).ok().map(|v| (k, v)))
+        .collect()
 }
 
 /// An MP4 with one H.264 sample entry and one sample (no decoder in 6A reads it).

@@ -1518,6 +1518,13 @@ export type StorageKind =
   | "sync:googledrive"
   | "sync:unknown";
 /**
+ * How an HDR source was brought to SDR (Decision 9).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ToneMapped".
+ */
+export type ToneMapped = "os" | "shader";
+/**
  * What a merge does with a source record (the review's `status`).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -2359,6 +2366,20 @@ export type Placeholder =
  * via the `definition` "Severity".
  */
 export type Severity = "low" | "medium" | "high" | "critical";
+/**
+ * The codec of a proxy (Decision 5).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProxyCodec".
+ */
+export type ProxyCodec = "h264" | "av1";
+/**
+ * A proxy tier (spec §7.1).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProxyTier".
+ */
+export type ProxyTier = "540" | "1080";
 /**
  * What to purge (`fin diagnostics purge`, `diagnostics.purge`).
  *
@@ -6076,6 +6097,10 @@ export interface EntryMeta {
   recipe: string;
   recipeVersion: number;
   renderVersion: number;
+  /**
+   * How an HDR source was brought to SDR (proxies, plan 6B-1 Decision 9); absent for SDR.
+   */
+  toneMapped?: ToneMapped;
 }
 /**
  * What a media file is (spec §6.3).
@@ -8660,6 +8685,160 @@ export interface ProjectView {
  */
 export interface ProjectViewText {
   text: string;
+}
+/**
+ * One move of the encode to another encoder (`ENCODER_HUNG`'s fallback, an encoder that did
+ * not open), as the result records it.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProxyFallback".
+ */
+export interface ProxyFallback {
+  from: string;
+  /**
+   * `openFailed` or `hung`.
+   */
+  reason: string;
+  to: string;
+}
+/**
+ * A library file the `proxy540` stage hands the worker (5D Decision 39): the library's
+ * canonical root, the file's raw chain below it and the `Expect` the opener checks, in
+ * `fin-library`'s wire forms (`RawRel`, `Expect`), which the worker decodes.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProxyLibraryFile".
+ */
+export interface ProxyLibraryFile {
+  /**
+   * `fin-library`'s `Expect`: `{size, mtimeNs, fileId?, dev?}`.
+   */
+  expect: unknown;
+  /**
+   * The library hydrates cloud-only files when read.
+   */
+  hydrate?: boolean;
+  library: string;
+  /**
+   * `fin-library`'s `RawRel`: `{components: [<base64>]}`.
+   */
+  rel: unknown;
+  /**
+   * The library's canonical root (absolute).
+   */
+  root: string;
+}
+/**
+ * `media.proxy` v1: a proxy of the source whose content is `fingerprint`, at `tier`, in
+ * `codec`, which the cache knows as `key`. A batch kind of one item, the fingerprint.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProxyParams".
+ */
+export interface ProxyParams {
+  /**
+   * A project asset, through the job's `in/manifest.json` (the asset's fingerprint there
+   * must equal `fingerprint`, else `ASSET_CHANGED`).
+   */
+  asset?: string;
+  /**
+   * The branch whose head names the asset (`main` when absent). Host only.
+   */
+  branch?: string;
+  codec: ProxyCodec;
+  /**
+   * The vendor class the host expects the original's decoder to have (part of the key).
+   */
+  decoderClass: VendorClass;
+  display?: Size;
+  /**
+   * A library file (the `proxy540` stage).
+   */
+  file?: ProxyLibraryFile;
+  fingerprint: string;
+  /**
+   * The encoder may make a 540 proxy all-intra (Decision 8: measured at ≥ 8× real time by
+   * the capability probe). Absent: a keyframe every 0.25 s.
+   */
+  intraOk?: boolean;
+  /**
+   * [`proxy_key`] of the fields above: where the host commits the entry. The worker writes
+   * `out/<key>/` and fails `PLAN_MISMATCH {reason: cacheKey}` when the decoder it opened
+   * gives another key.
+   */
+  key: string;
+  /**
+   * The project that asked (host only: `prepare` writes the manifest from its branch head,
+   * `onSucceeded` commits the entry for it).
+   */
+  projectId?: string;
+  tier: ProxyTier;
+}
+/**
+ * What `media.proxy` v1 answers for its item (the fingerprint).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProxyResult".
+ */
+export interface ProxyResult {
+  /**
+   * The encoder's backend (`svt-av1`, `videotoolbox`, `mf-hw`, …) and its vendor class.
+   */
+  backend: string;
+  /**
+   * The entry's bytes (its files, `meta.json` not included).
+   */
+  bytes: number;
+  class: VendorClass;
+  codec: ProxyCodec;
+  /**
+   * The decoder's backend.
+   */
+  decoder: string;
+  fellBack?: ProxyFallback[];
+  /**
+   * Proxy frames: the original's presented frames.
+   */
+  frames: number;
+  key: string;
+  /**
+   * The proxy's coded size.
+   */
+  size: Size;
+  tier: ProxyTier;
+  toneMapped?: ToneMapped;
+}
+/**
+ * `media.proxy.status`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProxyStatus".
+ */
+export interface ProxyStatus {
+  asset: string;
+  fingerprint: string;
+  tiers: ProxyTierStatus[];
+}
+/**
+ * One tier of `media.proxy.status`: its entry when the cache holds one, the job making it.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProxyTierStatus".
+ */
+export interface ProxyTierStatus {
+  /**
+   * The failed job's error code.
+   */
+  code?: string;
+  codec?: ProxyCodec;
+  job?: string;
+  key?: string;
+  /**
+   * `ready` (in the cache), `making` (a job runs), `failed` (the last job failed) or
+   * `none`.
+   */
+  state: string;
+  tier: ProxyTier;
 }
 /**
  * What a purge removed.

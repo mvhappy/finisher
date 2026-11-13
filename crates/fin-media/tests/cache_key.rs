@@ -38,6 +38,7 @@ fn meta(files: &[(&str, &[u8])]) -> EntryMeta {
             })
             .collect(),
         media: None,
+        tone_mapped: None,
         created_at: 1,
     }
 }

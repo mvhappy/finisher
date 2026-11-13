@@ -13,6 +13,8 @@
 //!   fresh one. Between jobs nothing under the job directory stays open.
 //! - **Workers never start processes** (spec §2.9); `tests/media_look.rs` checks it.
 //! - `fin-workers media --replay <jobdir>` runs a job directory without a host (`replay.rs`).
+//! - `media.proxy` v1 (plan 6B-1 Task 14, cold): a proxy into `out/<key>/` (`proxy.rs`, the
+//!   GPU scale in `scale.rs`, the encoder and muxer in `encode_pipeline.rs`).
 
 use fin_codecs::{Capabilities, ProbeResult};
 use fin_compositor::{Compositor, Gpu};
@@ -22,18 +24,22 @@ use serde_json::Value;
 
 mod caps;
 mod diag;
+mod encode_pipeline;
 mod fonts;
 mod inputs;
 mod look;
 mod open_cache;
 mod probe_deep;
+mod proxy;
 pub mod replay;
+mod scale;
 mod sources;
 
 static KINDS: &[KindVersion] = &[
     KindVersion::new("media.look", 1),
     KindVersion::new("media.capabilities", 1),
     KindVersion::new("media.probeDeep", 1),
+    KindVersion::new("media.proxy", 1),
 ];
 
 /// The GPU state a warm worker keeps.
@@ -111,6 +117,7 @@ impl Family for MediaFamily {
             ("media.look", 1) => look::run(job, ctx, &mut self.state),
             ("media.capabilities", 1) => caps::run(job, ctx, &mut self.state),
             ("media.probeDeep", 1) => probe_deep::run(job, ctx, &mut self.state),
+            ("media.proxy", 1) => proxy::run(job, ctx, &mut self.state),
             (kind, version) => Err(JobError::new(
                 "JOB_KIND_UNKNOWN",
                 format!("family media has no kind {kind} v{version}"),

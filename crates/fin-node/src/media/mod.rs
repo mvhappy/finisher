@@ -14,6 +14,7 @@
 //!   `onSucceeded` moves each finished file out of the job directory with it, after the
 //!   worker can no longer write (spec §3.3).
 //!
+//! - `mediaProxyPlan` (`proxy.rs`, 6B-1 Task 14): a proxy's cache key, before its job.
 //! - [`cache`]: the media cache (`MediaCache`, 6B-1 Task 13): its index, commits, pins and
 //!   eviction.
 //!
@@ -23,6 +24,7 @@
 mod asset_job;
 pub mod cache;
 mod inputs;
+pub mod proxy;
 
 use std::path::{Path, PathBuf};
 

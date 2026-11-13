@@ -101,6 +101,7 @@ pub use library::{
 pub use library::{library_probe_hang_for_test, library_probe_started_for_test};
 pub use media::cache::{MediaCache, media_cache_open};
 pub use media::commit_job_output;
+pub use media::proxy::media_proxy_plan;
 pub use pipe_server::{PipeOptions, PipeServer};
 pub use private_dir::{PrivateDirReport, check_private_dir, make_private_dir};
 pub use private_file::{PrivateFile, create_private_file};

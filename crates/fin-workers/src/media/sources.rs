@@ -54,7 +54,7 @@ impl<'a> Sources<'a> {
 
 /// Container tags over bitstream tags, field by field; the range is the container's when it
 /// tags anything.
-fn merge(container: ColourTags, stream: ColourTags) -> ColourTags {
+pub(super) fn merge(container: ColourTags, stream: ColourTags) -> ColourTags {
     let tagged = container.primaries != Primaries::Unknown
         || container.transfer != Transfer::Unknown
         || container.matrix != Matrix::Unknown;
