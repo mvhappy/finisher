@@ -1,0 +1,124 @@
+[
+  {
+    "type": "usage",
+    "input": 2,
+    "output": 5,
+    "cacheRead": 6319,
+    "cacheWrite": 684,
+    "reasoning": 0,
+    "costMicros": 0,
+    "costBasis": "reported"
+  },
+  {
+    "type": "reasoning",
+    "text": "",
+    "encrypted": {
+      "signature": "c2lnbmF0dXJl"
+    }
+  },
+  {
+    "type": "toolStarted",
+    "providerId": "toolu_0001",
+    "tool": "Bash",
+    "input": {
+      "command": "sleep 4 && echo one",
+      "description": "Sleep 4 seconds then echo one"
+    }
+  },
+  {
+    "type": "request",
+    "id": "00000000-0000-4000-8000-000000000032#1",
+    "kind": "approval",
+    "tool": "Bash",
+    "input": {
+      "command": "sleep 4 && echo one",
+      "description": "Sleep 4 seconds then echo one"
+    },
+    "providerId": "toolu_0001"
+  },
+  {
+    "type": "usage",
+    "input": 0,
+    "output": 152,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "reasoning": 0,
+    "costMicros": 0,
+    "costBasis": "reported"
+  },
+  {
+    "type": "toolCompleted",
+    "providerId": "toolu_0001",
+    "ok": true,
+    "output": "one"
+  },
+  {
+    "type": "usage",
+    "input": 2,
+    "output": 1,
+    "cacheRead": 7003,
+    "cacheWrite": 282,
+    "reasoning": 0,
+    "costMicros": 0,
+    "costBasis": "reported"
+  },
+  {
+    "type": "messageDelta",
+    "text": "one"
+  },
+  {
+    "type": "messageDelta",
+    "text": "\n\nste"
+  },
+  {
+    "type": "messageDelta",
+    "text": "ered"
+  },
+  {
+    "type": "message",
+    "role": "assistant",
+    "blocks": [
+      {
+        "type": "text",
+        "text": "one\n\nsteered"
+      }
+    ]
+  },
+  {
+    "type": "usage",
+    "input": 0,
+    "output": 5,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "reasoning": 0,
+    "costMicros": 0,
+    "costBasis": "reported"
+  },
+  {
+    "type": "usage",
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "reasoning": 0,
+    "costMicros": 408,
+    "costBasis": "reported"
+  },
+  {
+    "type": "notice",
+    "name": "modelUsage",
+    "details": {
+      "claude-haiku-5-5": {
+        "input": 4,
+        "output": 163,
+        "cacheRead": 13322,
+        "cacheWrite": 966,
+        "costMicros": 408
+      }
+    }
+  },
+  {
+    "type": "turnCompleted",
+    "stopReason": "endTurn"
+  }
+]

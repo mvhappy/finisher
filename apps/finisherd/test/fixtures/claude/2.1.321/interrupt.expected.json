@@ -1,0 +1,75 @@
+[
+  {
+    "type": "usage",
+    "input": 2,
+    "output": 16,
+    "cacheRead": 6319,
+    "cacheWrite": 465,
+    "reasoning": 0,
+    "costMicros": 0,
+    "costBasis": "reported"
+  },
+  {
+    "type": "toolStarted",
+    "providerId": "toolu_0001",
+    "tool": "Bash",
+    "input": {
+      "command": "sleep 30 && echo late",
+      "description": "Sleep 30 seconds then echo late"
+    }
+  },
+  {
+    "type": "request",
+    "id": "00000000-0000-4000-8000-000000000025#1",
+    "kind": "approval",
+    "tool": "Bash",
+    "input": {
+      "command": "sleep 30 && echo late",
+      "description": "Sleep 30 seconds then echo late"
+    },
+    "providerId": "toolu_0001"
+  },
+  {
+    "type": "usage",
+    "input": 0,
+    "output": 74,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "reasoning": 0,
+    "costMicros": 0,
+    "costBasis": "reported"
+  },
+  {
+    "type": "toolCompleted",
+    "providerId": "toolu_0001",
+    "ok": false,
+    "output": "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed. Correction to the text above: this call was stopped while running, not refused before it ran. It may have run in part or in full, and its changes may have been written. No permission prompt was involved. Work it started elsewhere (a remote command, a background process) may still be running, so check before starting the same work again. The instruction to stop and wait still stands."
+  },
+  {
+    "type": "usage",
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "reasoning": 0,
+    "costMicros": 201,
+    "costBasis": "reported"
+  },
+  {
+    "type": "notice",
+    "name": "modelUsage",
+    "details": {
+      "claude-haiku-5-5": {
+        "input": 2,
+        "output": 90,
+        "cacheRead": 6319,
+        "cacheWrite": 465,
+        "costMicros": 201
+      }
+    }
+  },
+  {
+    "type": "turnCompleted",
+    "stopReason": "interrupted"
+  }
+]
