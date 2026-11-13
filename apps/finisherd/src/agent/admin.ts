@@ -14,6 +14,7 @@ import { Effect } from "effect";
 import { finError } from "../errors.ts";
 import type { SecretStore } from "../secrets/store.ts";
 import type { ProviderAdapter } from "./adapter.ts";
+import { ClaudeAccounts } from "./claude/account.ts";
 import { closedTargets, type LocalEndpoint, localEndpoint, parseEndpoint, setClosedTargets, setLocalEndpoint } from "./settings.ts";
 import { agentWarnings } from "./warnings.ts";
 
@@ -185,6 +186,25 @@ export class AgentAdmin {
     setClosedTargets(this.deps.serverData, state);
     this.deps.audit(by, { rpc: "training.closedTargets.set", value: state });
     return this.closedTargets();
+  }
+
+  // Claude Code's account (plan 7D Decision 19, `claude/account.ts`) ---------------------------
+
+  /**
+   * `agent.account.confirm`: the account change waiting for a person becomes the account sessions
+   * run on (`next`: the next change is taken without a confirmation, `provider signin --confirm`).
+   * The scope chain lets only the console's principal here; audited with words and hashes only.
+   */
+  accountConfirm(by: Principal, req: { harness: "claudeCode"; next?: boolean }): { confirmed: boolean; expecting?: boolean; accountHash?: string; previous?: string } {
+    const accounts = new ClaudeAccounts(this.deps.serverData);
+    if (req.next === true) {
+      accounts.expectNext();
+      this.deps.audit(by, { rpc: "agent.account.confirm", value: "claudeCode.next" });
+      return { confirmed: false, expecting: true };
+    }
+    const r = accounts.confirm();
+    if (r.confirmed) this.deps.audit(by, { rpc: "agent.account.confirm", value: "claudeCode" });
+    return r;
   }
 
   // `agent.providers` ------------------------------------------------------------------------

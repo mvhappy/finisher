@@ -305,8 +305,9 @@ describe("detection", () => {
     const line = answer.providers.find((p) => p.harness === "claudeCode") as ProviderInfo;
     expect(line).toMatchObject({ detected: true, version: "2.1.321", supported: true, signedIn: true, authMethod: "claude.ai", floor: CLAUDE_FLOOR, enabled: true });
     expect(line.account).toBeUndefined();
-    expect(line.accountHash).toBeUndefined();
-    expect(Object.keys(line).sort()).toEqual(["authMethod", "capabilities", "detected", "enabled", "floor", "harness", "signedIn", "supported", "version"]);
+    // Task 11: the account as its keyed hash only (`claude/account.ts`).
+    expect(line.accountHash).toMatch(/^[0-9a-f]{8}$/);
+    expect(Object.keys(line).sort()).toEqual(["accountHash", "authMethod", "capabilities", "detected", "enabled", "floor", "harness", "signedIn", "supported", "version"]);
     // The schema holds `accountHash` to 8 hex characters.
     expect(() => Schema.decodeUnknownSync(AgentProvidersSuccess)({ ...answer, providers: [{ ...line, accountHash: label }] })).toThrow();
     expect(() => Schema.decodeUnknownSync(AgentProvidersSuccess)({ ...answer, providers: [{ ...line, accountHash: "0a1b2c3d" }] })).not.toThrow();

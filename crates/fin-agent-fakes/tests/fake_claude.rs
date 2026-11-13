@@ -594,6 +594,40 @@ fn fake_reports_version_and_auth_status() {
 }
 
 #[test]
+fn fake_reports_the_configured_account_label() {
+    let dir = Dir::new("account");
+    let status = |script: Option<Value>| {
+        let mut c = Command::new(BIN);
+        c.args(["auth", "status"])
+            .env("FAKE_CLAUDE_ACCOUNT", "person-b@example.invalid")
+            .env("CLAUDE_CONFIG_DIR", "/nonexistent/cfg");
+        if let Some(s) = script {
+            c.env("FAKE_CLAUDE_SCRIPT", dir.write("script.json", &s));
+        }
+        serde_json::from_slice::<Value>(&c.output().unwrap().stdout).unwrap()
+    };
+    assert_eq!(status(None)["email"], "person-b@example.invalid");
+    // Signed out: no label.
+    assert!(status(Some(json!({"auth": {"loggedIn": false}})))["email"].is_null());
+    // A script's own label wins.
+    assert_eq!(
+        status(Some(json!({"auth": {"email": "own@example.invalid"}})))["email"],
+        "own@example.invalid"
+    );
+    // `initialize.account` carries it too.
+    let mut f = Fake::start(
+        &dir,
+        None,
+        &["--session-id", UUID],
+        &[("FAKE_CLAUDE_ACCOUNT", "person-b@example.invalid")],
+    );
+    let body = initialize(&mut f);
+    assert_eq!(body["account"]["email"], "person-b@example.invalid");
+    assert_eq!(body["account"]["tokenSource"], "claude.ai");
+    assert!(f.finish().success());
+}
+
+#[test]
 fn fake_shipped_scripts_parse() {
     let scripts = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/claude");
     let mut n = 0;

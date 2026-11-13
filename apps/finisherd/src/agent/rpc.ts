@@ -219,6 +219,7 @@ export function agentHandlers(deps: AgentRpcDeps) {
     "agent.local.show": () => guard("agent.local.show", sync(() => admin.localShow())),
     "agent.local.test": () => guard("agent.local.test", promised(() => admin.localTest())),
     "agent.local.remove": (_: unknown, options: Options) => guard("agent.local.remove", sync(() => ({ removed: admin.localRemove(by(options)) }))),
+    "agent.account.confirm": (req: { harness: "claudeCode"; next?: boolean }, options: Options) => guard("agent.account.confirm", sync(() => admin.accountConfirm(by(options), req))),
     "training.closedTargets.get": () => guard("training.closedTargets.get", sync(() => ({ state: admin.closedTargets() }))),
     "training.closedTargets.set": ({ state }: { state: "pendingCounsel" | "cleared" | "excluded" }, options: Options) =>
       guard("training.closedTargets.set", sync(() => ({ state: admin.setClosedTargets(by(options), state) }))),
