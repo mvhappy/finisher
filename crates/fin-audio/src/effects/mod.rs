@@ -17,14 +17,18 @@
 //! part of the block in hand. So within a block coefficients never move, and an effect sees the
 //! previous effect's output for the same samples.
 //!
-//! **Adding an effect (Task 9).** Implement [`Effect`] (build its [`params::ParamCurve`]s from
+//! **Adding an effect.** Implement [`Effect`] (build its [`params::ParamCurve`]s from
 //! [`params::ParamsAt`] in the constructor, design in `f64` with `libm` in `update`, run scalar
 //! `f32` in `run`, state per channel or linked across `ch`), then add its kind to
 //! [`Chain::new`]'s match. A kind the engine does not know (a newer model's) is skipped and
 //! listed by [`Chain::skipped`] (and [`crate::Mixer::skipped_effects`]).
 
 pub mod biquad;
+pub mod compressor;
+pub mod deesser;
+pub mod detector;
 pub mod eq;
+pub mod gate;
 pub mod params;
 
 use fin_core::CoreError;
@@ -78,8 +82,9 @@ impl Chain {
         for e in &item.effects {
             match e.kind.as_str() {
                 "eq" => fx.push(Box::new(eq::Eq::new(e, start, end)?)),
-                // Registry kinds whose DSP arrives with plan 6C Task 9: a passthrough until then.
-                "compressor" | "gate" | "deEsser" => {}
+                "compressor" => fx.push(Box::new(compressor::Compressor::new(e, start, end)?)),
+                "gate" => fx.push(Box::new(gate::Gate::new(e, start, end)?)),
+                "deEsser" => fx.push(Box::new(deesser::DeEsser::new(e, start, end)?)),
                 _ => skipped.push(SkippedEffect {
                     item: item.item.clone(),
                     effect: e.id.clone(),

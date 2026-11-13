@@ -11,9 +11,8 @@
 //!   Coefficients are passed in on every call, so the owner may change them between calls
 //!   (every 64 samples) while the state carries on.
 //!
-//! **For Task 9.** The de-esser's split is `band = BandPass` (constant 0 dB peak gain, `q`)
-//! and `residual = x − band`; design it with [`design`]`(BandKind::BandPass, freq, 0.0, q,
-//! rate)` and run one [`Biquad`] per channel.
+//! **The de-esser** ([`super::deesser`]) splits with `band = BandPass` (constant 0 dB peak
+//! gain, `q`) and `residual = x − band`, one [`Biquad`] per channel.
 
 /// Normalised coefficients (`a0 = 1`).
 #[derive(Debug, Clone, Copy, PartialEq)]
