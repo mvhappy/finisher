@@ -9,6 +9,7 @@ import type { ConnectionRegistry, Transport } from "./connections.ts";
 import type { Audit } from "./control/audit.ts";
 import { finError, toFinError } from "./errors.ts";
 import { agentWarnings } from "./agent/warnings.ts";
+import type { HookStats } from "./hooks/engine.ts";
 import { currentSandboxStatus, profileWarning, sandboxWarnings, type SandboxReporter, type SandboxStatus } from "./sandbox/status.ts";
 
 /** What `serve` tells the admin RPCs about itself. */
@@ -41,6 +42,8 @@ export interface AdminDeps {
   readonly sandboxReporter?: SandboxReporter;
   /** Enabled, active code plugins (sp8b Decision 17); without it the plugin profile warns as any other. */
   readonly enabledCodePlugins?: () => number;
+  /** The hook engine's counters since start (7F Decision 21). */
+  readonly hooks?: () => HookStats;
 }
 
 /**
@@ -97,6 +100,7 @@ export function serverStatus(deps: AdminDeps) {
       connections: deps.connections.count(),
       journal: { enabled: deps.journalEnabled() },
       auditFailures: deps.audit.failures(),
+      ...(deps.hooks === undefined ? {} : { hooks: deps.hooks() }),
       jobs: {
         caps: {
           killTree: caps.killTree,

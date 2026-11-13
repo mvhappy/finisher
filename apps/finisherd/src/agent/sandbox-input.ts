@@ -1,9 +1,9 @@
 // The session sandbox's types and the parts of opening one that start nothing (plan 7C Task 11,
 // 7D Task 3b): the mode from the `agent` profile's status, the launcher's endpoint per OS, the
-// profile input's check and the Windows grant counting. `sandbox.ts` starts the processes.
+// profile input's check and the Windows grant counting. `sandbox.ts` starts the processes
+// (through `sandbox/launch.ts`).
 import { realpath } from "node:fs/promises";
 import { isAbsolute, relative, sep } from "node:path";
-import type { Readable, Writable } from "node:stream";
 import type { FinError } from "@finisher/contracts";
 import type { AgentInput, FinEndpoint } from "@finisher/core-types";
 import { sandboxAgentCheck, type sandboxAgentGrants } from "@finisher/fin-node";
@@ -11,30 +11,11 @@ import type { Effect } from "effect";
 import { canonicalEndpoint } from "../auth/crypto.ts";
 import { finError } from "../errors.ts";
 import type { AclBroker } from "../sandbox/broker.ts";
+import type { SandboxedChild } from "../sandbox/launch.ts";
 import type { SandboxMechanism, SandboxStatus, SandboxWarning } from "../sandbox/status.ts";
 import type { LinkOptions } from "./session-dirs.ts";
 
-/** How long a hung-up Linux launcher may take to reap its session before its group is killed. */
-export const REAP_GRACE_MS = 2_000;
-
-/** The launcher's own exit code for `SANDBOX_UNAVAILABLE` (`launch.rs` `EXIT_UNAVAILABLE`). */
-export const LAUNCHER_UNAVAILABLE = 78;
-
-export interface ChildExit {
-  readonly code: number | null;
-  readonly signal: NodeJS.Signals | null;
-}
-
-export interface SandboxedChild {
-  readonly pid: number;
-  readonly stdin: Writable;
-  readonly stdout: Readable;
-  readonly stderr: Readable;
-  /** Settles when the process has exited. */
-  readonly exited: Promise<ChildExit>;
-  /** Signals the child's whole process group. */
-  kill(signal?: NodeJS.Signals): void;
-}
+export { type ChildExit, LAUNCHER_UNAVAILABLE, REAP_GRACE_MS, type SandboxedChild } from "../sandbox/launch.ts";
 
 export type SandboxMode = "launcher" | "direct";
 
@@ -160,8 +141,8 @@ export function grantsOf(acl: AclBroker): SessionGrants {
   return g;
 }
 
-/** How the `agent` profile's status starts processes, or the refusal. */
-export function sandboxMode(m: SandboxMechanism, os: string): SandboxMode | FinError {
+/** How a profile's status (`agent` by default, or `hook`) starts processes, or the refusal. */
+export function sandboxMode(m: SandboxMechanism, os: string, profile: "agent" | "hook" = "agent"): SandboxMode | FinError {
   switch (m.kind) {
     case "enforced":
       return "launcher";
@@ -172,8 +153,8 @@ export function sandboxMode(m: SandboxMechanism, os: string): SandboxMode | FinE
     case "unavailable":
       return finError(
         "SANDBOX_UNAVAILABLE",
-        "the agent sandbox cannot be applied on this host, so agent processes do not start",
-        { profile: "agent", os, need: m.need },
+        `the ${profile} sandbox cannot be applied on this host, so ${profile} processes do not start`,
+        { profile, os, need: m.need },
         `This host needs ${m.need}.`,
       );
   }
@@ -188,7 +169,7 @@ export function within(p: string, dir: string): boolean {
 }
 
 /** `FIN_SERVER` and the policy's `fin` endpoint under the launcher, per OS. */
-export async function launcherServer(deps: SessionSandboxDeps, platform: NodeJS.Platform): Promise<{ env: string; fin: FinEndpoint | undefined }> {
+export async function launcherServer(deps: Pick<SessionSandboxDeps, "localEndpoint" | "agentListener">, platform: NodeJS.Platform): Promise<{ env: string; fin: FinEndpoint | undefined }> {
   if (platform === "win32") return { env: deps.localEndpoint, fin: { kind: "pipe" } };
   if (platform === "darwin") {
     // Resolved, as the handshake binds it: a sandboxed `fin` may not resolve a link on the way

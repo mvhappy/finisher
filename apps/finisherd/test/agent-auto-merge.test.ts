@@ -691,11 +691,10 @@ const importers = (re: RegExp) => sources().filter(([, text]) => re.test(text)).
 
 describe("no_rpc_reaches_the_trigger", () => {
   test("only the server wiring builds the trigger, and only the trigger imports 5E's path", () => {
-    expect(importers(/(?:\bfrom\s*|\bimport\s*\(?\s*)["'`][^"'`\n]*agent\/auto-merge(?:\.[cm]?[jt]s)?["'`]|from\s*["'`]\.\/auto-merge(?:\.ts)?["'`]/)).toEqual(["agent/wiring.ts", "main.ts"]);
-    // `agent/wiring.ts` holds the options' type, nothing that runs.
-    const wiring = sources().find(([p]) => p === "agent/wiring.ts")![1];
-    expect(wiring.split("\n").filter((l) => /auto-merge/.test(l) && /\bimport\b/.test(l)).every((l) => /^import type\b/.test(l.trim()))).toBe(true);
-    expect(importers(/\bautoMergeTrigger\(/)).toEqual(["agent/auto-merge.ts", "main.ts"]);
+    // `startAgentReviews` (`agent/wiring.ts`, called by `main.ts`) builds it.
+    expect(importers(/(?:\bfrom\s*|\bimport\s*\(?\s*)["'`][^"'`\n]*agent\/auto-merge(?:\.[cm]?[jt]s)?["'`]|from\s*["'`]\.\/auto-merge(?:\.ts)?["'`]/)).toEqual(["agent/wiring.ts"]);
+    expect(importers(/\bautoMergeTrigger\(/)).toEqual(["agent/auto-merge.ts", "agent/wiring.ts"]);
+    expect(importers(/\bstartAgentReviews\(/)).toEqual(["agent/wiring.ts", "main.ts"]);
     expect(importers(/(?:\bfrom\s*|\bimport\s*\(?\s*)["'`][^"'`\n]*reviews\/auto-merge(?:\.[cm]?[jt]s)?["'`]/)).toEqual(["agent/auto-merge.ts"]);
   });
 
