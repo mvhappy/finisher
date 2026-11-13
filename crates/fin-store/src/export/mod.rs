@@ -167,6 +167,21 @@ pub(crate) struct ExportState {
     pub(crate) fail_at: Option<FailPoint>,
 }
 
+/// [`Store::close`]: a forced export pass, then the lease is released
+/// ([`crate::lease::Lease::release`]) if this pass left nothing unexported. With records
+/// still unexported (a folder failure, read-only, not caught up) it is not: they stay this
+/// server's to export on its next open (the restart shortcut), and others wait out staleness
+/// as before.
+pub(crate) fn close(store: &mut Store, now: Instant) -> Result<ExportReport, StoreError> {
+    let report = export_pending(store, now, true)?;
+    let flushed =
+        report.error.is_none() && pending_branches(&store.conn).is_ok_and(|b| b.is_empty());
+    if flushed && let StoreLease::Lease(lease) = std::mem::take(&mut store.export.lease) {
+        lease.release();
+    }
+    Ok(report)
+}
+
 /// One export pass (module docs). `Err` only for DB failures, a broken DB invariant, or an
 /// injected `FailPoint`.
 pub(crate) fn export_pending(

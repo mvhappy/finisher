@@ -16,7 +16,7 @@ fn takeover_after_writer_stops() {
     commit(&mut a, "t1", vec![asset("/m/a.mov")]);
     e.flush(&mut a);
     let mut b = e.open("b");
-    a.close().unwrap(); // the writer stops: nothing is released
+    drop(a); // the writer stops without a clean close (a crash): nothing is released
     e.advance(44);
     e.poll(&mut b);
     assert_eq!(
@@ -46,6 +46,57 @@ fn takeover_after_writer_stops() {
     assert_eq!(segments(&e.dir).last().unwrap().1.epoch(), 2);
     let f = e.open("f");
     assert_eq!(f.snapshot(MAIN).unwrap(), b.snapshot(MAIN).unwrap());
+}
+
+#[test]
+fn a_clean_close_releases_the_lease_to_another_server_at_once() {
+    let e = env();
+    let mut a = e.create("a");
+    commit(&mut a, "t1", vec![asset("/m/a.mov")]);
+    e.flush(&mut a);
+    let mut b = e.open("b");
+    assert_eq!(b.read_only(), Some(ReadOnlyReason::LeaseHeld));
+    // A follower's close writes nothing.
+    let lease = e.dir.join(".finisher").join("lease.json");
+    let before = fs::read(&lease).unwrap();
+    e.open("c").close().unwrap();
+    assert_eq!(
+        fs::read(&lease).unwrap(),
+        before,
+        "a non-holder releases nothing"
+    );
+    // The holder's close releases: B takes the lease on its next poll, no staleness wait.
+    commit(&mut a, "t2", vec![insert(0, "a1")]);
+    a.close().unwrap();
+    assert!(String::from_utf8_lossy(&fs::read(&lease).unwrap()).contains("\"released\":true"));
+    e.poll(&mut b);
+    assert_eq!(held_epoch(&b), Some(2), "taken at once");
+    // A wrote before: the ordering rule still waits out the directory-cache window.
+    assert_eq!(b.read_only(), Some(ReadOnlyReason::CatchingUp));
+    e.advance(10);
+    e.poll(&mut b);
+    assert_eq!(b.read_only(), None);
+    assert_eq!(
+        folder_tx_ids(&e.dir),
+        ["t1", "t2"],
+        "the close flushed t2 first"
+    );
+    let c = commit(&mut b, "b1", vec![insert(1, "a1")]);
+    assert_eq!(c.rev, 3);
+}
+
+#[test]
+fn a_close_with_records_left_unexported_releases_nothing() {
+    let e = env();
+    let mut a = e.create("a");
+    commit(&mut a, "t1", vec![asset("/m/a.mov")]);
+    e.flush(&mut a);
+    let mut b = e.open("b");
+    commit(&mut a, "t2", vec![insert(0, "a1")]);
+    a.fail_next_export_at(fin_store::FailPoint::AfterTempWrite);
+    assert!(a.close().is_err());
+    e.poll(&mut b);
+    assert_eq!(b.read_only(), Some(ReadOnlyReason::LeaseHeld), "still held");
 }
 
 /// Lets `s`'s lease look stopped to others: every heartbeat fails from now on, so it

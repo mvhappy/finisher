@@ -19,6 +19,8 @@
 //!    - **ours**: if one of our leases in this process still heartbeats it → held; if it is
 //!      at an epoch this process held and that lease is lost or dropped → ours to re-take at
 //!      once ([`registry`]);
+//!    - **released** by its holder's clean close ([`LeaseRecord::released`]) → free: taken
+//!      at once (after the checks of ours above), through a fresh claim like any acquisition;
 //!    - otherwise **held**, with age = this round's server time − the record's stamp.
 //! 3. Staleness, all of:
 //!    - age > 45 s in two counting rounds ≥ 5 s apart (monotonic), with no non-stale counting
@@ -181,6 +183,9 @@ enum Expected {
 enum Verdict {
     Free,
     Leftover(LeaseRecord),
+    /// A record its holder released on a clean close ([`LeaseRecord::released`]): free to
+    /// take, through a fresh claim above it.
+    Released(LeaseRecord),
     Stale {
         holder: String,
         epoch: u64,
@@ -248,6 +253,7 @@ impl Contender {
                 self.leftover = true;
                 self.take(Expected::Record(r))
             }
+            Verdict::Released(r) => self.take(Expected::Record(r)),
             Verdict::Stale { expected, .. } if self.params.auto_takeover => self.take(expected),
             Verdict::Stale { holder, epoch, .. } => Err(LeaseState::Stale { holder, epoch }),
             Verdict::Held { .. } if let Some(own) = self.own_lost.take() => Err(LeaseState::Lost {
@@ -283,7 +289,7 @@ impl Contender {
         let own_text = |sync_text: &str| own.map(|o| format!("{}; {sync_text}", o.what()));
         let taken = match verdict {
             Verdict::Free => self.take(Expected::Missing),
-            Verdict::Leftover(r) => self.take(Expected::Record(r)),
+            Verdict::Leftover(r) | Verdict::Released(r) => self.take(Expected::Record(r)),
             Verdict::Stale { expected, .. } if auto || confirm => self.take(expected),
             Verdict::Stale { holder, epoch, .. } => {
                 return Err(refused(
@@ -437,6 +443,10 @@ impl Contender {
                             }
                         }
                     }
+                }
+                if r.released {
+                    self.evidence = None;
+                    return Ok(Verdict::Released(r));
                 }
                 let age = server_now.map(|n| n - r.probe_server_ms);
                 let (holder, epoch) = (r.holder.clone(), r.epoch);

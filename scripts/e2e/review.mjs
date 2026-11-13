@@ -2,7 +2,7 @@
 // the local person decides, merges and drops, a conflicting merge opens a `mergeConflict` item, the
 // project moves to a second server data (the drop holds, the agent branch is re-derived), the
 // policy refuses auto merge and the agent, and the journal and audit are read for what they hold.
-import { cpSync, readdirSync, rmSync } from "node:fs";
+import { cpSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { entriesIn, filesIn } from "./agent-lib.mjs";
 import { writeCredentialFile } from "./auth-lib.mjs";
@@ -162,12 +162,12 @@ export async function run() {
     await consoleRpc(server, "project.close", { projectId });
     await stopServer(server);
     servers.length = 0;
-    // The folder is copied without its lease files: the second server takes its own lease. (A clean stop leaves the
-    // lease held for about 45 s; TASKS.md's open 4A item "Clean close could write a 'released' lease record so other
-    // servers need not wait out 45 s of staleness" is a known item, not a 5E bug.)
+    // The folder is copied with its lease files: the clean close released the lease, so the second server takes it at
+    // once (no 45 s staleness wait).
     const moved = join(tmp, "moved project");
     cpSync(project, moved, { recursive: true });
-    for (const name of readdirSync(join(moved, ".finisher"))) if (name.startsWith("lease.")) rmSync(join(moved, ".finisher", name));
+    const record = readFileSync(join(moved, ".finisher", "lease.json"), "latin1");
+    assertEqual(record.includes('"released":true'), true, "the clean close released the lease");
     const serverB = await startServer(sdB);
     servers.push(serverB);
     const localB = (args) => {
@@ -176,7 +176,9 @@ export async function run() {
       return r.json;
     };
     localB(["project", "open", moved]);
-    await waitFor("the second server to take its own lease", () => !localB(["project", "status"]).status.readOnly, 60_000);
+    const takeStart = Date.now();
+    await waitFor("the second server to take the released lease", () => !localB(["project", "status"]).status.readOnly, 30_000);
+    assertEqual(Date.now() - takeStart < 25_000, true, `taken without the staleness wait (${Date.now() - takeStart} ms)`);
     const plainB = localB(["merge", work.id, "--skip-conflicting"]).merge;
     assertEqual(plainB.merged.length, 0, "nothing to merge on the second server");
     assertEqual(plainB.excluded.some((e) => e.txId === edits[0] && e.reason === "DROPPED"), true, "the drop holds there");
