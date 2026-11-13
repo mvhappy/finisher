@@ -141,8 +141,8 @@ export function grantsOf(acl: AclBroker): SessionGrants {
   return g;
 }
 
-/** How the `agent` profile's status starts processes, or the refusal. */
-export function sandboxMode(m: SandboxMechanism, os: string): SandboxMode | FinError {
+/** How a profile's status (`agent` by default, or `hook`) starts processes, or the refusal. */
+export function sandboxMode(m: SandboxMechanism, os: string, profile: "agent" | "hook" = "agent"): SandboxMode | FinError {
   switch (m.kind) {
     case "enforced":
       return "launcher";
@@ -153,8 +153,8 @@ export function sandboxMode(m: SandboxMechanism, os: string): SandboxMode | FinE
     case "unavailable":
       return finError(
         "SANDBOX_UNAVAILABLE",
-        "the agent sandbox cannot be applied on this host, so agent processes do not start",
-        { profile: "agent", os, need: m.need },
+        `the ${profile} sandbox cannot be applied on this host, so ${profile} processes do not start`,
+        { profile, os, need: m.need },
         `This host needs ${m.need}.`,
       );
   }

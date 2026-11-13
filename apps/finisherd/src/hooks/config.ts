@@ -29,10 +29,16 @@
 //   absolute path outside the project and a bare program name are not project content.
 // - **Paths** (Decision 6): `run[0]` with a separator, and `file`, are relative to the folder
 //   of the file that declares them unless absolute; absent `file` is `run[0]` when that is such
-//   a declaring-folder path. A bare program name is kept as written (Task 3 resolves it).
+//   a declaring-folder path. The program is resolved at load into `program` (`programOf`):
+//   `node` is finisherd's own Node (`process.execPath`), a path is resolved as above (for a
+//   project hook exactly the path its `hooksHash` binds), another bare name is looked up in the
+//   toolchain base when the hook runs (`hooks/process.ts`; the parsed file is kept by its key,
+//   so a lookup at load would outlive an install), never in the user's `PATH`. On Windows
+//   anything but `node` must be an `.exe`: a `.cmd`, `.bat` or other file a shell would run
+//   makes the file unreadable (nothing runs through a shell, Decision 9).
 import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { isAbsolute, join, posix, relative, resolve, sep, win32 } from "node:path";
 import { type AgentHooksListSuccess, type AgentWarning, HOOK_CLASSES, HOOK_LIMITS, type HookEvent, type HookLayer, HookSpec, type ListedHook } from "@finisher/contracts";
 import { Effect, Schema } from "effect";
 import { settingsPath } from "../config.ts";
@@ -52,6 +58,25 @@ export interface PluginHookRow {
   readonly handler: string;
 }
 
+/**
+ * A hook's program (Decision 6): a path (`node`: finisherd's own Node, its install directory
+ * then readable too), or a bare name looked up in the toolchain base at each run.
+ */
+export type HookProgram = { readonly path: string; readonly node?: true } | { readonly bare: string };
+
+/**
+ * `run[0]` resolved against `dir`, the folder of the file that declares it. On Windows anything
+ * but `node` must be an `.exe` (throws otherwise): nothing runs through a shell.
+ */
+export function programOf(program: string, dir: string, platform: NodeJS.Platform = process.platform): HookProgram {
+  if (program === "node") return { path: process.execPath, node: true };
+  if (platform === "win32" && !/\.exe$/i.test(program)) throw new Error(`on Windows a hook's program is node or an .exe (nothing runs through a shell): ${program}`);
+  const path = platform === "win32" ? win32 : posix;
+  if (path.isAbsolute(program)) return { path: program };
+  if (program.includes("/") || (platform === "win32" && program.includes("\\"))) return { path: path.resolve(dir, program) };
+  return { bare: program };
+}
+
 /** One configured hook, paths resolved. */
 export interface ConfiguredHook {
   readonly layer: HookLayer;
@@ -63,6 +88,8 @@ export interface ConfiguredHook {
   readonly spec?: HookSpec;
   /** The program (resolved when it is a declaring-folder path) and its arguments. */
   readonly run?: readonly string[];
+  /** `run[0]` resolved (`programOf`). */
+  readonly program?: HookProgram;
   /** The hook's own file (read-only to it), resolved. */
   readonly file?: string;
   /** The folder of the file that declares it. */
@@ -128,11 +155,17 @@ function decodeHooks(list: unknown, layer: HookLayer, source: string, dir: strin
     }
     if (seen.has(spec.id)) throw new Error(`hook ${name}: a second hook with this id`);
     seen.add(spec.id);
-    const [program, ...args] = spec.run as [string, ...string[]];
-    const local = !isAbsolute(program) && hasSeparator(program);
-    const run = [local ? resolve(dir, program) : program, ...args];
-    const file = spec.file !== undefined ? resolve(dir, spec.file) : local ? run[0] : undefined;
-    return { layer, source, id: spec.id, event: spec.event, spec, run, ...(file === undefined ? {} : { file }), dir };
+    let program: HookProgram;
+    try {
+      program = programOf(spec.run[0]!, dir);
+    } catch (e) {
+      throw new Error(`hook ${name}: ${firstLine(e)}`);
+    }
+    const [first, ...args] = spec.run as [string, ...string[]];
+    const local = "path" in program && program.node !== true && !isAbsolute(first) ? program.path : undefined;
+    const run = [local ?? first, ...args];
+    const file = spec.file !== undefined ? resolve(dir, spec.file) : local;
+    return { layer, source, id: spec.id, event: spec.event, spec, run, program, ...(file === undefined ? {} : { file }), dir };
   });
 }
 
@@ -267,6 +300,9 @@ export function checkTrustedHooks(dir: string, projectId: string, expected: stri
   return hash;
 }
 
+/** What makes a configured hook the same hook: where it is declared, as it is configured, as resolved. */
+const hookKey = (h: ConfiguredHook) => JSON.stringify([h.layer, h.source, h.dir, h.id, h.event, h.spec, h.program, h.file, h.plugin, h.unreadable]);
+
 const inert = (event: HookEvent) => (event === "PreRender" || event === "PostRender" ? { inert: "noRenderKind" as const } : {});
 
 /** A configured hook as `agent.hooks.list` shows it. */
@@ -332,6 +368,17 @@ export class HookConfig {
     const trusted = this.#d.trustOf(projectId)?.hooksHash;
     const project = trusted === undefined || trusted === NO_FILE ? [] : this.project(projectId).hooks;
     return [...this.#server(), ...project, ...this.#local(projectId), ...this.#plugins()];
+  }
+
+  /**
+   * Whether `h` (from `hooks(projectId)`) still applies, every layer re-read as a dispatch does:
+   * the check right before a hook's process starts (a project hook's file or script changed
+   * while it waited for a slot no longer runs).
+   */
+  applies(projectId: string | undefined, h: ConfiguredHook): boolean {
+    // By what it is, not by object: a file changed within `RACY_MS` is parsed again at each read.
+    const key = hookKey(h);
+    return this.hooks(projectId).some((x) => x === h || hookKey(x) === key);
   }
 
   /** `agent.hooks.list`'s answer: every layer's hooks, a project file's with whether it applies. */
