@@ -8,11 +8,13 @@
 
 pub mod buf;
 pub mod channels;
+pub mod stretch;
 #[cfg(feature = "testing")]
 pub mod testing;
 pub mod time;
 
 pub use buf::Stereo;
+pub use stretch::Wsola;
 pub use time::sample_at;
 
 /// The engine's sample rate: every mixed or cached feed is 48 kHz.
