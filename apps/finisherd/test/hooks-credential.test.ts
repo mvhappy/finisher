@@ -21,7 +21,8 @@ import { controlDbPath } from "../src/control/db.ts";
 import { HookConfig } from "../src/hooks/config.ts";
 import { type HookProcessDeps, HookSlots, isCommandHook, runCommandHook } from "../src/hooks/process.ts";
 import { ulid } from "../src/control/ulid.ts";
-import { LOCAL } from "../src/principal.ts";
+import { CONSOLE, LOCAL } from "../src/principal.ts";
+import { HOOK_CREDENTIAL_ABSOLUTE_S, HOOK_CREDENTIAL_IDLE_S, HOOK_CREDENTIAL_MAKER } from "../src/hooks/credential.ts";
 import { probeLauncher } from "../src/sandbox/status.ts";
 import { AgentServer } from "./support/agent-server.ts";
 import type { NdjsonClient } from "./support/ndjson-client.ts";
@@ -108,6 +109,30 @@ function auditCount(serverData: string, kind: string): number {
   }
 }
 
+/** The `rpc` of each `credential.revoke` row of credential `id`, oldest first. */
+function revokes(serverData: string, id: string): string[] {
+  const db = new DatabaseSync(controlDbPath(serverData));
+  try {
+    const rows = db.prepare("SELECT details FROM audit WHERE kind = 'credential.revoke' ORDER BY rowid").all() as Array<{ details: string }>;
+    return rows.map((x) => JSON.parse(x.details) as { credentialId?: string; rpc?: string }).filter((d) => d.credentialId === id).map((d) => d.rpc ?? "");
+  } finally {
+    db.close();
+  }
+}
+
+/** The hooks' maker as `credentials.mintWithId` takes it. */
+const HOOKS_MAKER: Principal = { ...LOCAL, id: "hooks" };
+
+/** P's `finisher.hooks.json` holds `hooks`, trusted as it is now. */
+function trustProjectHooks(r: Running, hooks: readonly unknown[]): void {
+  copyFileSync(FAKE, join(r.dir, "fake-hook.mjs"));
+  writeFileSync(join(r.dir, "finisher.hooks.json"), JSON.stringify({ hooks }));
+  const hooksHash = r.server.agents.hooks.list(r.projectId).hooksHash;
+  if (hooksHash === undefined) throw new Error("not trustable");
+  r.server.agents.ruleStore.trust(r.projectId, "none", "console:owner", Date.now());
+  r.server.agents.ruleStore.trustHooks(r.projectId, hooksHash);
+}
+
 const credFiles = (serverData: string) => (existsSync(join(serverData, "hooks", "creds")) ? readdirSync(join(serverData, "hooks", "creds")) : []);
 
 describe("the credential's rights (Decision 11)", () => {
@@ -117,8 +142,8 @@ describe("the credential's rights (Decision 11)", () => {
     expect(s.fin).toEqual({ code: 0 });
     expect(Object.keys(s.env).sort()).toEqual(["FIN_CREDENTIAL", "FIN_HOOK_EVENT", "FIN_PROJECT_DIR", "FIN_SERVER", "HOME", "LANG", "PATH", "TEMP", "TMP", "TMPDIR"]);
     const [cred] = hookCreds(r);
-    expect(cred).toMatchObject({ kind: "agent", label: "hook user:reader", projects: [r.projectId], branches: ["main"], idleExpiryS: 60, status: "live" });
-    expect(cred!.absoluteExpiryAt).toBeUndefined();
+    expect(cred).toMatchObject({ kind: "agent", label: "hook user:reader", projects: [r.projectId], branches: ["main"], idleExpiryS: HOOK_CREDENTIAL_IDLE_S, createdBy: HOOK_CREDENTIAL_MAKER, status: "live" });
+    expect(cred!.absoluteExpiryAt).toBe(cred!.createdAt + HOOK_CREDENTIAL_ABSOLUTE_S * 1000);
     expect([...cred!.scopes].sort()).toEqual(["agent.read", "diagnostics.read", "diagnostics.record", "jobs.read", "library.read", "project.read", "server.read"]);
     // Its file is private, in server data.
     expect(s.env.FIN_CREDENTIAL).toMatch(new RegExp(`^${realpathSync(r.serverData).replace(/[\\^$.*+?()[\]{}|]/g, "\\$&")}[\\\\/]hooks[\\\\/]creds[\\\\/][0-9a-f]+\\.json$`));
@@ -173,7 +198,7 @@ describe("the credential's lifetime (Owner question 6)", () => {
     expect(old!.id).toBe(first!.id);
     expect(old!.status).toBe("revoked");
     expect(second!.status).toBe("live");
-    expect(auditCount(r.serverData, "credential.revoke")).toBeGreaterThanOrEqual(1);
+    expect(revokes(r.serverData, first!.id)).toEqual(["hooks.changed"]);
     // Gone (no hook for any event any more): the next dispatch ends it, with its file.
     userHooks(r.serverData, []);
     await fire(r, "PreCommand");
@@ -188,6 +213,7 @@ describe("the credential's lifetime (Owner question 6)", () => {
     const [cred] = hookCreds(r);
     await r.server.stop();
     expect(credentials.get(cred!.id)?.status).toBe("revoked");
+    expect(revokes(r.serverData, cred!.id)).toEqual(["hooks.stop"]);
     expect(credFiles(r.serverData)).toEqual([]);
     const db = new DatabaseSync(controlDbPath(r.serverData));
     try {
@@ -197,21 +223,107 @@ describe("the credential's lifetime (Owner question 6)", () => {
     }
   });
 
-  test("leftover_hook_credentials_revoked_at_start: by the label prefix, with their files", { timeout: 60_000 }, async () => {
+  test("leftover_hook_credentials_revoked_at_start: by the label prefix and the hooks' maker, with their files", { timeout: 60_000 }, async () => {
     const serverData = join(tmp, "server");
     const r = await started([], DIRECT, serverData);
     // What a crash leaves: a hook credential the server did not end, and its file.
     const credentials = r.server.core.credentials.base.credentials;
-    const left = credentials.mintWithId(LOCAL, ulid(), { kind: "agent", label: "hook user:left", scopes: ["project.read"], projects: [r.projectId], branches: ["main"] }).credential;
-    const other = credentials.mintWithId(LOCAL, ulid(), { kind: "agent", label: "hooked on fin", scopes: ["project.read"], projects: [r.projectId], branches: ["main"] }).credential;
+    const minted = (label: string) => ({ kind: "agent" as const, label, scopes: ["project.read" as const], projects: [r.projectId], branches: ["main"] });
+    const left = credentials.mintWithId(HOOKS_MAKER, ulid(), minted("hook user:left")).credential;
+    const other = credentials.mintWithId(HOOKS_MAKER, ulid(), minted("hooked on fin")).credential;
+    // A person's own credential that happens to be labelled `hook …` is theirs, not a leftover.
+    const persons = credentials.mint(CONSOLE, minted("hook x")).credential;
     mkdirSync(join(serverData, "hooks", "creds"), { recursive: true });
     writeFileSync(join(serverData, "hooks", "creds", "0123abcd.json"), "{}");
     await r.server.stop();
     const again = await started([], DIRECT, serverData);
     const after = again.server.core.credentials.base.credentials;
     expect(after.get(left.id)?.status).toBe("revoked");
+    expect(revokes(serverData, left.id)).toEqual(["hooks.sweep"]);
     expect(after.get(other.id)?.status).toBe("live");
+    expect(after.get(persons.id)?.status).toBe("live");
     expect(credFiles(serverData)).toEqual([]);
+  });
+});
+
+describe("bounds and scope of an ending (review of Task 5)", () => {
+  test("credential_minted_again_after_idle_expiry: the expired one is left to the expiry sweep", { timeout: 60_000 }, async () => {
+    const r = await started([hook("reader", "UserPrompt", fin("view"), { fin: true })]);
+    await fire(r);
+    const [first] = hookCreds(r);
+    r.server.time.advance((HOOK_CREDENTIAL_IDLE_S + 1) * 1000);
+    expect((await seen(r)).fin).toEqual({ code: 0 });
+    const [second, old] = hookCreds(r);
+    expect(old!.id).toBe(first!.id);
+    expect(old!.status).toBe("expired");
+    expect(second!.status).toBe("live");
+    // Not audited as a revocation (the expiry sweep audits `credential.expire`).
+    expect(revokes(r.serverData, first!.id)).toEqual([]);
+    expect(credFiles(r.serverData)).toHaveLength(1);
+  });
+
+  test("credential_absolute_bound: used every 10 minutes, it ends at its hour and a new one is minted", { timeout: 60_000 }, async () => {
+    const r = await started([hook("reader", "UserPrompt", fin("view"), { fin: true })]);
+    await fire(r);
+    const [first] = hookCreds(r);
+    for (let t = 0; t < HOOK_CREDENTIAL_ABSOLUTE_S; t += 600) {
+      r.server.time.advance(600_000);
+      expect((await seen(r)).fin).toEqual({ code: 0 });
+    }
+    const all = hookCreds(r);
+    expect(all).toHaveLength(2);
+    expect(all.find((c) => c.id === first!.id)!.status).toBe("expired");
+    expect(all.find((c) => c.id !== first!.id)!.status).toBe("live");
+  });
+
+  test("project_and_local_credentials_survive_another_projects_resolution", { timeout: 60_000 }, async () => {
+    const r = await started([]);
+    const local = join(r.serverData, "projects", r.projectId);
+    mkdirSync(local, { recursive: true });
+    copyFileSync(FAKE, join(local, "fake-hook.mjs"));
+    writeFileSync(join(local, "hooks.json"), JSON.stringify({ hooks: [hook("loc", "UserPrompt", fin("view"), { fin: true })] }));
+    trustProjectHooks(r, [hook("proj", "UserPrompt", fin("view"), { fin: true })]);
+    const out = await fire(r);
+    expect(out.ran).toBe(2);
+    expect(hookCreds(r).map((c) => c.label).sort()).toEqual(["hook local:loc", "hook project:proj"]);
+    const q = ok<{ projectId: string }>(await r.local.call("project.create", { dir: join(tmp, "Q"), name: "Q", rate: "30" })).projectId;
+    await fire(r, "UserPrompt", q);
+    await fire(r, "PreCommand", q);
+    expect(hookCreds(r).map((c) => c.status)).toEqual(["live", "live"]);
+    // Untrusting P's hooks file ends its project credential at P's next dispatch; the local one stays.
+    r.server.agents.ruleStore.trustHooks(r.projectId, "none");
+    await fire(r, "PreCommand");
+    const byLabel = Object.fromEntries(hookCreds(r).map((c) => [c.label, c.status]));
+    expect(byLabel).toEqual({ "hook local:loc": "live", "hook project:proj": "revoked" });
+  });
+
+  test("user_layer_change_seen_through_another_project_ends_its_credential", { timeout: 60_000 }, async () => {
+    const r = await started([hook("reader", "UserPrompt", fin("view"), { fin: true })]);
+    await fire(r);
+    const [first] = hookCreds(r);
+    const q = ok<{ projectId: string }>(await r.local.call("project.create", { dir: join(tmp, "Q"), name: "Q", rate: "30" })).projectId;
+    userHooks(r.serverData, [hook("reader", "UserPrompt", fin("view"), { fin: true, timeoutS: 30 })]);
+    // Only Q's resolution sees the change (an event with no hook there: nothing runs).
+    expect(await fire(r, "PreCommand", q)).toEqual({ ran: 0 });
+    expect(hookCreds(r).find((c) => c.id === first!.id)!.status).toBe("revoked");
+  });
+
+  test("stale_run_does_not_end_a_newer_credential: only a resolution ends another key", { timeout: 60_000 }, async () => {
+    const r = await started([hook("reader", "UserPrompt", fin("view"), { fin: true })]);
+    const creds = r.server.agents.hookWiring.credentials!;
+    const h1 = r.server.agents.hooks.hooks(r.projectId).find((h) => h.id === "reader")!;
+    creds.forRun(h1, r.projectId);
+    userHooks(r.serverData, [hook("reader", "UserPrompt", fin("view"), { fin: true, timeoutS: 30 })]);
+    const h2 = r.server.agents.hooks.hooks(r.projectId).find((h) => h.id === "reader")!;
+    const path2 = creds.forRun(h2, r.projectId);
+    // A run that resolved the old configuration before the change uses (or mints) its own.
+    const path1 = creds.forRun(h1, r.projectId);
+    expect(path1).not.toBe(path2);
+    const byKey = hookCreds(r);
+    expect(byKey.filter((c) => c.status === "live")).toHaveLength(2);
+    // The next resolution ends the old key only.
+    await fire(r, "PreCommand");
+    expect(hookCreds(r).map((c) => [c.id === byKey[0]!.id ? "newer" : "older", c.status])).toEqual([["newer", "live"], ["older", "revoked"]]);
   });
 });
 
@@ -227,6 +339,15 @@ describe("the recursion guard (Review Focus 4)", () => {
     expect(await fire(r, "UserPrompt", r.projectId, asHook)).toEqual({ ran: 0 });
     // The engine's counters saw one run.
     expect(r.server.agents.hookWiring.engine.stats().events.PreCommand.runs).toBe(1);
+  });
+
+  test("hook_maker_credentials_fire_no_hooks: one the hooks' maker minted, even when not held", { timeout: 60_000 }, async () => {
+    const r = await started([hook("guard", "PreCommand", fin("view"), { fin: true, principals: "all" })]);
+    const credentials = r.server.core.credentials.base.credentials;
+    const c = credentials.mintWithId(HOOKS_MAKER, ulid(), { kind: "agent", label: "hook user:guard", scopes: ["project.read"], projects: [r.projectId], branches: ["main"] }).credential;
+    expect(await fire(r, "PreCommand", r.projectId, { ...AGENT, id: c.id })).toEqual({ ran: 0 });
+    // Another agent credential still fires them.
+    expect((await fire(r, "PreCommand")).ran).toBe(1);
   });
 });
 

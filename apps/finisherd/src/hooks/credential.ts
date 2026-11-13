@@ -4,27 +4,30 @@
 // - **What it is:** an `agent` credential minted by the server (`Credentials.mintWithId`, maker
 //   `local:hooks`: `mint` is people's only) with `plan`'s scopes (`MODE_SCOPES.plan`),
 //   `projects: [the event's project]`, `branches: ["main"]` (no write scope, so branch limits
-//   never apply), label `hook <layer>:<id>` (cut at the label limit), the minimum idle expiry
-//   (`CREDENTIAL_MIN_EXPIRY_S`) and no absolute one. It is not a session's: `fin` finds no
-//   session for it (`agent.self` answers `SESSION_NOT_FOUND`) and the chain treats it as a
-//   sessionless `agent` credential.
-// - **One per (hook, project)**, minted on a hook's first run in a project (after the run's
-//   re-check), its file `<server-data>/hooks/creds/<hash>.json` (0600 from creation, renamed into
-//   place), `<hash>` of the layer, the hook's id and the project. Each later run renews it
-//   (`touch`); one that expired meanwhile (a minute without use: the expiry sweep ends it) is
-//   minted again.
-// - **Ended through 5A's one revoke path** (`revokeCredential`, audited `credential.revoke`), its
-//   file removed: when the hook's configuration changes (its key: the layer, source, spec as
-//   written, `run`, program, `file` and bound hashes) or disappears (a resolution of its project,
-//   or of the server layers, no longer holds it with `fin`), at server stop (`close`), and at
-//   start for any left over (`sweep`: every live credential whose label starts `hook `, and
-//   every file in `hooks/creds/`).
-// - **The recursion guard** (`isHook`): the ids of the hook credentials held now; the engine
-//   runs no hook for an event whose principal is one.
+//   never apply), label `hook <layer>:<id>` (cut at the label limit), idle expiry
+//   `HOOK_CREDENTIAL_IDLE_S` (15 min) and absolute expiry `HOOK_CREDENTIAL_ABSOLUTE_S` (1 h).
+//   It is not a session's: `fin` finds no session for it (`agent.self` answers
+//   `SESSION_NOT_FOUND`) and the chain treats it as a sessionless `agent` credential.
+// - **One per (hook, project)** and configuration key, minted on a hook's first run in a project
+//   (after the run's re-check), its file `<server-data>/hooks/creds/<hash>.json` (0600 from
+//   creation, renamed into place), `<hash>` of the layer, the hook's id, the project and the key.
+//   Each later run renews it (`touch`); one no longer live (idle 15 min, past its hour, or ended
+//   elsewhere) is forgotten with its file, not revoked (the expiry sweep ends and audits it,
+//   `credential.expire`), and minted again.
+// - **Ended through 5A's one revoke path** (`revokeCredential`, audited `credential.revoke` with
+//   `rpc` `hooks.changed`, `hooks.stop` or `hooks.sweep`), its file removed: when the hook's
+//   configuration changes (its key: the layer, source, spec as written, `run`, program, `file`
+//   and bound hashes) or disappears (a resolution of its project, or of any project for the
+//   managed and user layers, no longer holds it with `fin`: only `retain` ends another key, so a
+//   run that resolved the old configuration never ends a newer one), at server stop (`close`),
+//   and at start for any left over (`sweep`: every live `agent` credential the hooks' maker
+//   `local:hooks` minted with a label starting `hook `, and every file in `hooks/creds/`).
+// - **The recursion guard** (`isHook`): a hook credential held now, or any credential the hooks'
+//   maker minted; the engine runs no hook for an event whose principal is one.
 import { createHash } from "node:crypto";
 import { mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { CREDENTIAL_LABEL_MAX, CREDENTIAL_MIN_EXPIRY_S, type HookLayer, type Principal } from "@finisher/contracts";
+import { CREDENTIAL_LABEL_MAX, type HookLayer, type Principal } from "@finisher/contracts";
 import type { Credentials } from "../auth/credentials.ts";
 import { type RevokeDeps, revokeCredential } from "../auth/revoke.ts";
 import { MODE_SCOPES, writeCredentialFile } from "../agent/credentials.ts";
@@ -34,8 +37,16 @@ import type { ConfiguredHook } from "./config.ts";
 
 /** Every hook credential's label starts with it (`sweep` finds leftovers by it). */
 export const HOOK_LABEL_PREFIX = "hook ";
-/** The maker recorded on a hook credential (`createdBy`, the mint's audit row). */
+/** The maker recorded on a hook credential (the mint's audit row; `createdBy` `local:hooks`). */
 const MINTER: Principal = { ...LOCAL, id: "hooks" };
+/** A hook credential's `createdBy`: the start sweep and the recursion guard know it by it. */
+export const HOOK_CREDENTIAL_MAKER = `${MINTER.kind}:${MINTER.id}`;
+/** Idle expiry of a hook credential (renewed by every run and every call it makes). */
+export const HOOK_CREDENTIAL_IDLE_S = 15 * 60;
+/** Absolute expiry of a hook credential: the next run after it mints a new one. */
+export const HOOK_CREDENTIAL_ABSOLUTE_S = 60 * 60;
+/** The audit `rpc` of each reason a hook credential is revoked. */
+type RevokeRpc = "hooks.changed" | "hooks.stop" | "hooks.sweep";
 /** Layers whose hooks are the same in every project (the others are one project's). */
 const SERVER_LAYERS: ReadonlySet<HookLayer> = new Set(["managed", "user", "plugin"]);
 
@@ -80,7 +91,7 @@ const declaresFin = (h: ConfiguredHook) => h.spec?.fin === true && h.run !== und
 export class HookCredentials implements HookCredentialPort {
   readonly #d: HookCredentialDeps;
   readonly #dir: string;
-  /** By `<layer>\0<id>\0<project>`. */
+  /** By `<layer>\0<id>\0<project>\0<configuration key>`. */
   readonly #held = new Map<string, Held>();
   readonly #ids = new Set<string>();
 
@@ -89,12 +100,12 @@ export class HookCredentials implements HookCredentialPort {
     this.#dir = join(d.serverData, "hooks", "creds");
   }
 
-  /** At start, before any hook runs: ends every live hook credential left over and removes every file. */
+  /** At start, before any hook runs: ends every live credential the hooks' maker left over and removes every file. */
   sweep(): number {
     let n = 0;
     for (const c of this.#d.credentials.list()) {
-      if (c.kind !== "agent" || !c.label.startsWith(HOOK_LABEL_PREFIX) || this.#ids.has(c.id)) continue;
-      if (this.#revoke(c.id)) n++;
+      if (c.kind !== "agent" || c.createdBy !== HOOK_CREDENTIAL_MAKER || !c.label.startsWith(HOOK_LABEL_PREFIX) || this.#ids.has(c.id)) continue;
+      if (this.#revoke(c.id, "hooks.sweep")) n++;
     }
     let names: string[] = [];
     try {
@@ -107,15 +118,16 @@ export class HookCredentials implements HookCredentialPort {
   }
 
   forRun(h: ConfiguredHook, projectId: string): string {
-    const slot = `${h.layer}\0${h.id}\0${projectId}`;
     const key = hookKey(h);
+    const slot = `${h.layer}\0${h.id}\0${projectId}\0${key}`;
     const held = this.#held.get(slot);
     if (held !== undefined) {
-      if (held.key === key && this.#d.credentials.isLive({ kind: "agent", id: held.id })) {
+      if (this.#d.credentials.isLive({ kind: "agent", id: held.id })) {
         this.#d.credentials.touch(held.id);
         return held.path;
       }
-      this.#end(slot, held);
+      // Expired (the expiry sweep ends and audits it) or ended elsewhere: forgotten, minted again.
+      this.#forget(slot, held);
     }
     mkdirSync(this.#dir, { recursive: true, mode: 0o700 });
     const label = `${HOOK_LABEL_PREFIX}${h.layer}:${h.id}`.slice(0, CREDENTIAL_LABEL_MAX);
@@ -125,15 +137,15 @@ export class HookCredentials implements HookCredentialPort {
       scopes: MODE_SCOPES.plan,
       projects: [projectId],
       branches: ["main"],
-      idleS: CREDENTIAL_MIN_EXPIRY_S,
-      absoluteS: null,
+      idleS: HOOK_CREDENTIAL_IDLE_S,
+      absoluteS: HOOK_CREDENTIAL_ABSOLUTE_S,
     });
     const path = join(this.#dir, `${sha(slot).slice(0, 32)}.json`);
     try {
       writeCredentialFile(path, file);
     } catch (e) {
       // A credential no file holds is no use: ended at once.
-      this.#revoke(credential.id);
+      this.#revoke(credential.id, "hooks.changed");
       throw e;
     }
     this.#held.set(slot, { id: credential.id, key, layer: h.layer, hook: h.id, projectId, path });
@@ -142,7 +154,9 @@ export class HookCredentials implements HookCredentialPort {
   }
 
   isHook(p: Pick<Principal, "kind" | "id">): boolean {
-    return p.kind === "agent" && this.#ids.has(p.id);
+    if (p.kind !== "agent") return false;
+    // Held now, or any the hooks' maker minted (one this server forgot, a leftover): one map lookup each.
+    return this.#ids.has(p.id) || this.#d.credentials.get(p.id)?.createdBy === HOOK_CREDENTIAL_MAKER;
   }
 
   retain(projectId: string | undefined, hooks: readonly ConfiguredHook[]): void {
@@ -152,26 +166,31 @@ export class HookCredentials implements HookCredentialPort {
     for (const [slot, held] of this.#held) {
       // A project's layers are seen only in its own resolution; the server's in every one.
       const seen = SERVER_LAYERS.has(held.layer) || held.projectId === projectId;
-      if (seen && present.get(`${held.layer}\0${held.hook}`) !== held.key) this.#end(slot, held);
+      if (seen && present.get(`${held.layer}\0${held.hook}`) !== held.key) this.#end(slot, held, "hooks.changed");
     }
   }
 
   /** At server stop: ends every credential held. */
   close(): void {
-    for (const [slot, held] of [...this.#held]) this.#end(slot, held);
+    for (const [slot, held] of [...this.#held]) this.#end(slot, held, "hooks.stop");
   }
 
-  #end(slot: string, held: Held): void {
+  #forget(slot: string, held: Held): void {
     this.#held.delete(slot);
     this.#ids.delete(held.id);
     rmSync(held.path, { force: true });
-    this.#revoke(held.id);
   }
 
-  /** 5A's revoke path; a failure is logged (the expiry sweep ends it within a minute anyway). */
-  #revoke(id: string): boolean {
+  /** Forgets `held` and ends it through the revoke path; one no longer live is left to the expiry sweep. */
+  #end(slot: string, held: Held, rpc: RevokeRpc): void {
+    this.#forget(slot, held);
+    if (this.#d.credentials.isLive({ kind: "agent", id: held.id })) this.#revoke(held.id, rpc);
+  }
+
+  /** 5A's revoke path; a failure is logged (the credential still expires on its own). */
+  #revoke(id: string, rpc: RevokeRpc): boolean {
     try {
-      return revokeCredential(this.#d.revoke, { kind: "agent", id }, { rpc: "hooks", reason: "owner" }).revoked;
+      return revokeCredential(this.#d.revoke, { kind: "agent", id }, { rpc, reason: "owner" }).revoked;
     } catch (e) {
       this.#d.log?.(`hooks: a hook credential was not revoked: ${e instanceof Error ? e.message : String(e)}`);
       return false;

@@ -42,7 +42,7 @@
 //   credential from `credentials` (minted on first use, one per hook and project); every
 //   resolution tells `credentials.retain` what applies now, so a hook that changed or is gone has
 //   its credential ended at the next dispatch that sees it. **Recursion guard:** an event whose
-//   principal is a hook credential held now runs no hook (`fire` answers `{ran: 0}`, `observe`
+//   principal is a hook credential (`isHook`) runs no hook (`fire` answers `{ran: 0}`, `observe`
 //   queues nothing).
 // - **Sandbox warning:** a hook that runs unconfined (`direct`) is logged once per server start
 //   (`server.status` lists the `hook` profile's warning all along).
