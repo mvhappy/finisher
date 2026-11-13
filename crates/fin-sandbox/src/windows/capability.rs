@@ -95,6 +95,9 @@ fn bounded(name: String, max: usize) -> Result<String, String> {
     Ok(name)
 }
 
+/// The container of the hooks of server-scoped events (no project): they read no project.
+pub const SERVER_HOOKS_CONTAINER: &str = "finisher-hooks";
+
 /// The container of a project's agents and hooks.
 pub fn project_container(project_dir: &Path) -> String {
     format!("finisher-p-{}", path_hash(project_dir, 24))

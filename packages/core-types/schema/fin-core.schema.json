@@ -6569,7 +6569,7 @@
           "type": "string"
         },
         "projectDir": {
-          "description": "Read-only.",
+          "description": "Read-only. Absent for a server-scoped event (no project): the hook reads no project.",
           "type": "string"
         },
         "serverData": {
@@ -6594,7 +6594,6 @@
         }
       },
       "required": [
-        "projectDir",
         "hookFile",
         "tmp",
         "serverData",
@@ -6682,7 +6681,12 @@
           "description": "The event's payload (over 1 MiB: `{payloadOmitted: true, bytes}`)."
         },
         "project": {
-          "$ref": "#/$defs/HookProject"
+          "allOf": [
+            {
+              "$ref": "#/$defs/HookProject"
+            }
+          ],
+          "description": "Absent for a server-scoped event (a call or a job that names no project): only the\nmanaged, user and plugin layers run for it."
         },
         "session": {
           "allOf": [
@@ -6702,7 +6706,6 @@
       "required": [
         "event",
         "v",
-        "project",
         "payload"
       ],
       "type": "object"

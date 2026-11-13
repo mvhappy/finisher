@@ -1,6 +1,6 @@
 // `JobDone` (7F plan Task 8, Decision 18; spec §9.1) from the job engine's `onDone`: one
-// observe-only event per finished job of a project, `match` tested against the job kind, the
-// project's own hooks only, never for a `plugin.hook` job (recursion) nor for a job a hook's own
+// observe-only event per finished job, `match` tested against the job kind, the project's own
+// hooks only (a job of no project: the server layers only), never for a `plugin.hook` job (recursion) nor for a job a hook's own
 // credential submitted; `PreRender`/`PostRender` are listed inert and nothing fires them
 // (Decision 17). A real job engine (the test kinds) and a real hook engine (the fake hook,
 // `direct`).
@@ -109,7 +109,7 @@ describe("JobDone (Decision 18)", () => {
     expect(Object.keys(req.payload.error as object)).toEqual(["code"]);
   });
 
-  test("job_done_project_hooks_see_own_project_only; a job of no project fires nothing", async () => {
+  test("job_done_project_hooks_see_own_project_only; a job of no project fires the server layers only", async () => {
     const r = await rig();
     const m1 = join(tmp, "p1-ran");
     project(r, "p1", [hook("mine", "JobDone", ["--write", m1])]);
@@ -119,10 +119,20 @@ describe("JobDone (Decision 18)", () => {
     await r.jobs.runJob("test.echo", { value: 1 }, {});
     await r.hooks.settled();
     expect(r.hooks.stats().events.JobDone.runs).toBe(0);
+    // A user hook sees it, server-scoped: no project in its request or payload.
+    user(r, [hook("server", "JobDone", ["--report", "stdin"])]);
+    const done = await r.jobs.runJob("test.echo", { value: 1 }, {});
+    await r.hooks.settled();
+    expect(existsSync(m1)).toBe(false);
+    expect(r.hooks.stats().events.JobDone.runs).toBe(1);
+    const req = seen(r.delivered.at(-1)!.outcome);
+    expect(req.project).toBeUndefined();
+    expect(req.payload).toEqual({ jobId: done.id, kind: "test.echo", kindVersion: done.kindVersion, state: done.state, owner: { kind: "local", id: "local" } });
+    user(r, []);
     await r.jobs.runJob("test.echo", { value: 1 }, { project: "p1" });
     await r.hooks.settled();
     expect(existsSync(m1)).toBe(true);
-    expect(r.hooks.stats().events.JobDone.runs).toBe(1);
+    expect(r.hooks.stats().events.JobDone.runs).toBe(2);
   });
 
   test("plugin_hook_jobs_fire_no_job_done", async () => {

@@ -46,7 +46,7 @@ fn agent_input() -> AgentInput {
 fn policies() -> Vec<(&'static str, SandboxPolicy)> {
     let os = Os::Macos;
     let hook = HookInput {
-        project_dir: p("/u/proj"),
+        project_dir: Some(p("/u/proj")),
         hook_file: p("/u/proj/.hooks/check.sh"),
         toolchains: vec![p("/usr"), p("/bin")],
         tmp: p("/u/data/agents/s1/tmp/hook"),

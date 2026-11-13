@@ -17,6 +17,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } fr
 import { credentialPath } from "../src/agent/credentials.ts";
 import type { FakeScript } from "../src/agent/fake.ts";
 import { controlDbPath } from "../src/control/db.ts";
+import { CONSOLE } from "../src/principal.ts";
 import { AgentServer, code, open } from "./support/agent-server.ts";
 import { addAsset, commit, confirmed, type Exit, insert, type NdjsonClient, ok, tx } from "./support/ndjson-client.ts";
 
@@ -371,6 +372,96 @@ describe("PreMerge and PostMerge on RPCs (Decision 14)", () => {
     expect(post).toHaveLength(1);
     expect(post[0]!.payload).toMatchObject({ via: "rpc", rpc: "review.merge", itemId: item.id, from: root, into: item.target });
     expect(post[0]!.payload.mergeId).toBeTypeOf("string");
+  });
+
+  test("dry_run_merge_fires_no_post_merge: the command hooks still run; a real merge then fires it once", async () => {
+    const b = await boot();
+    const feat = await feature(b);
+    settings({ hooks: [hook("post", "PostMerge", rec("post")), hook("cmd", "PostCommand", rec("cmd"), { principals: "all", match: "rpc:history.merge" })] });
+    const planned = ok<{ dryRun: boolean }>(await b.local.call("history.merge", { projectId: b.projectId, txId: id(), author: "x", from: feat, into: "main", dryRun: true }));
+    expect(planned.dryRun).toBe(true);
+    await settled();
+    expect(requests("post")).toEqual([]);
+    expect(requests("cmd").map((r) => r.payload.payload.dryRun)).toEqual([true]);
+    ok(await merge(b, feat));
+    await settled();
+    expect(requests("post")).toHaveLength(1);
+    expect(requests("cmd")).toHaveLength(2);
+  });
+
+  test("merge_retries_fire_post_merge_once: a history.merge retried with its txId answers the same merge, no second event", async () => {
+    const b = await boot({ hooks: [hook("post", "PostMerge", rec("post"))] });
+    const feat = await feature(b);
+    const txId = id();
+    const again = () => b.local.call("history.merge", { projectId: b.projectId, txId, author: "x", from: feat, into: "main" });
+    const first = ok<{ mergeId: string }>(await again());
+    const second = ok<{ mergeId: string }>(await again());
+    expect(second.mergeId).toBe(first.mergeId);
+    await settled();
+    expect(requests("post").map((r) => r.payload.mergeId)).toEqual([first.mergeId]);
+  });
+
+  test("review_merge_retry_fires_no_second_pre_or_post_merge: the same idemKey answers the stored merge", async () => {
+    const b = await boot({ hooks: [hook("pre", "PreMerge", rec("pre")), hook("post", "PostMerge", rec("post"))] });
+    const { session, a } = await started(b);
+    const root = session.rootBranch!;
+    const t1 = id();
+    ok(await commit(a, b.projectId, { ...tx(t1, 1, [insert(0)]), branch: root }));
+    const { item } = ok<{ item: ReviewItem }>(await a.call("review.request", { projectId: b.projectId, source: root, title: "Ready" }));
+    await srv().core.reviewLink.settled();
+    const decided = ok<ReviewView>(await b.local.call("review.decide", { itemId: item.id, expect: item.snapshot, decisions: [{ txId: t1, decision: "accept" }] }));
+    const once = () => b.local.call("review.merge", { itemId: item.id, expect: decided.item.snapshot, idemKey: "m1" });
+    const first = ok<{ merge: { mergeId: string } }>(await once());
+    const second = ok<{ merge: { mergeId: string } }>(await once());
+    expect(second.merge.mergeId).toBe(first.merge.mergeId);
+    await settled();
+    expect(requests("pre")).toHaveLength(1);
+    expect(requests("post").map((r) => r.payload.mergeId)).toEqual([first.merge.mergeId]);
+  });
+});
+
+describe("server-scoped calls and stage 3's project (Task 7 review)", () => {
+  test("server_scoped_pre_command_for_an_agent_and_a_person: no project, the managed and user layers only", { timeout: 30_000 }, async () => {
+    const b = await boot();
+    const { file } = srv().core.credentials.base.credentials.mint(CONSOLE, { kind: "agent", label: "a script", projects: [b.projectId] });
+    const proved = await srv().proveAs(file);
+    ok(proved.exit);
+    const script = proved.client;
+    const local = join(serverData, "projects", b.projectId);
+    mkdirSync(local, { recursive: true });
+    writeFileSync(join(local, "hooks.json"), JSON.stringify({ hooks: [hook("local", "PreCommand", rec("local"), { principals: "all" })] }));
+    settings({
+      hooks: [
+        hook("agents", "PreCommand", rec("agents"), { match: "rpc:auth.whoami" }),
+        hook("everyone", "PreCommand", rec("everyone"), { principals: "all" }),
+        hook("finny", "PreCommand", [], { fin: true, match: "rpc:auth.whoami" }),
+      ],
+    });
+    ok(await script.call("auth.whoami", {}));
+    expect(requests("agents").map((r) => [r.payload.rpc, "project" in r, r.session])).toEqual([["auth.whoami", false, undefined]]);
+    // A `fin` hook needs a project for its credential: a server-scoped event fails it `unavailable`
+    // (Decision 3: `allow` by default), and nothing is minted.
+    expect(stats().PreCommand.failures).toBe(1);
+    expect(srv().core.credentials.base.credentials.list(true).filter((c) => c.label.startsWith("hook "))).toEqual([]);
+    ok(await b.local.call("auth.whoami", {}));
+    ok(await b.local.call("project.create", { dir: join(tmp, "Q"), name: "Q", rate: "30" }));
+    expect(requests("agents")).toHaveLength(1);
+    expect(requests("everyone").map((r) => [r.payload.rpc, "project" in r])).toEqual([
+      ["auth.whoami", false],
+      ["auth.whoami", false],
+      ["project.create", false],
+    ]);
+    // The project's local layer never runs for a call of no project.
+    expect(requests("local")).toEqual([]);
+  });
+
+  test("project_open_fires_pre_and_post_command_in_its_project: stage 3's project reaches stage 7", async () => {
+    const b = await boot();
+    settings({ hooks: [hook("pre", "PreCommand", rec("pre"), { principals: "all", match: "rpc:project.open" }), hook("post", "PostCommand", rec("post"), { principals: "all", match: "rpc:project.open" })] });
+    ok(await b.local.call("project.open", { dir: join(tmp, "P") }));
+    await settled();
+    expect(requests("pre").map((r) => (r as { project?: { id: string } }).project?.id)).toEqual([b.projectId]);
+    expect(requests("post").map((r) => (r as { project?: { id: string } }).project?.id)).toEqual([b.projectId]);
   });
 });
 

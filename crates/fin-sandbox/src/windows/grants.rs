@@ -202,17 +202,23 @@ pub fn hook_in(i: &HookInput, tree: &dyn Tree) -> Result<Vec<AclGrant>, String> 
     let policy = crate::profile::hook(i).map_err(|e| e.to_string())?;
     let call = cap(capability::hook(&i.tmp));
     let mut own = vec![];
-    if !i.hook_file.starts_with(&i.project_dir) {
+    if i.project_dir
+        .as_ref()
+        .is_none_or(|p| !i.hook_file.starts_with(p))
+    {
         own.push(i.hook_file.clone());
     }
-    let groups = vec![
-        toolchains(&i.toolchains),
-        Group {
-            roots: vec![i.project_dir.clone()],
-            trustee: cap(capability::project_view(&i.project_dir, &policy.deny_read)),
+    let mut groups = vec![toolchains(&i.toolchains)];
+    // A server-scoped event's hook reads no project.
+    if let Some(p) = &i.project_dir {
+        groups.push(Group {
+            roots: vec![p.clone()],
+            trustee: cap(capability::project_view(p, &policy.deny_read)),
             mask: READ_EXECUTE,
             scope: Scope::Static,
-        },
+        });
+    }
+    groups.extend([
         Group {
             roots: own,
             trustee: call.clone(),
@@ -231,7 +237,7 @@ pub fn hook_in(i: &HookInput, tree: &dyn Tree) -> Result<Vec<AclGrant>, String> 
             mask: MODIFY,
             scope: Scope::Owner,
         },
-    ];
+    ]);
     expand(&policy, groups, tree)
 }
 
@@ -459,7 +465,7 @@ mod tests {
     fn hook_grants() {
         let r = root();
         let i = HookInput {
-            project_dir: r.join("p"),
+            project_dir: Some(r.join("p")),
             hook_file: r.join("hooks").join("h.cmd"),
             toolchains: vec![r.join("tools")],
             tmp: r.join("data").join("hooks").join("t1"),
@@ -473,7 +479,7 @@ mod tests {
         };
         let call = sid(&capability::hook(&i.tmp));
         let c = sid(&capability::project_view(
-            &i.project_dir,
+            i.project_dir.as_ref().unwrap(),
             &crate::profile::hook(&i).unwrap().deny_read,
         ));
         let want: BTreeSet<_> = [
@@ -487,6 +493,30 @@ mod tests {
         .map(|(p, w, m, s)| (p.to_string(), w, m, s))
         .collect();
         assert_eq!(table(&hook_in(&i, &model(vec![])).unwrap()), want);
+    }
+
+    #[test]
+    fn server_scoped_hook_grants_no_project() {
+        let r = root();
+        let i = HookInput {
+            project_dir: None,
+            hook_file: r.join("hooks").join("h.cmd"),
+            toolchains: vec![r.join("tools")],
+            tmp: r.join("data").join("hooks").join("t1"),
+            server_data: r.join("data"),
+            home: r.join("home"),
+            fin: None,
+            timeout_ms: None,
+        };
+        let got = hook_in(&i, &model(vec![])).unwrap();
+        assert!(
+            got.iter().all(|g| !g.path.starts_with(r.join("p"))),
+            "{got:?}"
+        );
+        assert!(got.iter().any(|g| g.path == i.hook_file));
+        let plan = crate::windows::plan::hook(&i).unwrap();
+        assert_eq!(plan.container, capability::SERVER_HOOKS_CONTAINER);
+        assert_eq!(plan.capabilities.len(), 2);
     }
 }
 

@@ -492,11 +492,14 @@ describe("server.status (Decision 21)", () => {
     const serverData = join(tmp, "server");
     mkdirSync(serverData, { recursive: true });
     copyFileSync(FAKE, join(serverData, "fake-hook.mjs"));
-    writeFileSync(join(serverData, "settings.json"), JSON.stringify({ hooks: [hook("guard", "PreCommand", block("no"), { principals: "all" })] }));
+    // An agent's hook only: with `principals: all` it would also block the person's own
+    // `server.status` below (a call of no project fires the server layers, Task 7 review).
+    writeFileSync(join(serverData, "settings.json"), JSON.stringify({ hooks: [hook("guard", "PreCommand", block("no"))] }));
     const server = new AgentServer(serverData, { hooks: { status: DIRECT } });
     await server.start();
     try {
-      const out = await Effect.runPromise(server.agents.hookWiring.engine.fire("PreCommand", { projectId: "p0", principal: LOCAL }, {}));
+      const agent = { kind: "agent" as const, id: "01JAGENTAGENTAGENTAGENTAGE", scopes: [], projects: "*" as const, branches: "*" as const, human: false };
+      const out = await Effect.runPromise(server.agents.hookWiring.engine.fire("PreCommand", { projectId: "p0", principal: agent }, {}));
       // No such project: its hooks fail (Decision 3) and fail open.
       expect(out.blocked).toBeUndefined();
       const status = ok<{ hooks: { events: Record<string, unknown>; dropped: number; unreadable: string[] } }>(await (await server.local()).call("server.status", {}));

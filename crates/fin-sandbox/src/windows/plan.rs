@@ -122,17 +122,27 @@ pub fn agent(i: &AgentInput, policy: &SandboxPolicy) -> Result<ContainerPlan, St
     })
 }
 
-/// `hook`: the project's container; the toolchain's capability and the call's own. No
-/// `internetClient` (a hook reaches `fin` through the pipe, whose DACL admits the container).
+/// `hook`: the project's container (a server-scoped event's: [`capability::SERVER_HOOKS_CONTAINER`]);
+/// the toolchain's capability, the call's own and the project's view. No `internetClient` (a
+/// hook reaches `fin` through the pipe, whose DACL admits the container).
 pub fn hook(i: &HookInput) -> Result<ContainerPlan, String> {
     let policy = crate::profile::hook(i).map_err(|e| e.to_string())?;
+    let mut capabilities = vec![
+        Capability::named(TOOLCHAIN.into()),
+        Capability::named(capability::hook(&i.tmp)),
+    ];
+    if let Some(p) = &i.project_dir {
+        capabilities.push(Capability::named(capability::project_view(
+            p,
+            &policy.deny_read,
+        )));
+    }
     Ok(ContainerPlan {
-        container: capability::project_container(&i.project_dir),
-        capabilities: vec![
-            Capability::named(TOOLCHAIN.into()),
-            Capability::named(capability::hook(&i.tmp)),
-            Capability::named(capability::project_view(&i.project_dir, &policy.deny_read)),
-        ],
+        container: i.project_dir.as_deref().map_or_else(
+            || capability::SERVER_HOOKS_CONTAINER.to_owned(),
+            capability::project_container,
+        ),
+        capabilities,
         local_app_data: Some(i.tmp.join(APPDATA)),
     })
 }
@@ -219,7 +229,7 @@ mod tests {
         );
         assert!(!agent(&i, &policy(Net::None)).unwrap().has_internet());
         let h = HookInput {
-            project_dir: r.join("p"),
+            project_dir: Some(r.join("p")),
             hook_file: r.join("p").join("h.cmd"),
             toolchains: vec![],
             tmp: r.join("t"),

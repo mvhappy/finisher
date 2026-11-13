@@ -879,7 +879,7 @@ fn the_real_grant_tables_pass_the_protect_rules() {
         fin: None,
     };
     let hook = HookInput {
-        project_dir: t.project.clone(),
+        project_dir: Some(t.project.clone()),
         hook_file,
         toolchains,
         tmp: d.join("hooks/c1"),

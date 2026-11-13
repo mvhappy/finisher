@@ -6850,9 +6850,9 @@ export interface HookInput {
    */
   hookFile: string;
   /**
-   * Read-only.
+   * Read-only. Absent for a server-scoped event (no project): the hook reads no project.
    */
-  projectDir: string;
+  projectDir?: string;
   serverData: string;
   /**
    * The hook's time limit (`Limits.wall_ms`): the launcher ends the whole tree when it passes
@@ -6890,7 +6890,11 @@ export interface HookRequest {
    * The event's payload (over 1 MiB: `{payloadOmitted: true, bytes}`).
    */
   payload: unknown;
-  project: HookProject;
+  /**
+   * Absent for a server-scoped event (a call or a job that names no project): only the
+   * managed, user and plugin layers run for it.
+   */
+  project?: HookProject;
   /**
    * Absent for events outside a session (`JobDone` of a job, a person's merge, `UserPrompt`
    * before `agent.session.start` opens the session).
