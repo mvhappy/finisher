@@ -16,6 +16,8 @@ pub enum TickPoint {
 #[derive(Debug, Default)]
 struct State {
     armed: Option<TickPoint>,
+    /// The armed point panics instead of waiting.
+    panic: bool,
     hung: bool,
     released: bool,
 }
@@ -45,6 +47,16 @@ impl TickHooks {
     pub fn hang(&self, point: TickPoint) {
         *self.lock() = State {
             armed: Some(point),
+            ..State::default()
+        };
+    }
+
+    /// The next tick reaching `point` panics there (outside the store lock), as a bug in the
+    /// folder I/O would.
+    pub fn panic_at(&self, point: TickPoint) {
+        *self.lock() = State {
+            armed: Some(point),
+            panic: true,
             ..State::default()
         };
     }
@@ -80,6 +92,10 @@ impl TickHooks {
             return;
         }
         s.armed = None;
+        if std::mem::take(&mut s.panic) {
+            drop(s);
+            panic!("fin-store test panic in a tick's folder I/O at {point:?}");
+        }
         s.hung = true;
         self.0.cv.notify_all();
         while !s.released {

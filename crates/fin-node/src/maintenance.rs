@@ -20,9 +20,10 @@
 //! Every `status` event also refreshes the engine's cached status (what `status()` answers
 //! during a long call).
 //!
-//! A tick is skipped while a long call has the store (`Busy`). A panic inside a tick step drops
-//! the store (`Panicked`, like any call) and ends the thread after a fatal `error` event. A tick
-//! that fails with a database error emits a non-fatal `error` event and the thread goes on.
+//! A tick is skipped while a long call has the store (`Busy`). A panic anywhere in a tick, in a
+//! step under the mutex or in the folder I/O between steps, drops the store (`Panicked`, like
+//! any call) and ends the thread after a fatal `error` event. A tick that fails with a
+//! database error emits a non-fatal `error` event and the thread goes on.
 //!
 //! # Events (JSON strings)
 //!
@@ -244,16 +245,35 @@ fn tick(inner: &Shared) -> bool {
         first: true,
         dead: false,
     };
-    // `None`: a long call took the store between two steps; the next tick starts afresh.
-    let result = fin_store::Store::tick_phased(&mut access, Instant::now(), LIGHT);
+    // `None`: a long call took the store between two steps; the next tick starts afresh. A
+    // panic in a step under the mutex is handled by `Access::with`; one in the folder I/O
+    // between steps (the store not held) ends here, the same way.
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        fin_store::Store::tick_phased(&mut access, Instant::now(), LIGHT)
+    }));
     if access.dead {
         return false;
     }
-    if let Err(e) = result {
-        let e: CoreError = e.into();
-        inner.events.emit(error_json(&json!(e), false));
+    match result {
+        Ok(Ok(_)) => true,
+        Ok(Err(e)) => {
+            let e: CoreError = e.into();
+            inner.events.emit(error_json(&json!(e), false));
+            true
+        }
+        Err(payload) => {
+            let mut guard = lock(&inner.state);
+            // A long call may have the store now: it is dropped when that call puts it back
+            // (`run_long` keeps a `Panicked` it finds).
+            let store = std::mem::replace(&mut *guard, State::Panicked);
+            drop(guard);
+            inner.returned.notify_all();
+            let _ = catch_unwind(AssertUnwindSafe(move || drop(store)));
+            let e = panic_error(payload.as_ref());
+            inner.events.emit(error_json(&json!(e), true));
+            false
+        }
     }
-    true
 }
 
 /// The store as a tick's steps reach it (module docs): under the state mutex, only while it

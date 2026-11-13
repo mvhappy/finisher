@@ -223,6 +223,15 @@ export class Engine {
     }
   }
 
+  /** @internal Test builds only: the next tick panics in its folder I/O (`import` or `export`). */
+  panicNextTickIoForTest(point) {
+    try {
+      this.#hook("panicNextTickIoForTest")(point);
+    } catch (e) {
+      throw toFinError(e);
+    }
+  }
+
   /** @internal Test builds only: whether a tick is stopped at the armed point. */
   tickHungForTest() {
     return this.#hook("tickHungForTest")();

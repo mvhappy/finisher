@@ -127,15 +127,17 @@ impl Engine {
     /// `releaseTickForTest`.
     #[napi(catch_unwind)]
     pub fn hang_next_tick_for_test(&self, point: String) -> Result<()> {
-        let point = match point.as_str() {
-            "import" => fin_store::TickPoint::ImportRead,
-            "export" => fin_store::TickPoint::ExportWrite,
-            other => {
-                let e = CoreError::new("INVALID_OP", format!("no tick point {other:?}"));
-                return Err(reject(e));
-            }
-        };
+        let point = tick_point(&point)?;
         self.tick_hooks()?.hang(point);
+        Ok(())
+    }
+
+    /// The next tick panics in its folder I/O, outside the store mutex (`import` or `export`,
+    /// as for `hangNextTickForTest`).
+    #[napi(catch_unwind)]
+    pub fn panic_next_tick_io_for_test(&self, point: String) -> Result<()> {
+        let point = tick_point(&point)?;
+        self.tick_hooks()?.panic_at(point);
         Ok(())
     }
 
@@ -158,6 +160,18 @@ impl Engine {
         lock(&self.inner.maintenance)
             .as_ref()
             .is_some_and(|m| m.running())
+    }
+}
+
+/// `import` or `export`.
+fn tick_point(point: &str) -> Result<fin_store::TickPoint> {
+    match point {
+        "import" => Ok(fin_store::TickPoint::ImportRead),
+        "export" => Ok(fin_store::TickPoint::ExportWrite),
+        other => Err(reject(CoreError::new(
+            "INVALID_OP",
+            format!("no tick point {other:?}"),
+        ))),
     }
 }
 

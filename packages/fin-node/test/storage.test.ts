@@ -356,6 +356,22 @@ describe("storage", () => {
     expect(await again.head("main")).toBe(1);
   });
 
+  test("a panic in a tick's folder I/O marks the engine panicked", async () => {
+    const a = keep(await Engine.create(serverData, projectDir, "Demo", "30"));
+    const b = keep(await Engine.open(join(tmp, "server-data-2"), projectDir));
+    await a.commit(tx("tx-1", 0, [addAsset]));
+    const events = listen(b);
+    // Outside the store mutex: no step's own panic handling sees it.
+    b.panicNextTickIoForTest("import");
+    const fatal = await until(() => events.find((e) => e.type === "error"), 10_000, "the error event");
+    expect(fatal.fatal).toBe(true);
+    expect((fatal.error as { code: string }).code).toBe("INTERNAL");
+    const dead = await rejection(b.head("main"));
+    expect(dead.code).toBe("ENGINE_CLOSED");
+    expect(dead.details.reason).toBe("panicked");
+    expect(b.maintenanceRunningForTest()).toBe(false);
+  }, 20_000);
+
   test("records imported at open are announced as applied", async () => {
     const a = keep(await Engine.create(serverData, projectDir, "Demo", "30"));
     await a.commit(tx("tx-1", 0, [addAsset]));

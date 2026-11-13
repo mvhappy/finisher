@@ -226,6 +226,8 @@ export declare class Engine {
    * `releaseTickForTest`.
    */
   hangNextTickForTest(point: "import" | "export"): void;
+  /** @internal Test builds only: the next tick panics in its folder I/O, outside the store mutex. */
+  panicNextTickIoForTest(point: "import" | "export"): void;
   /** @internal Test builds only: whether a tick is stopped at the armed point. */
   tickHungForTest(): boolean;
   /** @internal Test builds only: lets the stopped tick go on. */
