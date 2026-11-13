@@ -88,6 +88,7 @@ fn passband_flat() {
         (22_050, 48_000, 10_000.0),
         (96_000, 48_000, 21_700.0),
         (8_000, 48_000, 3_620.0),
+        (47_999, 48_000, 21_760.0),
     ];
     for (from, to, edge) in edges {
         let f64_edge: f64 = edge;
@@ -113,6 +114,14 @@ fn stopband_rejects() {
         (96_000, 48_000, 26_000.0, 22_000.0),
         (44_100, 16_000, 18_000.0, 2_000.0),
         (44_100, 48_000, 15_000.0, 18_900.0),
+        // Just past the stopband edge (8 kHz at 16 kHz out): aliases to 7,980 Hz.
+        (48_000, 16_000, 8_020.0, 7_980.0),
+        // L > 1024 (phase tables interpolated). 48,000 -> 47,999 has no whole-Hz tone in its
+        // stopband (23,999.5 to 24,000 Hz), so 48,000 -> 32,001 (L = 10,667) stands in for the
+        // downsampling side: 18 kHz aliases to 14,001 Hz.
+        (48_000, 32_001, 18_000.0, 14_001.0),
+        // Upsampling, L = 48,000: 20 kHz images to 27,999 Hz, folding to 20,001 Hz.
+        (47_999, 48_000, 20_000.0, 20_001.0),
     ];
     for (from, to, tone, alias) in cases {
         let reference = level(
@@ -186,21 +195,42 @@ fn identity_ratio_bit_exact() {
     }
 }
 
+/// `MEDIA_LIMIT` with `details {limit, value, max}`.
+fn limit_error(from: u32, to: u32) -> (String, f64, f64) {
+    let e = Resampler::new(from, to).err().expect("refused");
+    assert_eq!(e.code, "MEDIA_LIMIT", "{from} -> {to}");
+    let d = &e.details;
+    (
+        d["limit"].as_str().unwrap().to_string(),
+        d["value"].as_f64().unwrap(),
+        d["max"].as_f64().unwrap(),
+    )
+}
+
 #[test]
-fn rejects_zero_and_extreme_rates() {
+fn rate_limits() {
     assert_eq!(
-        Resampler::new(0, 48_000).err().unwrap().code,
-        "INVALID_RANGE"
+        limit_error(0, 48_000),
+        ("sampleRate".into(), 0.0, 768_000.0)
     );
     assert_eq!(
-        Resampler::new(48_000, 0).err().unwrap().code,
-        "INVALID_RANGE"
+        limit_error(48_000, 0),
+        ("sampleRate".into(), 0.0, 768_000.0)
     );
     assert_eq!(
-        Resampler::new(768_000, 8_000).err().unwrap().code,
-        "INVALID_RANGE"
+        limit_error(768_001, 48_000),
+        ("sampleRate".into(), 768_001.0, 768_000.0)
     );
-    assert!(Resampler::new(384_000, 16_000).is_ok());
+    assert_eq!(
+        limit_error(48_000, 768_001),
+        ("sampleRate".into(), 768_001.0, 768_000.0)
+    );
+    assert!(Resampler::new(768_000, 48_000).is_ok());
+    assert!(Resampler::new(768_000, 16_000).is_ok()); // 48:1
+    assert!(Resampler::new(705_600, 16_000).is_ok());
+    let (limit, value, max) = limit_error(768_000, 15_999);
+    assert_eq!((limit.as_str(), max), ("downsampleRatio", 48.0));
+    assert!((value - 768_000.0 / 15_999.0).abs() < 1e-9, "{value}");
 }
 
 /// Pinned: a change here moves an A0 hash and is re-blessed only with an `AUDIO_VERSION` bump.

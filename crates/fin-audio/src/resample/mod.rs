@@ -7,16 +7,23 @@
 //! the first sample and after the last are zeros. Streaming: `process` accepts any chunk sizes
 //! and `finish` flushes the tail; the output is bit-identical whatever the chunking, since every
 //! output is the same fixed-order `f32` dot product over the same samples.
+//!
+//! **Limits.** Both rates must be 1 Hz to 768 kHz, and downsampling at most 48:1 (so 705.6
+//! and 768 kHz sources still reach the 16 kHz feed); upsampling is unbounded within the rates.
+//! The tables hold about `140 × max(1, from / to)` taps a phase for at most 1,025 phases, so
+//! the limits keep a resampler under about 30 MB. Anything else is `MEDIA_LIMIT` with
+//! `details {limit: "sampleRate" | "downsampleRatio", value, max}`.
 
 mod kernel;
 
 use fin_core::CoreError;
 use kernel::{Kernel, PHASES, dot};
+use serde_json::json;
 
 /// Rates accepted, in Hz.
 const MAX_RATE: u32 = 768_000;
 /// The largest downsampling ratio accepted (the taps grow with it: 140 × ratio a phase).
-const MAX_DOWN: u64 = 32;
+const MAX_DOWN: u32 = 48;
 
 /// The number of outputs for `n_in` inputs: `ceil(n_in × to / from)` (saturating; 0 for a
 /// zero `from_hz`).
@@ -26,6 +33,11 @@ pub fn resampled_len(n_in: u64, from_hz: u32, to_hz: u32) -> u64 {
     }
     let n = (u128::from(n_in) * u128::from(to_hz)).div_ceil(u128::from(from_hz));
     u64::try_from(n).unwrap_or(u64::MAX)
+}
+
+fn limit(name: &str, value: f64, max: f64, message: String) -> CoreError {
+    CoreError::new("MEDIA_LIMIT", message)
+        .with_details(json!({ "limit": name, "value": value, "max": max }))
 }
 
 fn gcd(mut a: u64, mut b: u64) -> u64 {
@@ -57,17 +69,25 @@ pub struct Resampler {
 
 impl Resampler {
     /// A resampler for `from_hz → to_hz`; the filter tables are designed here, once.
-    /// `INVALID_RANGE` for a rate of 0 or above 768 kHz, or a downsampling ratio above 32.
+    /// `MEDIA_LIMIT` outside the limits in the module documentation.
     pub fn new(from_hz: u32, to_hz: u32) -> Result<Resampler, CoreError> {
-        let ok = |r: u32| (1..=MAX_RATE).contains(&r);
-        if !ok(from_hz) || !ok(to_hz) || u64::from(from_hz) > MAX_DOWN * u64::from(to_hz) {
-            return Err(CoreError::new(
-                "INVALID_RANGE",
-                format!("cannot resample {from_hz} Hz to {to_hz} Hz"),
-            )
-            .with_fix(format!(
-                "rates must be 1 to {MAX_RATE} Hz and at most {MAX_DOWN}:1 down"
-            )));
+        for rate in [from_hz, to_hz] {
+            if !(1..=MAX_RATE).contains(&rate) {
+                return Err(limit(
+                    "sampleRate",
+                    f64::from(rate),
+                    f64::from(MAX_RATE),
+                    format!("the sample rate {rate} Hz is outside 1 to {MAX_RATE} Hz"),
+                ));
+            }
+        }
+        if u64::from(from_hz) > u64::from(MAX_DOWN) * u64::from(to_hz) {
+            return Err(limit(
+                "downsampleRatio",
+                f64::from(from_hz) / f64::from(to_hz),
+                f64::from(MAX_DOWN),
+                format!("resampling {from_hz} Hz to {to_hz} Hz is more than {MAX_DOWN}:1 down"),
+            ));
         }
         let g = gcd(u64::from(from_hz), u64::from(to_hz));
         let (l, m) = (u64::from(to_hz) / g, u64::from(from_hz) / g);
