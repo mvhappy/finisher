@@ -99,7 +99,7 @@ export class Runtime extends RuntimeEngine {
         started: (live, runId) => this.#sandboxNotices(live, runId),
         startClock: (s) => this.budget(s).startRun(),
         facts: (s) => this.facts(s),
-        append: async (n) => void (await this.append(n)),
+        append: async (n) => (await this.append(n)).node,
         interrupt: async (id, reason) => void (await this.apply(id, { kind: "interrupted", reason })),
       },
     });

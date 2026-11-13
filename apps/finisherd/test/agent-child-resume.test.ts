@@ -51,7 +51,8 @@ const OVER: FakeScript = { name: "over", turns: [[{ emit: [usage(800, 400), msg(
 /** A brief whose process exits. */
 const EXITS: FakeScript = { name: "exits", turns: [[{ emit: [msg("bye")] }, { crash: { code: 1, signal: null } }]] };
 
-async function boot(scripts: readonly FakeScript[]) {
+async function boot(scripts: readonly FakeScript[], agents?: Record<string, unknown>) {
+  if (agents !== undefined) writeFileSync(join(serverData, "settings.json"), JSON.stringify({ agents }));
   server = new AgentServer(serverData, { timers: false, fakeScripts: scripts });
   await server.start();
   const local = await server.local();
@@ -211,5 +212,70 @@ describe("a parent resumes a child it interrupted (7B Decision 16 amendment)", (
     const exit = await Effect.runPromiseExit(srv().agents.runtime.resume(c.id, asParent as never));
     expect(Exit.isFailure(exit) && JSON.stringify(exit.cause)).toMatch(/SCOPE_DENIED.*interruptedByOther/);
     expect(get(c.id).status).toBe("interrupted");
+  });
+});
+
+describe("a queued run's steers are handed back too (review of the hand-back)", () => {
+  /** The `steerReturned` notices of `sessionId`'s last run. */
+  const returnedIn = (sessionId: string) => {
+    const run = srv().core.store.runs(sessionId).at(-1)!.id;
+    return srv().core.store.nodes(sessionId).filter((x) => x.runId === run && x.kind === "notice" && "steerReturned" in (x.payload as object)).map((x) => (x.payload as { steerReturned: unknown }).steerReturned);
+  };
+  const steerNodes = (sessionId: string) => srv().core.store.nodes(sessionId).filter((x) => x.kind === "userMessage" && (x.payload as { trigger?: string }).trigger === "steer");
+  const expectBack = (sessionId: string, texts: string[]) => {
+    const nodes = steerNodes(sessionId);
+    expect(returnedIn(sessionId)).toEqual([{ harness: "fake", steers: texts.map((text, i) => ({ text, nodeId: nodes[i]!.id, at: nodes[i]!.createdAt })) }]);
+  };
+
+  test("interrupted before admission: the held steers come back in a notice, and resendReturned sends them", async () => {
+    // One slot: the parent's run holds it, so its child's brief waits.
+    const { local, projectId } = await boot([WORKING], { maxLiveBuiltin: 1 });
+    const p = await parentOf(local, projectId);
+    const c = ok<{ session: Session }>(await p.client.call("agent.session.start", { projectId, role: "fixer", prompt: "brief" })).session;
+    await until(() => srv().core.store.nodes(c.id).some((x) => x.kind === "notice"), "queued");
+    expect(ok<{ queued: boolean }>(await p.client.call("agent.session.steer", { sessionId: c.id, text: "one" }))).toEqual({ queued: true });
+    expect(ok<{ queued: boolean }>(await p.client.call("agent.session.steer", { sessionId: c.id, text: "two" }))).toEqual({ queued: true });
+    ok(await p.client.call("agent.session.interrupt", { sessionId: c.id }));
+    expect(await interrupted(c.id)).toMatchObject({ statusReason: "parentInterrupt" });
+    await until(() => returnedIn(c.id).length > 0, "the hand-back");
+    expectBack(c.id, ["one", "two"]);
+    const resumed = ok<{ session: Session; run?: Run }>(await p.client.call("agent.session.resume", { sessionId: c.id, resendReturned: true }));
+    const prompts = srv().core.store.nodes(c.id).filter((x) => x.kind === "userMessage" && x.runId === resumed.run!.id);
+    expect(prompts.map((x) => (x.payload as { text: string }).text)).toEqual(["one\n\ntwo"]);
+  });
+
+  test("ended before admission: the held steer comes back in the ended run", async () => {
+    const { local, projectId } = await boot([WORKING], { maxLiveBuiltin: 1 });
+    await parentOf(local, projectId);
+    const b = ok<{ session: Session }>(await local.call("agent.session.start", { projectId, harness: "fake", prompt: "job b" })).session;
+    await until(() => srv().core.store.nodes(b.id).some((x) => x.kind === "notice"), "queued");
+    expect(ok<{ queued: boolean }>(await local.call("agent.session.steer", { sessionId: b.id, text: "faster" }))).toEqual({ queued: true });
+    ok(await local.call("agent.session.end", { sessionId: b.id }));
+    await until(() => returnedIn(b.id).length > 0, "the hand-back");
+    expectBack(b.id, ["faster"]);
+  });
+
+  test("a queued run whose turn cannot start once admitted: its held steer comes back", async () => {
+    // The parent holds the one slot; the queued session's process cannot start when it is admitted.
+    const { local, projectId } = await boot([WORKING, { name: "broken", spawnFails: true, turns: [] }], { maxLiveBuiltin: 1 });
+    const a = await parentOf(local, projectId);
+    const b = ok<{ session: Session }>(await local.call("agent.session.start", { projectId, harness: "fake", prompt: "job b" })).session;
+    await until(() => srv().core.store.nodes(b.id).some((x) => x.kind === "notice"), "queued");
+    ok(await local.call("agent.session.steer", { sessionId: b.id, text: "later" }));
+    ok(await local.call("agent.session.end", { sessionId: a.session.id }));
+    await interrupted(b.id);
+    await until(() => returnedIn(b.id).length > 0, "the hand-back");
+    expectBack(b.id, ["later"]);
+  });
+
+  test("an admitted run's held steers are steered in, never handed back", async () => {
+    const { local, projectId } = await boot([WORKING], { maxLiveBuiltin: 1 });
+    const a = await parentOf(local, projectId);
+    const b = ok<{ session: Session }>(await local.call("agent.session.start", { projectId, harness: "fake", prompt: "job b" })).session;
+    await until(() => srv().core.store.nodes(b.id).some((x) => x.kind === "notice"), "queued");
+    ok(await local.call("agent.session.steer", { sessionId: b.id, text: "go on" }));
+    ok(await local.call("agent.session.end", { sessionId: a.session.id }));
+    await until(() => fake().log.steers.some((x) => x.text === "go on"), "the steer");
+    expect(returnedIn(b.id)).toEqual([]);
   });
 });
