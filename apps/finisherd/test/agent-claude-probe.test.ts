@@ -597,13 +597,15 @@ describe("the first-turn gate", () => {
     const second = init();
     expect(gate.push(status)).toEqual({ kind: "forward", lines: [status] });
     expect(gate.push(second)).toEqual({ kind: "forward", lines: [second] });
-    // A later init that passes the predicate but differs from the first (a model, a server's
-    // status, the tool set, the mode) refuses.
+    // A model change (a plan's automatic fallback) passes: `session.ts` shows it as a notice.
+    expect(gate.push(init({ model: "claude-sonnet-5-5" }))).toMatchObject({ kind: "forward" });
+    expect(gate.state).toBe("open");
+    // A later init that passes the predicate but differs from the first on an isolation key refuses.
     for (const [over, item] of [
-      [{ model: "claude-sonnet-5-5" }, "init:model"],
       [{ tools: ["Bash", "Edit", "Read"] }, "init:tools"],
+      [{ agents: ["claude", "Explore"] }, "init:agents"],
       [{ output_style: "Explanatory" }, "init:output_style"],
-      [{ cwd: "/elsewhere" }, "init:cwd"],
+      [{ memory_paths: null }, "init:memory_paths"],
     ] as const) {
       const g = firstTurnGate(PLAN);
       g.push(first);

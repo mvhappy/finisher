@@ -228,6 +228,20 @@ impl Runner {
         None
     }
 
+    /// The `initialize` answer; the SDK servers' handshake starts before it (Task 0). With the
+    /// script's `initializeSilent`, the handshake only (the host waits in vain).
+    pub(super) fn answer_initialize(&mut self, rid: &Value) {
+        self.mcp_start();
+        self.on_start();
+        if self.script.initialize_silent {
+            return;
+        }
+        let body = self.initialize_body();
+        self.emit(&json!({"type": "control_response", "response": {
+            "subtype": "success", "request_id": rid, "response": body,
+            "pending_permission_requests": [], "pending_user_dialog_requests": []}}));
+    }
+
     /// Takes every queued user line for one turn. Verified on 2.1.321 (7D Task 0, s1d): lines
     /// queued during one turn run as one next turn.
     pub(super) fn take_queued(&mut self) -> bool {

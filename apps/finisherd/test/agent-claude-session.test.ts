@@ -7,11 +7,11 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpat
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Node, ProviderEvent, Session } from "@finisher/contracts";
+import type { FinError, Node, ProviderEvent, Session } from "@finisher/contracts";
 import { sandboxStatus } from "@finisher/fin-node";
 import { Effect, Exit, Scope, Stream } from "effect";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
-import type { ProviderSession, SessionSpec } from "../src/agent/adapter.ts";
+import type { CallGate, ProviderSession, SessionSpec } from "../src/agent/adapter.ts";
 import { ClaudeCodeAdapter, sessionUuid } from "../src/agent/claude/adapter.ts";
 import { accountCheck, accountKey, ClaudeAccounts } from "../src/agent/claude/account.ts";
 import { CLAUDE_FLOOR } from "../src/agent/claude/detect.ts";
@@ -209,7 +209,8 @@ describe("a turn through the runtime", () => {
   });
 
   // Verified on 2.1.321 (7D Task 0, s1b/s1d): a steer never joins the running turn, whose
-  // `result` has `queued_turn_count: 0` (as the fake's now); the queued line is the next turn.
+  // `result` has `queued_turn_count: 0` (as the fake's now). The session holds the steer and
+  // writes it at that `result` as the next CLI turn of the same run.
   withFake("steer_stays_in_run: two results, one Finisher run", async () => {
     const r = await claudeServer({
       steps: [
@@ -249,7 +250,10 @@ describe("a turn through the runtime", () => {
     expect(new Set(ns.map((n) => n.runId)).size).toBe(1);
     expect(kinds(ns.filter((n) => n.kind !== "notice"))).toEqual(["userMessage", "assistantMessage", "userMessage", "userMessage", "usage", "assistantMessage", "usage"]);
     expect(runOf(s.id, ns[0]!.runId!)).toMatchObject({ status: "completed" });
-    expect(observed(r.serverData, s.id)[0]!.userLines).toHaveLength(3);
+    // Both steers went as one user line, after the first turn's `result`.
+    const lines = observed(r.serverData, s.id)[0]!.userLines as { content: { text: string }[] }[];
+    expect(lines).toHaveLength(2);
+    expect(lines[1]!.content.map((b) => b.text)).toEqual(["also this", "and this"]);
   });
 
   withFake("interrupt: the tool in flight gets the synthetic result; the next prompt resumes", async () => {
@@ -388,6 +392,10 @@ interface WatchOptions {
   readonly accountHash?: string;
   /** Detection's sign-in method (default none: not a plan sign-in). */
   readonly authMethod?: string;
+  /** The runtime's budget gate for the session (Decision 15). */
+  readonly gate?: CallGate;
+  /** How long the `initialize` answer may take. */
+  readonly initializeTimeoutMs?: number;
 }
 
 /** `openWatched` whose open may fail: then its error and what was spawned. */
@@ -436,10 +444,11 @@ async function openWatched(script: Record<string, unknown>, opts: WatchOptions &
     interruptWaitMs: opts.interruptWaitMs ?? 300,
     sigintGraceMs: opts.sigintGraceMs ?? 300,
     enabled: () => opts.enabled ?? true,
+    ...(opts.initializeTimeoutMs === undefined ? {} : { initializeTimeoutMs: opts.initializeTimeoutMs }),
     detect: () => Effect.succeed({ path: binary, version: VERSION, floor: CLAUDE_FLOOR, signedIn: opts.signedIn ?? true, ...(opts.accountHash === undefined ? {} : { accountHash: opts.accountHash }), ...(opts.authMethod === undefined ? {} : { authMethod: opts.authMethod }) }),
   });
   const ref = opts.resume === true ? { kind: "claudeCode", id: sessionUuid(s.id) } : null;
-  const spec: SessionSpec = { sessionId: s.id, projectId: s.projectId, model: "default", role: "editor", mode: "draft", system: "You edit.", cwd: box.workspace, env: box.env, providerRef: ref, tools: opts.tools ?? ["Read", "Bash"], sandbox: watched };
+  const spec: SessionSpec = { sessionId: s.id, projectId: s.projectId, model: "default", role: "editor", mode: "draft", system: "You edit.", cwd: box.workspace, env: box.env, providerRef: ref, tools: opts.tools ?? ["Read", "Bash"], sandbox: watched, ...(opts.gate === undefined ? {} : { gate: opts.gate }) };
   const exit = await Effect.runPromiseExit(Scope.provide(scope)(adapter.open(spec)));
   if (Exit.isFailure(exit)) {
     await Effect.runPromise(Scope.close(scope, Exit.void));
@@ -553,6 +562,108 @@ describe("the instance", () => {
   });
 });
 
+describe("steers held host-side (Decision 13 as 7D Task 0 amended it)", () => {
+  const usage = { inputTokens: 1, outputTokens: 1 };
+  const lines = (w: Watched) => ((observed(w.serverData, SESSION_ID).at(-1)?.userLines ?? []) as { content: { text?: string }[] }[]).map((l) => l.content.map((b) => b.text));
+  const types = (w: Watched) => w.events.map((e) => e.type);
+  const dropped = (w: Watched) => w.events.filter((e) => e.type === "notice" && e.name === "steerDropped").map((e) => (e as { details: unknown }).details);
+  const quiet = () => new Promise((r) => setTimeout(r, 400));
+
+  withFake("a steer right after startTurn, before the turn's init, is the run's next CLI turn", async () => {
+    const w = await openWatched({ steps: [{ expect: "user", cumulativeUsage: usage }, { expect: "user", emit: [assistant([{ type: "text", text: "second" }])], cumulativeUsage: usage }] });
+    await run(w.provider.startTurn({ runId: "r1", text: "one" }));
+    await run(w.provider.steer({ text: "held" }));
+    await waitFor(w, "turnCompleted");
+    await quiet();
+    expect(types(w).filter((t) => t === "turnCompleted" || t === "usage")).toEqual(["usage", "usage", "turnCompleted"]);
+    expect(JSON.stringify(w.events)).toContain("second");
+    expect(lines(w)).toEqual([["one"], ["held"]]);
+  });
+
+  withFake("two steers in one turn go as one user line", async () => {
+    const w = await openWatched({ steps: [{ expect: "user", sleep: 500, cumulativeUsage: usage }, { expect: "user", cumulativeUsage: usage }] });
+    await run(w.provider.startTurn({ runId: "r1", text: "one" }));
+    await run(w.provider.steer({ text: "a" }));
+    await run(w.provider.steer({ text: "b" }));
+    await waitFor(w, "turnCompleted");
+    await quiet();
+    expect(types(w).filter((t) => t === "turnCompleted")).toHaveLength(1);
+    expect(lines(w)).toEqual([["one"], ["a", "b"]]);
+  });
+
+  withFake("a steer reaching an instance whose run ended is refused SESSION_BUSY and never written", async () => {
+    const w = await openWatched({ steps: [{ expect: "user", cumulativeUsage: usage }, { expect: "user", cumulativeUsage: usage }] });
+    await run(w.provider.startTurn({ runId: "r1", text: "one" }));
+    await waitFor(w, "turnCompleted");
+    const exit = await Effect.runPromiseExit(w.provider.steer({ text: "late" }));
+    expect(JSON.stringify(exit)).toMatch(/SESSION_BUSY.*runEnded|runEnded.*SESSION_BUSY/);
+    await quiet();
+    expect(lines(w)).toEqual([["one"]]);
+  });
+
+  withFake("a failed result drops the held steer with a notice", async () => {
+    const w = await openWatched({ steps: [{ expect: "user", sleep: 500, notLoggedIn: true }, { expect: "user", cumulativeUsage: usage }] });
+    await run(w.provider.startTurn({ runId: "r1", text: "one" }));
+    await run(w.provider.steer({ text: "x" }));
+    await waitFor(w, "turnFailed");
+    await quiet();
+    expect(dropped(w)).toEqual([{ harness: "claudeCode", count: 1 }]);
+    // In the run: before its end.
+    expect(w.events.findIndex((e) => e.type === "notice" && e.name === "steerDropped")).toBeLessThan(types(w).indexOf("turnFailed"));
+    expect(lines(w)).toEqual([["one"]]);
+  });
+
+  withFake("an interrupt drops the held steer with a notice", async () => {
+    const w = await openWatched(TOOL_THEN_WAIT({}), { interruptWaitMs: 5000 });
+    await run(w.provider.startTurn({ runId: "r1", text: "go" }));
+    await waitFor(w, "toolStarted");
+    await run(w.provider.steer({ text: "x" }));
+    await run(w.provider.interrupt());
+    await waitFor(w, "turnFailed");
+    await quiet();
+    expect(dropped(w)).toEqual([{ harness: "claudeCode", count: 1 }]);
+    expect(lines(w)).toEqual([["go"]]);
+    expect(w.kills).toEqual([]);
+  });
+
+  withFake("an interrupt crossing a successful result drops the held steer: the run ends there", async () => {
+    const w = await openWatched({ onInterrupt: "ignore", steps: [{ expect: "user", sleep: 700, cumulativeUsage: usage }, { expect: "user", cumulativeUsage: usage }] }, { interruptWaitMs: 5000 });
+    await run(w.provider.startTurn({ runId: "r1", text: "one" }));
+    await run(w.provider.steer({ text: "x" }));
+    await run(w.provider.interrupt());
+    await waitFor(w, "turnCompleted");
+    await quiet();
+    expect(dropped(w)).toEqual([{ harness: "claudeCode", count: 1 }]);
+    expect(lines(w)).toEqual([["one"]]);
+    expect(w.kills).toEqual([]);
+  });
+
+  withFake("each steer turn asks the budget gate; a refusal ends the run and drops the texts", async () => {
+    let calls = 0;
+    const refuse = { code: "BUDGET_EXCEEDED", message: "over", details: { kind: "money" } } as unknown as FinError;
+    const gate: CallGate = { beforeCall: () => (++calls === 2 ? { ok: false, error: refuse } : { ok: true }), release: () => undefined };
+    const w = await openWatched({ steps: [{ expect: "user", sleep: 400, cumulativeUsage: usage }, { expect: "user", cumulativeUsage: usage }] }, { gate });
+    await run(w.provider.startTurn({ runId: "r1", text: "one" }));
+    await run(w.provider.steer({ text: "x" }));
+    await waitFor(w, "turnFailed");
+    await quiet();
+    expect(calls).toBe(2);
+    expect(dropped(w)).toEqual([{ harness: "claudeCode", count: 1 }]);
+    expect(w.events.find((e) => e.type === "turnFailed")).toMatchObject({ error: { code: "BUDGET_EXCEEDED" } });
+    expect(types(w)).not.toContain("turnCompleted");
+    expect(lines(w)).toEqual([["one"]]);
+  });
+
+  withFake("an interrupt answer still naming queued lines is a notice", async () => {
+    const w = await openWatched(TOOL_THEN_WAIT({ interruptStillQueued: [{ uuid: "q1" }] }), { interruptWaitMs: 5000 });
+    await run(w.provider.startTurn({ runId: "r1", text: "go" }));
+    await waitFor(w, "toolStarted");
+    await run(w.provider.interrupt());
+    await waitFor(w, "turnFailed");
+    expect(w.events.filter((e) => e.type === "notice" && e.name === "stillQueued")).toEqual([{ type: "notice", name: "stillQueued", details: { harness: "claudeCode", count: 1 } }]);
+  });
+});
+
 describe("review of Task 7", () => {
   const TURN = { steps: [{ expect: "user", cumulativeUsage: { inputTokens: 1, outputTokens: 1 } }] };
 
@@ -589,7 +700,7 @@ describe("review of Task 7", () => {
       steps: [
         { expect: "user", cumulativeUsage: usage },
         { expect: "user", cumulativeUsage: usage },
-        { expect: "user", init: { model: "claude-sonnet-5-5" }, emit: [assistant([{ type: "text", text: "never" }])], cumulativeUsage: usage },
+        { expect: "user", init: { agents: ["claude", "Explore"] }, emit: [assistant([{ type: "text", text: "never" }])], cumulativeUsage: usage },
       ],
     });
     const completed = (n: number) => until(() => (w.events.filter((e) => e.type === "turnCompleted").length === n ? true : undefined));
@@ -602,8 +713,29 @@ describe("review of Task 7", () => {
     await run(w.provider.startTurn({ runId: "r3", text: "three" }));
     await waitFor(w, "exited");
     expect(w.events.slice(9).map((e) => e.type)).toEqual(["turnStarted", "turnFailed", "exited"]);
-    expect(w.events[10]).toMatchObject({ error: { code: "PROVIDER_VERSION", details: { missing: "isolation", item: "init:model" } } });
+    expect(w.events[10]).toMatchObject({ error: { code: "PROVIDER_VERSION", details: { missing: "isolation", item: "init:agents" } } });
     expect(JSON.stringify(w.events)).not.toContain("never");
+  });
+
+  withFake("init_every_turn_rechecked: a later init naming another model is a notice, not a refusal", async () => {
+    const usage = { inputTokens: 1, outputTokens: 1 };
+    const w = await openWatched({ steps: [{ expect: "user", cumulativeUsage: usage }, { expect: "user", init: { model: "claude-sonnet-5-5" }, cumulativeUsage: usage }] });
+    await run(w.provider.startTurn({ runId: "r1", text: "one" }));
+    await waitFor(w, "turnCompleted");
+    await run(w.provider.startTurn({ runId: "r2", text: "two" }));
+    await until(() => (w.events.filter((e) => e.type === "turnCompleted").length === 2 ? true : undefined));
+    expect(w.events.some((e) => e.type === "turnFailed")).toBe(false);
+    expect(w.events.filter((e) => e.type === "notice" && e.name === "modelChanged")).toEqual([
+      { type: "notice", name: "modelChanged", details: { harness: "claudeCode", from: expect.any(String), to: "claude-sonnet-5-5" } },
+    ]);
+  });
+
+  withFake("an initialize that never answers fails the open closed (no sign-in or account check could run)", async () => {
+    // The probe (cached per version) answered once; the instance's CLI then stays silent.
+    await (await openWatched({ steps: [] })).close();
+    const refused = await openWatched({ initializeSilent: true, steps: [{ expect: "user", cumulativeUsage: { inputTokens: 1, outputTokens: 1 } }] }, { mayFail: true, initializeTimeoutMs: 600 });
+    expect(refused.failure).toMatchObject({ code: "PROVIDER_PROTOCOL", details: { reason: "initializeTimeout" } });
+    expect(refused.spawns).toHaveLength(1);
   });
 
   withFake("can_use_tool is never answered on the adapter's own: it waits for the runtime's decision", async () => {

@@ -259,15 +259,7 @@ impl Runner {
                     json!({"requestId": rid, "subtype": sub, "request": v["request"]}),
                 );
                 match sub.as_str() {
-                    "initialize" => {
-                        // The SDK servers' handshake starts before the answer (Task 0).
-                        self.mcp_start();
-                        self.on_start();
-                        let body = self.initialize_body();
-                        self.emit(&json!({"type": "control_response", "response": {
-                            "subtype": "success", "request_id": rid, "response": body,
-                            "pending_permission_requests": [], "pending_user_dialog_requests": []}}));
-                    }
+                    "initialize" => self.answer_initialize(&rid),
                     "set_permission_mode" => {
                         if let Some(m) = v["request"]["mode"].as_str() {
                             self.mode = if m == "manual" { "default" } else { m }.into();
@@ -275,7 +267,9 @@ impl Runner {
                         self.respond(&rid, json!({}));
                     }
                     "interrupt" => {
-                        self.respond(&rid, json!({}));
+                        // Verified on 2.1.321 (7D Task 0, s1b): `{still_queued: []}`.
+                        let queued = self.script.interrupt_still_queued.clone();
+                        self.respond(&rid, json!({"still_queued": queued}));
                         return Some(self.interrupt(false).unwrap_or(Ev::Control(sub)));
                     }
                     _ => self.respond(&rid, json!({})),

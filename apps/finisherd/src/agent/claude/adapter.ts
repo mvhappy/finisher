@@ -69,6 +69,8 @@ export interface ClaudeDeps {
   readonly interruptWaitMs?: number;
   readonly sigintGraceMs?: number;
   readonly closeGraceMs?: number;
+  /** How long the `initialize` answer may take (default `INITIALIZE_TIMEOUT_MS`; tests). */
+  readonly initializeTimeoutMs?: number;
   /** `agents.claudeCode.enabled`, read at each open (default: `settings.json`); off refuses the open. */
   readonly enabled?: () => boolean;
   /** Where CLI requests go (default: `claudePermissions()`, through the runtime; tests). */
@@ -204,8 +206,16 @@ export function ClaudeCodeAdapter(deps: ClaudeDeps): ProviderAdapter {
         const refuse = (e: FinError) => Effect.andThen(Effect.promise(() => i.close()), Effect.fail(e));
         // The `initialize` answer: the account (Decision 19) and the models (Decision 11). A
         // process that ends first opens all the same (its lines say why), except a resume whose
-        // transcript the CLI cannot find (Decision 17, Task 0): that one is refused.
-        const body = yield* Effect.promise(() => Promise.race([i.initialized(), new Promise((r) => setTimeout(() => r(null), INITIALIZE_TIMEOUT_MS).unref())]));
+        // transcript the CLI cannot find (Decision 17, Task 0): that one is refused. A live
+        // process with no usable answer (none in time, an error) is refused: the sign-in and
+        // account checks need it (fail closed).
+        const late = Symbol("late");
+        const ms = deps.initializeTimeoutMs ?? INITIALIZE_TIMEOUT_MS;
+        const answered = yield* Effect.promise(() => Promise.race([i.initialized(), new Promise<typeof late>((r) => setTimeout(() => r(late), ms).unref())]));
+        if (answered === late || ((answered === null || typeof answered !== "object") && !i.exited())) {
+          return yield* refuse(finError("PROVIDER_PROTOCOL", "Claude Code gave no usable initialize answer, so its sign-in and account could not be checked", { harness: "claudeCode", reason: answered === late ? "initializeTimeout" : "initialize", ...(answered === late ? { timeoutMs: ms } : {}) }));
+        }
+        const body = answered;
         const early = i.early();
         if (body === null && resume && early !== null && early.subtype === "error_during_execution") {
           return yield* refuse(finError("PROVIDER_EXITED", "Claude Code has no transcript of this session to resume", { harness: "claudeCode", reason: "transcriptLost", detail: early.text }, "end this session and start a new one"));

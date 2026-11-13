@@ -17,7 +17,8 @@
 // - an ignored sign-in (`oauth`): decided from the instance's `initialize.account`
 //   (`signInIgnored`), never from `apiKeySource` (verified on 2.1.321, 7D Task 0: a claude.ai
 //   sign-in reports `apiKeySource: "none"`);
-// - every later init of the instance (the CLI sends one before every turn) equal to its first;
+// - every later init of the instance (the CLI sends one before every turn) repeating its first
+//   on the isolation keys (`INIT_ISOLATION_KEYS`);
 // - with the probe's settings canary, `output_style` shows it (a settings file that fails the
 //   CLI's validation is dropped whole and silently, Task 0).
 import type { FinError, ProviderEvent } from "@finisher/contracts";
@@ -184,15 +185,19 @@ export function checkInitialize(body: unknown, version: string): InitializeFacts
 
 // ---- the first-turn gate ----
 
+/** The init keys a later init must repeat: what isolates the instance (Decisions 6, 8). */
+export const INIT_ISOLATION_KEYS = ["tools", "mcp_servers", "plugins", "skills", "slash_commands", "agents", "permissionMode", "output_style", "memory_paths", "additional_directories"] as const;
+
 /**
- * A later init against the instance's first: null when every key the decoder keeps is the same
- * (2.1.321 repeats the first exactly within one process, 7D Task 0 s1a/s1b/s1d), else
- * `isolation` naming the first key that differs.
+ * A later init against the instance's first: null when every isolation key
+ * (`INIT_ISOLATION_KEYS`) is the same (2.1.321 repeats the first exactly within one process, 7D
+ * Task 0 s1a/s1b/s1d), else `isolation` naming the first key that differs. Other keys may change
+ * (`model`: a plan's automatic fallback; the session shows it as a notice).
  */
 export function initChanged(first: SystemInit, later: SystemInit): FinError | null {
   const a = first as unknown as Record<string, unknown>;
   const b = later as unknown as Record<string, unknown>;
-  for (const k of [...new Set([...Object.keys(a), ...Object.keys(b)])].sort()) {
+  for (const k of INIT_ISOLATION_KEYS) {
     if (JSON.stringify(a[k]) !== JSON.stringify(b[k])) return isolation(`init:${label(k)}`, later.claude_code_version);
   }
   return null;
@@ -228,8 +233,9 @@ const passes = (l: CliLine): boolean => (l.kind === "controlRequest" && l.reques
  * Review Focus 1), so nothing reaches the runtime from an instance that is not isolated. Then it
  * releases what it held in arrival order, the init last, and forwards everything. The CLI sends
  * an init before every turn (verified on 2.1.321, 7D Task 0): each one is checked, in any
- * state, and must equal the instance's first (`initChanged`: a tool set, server or mode that
- * changed mid-instance is `PROVIDER_VERSION {missing: "isolation", item: "init:<key>"}`); a
+ * state, and must repeat the instance's first on every isolation key (`initChanged`: a tool
+ * set, server or mode that changed mid-instance is `PROVIDER_VERSION {missing: "isolation",
+ * item: "init:<key>"}`; a model change is not, `session.ts` shows it); a
  * failing one refuses (the caller kills the instance and fails the turn). A later init is
  * forwarded alone: nothing is held once the gate is open. A `result` before any init releases that
  * `result` alone when it is an error (an unknown `--resume`), dropping what was held, and

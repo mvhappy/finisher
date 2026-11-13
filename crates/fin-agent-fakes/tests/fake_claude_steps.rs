@@ -246,7 +246,10 @@ fn fake_interrupt_knobs() {
     let dir = Dir::new("knobs");
     let mut f = Fake::start(&dir, None, &[], &[]);
     f.control("i-1", "interrupt");
-    assert_eq!(f.read()["response"]["request_id"], "i-1");
+    let answer = f.read();
+    assert_eq!(answer["response"]["request_id"], "i-1");
+    // Verified on 2.1.321 (7D Task 0, s1b).
+    assert_eq!(answer["response"]["response"], json!({"still_queued": []}));
     assert!(f.silent_for(300), "no result without a turn");
     assert!(f.finish().success());
 
@@ -415,4 +418,20 @@ fn fake_resume_totals_follow_how_the_last_process_ended() {
     f.read();
     assert!(!f.finish().success());
     assert!((total(&killed) - 0.02).abs() < 1e-9);
+}
+
+#[test]
+fn fake_initialize_silent_and_still_queued_knobs() {
+    let dir = Dir::new("silent");
+    let script = json!({"initializeSilent": true, "interruptStillQueued": [{"uuid": "q1"}]});
+    let mut f = Fake::start(&dir, Some(script), &[], &[]);
+    f.control("req-init", "initialize");
+    assert_eq!(f.read_any()["subtype"], "ui_invalidate");
+    assert!(f.silent_for(400), "no initialize answer");
+    f.control("i-1", "interrupt");
+    assert_eq!(
+        f.read()["response"]["response"]["still_queued"],
+        json!([{"uuid": "q1"}])
+    );
+    assert!(f.finish().success());
 }

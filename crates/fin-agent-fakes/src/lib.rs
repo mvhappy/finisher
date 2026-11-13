@@ -57,6 +57,9 @@
 //!   result, then exit 0; 130 for SIGINT). An interrupt with no turn open is answered and
 //!   writes no result.
 //! - `mcpTimeoutMs` (default 1000): how long the first turn waits for the SDK servers.
+//! - `initializeSilent`: `initialize` gets no answer (the SDK handshake still starts).
+//! - `interruptStillQueued`: the `still_queued` list of the `interrupt` answer (default `[]`,
+//!   as 2.1.321 answered).
 //! - `refuseFlagValues`: `{"<flag>": [values]}` this version does not know (exit 1), e.g.
 //!   `--permission-prompt-tool stdio` for a version that dropped it.
 //!
