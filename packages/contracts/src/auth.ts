@@ -3,6 +3,7 @@
 import { Schema } from "effect";
 import { AuditEntrySchema, AuditKindSchema } from "./audit.ts";
 import { EnvStateSchema, RouteSchema } from "./devices.ts";
+import { HookEvent, HookLayer } from "./hooks.ts";
 import { HUMAN_ONLY, SCOPES, type Scope, ScopeSchema } from "./scopes.ts";
 
 export const PrincipalKind = Schema.Literals(["anonymous", "local", "console", "device", "agent", "mcp", "plugin"]);
@@ -131,6 +132,14 @@ export const ServerStatusSuccess = Schema.Struct({
   journal: Schema.Struct({ enabled: Schema.Boolean }),
   auditFailures: Schema.Number,
   jobs: Schema.Struct({ caps: JobHostCapsSchema }),
+  /** 7F: hook runs per event since start, events dropped from the full observe queue, layers that cannot be read. */
+  hooks: Schema.optional(
+    Schema.Struct({
+      events: Schema.Record(HookEvent, Schema.Struct({ runs: Schema.Number, blocks: Schema.Number, timeouts: Schema.Number, failures: Schema.Number })),
+      dropped: Schema.Number,
+      unreadable: Schema.Array(HookLayer),
+    }),
+  ),
   warnings: Schema.Array(Schema.Record(Schema.String, Schema.Unknown)),
 });
 

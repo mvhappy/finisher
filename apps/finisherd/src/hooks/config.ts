@@ -404,6 +404,26 @@ export class HookConfig {
     return rows.map((r) => ({ layer: "plugin", source: r.plugin, id: r.handler, event: r.event, plugin: r.plugin }));
   }
 
+  /** The folder of a project (open, else indexed). */
+  dirOf(projectId: string): string | undefined {
+    return this.#d.dirOf(projectId);
+  }
+
+  /**
+   * What `hooks(projectId)` depends on, without touching a file (Decision 5's cost contract):
+   * the configuration files that apply (managed, user; local for a project; its hooks file only
+   * while trusted with a hash other than `none`), the trusted hash and the project's folder.
+   */
+  sources(projectId: string | undefined): { readonly paths: readonly string[]; readonly trusted?: string; readonly dir?: string } {
+    const data = this.#d.serverData;
+    const server = [join(data, MANAGED_SETTINGS), settingsPath(data)];
+    if (projectId === undefined) return { paths: server };
+    const trusted = this.#d.trustOf(projectId)?.hooksHash;
+    const dir = trusted === undefined || trusted === NO_FILE ? undefined : this.#d.dirOf(projectId);
+    const local = SAFE_ID.test(projectId) ? [join(data, "projects", projectId, LOCAL_HOOKS)] : [];
+    return { paths: [...server, ...(dir === undefined ? [] : [join(dir, HOOKS_FILE)]), ...local], ...(trusted === undefined ? {} : { trusted }), ...(dir === undefined ? {} : { dir }) };
+  }
+
   /** A project's hooks file and whether it applies. */
   project(projectId: string): ProjectHooks {
     return projectHooks(this.#d.dirOf(projectId), this.#d.trustOf(projectId));
@@ -414,10 +434,18 @@ export class HookConfig {
    * managed, user, project, local, plugin. The project file is read only while trusted.
    */
   hooks(projectId: string | undefined): readonly ConfiguredHook[] {
-    if (projectId === undefined) return [...this.#server(), ...this.#plugins()];
+    return this.resolve(projectId).hooks;
+  }
+
+  /**
+   * `hooks(projectId)`, and whether a trusted project file is `changed` (deleted, edited, or a
+   * script it binds edited): the engine keeps no index while it is (Decision 5).
+   */
+  resolve(projectId: string | undefined): { readonly hooks: readonly ConfiguredHook[]; readonly projectChanged: boolean } {
+    if (projectId === undefined) return { hooks: [...this.#server(), ...this.#plugins()], projectChanged: false };
     const trusted = this.#d.trustOf(projectId)?.hooksHash;
-    const project = trusted === undefined || trusted === NO_FILE ? [] : this.project(projectId).hooks;
-    return [...this.#server(), ...project, ...this.#local(projectId), ...this.#plugins()];
+    const project = trusted === undefined || trusted === NO_FILE ? undefined : this.project(projectId);
+    return { hooks: [...this.#server(), ...(project?.hooks ?? []), ...this.#local(projectId), ...this.#plugins()], projectChanged: project?.status === "changed" };
   }
 
   /**
