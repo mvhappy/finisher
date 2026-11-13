@@ -313,6 +313,23 @@ fn a_lease_lost_in_memory_right_before_a_delete_stops_it() {
 }
 
 #[test]
+fn a_run_stopped_after_some_deletes_reports_them() {
+    let e = env();
+    let a = manifest_past_grace(&e, 3);
+    let before = a.call(|s| s.compaction_status().last_run_ms);
+    let dir = e.dir.clone();
+    // The lease goes after the first delete: the fence before the second stops the run.
+    a.call(|s| s.on_compaction_delete_for_test(Box::new(move |_| take_over_lease_file(&dir))));
+    thread::sleep(Duration::from_millis(5));
+    let r = compacted(spawn_tick(&e, &a));
+    assert!(r.skipped.is_some() && r.finished.is_empty(), "{r:?}");
+    assert_eq!(r.deleted, 1, "{r:?}");
+    assert_eq!((originals(&e.dir), manifests(&e.dir)), (2, 1));
+    let after = a.call(|s| s.compaction_status().last_run_ms);
+    assert!(after > before, "the run did work: {before:?} → {after:?}");
+}
+
+#[test]
 fn a_panic_in_the_unlocked_compaction_io_unwinds_outside_the_lock() {
     let e = env();
     let a = manifest_past_grace(&e, 3);

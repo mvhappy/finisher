@@ -30,14 +30,16 @@ enum Checked {
 /// the verdicts are resolved with (the storage kind; this database's `Known`).
 type ToDelete = (View, Vec<String>, StorageKind, Known);
 
-/// Phase 2 for manifest `name` through `access`. `Step::Done(n)`: `n` files deleted and the
-/// manifest with them. `None`: `access` lost the store.
+/// Phase 2 for manifest `name` through `access`. `Step::Done`: the replaced files deleted and
+/// the manifest with them. `deleted` counts the files deleted, whatever the step ends with
+/// (one stopped or overtaken after some deletes did them). `None`: `access` lost the store.
 pub(super) fn run<A: StoreAccess>(
     access: &mut A,
     planned: &Planned,
     name: &ManifestName,
     m: &Manifest,
-) -> Result<Option<Step<u32>>, StoreError> {
+    deleted: &mut u32,
+) -> Result<Option<Step<()>>, StoreError> {
     let (vplan, dir) = with!(access, |s| -> Result<_, StoreError> {
         let dir = s.project_dir.join(".finisher").join("compaction");
         Ok((view::plan(s, &m.branch)?, dir))
@@ -74,7 +76,6 @@ pub(super) fn run<A: StoreAccess>(
     if let Some(why) = verdict_changes(kind, &v, &files, ours) {
         return Ok(Some(Step::Abandon(why)));
     }
-    let mut deleted = 0;
     for file in &files {
         planned.at(Point::CompactDelete);
         // The fence, right before every delete: the folder belongs to whoever holds the lease.
@@ -85,12 +86,12 @@ pub(super) fn run<A: StoreAccess>(
         match with!(access, |s| delete_now(
             s, planned, m.epoch, &v.seg_dir, &path, true
         ))? {
-            Ok(true) => deleted += 1,
+            Ok(true) => *deleted += 1,
             Ok(false) => {}
             Err(step) => return Ok(Some(step)),
         }
     }
-    if deleted > 0
+    if *deleted > 0
         && let Err(e) = fsio::sync_dir(&v.seg_dir)
     {
         return Ok(Some(Step::Wait(format!(
@@ -108,7 +109,7 @@ pub(super) fn run<A: StoreAccess>(
         return Ok(Some(step));
     }
     let _ = fsio::sync_dir(&dir);
-    Ok(Some(Step::Done(deleted)))
+    Ok(Some(Step::Done(())))
 }
 
 /// With the store: unless overtaken, `scanned` checked against the database now
@@ -119,7 +120,7 @@ fn check_now(
     m: &Manifest,
     scanned: Scanned,
     snap: Option<Result<Snapshot, String>>,
-) -> Result<Result<ToDelete, Step<u32>>, StoreError> {
+) -> Result<Result<ToDelete, Step<()>>, StoreError> {
     if !planned.fresh(store) {
         return Ok(Err(Step::Overtaken));
     }
@@ -149,7 +150,7 @@ fn delete_now(
     dir: &Path,
     path: &Path,
     replaced: bool,
-) -> Result<Result<bool, Step<u32>>, StoreError> {
+) -> Result<Result<bool, Step<()>>, StoreError> {
     if !planned.fresh(store) {
         return Ok(Err(Step::Overtaken));
     }

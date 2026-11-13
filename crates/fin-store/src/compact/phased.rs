@@ -125,20 +125,25 @@ pub(crate) fn run_with<A: StoreAccess>(
             return Ok(Some(report));
         }
     }
+    let mut stopped = false;
     for (name, m) in with!(access, |s| ready(s, now)) {
         if units == 0 {
             break;
         }
         units -= 1;
-        let Some(step) = finish::run(access, &planned, &name, &m)? else {
+        let mut deleted = 0;
+        let step = finish::run(access, &planned, &name, &m, &mut deleted)?;
+        report.deleted += deleted;
+        let Some(step) = step else {
             return Ok(None);
         };
         if with!(access, |s| phase2_done(s, &mut report, name, step, now))? {
-            return Ok(Some(report));
+            stopped = true;
+            break;
         }
     }
     for branch in with!(access, |s| db::branches(&s.conn))? {
-        if units == 0 {
+        if units == 0 || stopped {
             break;
         }
         if !with!(access, |s| branch_due(s, &branch, now, force)) {
@@ -152,6 +157,7 @@ pub(crate) fn run_with<A: StoreAccess>(
             break;
         }
     }
+    // Also after a stop: what was done before it counts.
     with!(access, |s| {
         let worked =
             !report.manifests.is_empty() || !report.finished.is_empty() || report.deleted > 0;
@@ -208,15 +214,14 @@ fn phase2_done(
     store: &mut Store,
     report: &mut CompactReport,
     name: ManifestName,
-    step: Step<u32>,
+    step: Step<()>,
     now: Instant,
 ) -> Result<bool, StoreError> {
     let label = name.to_string();
     match step {
-        Step::Done(n) => {
+        Step::Done(()) => {
             store.compact.seen.remove(&name);
             report.finished.push(label);
-            report.deleted += n;
         }
         Step::Gone => {
             store.compact.seen.remove(&name);
