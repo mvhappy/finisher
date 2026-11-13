@@ -55,9 +55,9 @@ impl Runner {
     }
 
     /// One model call's usage as the stream reports it (`--include-partial-messages`), then added
-    /// to the totals. TODO(7D Task 0 Step 1): the `stream_event` usage shape; modelled on the
-    /// Messages API stream: `message_start.message.usage` holds the input side (output 1 at most),
-    /// `message_delta.usage.output_tokens` the message's output so far.
+    /// to the totals. Verified 2.1.321, Task 0 (s1a): `message_start.message.usage` holds the input
+    /// side (output 1 at most); `message_delta.usage` repeats the input and cache fields and gives
+    /// `output_tokens` as the message's running total.
     pub(super) fn live_usage(&mut self, u: &Usage, model: Option<&str>) {
         let name = model.map_or_else(|| self.model(), str::to_string);
         let id = fresh_uuid();
@@ -69,8 +69,11 @@ impl Runner {
                 "cache_creation_input_tokens": u.cache_creation_input_tokens},
         }})));
         self.emit(&event(
-            json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"},
-            "usage": {"output_tokens": u.output_tokens}}),
+            json!({"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": null},
+            "usage": {"input_tokens": u.input_tokens,
+                "cache_creation_input_tokens": u.cache_creation_input_tokens,
+                "cache_read_input_tokens": u.cache_read_input_tokens,
+                "output_tokens": u.output_tokens, "output_tokens_details": {"thinking_tokens": 0}}}),
         ));
         self.emit(&event(json!({"type": "message_stop"})));
         self.add_usage(u, Some(&name));

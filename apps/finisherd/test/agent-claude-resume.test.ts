@@ -16,10 +16,10 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } fr
 import { sessionUuid } from "../src/agent/claude/adapter.ts";
 import { claudePermissions } from "../src/agent/claude/permissions.ts";
 import { decodeLine } from "../src/agent/claude/protocol.ts";
-import { interruptedNote, resumeState } from "../src/agent/claude/resume.ts";
+import { interruptedNote, resumeState, toldIds } from "../src/agent/claude/resume.ts";
 import * as fs from "node:fs";
 import type { KeyFs } from "../src/auth/keys.ts";
-import { forgetProcess, lastBaseline, lastEnd, PROVIDER_PID, recordProcess, sweepProviderProcesses } from "../src/agent/provider-pid.ts";
+import { aliveProcesses, forgetProcess, lastBaseline, lastEnd, noteResult, PROVIDER_PID, recordProcess, sweepProviderProcesses } from "../src/agent/provider-pid.ts";
 import { resolveFinPath } from "../src/agent/settings.ts";
 import { processStart } from "../src/sandbox/process-start.ts";
 import { type SandboxStatus, setSandboxStatusSource } from "../src/sandbox/status.ts";
@@ -257,7 +257,7 @@ describe("the provider.pid record and its sweep", () => {
       rmSync: fs.rmSync,
       chmodSync: fs.chmodSync,
     };
-    recordProcess(dir, "01I", process.pid, process.platform, io);
+    recordProcess(dir, "01I", process.pid, { io });
     expect(calls).toEqual(WIN ? ["write tmp", "fsync tmp", "rename"] : ["write tmp", "fsync tmp", "rename", "fsync dir"]);
     if (!WIN) expect(fs.statSync(join(dir, PROVIDER_PID)).mode & 0o777).toBe(0o600);
     const t = (costMicros: number) => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costMicros });
@@ -272,11 +272,42 @@ describe("the provider.pid record and its sweep", () => {
     forgetProcess(dir, process.pid, "killed", killed);
     expect(lastEnd(dir)).toBe("killed");
     expect(lastBaseline(dir)).toEqual(killed);
-    // An end nobody saw (the sweep) has none.
-    recordProcess(dir, "01K", 999_999_999);
+    // An end nobody saw (the sweep), with no `result` seen, has none.
+    recordProcess(dir, "01K", 999_999_999, { start: () => "linux:1" });
     sweepProviderProcesses(dir, { start: () => null });
     expect(lastEnd(dir)).toBe("unseen");
     expect(lastBaseline(dir)).toBeUndefined();
+  });
+
+  test("third review: no record without a start time outside Windows; a sweep that cannot kill keeps the record; the last result's baseline survives an unseen end", () => {
+    const dir = join(tmp, "t3");
+    mkdirSync(dir);
+    // S2: a live process whose start time cannot be read is never recorded (the adapter kills it).
+    expect(() => recordProcess(dir, "01A", process.pid, { platform: "linux", start: () => null })).toThrow(/start time/);
+    expect(existsSync(join(dir, PROVIDER_PID))).toBe(false);
+    recordProcess(dir, "01W", process.pid, { platform: "win32", start: () => null });
+    expect(JSON.parse(readFileSync(join(dir, PROVIDER_PID), "utf8")).processes).toEqual([{ instance: "01W", pid: process.pid, start: null }]);
+    rmSync(join(dir, PROVIDER_PID));
+    // O1: a process still alive after the wait is not counted killed, and its record is kept.
+    const t = (costMicros: number) => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costMicros });
+    recordProcess(dir, "01B", 4242, { start: () => "linux:7" });
+    expect(sweepProviderProcesses(dir, { start: () => "linux:7", kill: () => {}, waitMs: 30 })).toEqual({ killed: [], left: [4242] });
+    expect(aliveProcesses(dir, () => "linux:7")).toEqual([4242]);
+    expect(lastEnd(dir)).toBeUndefined();
+    // O2: the baseline at its last result is the unseen end's.
+    const b = { cli: t(30_000), offset: t(0), charged: t(0) };
+    noteResult(dir, 4242, b);
+    expect(sweepProviderProcesses(dir, { start: () => null })).toEqual({ killed: [], left: [4242] });
+    expect(lastEnd(dir)).toBe("unseen");
+    expect(lastBaseline(dir)).toEqual(b);
+    expect(aliveProcesses(dir)).toEqual([]);
+  });
+
+  test("third review: the note lists every interrupted call", () => {
+    const calls = Array.from({ length: 40 }, (_, i) => ({ providerId: `toolu_${i}`, tool: "Bash", code: "SESSION_INTERRUPTED", reason: null }));
+    const note = interruptedNote(calls)!;
+    for (const c of calls) expect(note).toContain(`- ${c.providerId} (Bash)`);
+    expect(toldIds(calls)).toHaveLength(40);
   });
 
   test("the interrupt mid-tool's result line decodes (verified 2.1.321, Task 0: `result: null`)", () => {

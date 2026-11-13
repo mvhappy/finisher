@@ -8,8 +8,10 @@
 // commits unwatched. So crash recovery (`AgentStore.recoverAfterCrash`) sweeps each session it
 // interrupts before anything resumes it: a recorded process still alive **with the recorded start
 // time** has its group killed (a recycled pid, another start time, is left alone), and a resume
-// never runs two processes on one transcript. Synchronous: recovery runs at start, before the
-// transports listen.
+// never runs two processes on one transcript: one still alive after `SWEEP_WAIT_MS` keeps its
+// record and the adapter refuses to start another beside it (`aliveProcesses`). Outside Windows
+// a process whose start time cannot be read is never recorded (the adapter kills it). Synchronous:
+// recovery runs at start, before the transports listen.
 //
 // The record also keeps how the session's last process ended (`last`): `clean` (it exited by
 // itself, e.g. at stdin's end), `killed` (a signal, or the sweep), `unseen` (it was gone by the
@@ -18,13 +20,15 @@
 // left by a SIGKILLed host in direct mode ran its allowed tool, finished the turn into its
 // transcript and exited about 14 s later (s5C), so `unseen` means a tail the runtime never saw.
 //
-// An end a server saw also keeps the CLI's own accounting baseline (`baseline`, Task 10 review):
-// what the process's cumulative totals were at its last `result`, the offset it counted from,
-// and the session's charged usage when it started. `--resume` after a clean end restores that
-// process's totals (not the session's lifetime spend: a killed process before it restarted
-// them), so the next process checks what it restored against it (`claude/usage.ts`
-// `restoredOffset`); after a kill the CLI restarts its totals and the check finds nothing
-// restored. An end nobody saw has none: what the next process restores is charged in full.
+// The record also keeps the CLI's own accounting baseline (`baseline`, Task 10 review): what the
+// process's cumulative totals were at its last `result` a server saw (written at each `result`,
+// `noteResult`, and at its end), the offset it counted from, and the session's charged usage
+// when it started. `--resume` after a clean end restores that process's totals (not the
+// session's lifetime spend: a killed process before it restarted them), so the next process
+// checks what it restored against it (`claude/usage.ts` `restoredOffset`): only what lies beyond
+// (an unseen tail) is charged again; after a kill the CLI restarts its totals and the check finds
+// nothing restored. A process that never reached a `result` leaves none: all a resume restores
+// is charged.
 //
 // Every write is durable (`writePrivateFile`: temp file, fsync, rename, directory fsync), and a
 // process is recorded before its instance takes any work (the adapter kills it otherwise).
@@ -44,6 +48,8 @@ export interface ProviderProcess {
   readonly pid: number;
   /** `processStart(pid)` when it started; null where the OS gives none (Windows). */
   readonly start: string | null;
+  /** The CLI's accounting at the process's last `result` a server saw (`noteResult`). */
+  readonly baseline?: CliBaseline;
 }
 
 /** How the session's last process ended (module docs). */
@@ -92,7 +98,7 @@ function readFile(sessionDir: string): { processes: ProviderProcess[] } & Ended 
     const f = JSON.parse(readFileSync(fileOf(sessionDir), "utf8")) as Partial<PidFile>;
     const processes = Array.isArray(f.processes) ? f.processes.filter((p) => typeof p?.pid === "number" && Number.isInteger(p.pid) && p.pid > 0) : [];
     if (typeof f.last !== "string" || !LAST.has(f.last)) return { processes };
-    return f.last !== "unseen" && isBaseline(f.baseline) ? { processes, last: f.last, baseline: f.baseline } : { processes, last: f.last };
+    return isBaseline(f.baseline) ? { processes, last: f.last, baseline: f.baseline } : { processes, last: f.last };
   } catch {
     return { processes: [] };
   }
@@ -105,12 +111,41 @@ function write(sessionDir: string, processes: readonly ProviderProcess[], ended:
   writePrivateFile(fileOf(sessionDir), JSON.stringify({ v: 1, processes, ...endOf(ended) } satisfies PidFile), process.platform, io);
 }
 
+export interface RecordOptions {
+  readonly platform?: NodeJS.Platform;
+  /** The record's file calls (tests inject failures). */
+  readonly io?: KeyFs;
+  /** `processStart` (tests inject a failure). */
+  readonly start?: (pid: number) => string | null;
+}
+
 /**
  * Records a process the session's instance started (its start time read now). It throws when
- * the record cannot be written: the caller kills the process before it takes any work.
+ * the record cannot be written, or (outside Windows) when the start time cannot be read: a
+ * record without one is never swept. The caller kills the process before it takes any work.
  */
-export function recordProcess(sessionDir: string, instance: string, pid: number, platform: NodeJS.Platform = process.platform, io?: KeyFs): void {
-  write(sessionDir, [...read(sessionDir).filter((p) => p.pid !== pid), { instance, pid, start: processStart(pid, platform) }], undefined, io);
+export function recordProcess(sessionDir: string, instance: string, pid: number, o: RecordOptions = {}): void {
+  const platform = o.platform ?? process.platform;
+  const start = (o.start ?? ((p: number) => processStart(p, platform)))(pid);
+  if (start === null && platform !== "win32") throw new Error(`the start time of process ${pid} could not be read`);
+  write(sessionDir, [...read(sessionDir).filter((p) => p.pid !== pid), { instance, pid, start }], undefined, o.io);
+}
+
+/**
+ * The CLI's accounting at a `result` of a running process (Task 10 review, O2): a sweep that
+ * finds the process gone or kills it keeps it as the end's baseline, so a resume charges only
+ * what the CLI restored beyond the last result a server saw (the unseen tail), not all of it.
+ */
+export function noteResult(sessionDir: string, pid: number, baseline: CliBaseline): void {
+  const all = read(sessionDir);
+  if (all.some((p) => p.pid === pid)) write(sessionDir, all.map((p) => (p.pid === pid ? { ...p, baseline } : p)));
+}
+
+/** The recorded processes still alive with their recorded start time (a resume must wait for them). */
+export function aliveProcesses(sessionDir: string, start: (pid: number) => string | null = (pid) => processStart(pid)): number[] {
+  return read(sessionDir)
+    .filter((p) => p.start !== null && start(p.pid) === p.start)
+    .map((p) => p.pid);
 }
 
 /**
@@ -128,6 +163,9 @@ export const lastEnd = (sessionDir: string): LastEnd | undefined => readFile(ses
 /** The CLI's accounting baseline of the session's last process, when a server saw it end. */
 export const lastBaseline = (sessionDir: string): CliBaseline | undefined => readFile(sessionDir).baseline;
 
+/** A record's own baseline when it is valid (a hand-edited file may hold anything). */
+const baselineOf = (p: ProviderProcess): CliBaseline | undefined => (isBaseline(p.baseline) ? p.baseline : undefined);
+
 export interface SweepDeps {
   readonly platform?: NodeJS.Platform;
   readonly start?: (pid: number) => string | null;
@@ -138,7 +176,10 @@ export interface SweepDeps {
 /** What one sweep did, by pid. */
 export interface Swept {
   readonly killed: readonly number[];
-  /** Recorded but not killed: gone already, another process now (start time), or no start time to check. */
+  /**
+   * Recorded but not killed: gone already, another process now (start time), no start time to
+   * check, or still alive after `SWEEP_WAIT_MS` (its record is kept: a resume waits for it).
+   */
   readonly left: readonly number[];
 }
 
@@ -155,10 +196,13 @@ export function sweepProviderProcesses(sessionDir: string, deps: SweepDeps = {})
   const kill = deps.kill ?? ((pid: number, signal: NodeJS.Signals) => process.kill(pid, signal));
   const killed: number[] = [];
   const left: number[] = [];
+  const alive: ProviderProcess[] = [];
+  let baseline: CliBaseline | undefined;
   const recorded = read(sessionDir);
   for (const p of recorded) {
     if (p.start === null || start(p.pid) !== p.start) {
       left.push(p.pid);
+      baseline = baselineOf(p) ?? baseline;
       continue;
     }
     // The group (the process is its leader: the sandbox starts each one detached), then the
@@ -172,11 +216,22 @@ export function sweepProviderProcesses(sessionDir: string, deps: SweepDeps = {})
     }
     const end = Date.now() + (deps.waitMs ?? SWEEP_WAIT_MS);
     while (start(p.pid) === p.start && Date.now() < end) sleep(10);
+    if (start(p.pid) === p.start) {
+      // Still there: not counted as killed, its record kept.
+      left.push(p.pid);
+      alive.push(p);
+      continue;
+    }
     killed.push(p.pid);
+    baseline = baselineOf(p) ?? baseline;
     if (platform !== "win32") removeSocket(`/tmp/cc-socks-${process.getuid?.() ?? 0}/${p.pid}.sock`);
   }
   // A recorded process already gone ended while no server watched it (its tail is unseen).
-  if (recorded.length > 0) write(sessionDir, [], { last: killed.length > 0 ? "killed" : "unseen" });
+  // Its baseline is the last `result` a server saw (none recorded: the restored part is charged).
+  if (recorded.length > alive.length) {
+    const last: LastEnd = killed.length > 0 ? "killed" : "unseen";
+    write(sessionDir, alive, baseline === undefined ? { last } : { last, baseline });
+  }
   return { killed, left };
 }
 

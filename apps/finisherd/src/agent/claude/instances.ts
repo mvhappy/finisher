@@ -170,8 +170,11 @@ export class ClaudeSession {
     this.#disarm();
     const i = this.#current;
     this.#current = null;
-    await this.#closing;
-    if (i !== null) await i.close();
+    const closed = await this.#closing;
+    const gone = i === null ? closed || this.#closed === null || this.#closed.exited() : await i.close();
+    // Still running after its wait: the next open refuses to start another beside it (the
+    // adapter's `aliveProcesses` check over `provider.pid`).
+    if (!gone) this.#o.log?.("claude process still running after its close", { instance: this.#o.instance });
     this.#end();
   }
 

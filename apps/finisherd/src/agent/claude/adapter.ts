@@ -22,7 +22,7 @@ import type { Detection, ProviderAdapter, ProviderRef, ProviderSession, SessionS
 import { parseClaudeInitialize } from "../catalogue/cli-models.ts";
 import type { Ids } from "../clock.ts";
 import { systemIds } from "../clock.ts";
-import { type CliBaseline, forgetProcess, lastBaseline, lastEnd, recordProcess } from "../provider-pid.ts";
+import { aliveProcesses, type CliBaseline, forgetProcess, lastBaseline, lastEnd, noteResult, recordProcess } from "../provider-pid.ts";
 import type { SandboxedChild, SessionSandbox, SessionSandboxDeps } from "../sandbox.ts";
 import { claudeCodeSettings } from "../settings.ts";
 import { CLAUDE_CAPABILITIES, type ClaudeDetection, detectClaude } from "./detect.ts";
@@ -70,6 +70,8 @@ export interface ClaudeDeps {
   readonly closeGraceMs?: number;
   /** The file calls `provider.pid`'s record of a starting process makes (tests inject failures). */
   readonly pidIo?: KeyFs;
+  /** `processStart` for `provider.pid` (tests inject a failure). */
+  readonly processStart?: (pid: number) => string | null;
   /** How long a killed process may take to be gone (default `CLOSE_EXIT_WAIT_MS`). */
   readonly exitWaitMs?: number;
   /** `agents.claudeCode.enabled`, read at each open (default: `settings.json`); off refuses the open. */
@@ -153,23 +155,45 @@ export function ClaudeCodeAdapter(deps: ClaudeDeps): ProviderAdapter {
         // `authMethod` of a plan sign-in; modelled by fake-claude as `claude.ai` (its default).
         const planSignIn = d.authMethod === "claude.ai" && deps.chargePlanMoney?.() !== true;
         const dir = sessionDir(s.id);
+        // Decision 17: never a second process beside one still alive on this transcript (a
+        // sweep that could not kill it, or a close whose process outlived its wait).
+        if (aliveProcesses(dir, deps.processStart).length > 0) {
+          return yield* Effect.fail(finError("PROVIDER_UNAVAILABLE", "an earlier Claude Code process of this session is still running", { harness: "claudeCode", reason: "previousProcessAlive" }, "try again in a moment"));
+        }
         const charged = baselineOf(s.usage);
         // Verified 2.1.321, Task 0 (s1d/s1e): `--resume` restores the CLI's totals after a clean
         // exit and restarts them after a kill. What a resumed process restored is checked against
         // the last process's own baseline (`provider.pid`), not the session's lifetime spend;
-        // beyond it, or with none (an end nobody saw), it is charged (`usage.ts`). The flag adds
-        // the restored money only after a clean end (exit 0, no signal), when the CLI counts it.
+        // beyond it, or with none, it is charged (`usage.ts`). The flag adds the restored money
+        // only after a clean end (`tracked`), when the CLI counts it.
         const offset = resume ? restoredOffset(lastBaseline(dir), charged) : ZERO_TOTALS;
         const totals: ResumeTotals = resume ? "restored" : "reset";
         const restoredCostMicros = resume && lastEnd(dir) === "clean" ? offset.costMicros : 0;
+        // O2: the baseline at each `result` (an unseen end then re-charges only the unseen tail).
+        let pid: number | null = null;
         const plan = yield* attempt(() =>
           launchPlan(s, { ...spec, providerRef: resume ? ref : null }, found, os, { binary, retentionDays: deps.retentionDays ?? 90, remainingMoneyMicros: deps.remaining?.(s.id).moneyMicros ?? null, planSignIn, restoredCostMicros }),
         );
-        const usage = new ClaudeUsage({ baseline: offset, resumed: resume, basis: planSignIn ? "subscription" : "reported", resumeTotals: totals });
+        const usage: ClaudeUsage = new ClaudeUsage({
+          baseline: offset,
+          resumed: resume,
+          basis: planSignIn ? "subscription" : "reported",
+          resumeTotals: totals,
+          onResult: (cli) => {
+            if (pid === null) return;
+            try {
+              noteResult(dir, pid, { cli, offset: usage.offset, charged });
+            } catch (e) {
+              // A stale baseline only over-charges a later resume.
+              log("claude result baseline not recorded", { pid, error: String(e).slice(0, 200) });
+            }
+          },
+        });
         yield* attempt(() => writeLaunchFiles(plan, os));
         const spawned = yield* box.spawn(plan.argv, { cwd: box.workspace, stdio: "pipe", env: plan.env, extraRead });
         // Decision 17: recorded before the instance takes any work, or killed and refused.
-        const child = yield* tracked(dir, instance, spawned, () => ({ cli: usage.cliTotals(), offset: usage.offset, charged }));
+        const child = yield* tracked(dir, instance, spawned, () => ({ cli: usage.cliTotals(), offset: usage.offset, charged }), () => usage.lastIsError());
+        pid = child.pid;
         const notices: ProviderEvent[] = plan.dropped.map((tool) => ({ type: "notice", name: "toolDropped", details: { harness: "claudeCode", tool } }));
         if (unseen && first) notices.push({ type: "notice", name: "unseenTail", details: { harness: "claudeCode", reason: "exitedWhileServerDown" } });
         first = false;
@@ -246,17 +270,24 @@ export function ClaudeCodeAdapter(deps: ClaudeDeps): ProviderAdapter {
 
   /**
    * Decision 17: the process is in `provider.pid` while it runs. A record that cannot be written
-   * refuses the process: its group is killed (and waited for) before the failure, so nothing
-   * runs that a crash recovery could not sweep. The child handed on settles `exited` only once
-   * the end is recorded (`clean` only for exit 0 with no signal: anything else may have
-   * restarted the CLI's totals), so a later process reads it fresh.
+   * (or, outside Windows, a start time that cannot be read) refuses the process: its group is
+   * killed (and waited for) before the failure, so nothing runs that a crash recovery could not
+   * sweep; a process already gone by then (an unknown `--resume` exits at once) needs no record.
+   * The child handed on settles `exited` only once the end is recorded, so a later process reads
+   * it fresh. The end is `clean` when the CLI exited by itself with no signal: exit 0, or exit 1
+   * after an error `result` (Task 0 s1b, s1f: stdin's end then exits 1). TODO(7D Task 0 Step 1):
+   * whether the real CLI writes its `cost-state` (restores its totals) on that exit 1; modelled by
+   * fake-claude so. Only the flag reads it: a resume's charges come from per-turn deltas, so a
+   * wrong `clean` loosens only the CLI's own backstop, never the runtime's budget stop.
    */
-  function tracked(dir: string, instance: string, child: SandboxedChild, baseline: () => CliBaseline): Effect.Effect<SandboxedChild, FinError> {
+  function tracked(dir: string, instance: string, child: SandboxedChild, baseline: () => CliBaseline, lastIsError: () => boolean): Effect.Effect<SandboxedChild, FinError> {
     const unrecorded = Effect.promise(async () => {
       try {
-        recordProcess(dir, instance, child.pid, process.platform, deps.pidIo);
+        recordProcess(dir, instance, child.pid, { ...(deps.pidIo === undefined ? {} : { io: deps.pidIo }), ...(deps.processStart === undefined ? {} : { start: deps.processStart }) });
         return null;
       } catch (e) {
+        // Gone already (its start time unreadable because it exited): nothing to sweep.
+        if (await Promise.race([child.exited.then(() => true), new Promise<boolean>((r) => setTimeout(() => r(false), GONE_WAIT_MS).unref())])) return null;
         child.kill("SIGKILL");
         await Promise.race([child.exited, new Promise((r) => setTimeout(r, deps.exitWaitMs ?? CLOSE_EXIT_WAIT_MS).unref())]);
         return String(e).slice(0, 200);
@@ -266,7 +297,8 @@ export function ClaudeCodeAdapter(deps: ClaudeDeps): ProviderAdapter {
       if (error !== null) return Effect.fail(finError("INTERNAL", "the Claude Code process could not be recorded for the orphan sweep", { harness: "claudeCode", reason: "processNotRecorded", error }));
       const exited = child.exited.then((e) => {
         try {
-          forgetProcess(dir, child.pid, e.code === 0 && (e.signal ?? null) === null ? "clean" : "killed", baseline());
+          const clean = (e.signal ?? null) === null && (e.code === 0 || (e.code === 1 && lastIsError()));
+          forgetProcess(dir, child.pid, clean ? "clean" : "killed", baseline());
         } catch (err) {
           // The directory is gone (the session was deleted), or the disk failed: the record stays
           // and the next recovery counts the process as unseen (fail closed).
@@ -278,6 +310,9 @@ export function ClaudeCodeAdapter(deps: ClaudeDeps): ProviderAdapter {
     });
   }
 }
+
+/** How long a process whose record failed may take to show it had exited already. */
+const GONE_WAIT_MS = 200;
 
 /** What a resumed CLI is told when its last process ended unwatched (`provider-pid.ts`). */
 const UNSEEN_NOTE =

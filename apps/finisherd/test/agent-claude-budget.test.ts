@@ -378,6 +378,21 @@ describe("through the runtime", () => {
     expect(flag(observed(r.serverData, s.id)[2]!.argv)).toBe("0.9");
   });
 
+  withFake("third review: a resume after an interrupt's exit 1 counts the restored money in the flag (no false budget stop)", async () => {
+    // $1 budget, a $0.60 turn interrupted: the CLI exits 1 at stdin's end after its error result
+    // and keeps its totals; the next turn of $0.05 must not meet a $0.40 flag.
+    const r = await claudeServer({ ...CONSOLE, steps: [{ expect: "user", hiddenUsage: { inputTokens: 10, outputTokens: 1, costUsd: 0.6 } }, { sleep: 60_000 }] });
+    const s = await start(r, { moneyMicros: 1_000_000 });
+    await until(() => (observed(r.serverData, s.id)[0]?.userLines?.length === 1 ? true : undefined));
+    await new Promise((res) => setTimeout(res, 200));
+    ok(await r.local.call("agent.session.interrupt", { sessionId: s.id }));
+    await until(() => (get(s.id).status === "interrupted" && ledger(s.id, "money").used === 600_000 ? true : undefined));
+    const done = await restart(r, s, { ...CONSOLE, steps: [{ expect: "user", cumulativeUsage: { inputTokens: 1, outputTokens: 1, costUsd: 0.05 } }] });
+    expect(flag(observed(r.serverData, s.id)[1]!.argv)).toBe("1");
+    expect(done.status).toBe("idle");
+    expect(ledger(s.id, "money").used).toBe(650_000);
+  });
+
   withFake("interrupted_turn_usage_charged: an interrupt's result is charged to the run it ended", async () => {
     const r = await claudeServer({ ...CONSOLE, steps: [{ expect: "user", hiddenUsage: { inputTokens: 500, outputTokens: 50, costUsd: 0.02 } }, { sleep: 60_000 }] });
     const s = await start(r);
@@ -405,6 +420,8 @@ describe("through the runtime", () => {
     expect(Date.now() - t0).toBeLessThan(15_000);
     expect(done).toMatchObject({ status: "interrupted", statusReason: "BUDGET_EXCEEDED" });
     expect(errors(nodes(s.id))).toEqual([expect.objectContaining({ code: "BUDGET_EXCEEDED" })]);
+    // The budget card opens once the instance's queue is drained (Task 9 review), possibly after the status settles.
+    await until(() => (server!.core.store.approvals(s.id).length > 0 ? true : undefined));
     expect(server!.core.store.approvals(s.id)).toMatchObject([{ kind: "budget", status: "open", subject: { kind: "tokens", limit: 1000 } }]);
     expect(observed(r.serverData, s.id)[0]!.controlRequests?.map((c) => c.subtype)).toEqual(["initialize", "interrupt"]);
     // The interrupt's result added nothing the stream had not shown: charged once.

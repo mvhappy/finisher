@@ -64,11 +64,8 @@ export function resumeState(nodes: readonly Node[]): ResumeState {
   return { known, interrupted: [...due.values()] };
 }
 
-/** At most this many calls are listed in one note (the rest stay due). */
-const NOTE_CALLS = 32;
-
-/** The calls `interruptedNote(calls)` tells of: its `interruptedDelivered` notice's ids. */
-export const toldIds = (calls: readonly InterruptedCall[]): string[] => calls.slice(0, NOTE_CALLS).map((c) => c.providerId);
+/** The calls `interruptedNote(calls)` tells of (all of them): its `interruptedDelivered` notice's ids. */
+export const toldIds = (calls: readonly InterruptedCall[]): string[] => calls.map((c) => c.providerId);
 
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}…` : s);
 
@@ -76,7 +73,6 @@ const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}…` : s
 export function interruptedNote(calls: readonly InterruptedCall[]): string | undefined {
   if (calls.length === 0) return undefined;
   const list = calls
-    .slice(0, NOTE_CALLS)
     .map((c) => `- ${clip(c.providerId, 64)} (${clip(c.tool, 64)}): ${c.code}${c.reason === null ? "" : ` (${clip(c.reason, 64)})`}`)
     .join("\n");
   return [

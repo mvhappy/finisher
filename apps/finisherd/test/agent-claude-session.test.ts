@@ -17,6 +17,7 @@ import { accountCheck, accountKey, ClaudeAccounts } from "../src/agent/claude/ac
 import { CLAUDE_FLOOR } from "../src/agent/claude/detect.ts";
 import { ClaudeModelCache } from "../src/agent/claude/models.ts";
 import { readProbeCache } from "../src/agent/claude/probe.ts";
+import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import type { KeyFs } from "../src/auth/keys.ts";
 import { PROVIDER_PID } from "../src/agent/provider-pid.ts";
@@ -371,6 +372,7 @@ interface WatchOptions {
   readonly closeGraceMs?: number;
   readonly exitWaitMs?: number;
   readonly pidIo?: KeyFs;
+  readonly processStart?: (pid: number) => string | null;
   /** The session's nodes (a resumed session's synthetic results). */
   readonly nodes?: readonly Node[];
   /** A user line's write reports an asynchronous failure (EPIPE) after its bytes were passed on. */
@@ -446,6 +448,7 @@ async function openWatched(script: Record<string, unknown>, opts: WatchOptions &
     ...(opts.closeGraceMs === undefined ? {} : { closeGraceMs: opts.closeGraceMs }),
     ...(opts.exitWaitMs === undefined ? {} : { exitWaitMs: opts.exitWaitMs }),
     ...(opts.pidIo === undefined ? {} : { pidIo: opts.pidIo }),
+    ...(opts.processStart === undefined ? {} : { processStart: opts.processStart }),
     ...(opts.nodes === undefined ? {} : { nodes: () => opts.nodes! }),
     enabled: () => opts.enabled ?? true,
     detect: () => Effect.succeed({ path: binary, version: VERSION, floor: CLAUDE_FLOOR, signedIn: opts.signedIn ?? true, ...(opts.accountHash === undefined ? {} : { accountHash: opts.accountHash }) }),
@@ -727,6 +730,45 @@ describe("review of Task 10", () => {
     expect(told(resumed)[0]).toMatchObject({ details: { toolUseIds: ["toolu_X"] } });
     const lines = observed(resumed.serverData, SESSION_ID).at(-1)!.userLines as { content: { text?: string }[] }[];
     expect(lines[0]!.content.map((b) => b.text ?? "").join("\n")).toContain("toolu_X (Bash): SESSION_INTERRUPTED");
+  });
+
+  withFake("third review: a process whose start time cannot be read is killed and the open fails", async () => {
+    const failed = await openWatched(TURN, { mayFail: true, processStart: () => null });
+    expect(failed.failure).toMatchObject({ code: "INTERNAL", details: { reason: "processNotRecorded" } });
+    expect(failed.spawns).toHaveLength(1);
+    expect(failed.spawns[0]!.exitedAt).toBeDefined();
+    expect(processStart(failed.spawns[0]!.pid)).toBeNull();
+  });
+
+  withFake("third review: no process starts beside a recorded one still alive; each result's baseline is recorded", async () => {
+    const sleeper = spawn("sleep", ["60"], { detached: true, stdio: "ignore" });
+    sleeper.unref();
+    try {
+      const refused = await openWatched(TURN, {
+        mayFail: true,
+        resume: true,
+        before: (serverData) => {
+          const dir = join(serverData, "agents", SESSION_ID);
+          mkdirSync(dir, { recursive: true });
+          writeFileSync(join(dir, PROVIDER_PID), JSON.stringify({ v: 1, processes: [{ instance: "01OLD", pid: sleeper.pid, start: processStart(sleeper.pid!) }] }));
+        },
+      });
+      expect(refused.failure).toMatchObject({ code: "PROVIDER_UNAVAILABLE", details: { reason: "previousProcessAlive" } });
+      expect(refused.spawns).toEqual([]);
+    } finally {
+      sleeper.kill("SIGKILL");
+    }
+    await until(() => (processStart(sleeper.pid!) === null ? true : undefined));
+    const w = await openWatched({ steps: [{ expect: "user", cumulativeUsage: { inputTokens: 3, outputTokens: 1, costUsd: 0.002 } }, { sleep: 60_000 }] });
+    await run(w.provider.startTurn({ runId: "r1", text: "go" }));
+    await waitFor(w, "turnCompleted");
+    const rec = JSON.parse(readFileSync(join(w.serverData, "agents", SESSION_ID, PROVIDER_PID), "utf8")) as { processes: { pid: number; baseline?: { cli: { costMicros: number; input: number } } }[] };
+    expect(rec.processes.find((p) => p.pid === w.spawns[0]!.pid)?.baseline?.cli).toMatchObject({ input: 3, costMicros: 2_000 });
+    try {
+      process.kill(-w.spawns[0]!.pid, "SIGKILL");
+    } catch {
+      // Gone.
+    }
   });
 
   withFake("the lazy resume starts only once the idle-closed process has exited", async () => {

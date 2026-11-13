@@ -579,6 +579,8 @@ fn fake_live_and_hidden_usage_reach_the_totals() {
     let delta = f.read();
     assert_eq!(delta["event"]["type"], "message_delta");
     assert_eq!(delta["event"]["usage"]["output_tokens"], 9);
+    // Verified 2.1.321, Task 0 (s1a): the delta repeats the input side.
+    assert_eq!(delta["event"]["usage"]["input_tokens"], 40);
     assert_eq!(f.read()["event"]["type"], "message_stop");
     let r = f.read();
     assert!(f.finish().success());

@@ -19,8 +19,14 @@
 //   accounting baseline, kept in `provider.pid` at each end a server saw (`restoredOffset`:
 //   never more than the totals that process reported, nor than its offset plus what the ledger
 //   charged since it started, `Session.usage`, durable with the ledger): whatever it restores
-//   beyond the offset is charged. An end nobody saw has no baseline: the restored part is charged
-//   in full (an orphan may have finished a turn into it, s5C). In doubt, over, never under.
+//   beyond the offset is charged. The baseline is the last `result` a server saw (written at each
+//   one), so after an end nobody saw only the tail beyond it is charged again (an orphan may have
+//   finished a turn into it, s5C); with no `result` seen, all it restores. In doubt, over, never
+//   under.
+// - **A SIGKILLed turn** (a crash, the sweep) never writes its `result`: its money is never
+//   reported (the CLI restarts its totals after the kill, s1d), so only the tokens the stream
+//   showed live are charged for it. `--max-budget-usd` and the runtime's live token stop are what
+//   bound such a turn.
 // - **The basis:** `subscription` for a plan sign-in (money shown, never charged; spec §13.1),
 //   else `reported` (the CLI's own estimate). `modelUsage` gives a per-model split, recorded as a
 //   `notice {modelUsage}` per `result`.
@@ -87,11 +93,10 @@ export function cumulativeTotals(r: ResultMsg, prev: UsageTotals, turn: UsageTot
 }
 
 /**
- * What `--resume` does with the CLI's totals. `reset` (this class's default) charges all a
- * resumed instance reports; `restored` counts from the session's charged usage. Verified 2.1.321,
- * Task 0 (s1d/s1e): restored after the last process's clean exit, restarted after a kill; the
- * adapter picks the mode from how the last process ended (`provider.pid`), and an end nobody saw
- * fails closed (`reset`: over-charged, never under-charged).
+ * How a resumed instance's first cumulative totals are read. `reset` (this class's default, and a
+ * fresh `--session-id`) counts them from zero; `restored` from `baseline`, the offset the
+ * adapter derives from the last process's own baseline (`restoredOffset`). Either way the turn
+ * itself is charged in full (`model_usage_since_last_result`), so a wrong mode only over-charges.
  */
 export type ResumeTotals = "restored" | "reset";
 
@@ -103,6 +108,8 @@ export interface ClaudeUsageOptions {
   /** `subscription`: a plan sign-in whose money is not charged (spec §13.1). */
   readonly basis?: "reported" | "subscription";
   readonly resumeTotals?: ResumeTotals;
+  /** After each `result`: the CLI's cumulative totals (`provider.pid`'s baseline, `noteResult`). */
+  readonly onResult?: (cli: UsageTotals) => void;
 }
 
 /** At most this many models in one split, each id at most 128 characters. */
@@ -134,6 +141,8 @@ export class ClaudeUsage implements UsageSource {
   #live: UsageTotals = ZERO_TOTALS;
   /** The CLI's cumulative totals at its last `result` (the offset before any). */
   #cli: UsageTotals;
+  #lastError = false;
+  readonly #onResult: ((cli: UsageTotals) => void) | undefined;
   /** The open message's usage as the stream reported it so far (a top-level message). */
   #message: UsageTotals = ZERO_TOTALS;
   /** The last `modelUsage` seen on this instance (the per-model split's baseline), or null. */
@@ -144,8 +153,9 @@ export class ClaudeUsage implements UsageSource {
     this.#resumed = o.resumed === true;
     this.#basis = o.basis ?? "reported";
     this.#mode = o.resumeTotals ?? "reset";
-    // A fresh transcript (`--session-id`) counts from zero; so does a resumed one whose totals
-    // are not known to be restored (fail closed: Review Focus 4).
+    this.#onResult = o.onResult;
+    // A fresh transcript (`--session-id`) counts from zero; a resumed one from its offset (zero
+    // when the last process left no baseline).
     const restored = this.#resumed && this.#mode === "restored" && !isZero(this.#baseline);
     this.#offset = restored ? this.#baseline : ZERO_TOTALS;
     this.#cli = this.#offset;
@@ -161,6 +171,11 @@ export class ClaudeUsage implements UsageSource {
   /** The CLI's cumulative totals at its last `result` (the offset before any): `provider.pid`'s baseline at a clean end. */
   cliTotals(): UsageTotals {
     return this.#cli;
+  }
+
+  /** Whether the last `result` was an error (the CLI then exits 1 at stdin's end, Task 0). */
+  lastIsError(): boolean {
+    return this.#lastError;
   }
 
   /** The basis this instance's events carry. */
@@ -208,6 +223,8 @@ export class ClaudeUsage implements UsageSource {
     const now = cumulativeTotals(r, this.#cli, turn);
     const step = max(turn ?? ZERO_TOTALS, over(now, this.#cli));
     this.#cli = now;
+    this.#lastError = r.is_error;
+    this.#onResult?.(now);
     const d = over(step, this.#live);
     this.#live = ZERO_TOTALS;
     const out: Event[] = [];
