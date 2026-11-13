@@ -4,7 +4,7 @@
 //! never acted on again, across restarts, until `fin project compact` checks it again).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use schemars::JsonSchema;
@@ -14,6 +14,7 @@ use serde::Serialize;
 use super::CompactFail;
 use super::grace;
 use super::manifest::{self, Manifest};
+use super::planned::Planned;
 use crate::names::ManifestName;
 use crate::{Store, StoreError, db, fsio};
 
@@ -164,17 +165,123 @@ fn present_files(dir: &Path) -> HashSet<String> {
         .collect()
 }
 
-/// Notes every manifest in `names` and forgets the rest. A manifest's grace period starts at
-/// the first run that finds all its packs and its snapshot present (on a sync folder the
-/// manifest may arrive first); one that names something no compaction may act on is
-/// abandoned at once; the database's abandoned list is pruned to the manifests still there.
+/// What noting the manifests needs from the store ([`ObservePlan::new`]); the folder reads
+/// ([`ObservePlan::read`]) run without it, and [`observe`] applies them with it.
+pub(super) struct ObservePlan {
+    dot: PathBuf,
+    /// The manifests read already, each with the branch whose packs and snapshot are still
+    /// to be seen present (`None`: nothing to look for).
+    known: HashMap<ManifestName, Option<String>>,
+}
+
+/// What [`ObservePlan::read`] found in the folder.
+pub(super) struct ObserveRead {
+    /// `compaction/`'s manifests, or why it cannot be listed.
+    names: Result<Vec<ManifestName>, String>,
+    /// The manifests not read before.
+    manifests: HashMap<ManifestName, manifest::Read>,
+    /// `(segments, snapshots)` present in the branches to look in.
+    present: HashMap<String, (HashSet<String>, HashSet<String>)>,
+}
+
+/// What [`observe`] did.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Observed {
+    Listed,
+    /// `compaction/` cannot be listed (`last_error` says why).
+    Unlisted,
+    /// Something changed what the reads are checked against: nothing noted.
+    Overtaken,
+}
+
+impl ObservePlan {
+    pub(super) fn new(store: &Store) -> ObservePlan {
+        let known = store
+            .compact
+            .seen
+            .iter()
+            .filter_map(|(n, s)| {
+                let m = s.manifest.as_ref()?;
+                let look = s.observed.is_none() && !matches!(s.state, State::Abandoned(_));
+                Some((n.clone(), look.then(|| m.branch.clone())))
+            })
+            .collect();
+        ObservePlan {
+            dot: store.project_dir.join(".finisher"),
+            known,
+        }
+    }
+
+    /// Lists `compaction/`, reads the manifests not read before and lists the directories
+    /// of those whose packs and snapshot are still to be seen (folder I/O, without the store).
+    pub(super) fn read(self) -> ObserveRead {
+        let dir = self.dot.join("compaction");
+        let names = match manifest::list(&dir) {
+            Ok(n) => n,
+            Err(e) => {
+                return ObserveRead {
+                    names: Err(format!("cannot list {}: {e}", dir.display())),
+                    manifests: HashMap::new(),
+                    present: HashMap::new(),
+                };
+            }
+        };
+        let mut manifests = HashMap::new();
+        let mut branches = HashSet::new();
+        for name in &names {
+            match self.known.get(name) {
+                Some(look) => branches.extend(look.clone()),
+                None => {
+                    let r = manifest::read(&dir.join(name.to_string()));
+                    // Never a directory outside `segments/` (an invalid branch is abandoned).
+                    if let manifest::Read::Ok(m) = &r
+                        && crate::scan::valid_branch(&m.branch)
+                    {
+                        branches.insert(m.branch.clone());
+                    }
+                    manifests.insert(name.clone(), r);
+                }
+            }
+        }
+        let present = branches
+            .into_iter()
+            .map(|b| {
+                let segs = present_files(&self.dot.join("segments").join(&b));
+                let snaps = present_files(&self.dot.join("snapshots").join(&b));
+                (b, (segs, snaps))
+            })
+            .collect();
+        ObserveRead {
+            names: Ok(names),
+            manifests,
+            present,
+        }
+    }
+}
+
+/// Notes every manifest `read` listed and forgets the rest (with the store, unless
+/// `planned` was overtaken). A manifest's grace period starts at the first run that finds all
+/// its packs and its snapshot present (on a sync folder the manifest may arrive first); one
+/// that names something no compaction may act on is abandoned at once; the database's
+/// abandoned list is pruned to the manifests still there. A manifest the read did not read
+/// (it was known when the run started) is noted by the next run.
 pub(super) fn observe(
     store: &mut Store,
-    dir: &Path,
-    names: &[ManifestName],
+    planned: &Planned,
+    mut read: ObserveRead,
     now: Instant,
     now_ms: i64,
-) -> Result<(), StoreError> {
+) -> Result<Observed, StoreError> {
+    if !planned.fresh(store) {
+        return Ok(Observed::Overtaken);
+    }
+    let names = match read.names {
+        Ok(n) => n,
+        Err(why) => {
+            store.compact.last_error = Some(why);
+            return Ok(Observed::Unlisted);
+        }
+    };
     let mut gone = abandoned(store)?;
     let before = gone.len();
     gone.retain(|n, _| names.iter().any(|m| m.to_string() == *n));
@@ -182,7 +289,7 @@ pub(super) fn observe(
         set_abandoned(store, &gone)?;
     }
     store.compact.seen.retain(|n, _| names.contains(n));
-    for name in names {
+    for name in &names {
         let label = name.to_string();
         if store
             .compact
@@ -190,7 +297,10 @@ pub(super) fn observe(
             .get(name)
             .is_none_or(|s| s.manifest.is_none())
         {
-            let (manifest, state) = match manifest::read(&dir.join(&label)) {
+            let Some(r) = read.manifests.remove(name) else {
+                continue;
+            };
+            let (manifest, state) = match r {
                 manifest::Read::Ok(m) => {
                     let state = match (gone.get(&label), m.invalid(&store.project_id)) {
                         (Some(why), _) => State::Abandoned(why.clone()),
@@ -224,12 +334,11 @@ pub(super) fn observe(
         if matches!(s.state, State::Abandoned(_)) {
             continue;
         }
-        let dot = store.project_dir.join(".finisher");
-        let segs = present_files(&dot.join("segments").join(&m.branch));
+        let Some((segs, snaps)) = read.present.get(&m.branch) else {
+            continue;
+        };
         let complete = m.packs.iter().all(|p| segs.contains(p))
-            && m.snapshot
-                .as_ref()
-                .is_none_or(|n| present_files(&dot.join("snapshots").join(&m.branch)).contains(n));
+            && m.snapshot.as_ref().is_none_or(|n| snaps.contains(n));
         if complete {
             let g = grace_of(store, Some(m));
             let s = store.compact.seen.get_mut(name).expect("inserted above");
@@ -238,7 +347,7 @@ pub(super) fn observe(
                 Some(now_ms.saturating_add(i64::try_from(g.as_millis()).unwrap_or(i64::MAX)));
         }
     }
-    Ok(())
+    Ok(Observed::Listed)
 }
 
 impl CompactState {

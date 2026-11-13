@@ -1,5 +1,6 @@
-//! Phase 1 (module docs of `compact`): plan the packs of one branch, then write the snapshot,
-//! the packs and the manifest, each fenced, written once and read back.
+//! Phase 1 (module docs of `compact`): plan the packs of one branch (with the store), then
+//! write the snapshot, the packs and the manifest (without it), each fenced, written once and
+//! read back; each pack's `segments` row is recorded with the store.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -7,14 +8,15 @@ use std::path::{Path, PathBuf};
 use rusqlite::params;
 
 use super::manifest::{self, Manifest};
+use super::planned::{Planned, Point};
 use super::view::{self, View, seg_name};
-use super::{Fence, Step, fence, fsio_write, hit};
+use super::{Fence, Step, fsio_write, hit};
 use crate::chain::SegRef;
 use crate::db::to_i64;
 use crate::names::{ManifestName, SegmentName, SnapName, hash12};
 use crate::segment::{self, Header, Replaced};
 use crate::snapfile::{self, SnapHeader};
-use crate::{Store, StoreError};
+use crate::{Store, StoreAccess, StoreError};
 
 /// One pack to write.
 pub(super) struct PackPlan {
@@ -41,6 +43,11 @@ enum SnapPlan {
 pub(super) struct Plan {
     pub(super) packs: Vec<PackPlan>,
     snapshot: Option<(u64, SnapPlan)>,
+    /// `.finisher/`, and the manifest's `projectId`, `writerId` and `kind`.
+    dot: PathBuf,
+    project_id: String,
+    writer_id: String,
+    kind: String,
 }
 
 /// What may be packed: every non-pack segment wholly on the resolved chain and exported in
@@ -158,7 +165,14 @@ pub(super) fn plan(
         }
         None => None,
     };
-    Ok(Some(Plan { packs, snapshot }))
+    Ok(Some(Plan {
+        packs,
+        snapshot,
+        dot: store.project_dir.join(".finisher"),
+        project_id: store.project_id.clone(),
+        writer_id: store.server_id.clone(),
+        kind: store.storage_kind().to_string(),
+    }))
 }
 
 /// The pack of `primaries` (consecutive), replacing them and every other eligible segment
@@ -299,22 +313,22 @@ fn snapshot_plan(
         }))
 }
 
-/// Whether the snapshot at `path` verifies and holds the database's state at its seq.
+/// Reads and decodes the snapshot at `path` (folder I/O, without the store).
+pub(super) fn read_snapshot(path: &Path) -> Result<snapfile::Snapshot, String> {
+    let bytes = crate::reserved::no_links(path.parent().unwrap_or(path))
+        .and_then(|()| crate::fsio::read_uncached(path))
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    snapfile::decode(&bytes).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Whether `snap` (read from `path`, [`read_snapshot`]) holds the database's state at its
+/// seq (with the store).
 pub(super) fn snapshot_matches(
     store: &Store,
     branch: &str,
     path: &Path,
+    snap: &snapfile::Snapshot,
 ) -> Result<Result<(), String>, StoreError> {
-    let read = crate::reserved::no_links(path.parent().unwrap_or(path))
-        .and_then(|()| crate::fsio::read_uncached(path));
-    let bytes = match read {
-        Ok(b) => b,
-        Err(e) => return Ok(Err(format!("{}: {e}", path.display()))),
-    };
-    let snap = match snapfile::decode(&bytes) {
-        Ok(s) => s,
-        Err(e) => return Ok(Err(format!("{}: {e}", path.display()))),
-    };
     let ours = view::state_at(store, branch, snap.header.seq)?;
     let theirs = serde_json::from_slice(&snap.body)
         .ok()
@@ -330,85 +344,120 @@ pub(super) fn snapshot_matches(
     Ok(Ok(()))
 }
 
-/// Writes `plan`: snapshot, packs (each recorded in `segments` once read back), manifest.
-pub(super) fn write(
+/// Records pack `p` in `segments` (state `imported`: a pack carries other writers' records),
+/// with the store, unless the run was overtaken.
+fn record(
     store: &mut Store,
+    planned: &Planned,
+    branch: &str,
+    p: &PackPlan,
+) -> Result<Result<(), Step<(ManifestName, Manifest)>>, StoreError> {
+    if !planned.fresh(store) {
+        return Ok(Err(Step::Overtaken));
+    }
+    let h = &p.header;
+    store.conn.execute(
+        "INSERT INTO segments (branch, hash, name, epoch, first_seq, last_seq, pack, replaces, state)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, 'imported') ON CONFLICT(hash) DO NOTHING",
+        params![
+            branch,
+            p.hash,
+            p.name,
+            to_i64(h.epoch)?,
+            to_i64(h.first_seq)?,
+            to_i64(h.last_seq)?,
+            serde_json::to_string(&h.replaces)?,
+        ],
+    )?;
+    hit(store, super::CompactFail::AfterPack)?;
+    Ok(Ok(()))
+}
+
+/// Writes `plan` through `access`: snapshot, packs (each recorded in `segments` once read
+/// back), manifest. The folder I/O and the fences run without the store; a step overtaken
+/// before the manifest writes no manifest (the packs are duplicates readers skip). `None`:
+/// `access` lost the store.
+pub(super) fn write<A: StoreAccess>(
+    access: &mut A,
+    planned: &Planned,
     branch: &str,
     plan: Plan,
     now_ms: i64,
-) -> Result<Step<(ManifestName, Manifest)>, StoreError> {
-    let dot = store.project_dir.join(".finisher");
-    let mut lease_epoch = match fence(store, 0) {
+) -> Result<Option<Step<(ManifestName, Manifest)>>, StoreError> {
+    let dot = plan.dot.clone();
+    let mut lease_epoch = match planned.check(0) {
         Fence::Held(e) => e,
-        Fence::Lost(why) => return Ok(Step::Stopped(why)),
+        Fence::Lost(why) => return Ok(Some(Step::Stopped(why))),
     };
     let snapshot = match plan.snapshot {
         None => None,
         Some((_, SnapPlan::Existing { name, path })) => {
-            match snapshot_matches(store, branch, &path)? {
-                Ok(()) => Some(name),
-                Err(why) => return Ok(Step::Wait(why)),
+            let read = read_snapshot(&path);
+            let ok = with!(access, |s| -> Result<Result<(), Step<_>>, StoreError> {
+                if !planned.fresh(s) {
+                    return Ok(Err(Step::Overtaken));
+                }
+                Ok(match read {
+                    Ok(snap) => snapshot_matches(s, branch, &path, &snap)?.map_err(Step::Wait),
+                    Err(why) => Err(Step::Wait(why)),
+                })
+            })?;
+            if let Err(step) = ok {
+                return Ok(Some(step));
             }
+            Some(name)
         }
         Some((_, SnapPlan::New { name, bytes, hash })) => {
             let dir = dot.join("snapshots").join(branch);
             let check = |b: &[u8]| snapfile::decode(b).is_ok_and(|s| s.hash == hash);
             if let Err(why) = fsio_write(&dir, &name, &bytes, &check) {
-                return Ok(Step::Wait(why));
+                return Ok(Some(Step::Wait(why)));
             }
             Some(name)
         }
     };
-    hit(store, super::CompactFail::AfterSnapshot)?;
+    with!(access, |s| hit(s, super::CompactFail::AfterSnapshot))?;
     for p in &plan.packs {
-        lease_epoch = match fence(store, p.header.epoch) {
+        planned.at(Point::CompactWrite);
+        lease_epoch = match planned.check(p.header.epoch) {
             Fence::Held(e) => e,
-            Fence::Lost(why) => return Ok(Step::Stopped(why)),
+            Fence::Lost(why) => return Ok(Some(Step::Stopped(why))),
         };
         let dir = dot.join("segments").join(branch);
         let check = |b: &[u8]| segment::decode(b).is_ok_and(|s| s.hash == p.hash);
         if let Err(why) = fsio_write(&dir, &p.name, &p.bytes, &check) {
-            return Ok(Step::Wait(why));
+            return Ok(Some(Step::Wait(why)));
         }
-        let h = &p.header;
-        store.conn.execute(
-            "INSERT INTO segments (branch, hash, name, epoch, first_seq, last_seq, pack, replaces, state)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, 'imported') ON CONFLICT(hash) DO NOTHING",
-            params![
-                branch,
-                p.hash,
-                p.name,
-                to_i64(h.epoch)?,
-                to_i64(h.first_seq)?,
-                to_i64(h.last_seq)?,
-                serde_json::to_string(&h.replaces)?,
-            ],
-        )?;
-        hit(store, super::CompactFail::AfterPack)?;
+        if let Err(step) = with!(access, |s| record(s, planned, branch, p))? {
+            return Ok(Some(step));
+        }
     }
     let m = Manifest {
         magic: manifest::MAGIC.to_string(),
         format_version: manifest::FORMAT_VERSION,
         min_reader_version: manifest::FORMAT_VERSION,
-        project_id: store.project_id.clone(),
-        writer_id: store.server_id.clone(),
+        project_id: plan.project_id.clone(),
+        writer_id: plan.writer_id.clone(),
         epoch: lease_epoch,
         branch: branch.to_string(),
         replaced: plan.packs.iter().flat_map(|p| p.replaced.clone()).collect(),
         packs: plan.packs.iter().map(|p| p.name.clone()).collect(),
         snapshot,
         created_ms: now_ms,
-        kind: store.storage_kind().to_string(),
+        kind: plan.kind.clone(),
     };
-    if let Fence::Lost(why) = fence(store, 0) {
-        return Ok(Step::Stopped(why));
+    if !with!(access, |s| planned.fresh(s)) {
+        return Ok(Some(Step::Overtaken));
+    }
+    if let Fence::Lost(why) = planned.check(0) {
+        return Ok(Some(Step::Stopped(why)));
     }
     let name = ManifestName::new();
     let bytes = m.encode();
     let check = |b: &[u8]| b == bytes.as_slice();
     if let Err(why) = fsio_write(&dot.join("compaction"), &name.to_string(), &bytes, &check) {
-        return Ok(Step::Wait(why));
+        return Ok(Some(Step::Wait(why)));
     }
-    hit(store, super::CompactFail::AfterManifest)?;
-    Ok(Step::Done((name, m)))
+    with!(access, |s| hit(s, super::CompactFail::AfterManifest))?;
+    Ok(Some(Step::Done((name, m))))
 }

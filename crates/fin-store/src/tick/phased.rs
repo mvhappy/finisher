@@ -93,15 +93,22 @@ impl Store {
         run(access, now, opts)
     }
 
-    /// [`Store::run_due_compaction_step`] through `access`. `None` when it did not run to its
-    /// end: a tick of this store was running, or `access` lost the store.
+    /// [`Store::run_due_compaction_step`] through `access`, taking the store only around
+    /// database work and in-memory steps: the `compaction/` listing, the fresh reads, the
+    /// writes and the fences run without it, and every delete is checked with it against the
+    /// database as it is then (`crate::compact` module docs, "Locking"). Like a tick, one at a
+    /// time: `None` when a tick of this store was running, or `access` lost the store between
+    /// two steps (the step is due again at the next tick).
     pub fn run_due_compaction_step_phased<A: StoreAccess>(
         access: &mut A,
     ) -> Result<Option<crate::CompactReport>, StoreError> {
         let Some(Some(_guard)) = access.with(|s| TickGuard::take(&s.phase.ticking)) else {
             return Ok(None);
         };
-        access.with(Store::run_due_compaction_step).transpose()
+        if access.with(|s| s.due.compaction = false).is_none() {
+            return Ok(None);
+        }
+        crate::compact::run_with(access, crate::commit::now_ms(), false, 1)
     }
 
     /// Events of import passes (and rebuilds) not yet taken, then a `Status` event queued at
@@ -206,10 +213,10 @@ fn run<A: StoreAccess>(
         }
         access.with(|s| s.backup_step(opts));
         // Holder only, writable, caught up (`compact`); after the export and lease steps.
-        let Some(compact) = access.with(|s| s.compact_step(opts)) else {
+        let Some(compact) = compact_step(access, opts)? else {
             return Ok(None);
         };
-        out.compact = compact?;
+        out.compact = compact;
     }
     // Two steps: a caller that drains events in its `with` has them after the first.
     access.with(Store::queue_status_change);
@@ -218,6 +225,25 @@ fn run<A: StoreAccess>(
     };
     out.events = events;
     Ok(Some(out))
+}
+
+/// Step 6 of a poll: a compaction run (`TickOptions::compaction`), or noting it due; both
+/// through `access`, their folder I/O without the store (`crate::compact`, "Locking").
+fn compact_step<A: StoreAccess>(
+    access: &mut A,
+    opts: TickOptions,
+) -> Result<Option<crate::CompactReport>, StoreError> {
+    let now_ms = crate::commit::now_ms();
+    if opts.compaction {
+        return crate::compact::run_with(access, now_ms, false, usize::MAX);
+    }
+    let Some(due) = crate::compact::due_with(access, now_ms)? else {
+        return Ok(None);
+    };
+    if due && access.with(|s| s.due.compaction = true).is_none() {
+        return Ok(None);
+    }
+    Ok(Some(crate::CompactReport::default()))
 }
 
 impl Store {
@@ -273,17 +299,6 @@ impl Store {
         } else if self.backup_due(now_ms) {
             self.due.backup = true;
         }
-    }
-
-    fn compact_step(&mut self, opts: TickOptions) -> Result<crate::CompactReport, StoreError> {
-        let now_ms = crate::commit::now_ms();
-        if opts.compaction {
-            return crate::compact::run(self, now_ms, false);
-        }
-        if crate::compact::due(self)? {
-            self.due.compaction = true;
-        }
-        Ok(crate::CompactReport::default())
     }
 
     /// Queues [`crate::StoreEvent::Status`] if the status changed (lease ages ignored).
