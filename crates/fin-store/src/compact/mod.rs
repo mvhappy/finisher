@@ -262,17 +262,6 @@ pub(crate) fn run(
     now_ms: i64,
     force: bool,
 ) -> Result<CompactReport, StoreError> {
-    run_bounded(store, now_ms, force, usize::MAX)
-}
-
-/// [`run`], doing at most `units` steps (a manifest's phase 2 or a branch's phase 1); what
-/// is left stays due for the next run.
-pub(crate) fn run_bounded(
-    store: &mut Store,
-    now_ms: i64,
-    force: bool,
-    units: usize,
-) -> Result<CompactReport, StoreError> {
     // `Direct` always has the store: the run goes to its end.
-    Ok(run_with(&mut Direct(store), now_ms, force, units)?.unwrap_or_default())
+    Ok(run_with(&mut Direct(store), now_ms, force, usize::MAX)?.unwrap_or_default())
 }

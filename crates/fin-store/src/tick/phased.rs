@@ -93,12 +93,13 @@ impl Store {
         run(access, now, opts)
     }
 
-    /// [`Store::run_due_compaction_step`] through `access`, taking the store only around
-    /// database work and in-memory steps: the `compaction/` listing, the fresh reads, the
-    /// writes and the fences run without it, and every delete is checked with it against the
-    /// database as it is then (`crate::compact` module docs, "Locking"). Like a tick, one at a
-    /// time: `None` when a tick of this store was running, or `access` lost the store between
-    /// two steps (the step is due again at the next tick).
+    /// One step of the compaction a tick found due ([`Store::due_work`]): one manifest's
+    /// phase 2 or one branch's phase 1 (a later tick finds the rest due). Through `access`,
+    /// taking the store only around database work and in-memory steps: the `compaction/`
+    /// listing, the fresh reads, the writes and the fences run without it, and every delete is
+    /// checked with it against the database as it is then (`crate::compact` module docs,
+    /// "Locking"). Like a tick, one at a time: `None` when a tick of this store was running, or
+    /// `access` lost the store between two steps (the step is due again at the next tick).
     pub fn run_due_compaction_step_phased<A: StoreAccess>(
         access: &mut A,
     ) -> Result<Option<crate::CompactReport>, StoreError> {

@@ -204,7 +204,7 @@ impl LeaseCtl {
 /// The daily backup (`VACUUM INTO`) and compaction can take seconds (minutes on a slow share).
 /// A caller that must not hold the store that long inside its tick turns them off: the tick
 /// then only notes that they are due ([`Store::due_work`]) and the caller runs them when it
-/// can ([`Store::run_due_backup`], [`Store::run_due_compaction`]).
+/// can ([`Store::run_due_backup`], [`Store::run_due_compaction_step_phased`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TickOptions {
     pub backup: bool,
@@ -304,12 +304,6 @@ impl Store {
     pub fn run_due_backup(&mut self) {
         self.due.backup = false;
         self.daily_tick(crate::commit::now_ms());
-    }
-
-    /// Runs the compaction a tick found due.
-    pub fn run_due_compaction(&mut self) -> Result<crate::CompactReport, StoreError> {
-        self.due.compaction = false;
-        crate::compact::run(self, crate::commit::now_ms(), false)
     }
 
     /// Whether the daily backup of unix ms `now_ms` is still to take.

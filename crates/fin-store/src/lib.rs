@@ -249,7 +249,7 @@ pub struct Store {
     /// failed attempt (retried after [`tick::BACKUP_RETRY_MS`]).
     daily: tick::DailyState,
     /// Heavy work a tick found due but left to [`Store::run_due_backup`] /
-    /// [`Store::run_due_compaction`] ([`TickOptions`]).
+    /// [`Store::run_due_compaction_step_phased`] ([`TickOptions`]).
     due: tick::DueWork,
     /// The shared `db.lock` this store holds while it has the database open (`dblock`).
     db_lock: Option<std::fs::File>,

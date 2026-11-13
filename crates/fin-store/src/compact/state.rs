@@ -390,13 +390,6 @@ impl Store {
         super::run(self, crate::commit::now_ms(), force)
     }
 
-    /// One step of the compaction a tick found due ([`Store::due_work`]): one manifest's
-    /// phase 2 or one branch's phase 1. A later tick finds the rest due.
-    pub fn run_due_compaction_step(&mut self) -> Result<CompactReport, StoreError> {
-        self.due.compaction = false;
-        super::run_bounded(self, crate::commit::now_ms(), false, 1)
-    }
-
     /// Compaction as status shows it.
     pub fn compaction_status(&self) -> CompactionStatus {
         self.compact.status()
