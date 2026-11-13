@@ -55,13 +55,14 @@
 //   ignored ones included, and failures resolved to a block), `timeouts`, `failures`; `dropped`;
 //   `unreadable` layers.
 import { statSync } from "node:fs";
-import { type FinError, HOOK_CLASSES, HOOK_LIMITS, type HookEvent, type HookLayer, type Principal, type Session } from "@finisher/contracts";
+import { type FinError, HOOK_CLASSES, HOOK_LIMITS, type HookEvent, type HookLayer, type Session } from "@finisher/contracts";
 import type { HookRequest, HookSession } from "@finisher/core-types";
 import { Effect } from "effect";
 import { RACY_MS } from "../agent/file-cache.ts";
 import { globMatch } from "../agent/glob.ts";
 import type { AuditInput } from "../control/audit.ts";
 import { finError } from "../errors.ts";
+import type { Invoker } from "../plugins/host/rights.ts";
 import type { ConfiguredHook, HookConfig } from "./config.ts";
 import type { HookCredentialPort } from "./credential.ts";
 import { type HookFailure, type HookFailureKind, type HookProcessDeps, type HookRun, HookSlots, isCommandHook, isNotRun, runCommandHook } from "./process.ts";
@@ -70,8 +71,11 @@ import { type HookFailure, type HookFailureKind, type HookProcessDeps, type Hook
 export interface HookAt {
   readonly projectId: string;
   readonly session?: Session;
-  /** The caller (a block is audited as theirs; `principals` filters on its kind). */
-  readonly principal: Principal;
+  /**
+   * The caller (a block is audited as theirs; `principals` filters on its kind): a principal, or
+   * an invoker of no principal kind (`systemInvoker` for a system job's `JobDone`, Task 8).
+   */
+  readonly principal: Invoker;
   /** What a hook's `match` is tested against (Decision 6); none: hooks with a `match` do not run. */
   readonly names?: readonly string[];
 }

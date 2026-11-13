@@ -49,6 +49,10 @@ import { Runtime } from "./runtime.ts";
 import { cataloguePricing, type Pricing, type SessionEnvironment, type ToolExecutor } from "./runtime-deps.ts";
 import { HookConfig } from "../hooks/config.ts";
 import { buildHooks, type HookServeOptions, type HooksWiring } from "../hooks/wiring.ts";
+import { jobDoneHooks } from "../hooks/jobs.ts";
+import { reviewHooks } from "../hooks/review.ts";
+import type { JobEngine } from "../jobs/api.ts";
+import { liveInvokers } from "../plugins/host/rights.ts";
 import { LayeredRules } from "./rules.ts";
 import { RuleStore } from "./rule-store.ts";
 import type { AclBroker } from "../sandbox/broker.ts";
@@ -404,6 +408,10 @@ export interface AgentReviewsDeps {
   readonly journal: Journal;
   readonly core: AgentCore;
   readonly runtime: Runtime;
+  /** The hook engine (7F Task 8: `BranchReady`, `PreMerge`/`PostMerge` on the `auto` path, `JobDone`). */
+  readonly hooks: HooksWiring;
+  /** The job engine's bus, for `JobDone`. */
+  readonly jobs: Pick<JobEngine, "onDone">;
   /** Tests (7B Task 12): the trigger's availability, verdicts and observer. */
   readonly autoMerge?: AutoMergeTriggerOptions;
 }
@@ -411,11 +419,18 @@ export interface AgentReviewsDeps {
 /**
  * The reviews (5E), bound to the agent core's review link, and the `auto` merge policy's
  * trigger (7B Task 12) on its `branchReady`: unavailable until sub-project 10, so nothing merges.
+ * 7F Task 8: the `BranchReady` hooks on every `branchReady`, the trigger's `preMerge` point (a
+ * test's own still overrides it) and `PostMerge` after an auto merge (`hooks/review.ts`);
+ * `JobDone` on the job engine's `onDone` (`hooks/jobs.ts`).
  */
 export function startAgentReviews(d: AgentReviewsDeps): ReturnType<typeof startReviews> {
   const started = startReviews(d.control, { engine: registryEngine(d.projects), audit: d.audit, verdicts: journalReviewVerdicts(d.journal) });
   d.core.reviewLink.bind(reviewPort(started.reviews));
-  const autoMerge = { store: d.core.store, reviews: started.reviews, audit: d.audit, outcomes: d.core.outcomes, projects: registryProjects(d.projects), budgetSpent: d.runtime.budgetSpent.bind(d.runtime), ...d.autoMerge };
-  d.core.reviewLink.onBranchReady(autoMergeTrigger(autoMerge));
+  const hooks = reviewHooks({ engine: d.hooks.engine, sessions: d.core.store, ...(d.hooks.notices === undefined ? {} : { notices: d.hooks.notices }) });
+  d.core.reviewLink.onBranchReady(hooks.branchReady);
+  const autoMerge = { store: d.core.store, reviews: started.reviews, audit: d.audit, outcomes: d.core.outcomes, projects: registryProjects(d.projects), budgetSpent: d.runtime.budgetSpent.bind(d.runtime), preMerge: hooks.preMerge, ...d.autoMerge };
+  d.core.reviewLink.onBranchReady(hooks.afterMerge(autoMergeTrigger(autoMerge)));
+  const creds = d.core.credentials.base.credentials;
+  d.jobs.onDone(jobDoneHooks({ engine: d.hooks.engine, invoker: liveInvokers({ credential: (ref) => creds.lookup(ref)?.principal }) }));
   return started;
 }

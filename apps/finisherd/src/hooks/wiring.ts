@@ -1,16 +1,17 @@
 // The hooks as the server wires them (7F plan Task 4): one engine per server, built with the
 // agent runtime (`agent/wiring.ts`), which closes it on shutdown. The event sources of Tasks 6–8
 // add themselves here: the chain's policy rules and its after stage (Task 7), the session port
-// (Task 6), the review and job listeners (Task 8); the plugin layer's port (Task 10). The `fin`
-// hooks' credentials (Task 5): leftovers swept here at start, every one held ended at `close`,
-// after the engine (no run is under way then).
+// (Task 6); the plugin layer's port (Task 10). The review and job listeners (Task 8, `review.ts`,
+// `jobs.ts`) are subscribed by `startAgentReviews`, which holds the review link and the job
+// engine. The `fin` hooks' credentials (Task 5): leftovers swept here at start, every one held
+// ended at `close`, after the engine (no run is under way then).
 import { readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { ChainHooks } from "../chain/hooks.ts";
 import type { PolicyRule } from "../chain/policy.ts";
 import type { HookConfig } from "./config.ts";
 import { type HookCredentialDeps, HookCredentials } from "./credential.ts";
-import { type HookEngineDeps, type HookEngineImpl, makeHookEngine } from "./engine.ts";
+import { type HookEngineDeps, type HookEngineImpl, makeHookEngine, type SessionNotices } from "./engine.ts";
 import type { HookProcessDeps } from "./process.ts";
 
 /** `serve`'s hook options (tests): the process's sandbox status or launcher. */
@@ -24,6 +25,8 @@ export interface HooksWiring {
   readonly wrapAfter: (hooks: ChainHooks) => ChainHooks;
   /** `fin` hooks' credentials (absent without 5A's credentials: such a hook fails `unavailable`). */
   readonly credentials?: HookCredentials;
+  /** The engine's session port, for the review bridge's notices (Task 8, `review.ts`). */
+  readonly notices?: SessionNotices;
   close(): Promise<void>;
 }
 
@@ -58,5 +61,5 @@ export function buildHooks(d: BuildHooksDeps): HooksWiring {
     await engine.close();
     credentials?.close();
   };
-  return { engine, policies: [], wrapAfter: (hooks) => hooks, ...(credentials === undefined ? {} : { credentials }), close };
+  return { engine, policies: [], wrapAfter: (hooks) => hooks, ...(credentials === undefined ? {} : { credentials }), ...(d.notices === undefined ? {} : { notices: d.notices }), close };
 }

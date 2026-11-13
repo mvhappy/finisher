@@ -415,7 +415,7 @@ export const serve = ({
         },
       });
       onAgentRuntime?.(agentRuntime);
-      const started = startAgentReviews({ control: controlStore, projects, audit, journal: diagnostics.journal, core: agentCore, runtime: agentRuntime.runtime, ...(agentOptions?.autoMerge === undefined ? {} : { autoMerge: agentOptions.autoMerge }) });
+      const started = startAgentReviews({ control: controlStore, projects, audit, journal: diagnostics.journal, core: agentCore, runtime: agentRuntime.runtime, hooks: agentRuntime.hookWiring, jobs: engine, ...(agentOptions?.autoMerge === undefined ? {} : { autoMerge: agentOptions.autoMerge }) });
       onOpened = started.opened;
       // One font layer for the handlers and the plugins, which feed it the packs' catalogs.
       const fontsLayer = layerFonts(serverData, fonts);
