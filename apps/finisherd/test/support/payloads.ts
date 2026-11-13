@@ -130,6 +130,7 @@ export const SAMPLE_PAYLOADS: { readonly [T in FinRpcTag]: Record<string, unknow
   "agent.local.show": {},
   "agent.local.test": {},
   "agent.local.remove": {},
+  "agent.account.confirm": { harness: "claudeCode" },
   "training.closedTargets.get": {},
   "training.closedTargets.set": { state: "pendingCounsel" },
   "plugin.suggest": { id: "@acme/pack", reason: "captions in the house style", projectId: P },

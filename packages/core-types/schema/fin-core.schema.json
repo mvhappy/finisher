@@ -268,8 +268,12 @@
           "description": "`<projectDir>/workspace/shared`; written only outside `plan` mode.",
           "type": "string"
         },
+        "signInHome": {
+          "description": "Detection's host sandbox only (plan 7D Decision 19; Claude Code, `host-<ULID>`, `plan`,\nno `fin`, not Windows): `<serverData>/providers/claudeCode/home`, **read only** (`auth\nstatus` reads the account's profile there); the store inside it stays read-write.",
+          "type": "string"
+        },
         "signInStore": {
-          "description": "The harness's sign-in store file, inside `<serverData>/providers/<harness>/home/`\n(spec §8.6): read and written in place, never its directory.",
+          "description": "The harness's sign-in store, inside `<serverData>/providers/<harness>/home/` (spec\n§8.6): read and written in place (a file, or Claude Code's `store/` directory).",
           "type": "string"
         },
         "toolchains": {

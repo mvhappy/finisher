@@ -58,13 +58,25 @@ export class ClaudeModelCache {
 export const claudeModelOffered = (models: readonly CliModel[], model: string): boolean =>
   model !== "" && (models.length === 0 || model === "default" || models.some((m) => m.id === model || m.resolvedModel === model));
 
-/** What planning knows of Claude Code: `undefined` when it is not usable here, else its models or the version it is too old at. */
-export type ClaudeAccess = { readonly models: readonly CliModel[] } | { readonly tooOld: { readonly version?: string; readonly floor: string } } | undefined;
+/**
+ * What planning knows of Claude Code: `undefined` when it is not usable here, else its models, the
+ * version it is too old at, or an account change waiting for a person (`account.ts`).
+ */
+export type ClaudeAccess =
+  | { readonly models: readonly CliModel[] }
+  | { readonly tooOld: { readonly version?: string; readonly floor: string } }
+  | { readonly accountChanged: { readonly accountHash?: string } }
+  | undefined;
 
-/** Planning's view of `info`: absent unless detected and enabled; too old below the floor; else the models for its version and account. */
-export async function claudeAccess(info: Pick<ProviderInfo, "detected" | "enabled" | "supported" | "version" | "floor" | "accountHash">, cache: ClaudeModelCache): Promise<ClaudeAccess> {
+/**
+ * Planning's view of `info`: absent unless detected and enabled; too old below the floor; an
+ * unconfirmed account change (`PROVIDER_ACCOUNT_CHANGED` on the line) stops new sessions; else
+ * the models for its version and account.
+ */
+export async function claudeAccess(info: Pick<ProviderInfo, "detected" | "enabled" | "supported" | "version" | "floor" | "accountHash" | "problem">, cache: ClaudeModelCache): Promise<ClaudeAccess> {
   if (!claudeHarnessAvailable(info)) return undefined;
   if (info.supported === false) return { tooOld: { ...(info.version === undefined ? {} : { version: info.version }), floor: info.floor ?? "" } };
+  if (info.problem?.code === "PROVIDER_ACCOUNT_CHANGED") return { accountChanged: info.accountHash === undefined ? {} : { accountHash: info.accountHash } };
   return { models: info.version === undefined ? [] : await cache.models(info.version, info.accountHash) };
 }
 

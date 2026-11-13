@@ -21,6 +21,7 @@ test("generation_is_required, probe_requires_project_id (protocol 2)", () => {
 test("the group exposes exactly the protocol 2 RPC tags", () => {
   expect([...FinRpcs.requests.keys()].sort()).toEqual(
     [
+      "agent.account.confirm",
       "agent.approval.answer",
       "agent.approval.list",
       "agent.approval.wait",

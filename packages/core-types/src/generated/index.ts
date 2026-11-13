@@ -2739,8 +2739,14 @@ export interface AgentInput {
    */
   sharedDir?: string;
   /**
-   * The harness's sign-in store file, inside `<serverData>/providers/<harness>/home/`
-   * (spec §8.6): read and written in place, never its directory.
+   * Detection's host sandbox only (plan 7D Decision 19; Claude Code, `host-<ULID>`, `plan`,
+   * no `fin`, not Windows): `<serverData>/providers/claudeCode/home`, **read only** (`auth
+   * status` reads the account's profile there); the store inside it stays read-write.
+   */
+  signInHome?: string;
+  /**
+   * The harness's sign-in store, inside `<serverData>/providers/<harness>/home/` (spec
+   * §8.6): read and written in place (a file, or Claude Code's `store/` directory).
    */
   signInStore?: string;
   /**

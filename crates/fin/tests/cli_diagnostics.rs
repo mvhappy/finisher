@@ -298,10 +298,15 @@ fn agent_actor_from_fin_session_and_fin_call() {
         &[("FIN_SESSION", "sess-1"), ("FIN_CALL", "call-7")],
     );
     fake.wait_records(1);
+    // An agent's run also names its parse (`fin-args-hash`, plan 7D Task 12): the BLAKE3 of
+    // `describe`'s `{args, cmd, flags}`, the same on every request of the run.
+    let parse = br#"{"args":[],"cmd":"fonts.status","flags":{}}"#;
+    let hash = format!("blake3:{}", blake3::hash(parse).to_hex());
     let want = json!([
         ["fin-actor-kind", "agent"],
         ["fin-actor-session", "sess-1"],
-        ["fin-actor-call", "call-7"]
+        ["fin-actor-call", "call-7"],
+        ["fin-args-hash", hash]
     ]);
     for r in fake.requests() {
         assert_eq!(r["headers"], want, "{r}");
@@ -319,7 +324,11 @@ fn agent_actor_from_fin_session_and_fin_call() {
     for r in fake.requests() {
         assert_eq!(
             r["headers"],
-            json!([["fin-actor-kind", "agent"], ["fin-actor-session", "sess-1"]])
+            json!([
+                ["fin-actor-kind", "agent"],
+                ["fin-actor-session", "sess-1"],
+                ["fin-args-hash", hash]
+            ])
         );
     }
 }
@@ -458,10 +467,11 @@ fn runs_that_never_called_the_server_are_recorded_too() {
 #[test]
 fn an_agent_without_a_usable_session_is_still_an_agent() {
     let long = "x".repeat(300);
-    for (session, expect) in [
-        ("", json!([["fin-actor-kind", "agent"]])),
-        (long.as_str(), json!([["fin-actor-kind", "agent"]])),
-    ] {
+    // Still an agent's run: its parse is named too.
+    let parse = br#"{"args":[],"cmd":"fonts.status","flags":{}}"#;
+    let hash = format!("blake3:{}", blake3::hash(parse).to_hex());
+    let agent = json!([["fin-actor-kind", "agent"], ["fin-args-hash", hash]]);
+    for (session, expect) in [("", agent.clone()), (long.as_str(), agent)] {
         let fake = Fake::start(After::Serve);
         let sd = fake.discovery(Some(true));
         run(&fake, Some(&sd), &[("FIN_SESSION", session)]);

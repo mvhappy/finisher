@@ -186,7 +186,7 @@ describe("provider requests in the runtime", () => {
     // The request waits: no answer for req_3 yet.
     expect(adapter.log.answers.map((a) => [a.id, a.answer])).toEqual([
       ["req_1", { kind: "approval", allow: true }],
-      ["req_2", { kind: "approval", allow: false }],
+      ["req_2", { kind: "approval", allow: false, message: expect.stringMatching(/plan mode/) }],
     ]);
     expect(h.requests.waiting).toBe(1);
     await Effect.runPromise(h.approvals.answer(card.id, "allow", PERSON));
@@ -216,8 +216,8 @@ describe("provider requests in the runtime", () => {
     await h.runtime.sweep();
     await until(() => store.get(s.id)!.status === "idle", "idle");
     expect(adapter.log.answers.map((a) => [a.id, a.answer])).toEqual([
-      ["r1", { kind: "approval", allow: false }],
-      ["r2", { kind: "approval", allow: false }],
+      ["r1", { kind: "approval", allow: false, message: expect.any(String) }],
+      ["r2", { kind: "approval", allow: false, message: expect.any(String) }],
     ]);
     const settled = approvalNodes(s.id).filter((n) => n.requestId !== undefined);
     expect(settled).toEqual([
@@ -257,7 +257,7 @@ describe("provider card expiry", () => {
     expect(store.approval(second.id)!.status).toBe("expired");
     expect(adapter.log.answers.map((a) => [a.id, a.answer])).toEqual([
       ["r1", { kind: "approval", allow: true }],
-      ["r2", { kind: "approval", allow: false }],
+      ["r2", { kind: "approval", allow: false, message: expect.any(String) }],
     ]);
     expect(approvalNodes(s.id).filter((n) => n.requestId === "r2" && n.approvalId !== undefined)).toEqual([expect.objectContaining({ decision: "deny", by: "policy", reason: "expired" })]);
     expect(h.requests.waiting).toBe(0);

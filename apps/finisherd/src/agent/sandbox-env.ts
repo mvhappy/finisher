@@ -2,6 +2,7 @@
 // session's variables. `sessionEnv` builds it; `assertSessionEnv` is the contract a CLI
 // adapter (7D, 7E) checks its launch environment against, so a harness that sets its own
 // environment cannot drop `FIN_PROJECT_DIR` or pass a secret by accident.
+import { existsSync } from "node:fs";
 import { posix, win32 } from "node:path";
 import type { Harness, Session } from "@finisher/contracts";
 import { childEnv, NEVER_PASSED, secretName } from "../env.ts";
@@ -69,6 +70,25 @@ const EXTRA_VALUES: Readonly<Record<string, (v: string, env: Readonly<Record<str
   FIN_CALL: (v) => CALL_ID.test(v),
 };
 
+/**
+ * The shells a Claude Code session's `SHELL` may name (plan 7D Decision 5), in order of choice.
+ * Verified on 2.1.321 (7D Task 0, s3B): without `SHELL` the CLI's Bash tool starts the passwd
+ * login shell, which sources the user's rc files and hands their exports to every tool process.
+ */
+export const SESSION_SHELLS: ReadonlyArray<string> = ["/bin/bash", "/bin/sh"];
+
+/** The first of `SESSION_SHELLS` this host has (`/bin/sh` at worst). */
+export function sessionShell(exists: (p: string) => boolean = existsSync): string {
+  return SESSION_SHELLS.find((p) => exists(p)) ?? SESSION_SHELLS.at(-1)!;
+}
+
+/**
+ * The harnesses whose sessions get their own `HOME` (`tmp/home`, Windows `USERPROFILE` too) and,
+ * off Windows, an explicit `SHELL` (plan 7D Decision 5, Task 0 signed in): with the server's
+ * `HOME` Claude Code's Bash sourced the user's rc files and the CLI read `~/.claude/`.
+ */
+const OWN_HOME: ReadonlySet<Harness> = new Set(["claudeCode"]);
+
 /** The variable naming `harness`'s sign-in store directory, when its store is one (Claude Code). */
 export function storeEnvName(harness: Harness): string | undefined {
   const store = SIGN_IN_STORES[harness];
@@ -101,6 +121,7 @@ export function sessionKeys(harness: Harness, platform: NodeJS.Platform = proces
   const store = storeEnvName(harness);
   if (store !== undefined) keys.add(store);
   if (platform === "win32") for (const k of ["TEMP", "TMP", "LOCALAPPDATA"]) keys.add(k);
+  if (OWN_HOME.has(harness)) for (const k of platform === "win32" ? ["HOME", "USERPROFILE"] : ["HOME", "SHELL"]) keys.add(k);
   return keys;
 }
 
@@ -144,25 +165,28 @@ export interface HostEnvInput {
   readonly platform?: NodeJS.Platform;
 }
 
-/** A host sandbox's own `HOME` (Task 5 review): `tmp/home`, an empty directory the open makes. */
-export function hostHome(dirs: SessionDirs, platform: NodeJS.Platform = process.platform): string {
-  return (platform === "win32" ? win32 : posix).join(dirs.tmp, "home");
-}
-
 /**
  * A host sandbox's environment (plan 7D Task 3b): `childEnv()` and the directory's own `TMPDIR`,
  * provider directory, git settings and `GNUPGHOME`; no `FIN_*` connection, no project, no
- * credential; the sign-in store variable only with `store` (detection's). `HOME` (and Windows'
- * `USERPROFILE`) is the throwaway `hostHome`, never the server's: what a CLI reads under the
- * user's home (`$HOME/.config/anthropic/…`) cannot sign the probe in. Sessions keep the server's.
+ * credential; the sign-in store variable only with `store` (detection's), and with its
+ * `configDir` (detection's, off Windows: plan 7D Decision 19) the provider directory variable names
+ * the sign-in home instead of the throwaway `provider/`. `HOME` (and Windows'
+ * `USERPROFILE`) is the throwaway `SessionDirs.home`, never the server's: what a CLI reads under the
+ * user's home (`$HOME/.config/anthropic/…`) cannot sign the probe in. Sessions keep the server's,
+ * but for Claude Code's (`OWN_HOME`).
  */
 export function hostEnv(i: HostEnvInput): Record<string, string> {
   const platform = i.platform ?? process.platform;
   const env = childEnv({}, i.parent ?? process.env, platform);
   if (i.store?.env !== undefined) env[i.store.env.name] = i.store.env.value;
-  env.HOME = hostHome(i.dirs, platform);
+  // `tmp/home` (`SessionDirs.home`, made by `ensureSessionDirs`), the one spelling of it.
+  env.HOME = i.dirs.home;
   if (platform === "win32") env.USERPROFILE = env.HOME;
-  return ownDirs(env, i.harness, i.dirs, platform);
+  const own = ownDirs(env, i.harness, i.dirs, platform);
+  // Detection's (plan 7D Decision 19): the CLI's configuration directory is the sign-in home.
+  const provider = PROVIDER_DIR_ENV[i.harness];
+  if (i.store?.configDir !== undefined && provider !== undefined) own[provider] = i.store.configDir;
+  return own;
 }
 
 /** The directory-derived names of a session or host environment. */
@@ -183,6 +207,11 @@ function ownDirs(env: Record<string, string>, harness: Harness, dirs: SessionDir
     env[`GIT_CONFIG_VALUE_${n}`] = v;
   });
   env.GNUPGHOME = dirs.gnupg;
+  if (OWN_HOME.has(harness)) {
+    env.HOME = dirs.home;
+    if (platform === "win32") env.USERPROFILE = env.HOME;
+    else env.SHELL = sessionShell();
+  }
   return env;
 }
 
@@ -216,6 +245,12 @@ export interface AssertOptions {
    * has it, a host sandbox not (only detection's has it, plan 7D Decision 22; the probe never).
    */
   readonly store?: boolean;
+  /**
+   * A host sandbox whose provider directory variable is the harness's sign-in home
+   * (`providers/<harness>/home`, plan 7D Decision 19: detection's, with `store`), not its own
+   * `provider/`. Without it the variable must be the sandbox's own.
+   */
+  readonly signInHome?: boolean;
   readonly platform?: NodeJS.Platform;
 }
 
@@ -227,7 +262,8 @@ const isKey = (k: string) => /_API_KEY$/i.test(k);
  * Throws `SANDBOX_ENV` (a `FinError`) unless `env` is a session environment of `s` (§8.5):
  * every name `sessionEnv` sets is present; `FIN_SESSION` is the session's id; the credential,
  * `TMPDIR`, the provider directory, the git configuration and `GNUPGHOME` are the session's own
- * paths under `agents/<id>/` (absolute); the git settings are exactly `GIT_OVERRIDES` with
+ * paths under `agents/<id>/` (absolute), and for Claude Code `HOME` (Windows `USERPROFILE`) its
+ * `tmp/home` and `SHELL` one of `SESSION_SHELLS`; the git settings are exactly `GIT_OVERRIDES` with
  * `GIT_CONFIG_NOSYSTEM=1`; `FIN_PROJECT_DIR` is absolute; no name of `NEVER_IN_SESSION` and no
  * key (names in any case); nothing outside the allow-list, `LC_*`, the session's names,
  * `FIN_CALL` and `opts.extra`; `FIN_CALL` and the extra names with their fixed values
@@ -284,12 +320,20 @@ export function assertSessionEnv(env: Readonly<Record<string, string | undefined
   under("TMPDIR", "tmp");
   under("GIT_CONFIG_GLOBAL", "git", "config");
   under("GNUPGHOME", "tmp", "gnupg");
-  if (host) {
+  if (host || OWN_HOME.has(s.harness)) {
     under("HOME", "tmp", "home");
     if (platform === "win32") under("USERPROFILE", "tmp", "home");
   }
+  if (keys.has("SHELL") && !SESSION_SHELLS.includes(need("SHELL"))) fail("not a session shell", "SHELL");
   const provider = PROVIDER_DIR_ENV[s.harness];
-  if (provider !== undefined) under(provider, "provider");
+  if (provider !== undefined && opts.signInHome === true) {
+    if (!host || !withStore) fail("a sign-in home outside detection's host sandbox", provider);
+    const home = need(provider);
+    // This server's own: `base` is `<server-data>/agents/<id>` (review of Decision 19, O5).
+    if (home !== path.join(path.dirname(path.dirname(base)), "providers", s.harness, "home")) fail("not the harness's sign-in home", provider);
+    const storeOf = SIGN_IN_STORES[s.harness];
+    if (storeName !== undefined && storeOf !== undefined && env[storeName] !== path.join(home, storeOf.name)) fail("not the sign-in home's store", storeName);
+  } else if (provider !== undefined) under(provider, "provider");
   if (platform === "win32") {
     under("TEMP", "tmp");
     under("TMP", "tmp");

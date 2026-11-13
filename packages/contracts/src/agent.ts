@@ -269,6 +269,15 @@ export const AgentSessionSteerSuccess = Schema.Struct({ queued: Schema.Boolean }
 export const AgentSessionControlPayload = SessionIdPayload;
 export const AgentSessionControlSuccess = Schema.Struct({ session: Session });
 
+/**
+ * `agent.session.resume`, with `prompt` a run started on it at once (one call: e.g. the texts of a
+ * `notice {steerReturned}` sent again, plan 7D Decision 13, owner decision 2026-11-13);
+ * `resendReturned` instead takes those texts from the last run's notice (joined by a blank line).
+ * An agent resumes only its own child, and only after its own interrupt (7B Decision 16 amended).
+ */
+export const AgentSessionResumePayload = Schema.Struct({ sessionId: Id, prompt: Schema.optionalKey(Text), resendReturned: Schema.optionalKey(Schema.Boolean) });
+export const AgentSessionResumeSuccess = Schema.Struct({ session: Session, run: Schema.optionalKey(Run) });
+
 /** `agent.session.list`: newest first; `cursor` is a page's `next`; `limit` 1–200 (default 50). */
 export const AgentSessionListPayload = Schema.Struct({
   projectId: Schema.optionalKey(Id),

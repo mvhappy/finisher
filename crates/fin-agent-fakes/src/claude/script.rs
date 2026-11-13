@@ -20,7 +20,42 @@ pub struct Script {
     pub mcp_timeout_ms: Option<u64>,
     /// Flag values this "version" refuses, e.g. `{"--permission-prompt-tool": ["stdio"]}`.
     pub refuse_flag_values: BTreeMap<String, Vec<String>>,
+    /// What `--resume` does with the transcript's cumulative totals: by default as 2.1.321 does
+    /// (Task 0): restored when the last process exited cleanly, restarted after a kill.
+    pub resume_totals: ResumeTotals,
+    /// What a resumed process does with the tool calls its transcript holds without a result
+    /// (Task 10: unverified on the real CLI, so both are modelled).
+    pub on_resume_dangling: OnDangling,
+    /// `initialize` gets no answer (a host must not open without one).
+    pub initialize_silent: bool,
+    /// The `still_queued` list of the `interrupt` answer (2.1.321 answered `[]`).
+    pub interrupt_still_queued: Vec<Value>,
     pub steps: Vec<Step>,
+}
+
+/// A resumed transcript's `tool_use` blocks that never got a `tool_result`.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OnDangling {
+    /// Left as they are (the next prompt drives the session).
+    #[default]
+    Leave,
+    /// Asked again at the first turn: a `can_use_tool` with the same `tool_use_id`; the call
+    /// runs again (`reran` in the observations) only when the host allows it.
+    Reask,
+}
+
+/// Whether a resumed process's `result` totals count the earlier runs.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ResumeTotals {
+    /// Restored iff the transcript ends with the clean exit's `cost-state` entry (Task 0, s1d/s1e).
+    #[default]
+    Auto,
+    /// The transcript's totals carry on (the CLI reference: "totals restored from earlier runs").
+    Restored,
+    /// The resumed process counts from zero.
+    Reset,
 }
 
 /// What an interrupt (the control request, or SIGINT) does.
@@ -47,6 +82,9 @@ pub enum Expect {
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct Step {
     pub expect: Option<Expect>,
+    /// With `expect: "user"`: merged into the script's `init` from the turn it starts on, e.g. a
+    /// tool set that changes mid-instance.
+    pub init: Map<String, Value>,
     pub subtype: Option<String>,
     pub sleep: Option<u64>,
     pub write_file: Option<WriteFile>,
@@ -58,6 +96,15 @@ pub struct Step {
     pub on_deny: Branch,
     pub not_logged_in: bool,
     pub cumulative_usage: Option<Usage>,
+    /// One model call's usage as `stream_event` lines (`message_start` with the input side,
+    /// `message_delta` with the output), added to the totals the next `result` reports.
+    pub live_usage: Option<Usage>,
+    /// Usage added to the totals with no line (spend the stream did not show, e.g. a call an
+    /// interrupt cut short): only the next `result` reports it.
+    pub hidden_usage: Option<Usage>,
+    /// The model `cumulative_usage`/`live_usage` is charged to in `modelUsage` (default: the
+    /// session's model).
+    pub usage_model: Option<String>,
     pub text: Option<String>,
     pub crash: Option<Crash>,
 }
@@ -106,6 +153,14 @@ pub struct Ask {
     pub input: Value,
     /// Withdraw the request (`control_cancel_request`) when unanswered after this long.
     pub cancel_after_ms: Option<u64>,
+    /// The call's `tool_use_id` (default `toolu_fake_<n>`).
+    pub tool_use_id: Option<String>,
+    /// The CLI's `Bash` tool (`runner/bash.rs`): announced, run when allowed, its result written.
+    #[serde(default)]
+    pub bash: bool,
+    /// Once allowed, run the call as the CLI does (`Bash`: a login shell, `runner/bash.rs`).
+    #[serde(default)]
+    pub run: bool,
 }
 
 #[derive(Debug, Default, Clone, Copy, Deserialize)]

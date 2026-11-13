@@ -20,6 +20,7 @@ import { finError } from "../errors.ts";
 import { dirOlderThan, ensureAgentsRoot, listSessionDirs, makeSessionDirs, readBlob, removeBlob, removeSessionDir, sweepBlobs, writeBlob } from "./blobs.ts";
 import type { Clock, Ids } from "./clock.ts";
 import type { LedgerStore } from "./ledger.ts";
+import { sweepSession } from "./provider-pid.ts";
 import { initialState, next, type SessionEffect, type SessionEvent, type SessionState } from "./session.ts";
 import type { Appended, ApprovalRow, NewApproval, NewNode, NewSession, NodeRow, OutboxEffect, OutboxItem, Recovery, RunRow, RunStart, SessionQuery, SessionRow } from "./store-rows.ts";
 import { type Applied, addUsage, approvalExpired, INLINE_MAX, invalid, outboxOf, SYNTHETIC_RESULT, STORE_SQL, sessionNotFound, stateOf } from "./store-rows.ts";
@@ -38,8 +39,7 @@ const DAY_MS = 86_400_000;
 export const RETENTION_DAYS = 90;
 /** An orphan blob or session directory younger than this is left alone by the hourly sweep. */
 export const ORPHAN_GRACE_MS = 60 * 60_000;
-const NODE_PAGE_MAX = 1000;
-const SWEEP_PAGE = 100;
+const [NODE_PAGE_MAX, SWEEP_PAGE] = [1000, 100];
 /** The reason a session interrupted by a restart carries (spec §3.4). */
 export const SERVER_RESTART = "serverRestart";
 
@@ -323,7 +323,7 @@ export class AgentStore {
       const id = this.#ids.ulid();
       this.#s.insertApproval!.run(id, a.sessionId, a.kind, JSON.stringify(a.subject ?? null), a.argsHash, this.#clock.now(), a.expiresAt);
       const { session } = this.#applyIn(a.sessionId, { kind: "approvalOpened", id }, {});
-      return { approval: this.#approval(id)!, session };
+      return { approval: this.approval(id)!, session };
     });
   }
 
@@ -334,7 +334,7 @@ export class AgentStore {
    */
   answerApproval(id: string, decision: ApprovalDecision, by: string): { approval: Approval; session: Session } {
     const answered = this.#cs.tx(() => {
-      const a = this.#approval(id) ?? invalid("no such approval", { id });
+      const a = this.approval(id) ?? invalid("no such approval", { id });
       const now = this.#clock.now();
       if (a.status === "open" && a.expiresAt <= now) {
         this.#expireIn(a.id, a.sessionId);
@@ -344,7 +344,7 @@ export class AgentStore {
         invalid(`the approval is ${a.status}`, { id, status: a.status });
       }
       const { session } = this.#applyIn(a.sessionId, { kind: "approvalAnswered", id }, {});
-      return { approval: this.#approval(id)!, session };
+      return { approval: this.approval(id)!, session };
     });
     if (answered === null) throw approvalExpired(id);
     return answered;
@@ -367,6 +367,12 @@ export class AgentStore {
     return [...changed.values()];
   }
 
+  /** Expires open approval `id` now (its provider withdrew the request); the session when it changed. */
+  expireApproval(id: string): Session | undefined {
+    const a = this.approval(id);
+    return a?.status === "open" ? this.#cs.tx(() => this.#expireIn(id, a.sessionId)) : undefined;
+  }
+
   /** Expires one open approval in the caller's tx; the session's state when it changed. */
   #expireIn(id: string, sessionId: string): Session | undefined {
     const row = this.#s.session!.get(sessionId) as unknown as SessionRow | undefined;
@@ -382,15 +388,11 @@ export class AgentStore {
     return Number(this.#s.consumeApproval!.run(this.#clock.now(), id).changes) > 0;
   }
 
-  approval(id: string): Approval | undefined {
-    return this.#approval(id);
-  }
-
   approvals(sessionId: string): Approval[] {
     return (this.#s.approvalsOf!.all(sessionId) as unknown as ApprovalRow[]).map(toApproval);
   }
 
-  #approval(id: string): Approval | undefined {
+  approval(id: string): Approval | undefined {
     const r = this.#s.approval!.get(id) as unknown as ApprovalRow | undefined;
     return r === undefined ? undefined : toApproval(r);
   }
@@ -504,15 +506,16 @@ export class AgentStore {
    * calls given a synthetic result and its approvals expired; a run still open under any other
    * session is closed the same way. Each session is one transaction; running it again finds
    * nothing to do. The journal entries owed are in `outbox()`, with those an earlier start left.
+   * Before each is interrupted, a provider process it left running is killed (`provider-pid.ts`).
    */
   recoverAfterCrash(): Recovery {
     const interrupted: string[] = [];
     const before = this.#closed;
-    // Money and tokens held for model calls that died with the last process: no call settles
-    // them now, so they are returned before anything else (the outbox included) runs.
-    // Children's carves are held again, and settled for children that have ended (`carve.ts`).
+    // Money and tokens held for calls that died with the last process are returned before anything
+    // else runs; children's carves are held again and settled for those that ended (`carve.ts`).
     this.#cs.tx(() => this.#ledger.recover());
     for (const { id } of this.#s.live!.all() as Array<{ id: string }>) {
+      sweepSession(this.root, id);
       this.#cs.tx(() => this.#applyIn(id, { kind: "interrupted", reason: SERVER_RESTART }, {}));
       interrupted.push(id);
     }
