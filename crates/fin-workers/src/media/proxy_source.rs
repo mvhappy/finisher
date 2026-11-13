@@ -8,13 +8,19 @@
 //! spec §3.4 (`fin_shm::checked_open`: no link at any segment, one regular file, capped by the
 //! size `meta.json` lists) and checked against the manifest before it is believed: its key
 //! recomputes, it is the manifest's asset's fingerprint and tier, the files are the listed
-//! sizes, `table.bin` is its listed digest and decodes, and the proxy holds exactly the
-//! original's presented frames. Anything else is a [`Refusal`], which the layer answers by
-//! reading the original: never an error that names a path.
+//! sizes, `table.bin` and `proxy.mp4` are their listed digests (hashed through the handles
+//! opened, so the bytes checked are the bytes read), `table.bin` decodes, and the proxy holds
+//! exactly the original's presented frames. Anything else is a [`Refusal`], which the layer
+//! answers by reading the original: never an error that names a path.
+//!
+//! A warm worker reuses an open entry only while each of its three files is still what was
+//! verified ([`Verified`]: the same file, size, modification and change times); any difference
+//! sends it through [`open`] again, digests included. Matching facts are not re-hashed.
 
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
+use std::time::SystemTime;
 
 use fin_codecs::{DecodeThreads, FrameReader, ProbeResult};
 use fin_container::Limits;
@@ -58,20 +64,74 @@ impl Refusal {
     }
 }
 
-/// What an open proxy needs beside its reader: the original's table and display facts.
+/// What an open proxy needs beside its reader: the original's table and display facts, and
+/// what its files were when they were verified.
 pub struct ProxySide {
     /// The original's sample table (`table.bin`): `frame_at` runs on it.
     pub table: SampleTable,
     pub rotation: Rotation,
     pub pixel_aspect: Rational,
+    verified: Verified,
 }
 
-/// An entry opened: the reader, a second handle on `proxy.mp4` for the identity check on
-/// reuse, and the side facts.
+/// An entry opened: the reader, a second handle on `proxy.mp4`, and the side facts.
 pub struct Opened {
     pub reader: FrameReader<File>,
     pub held: File,
     pub side: ProxySide,
+}
+
+/// A file's facts that change when it is written, truncated or replaced: its size, its
+/// modification time and, on Unix, its change time in nanoseconds (identity is the held handle).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Stamp {
+    len: u64,
+    modified: Option<SystemTime>,
+    #[cfg(unix)]
+    changed: (i64, i64),
+}
+
+fn stamp(f: &File) -> Result<Stamp, Refusal> {
+    let m = f.metadata().map_err(|_| Refusal::Changed)?;
+    Ok(Stamp {
+        len: m.len(),
+        modified: m.modified().ok(),
+        #[cfg(unix)]
+        changed: {
+            use std::os::unix::fs::MetadataExt;
+            (m.ctime(), m.ctime_nsec())
+        },
+    })
+}
+
+/// One file as it was verified: a handle on it (its device and inode, or volume and file id)
+/// and its [`Stamp`], taken before its bytes were read.
+struct Held {
+    file: File,
+    stamp: Stamp,
+}
+
+impl Held {
+    fn of(file: &File) -> Result<Held, Refusal> {
+        Ok(Held {
+            stamp: stamp(file)?,
+            file: file.try_clone().map_err(|_| Refusal::Missing)?,
+        })
+    }
+
+    /// Whether `dir/name` still opens, no-follow, to this file with these facts.
+    fn unchanged(&self, dir: &Path, name: &str) -> bool {
+        open_file(dir, name, u64::MAX).is_ok_and(|now| {
+            fin_library::same_file(&now, &self.file) && stamp(&now).is_ok_and(|s| s == self.stamp)
+        })
+    }
+}
+
+/// The entry's three files as [`open`] verified them.
+struct Verified {
+    meta: Held,
+    table: Held,
+    proxy: Held,
 }
 
 /// `SHM_REFUSED {reason}` as a [`Refusal`].
@@ -88,10 +148,9 @@ fn open_file(dir: &Path, name: &str, cap: u64) -> Result<File, Refusal> {
     fin_shm::checked_open(&dir.join(name), cap).map_err(|e| refusal(&e))
 }
 
-fn read_all(mut f: File, cap: u64) -> Result<Vec<u8>, Refusal> {
+fn read_all(f: &File, cap: u64) -> Result<Vec<u8>, Refusal> {
     let mut out = Vec::new();
-    (&mut f)
-        .take(cap)
+    f.take(cap)
         .read_to_end(&mut out)
         .map_err(|_| Refusal::Changed)?;
     Ok(out)
@@ -117,10 +176,10 @@ fn entry_dir(p: &ManifestProxy) -> Result<&Path, Refusal> {
 /// Opens the entry `p` of the asset with `fingerprint` (module docs).
 pub fn open(p: &ManifestProxy, fingerprint: &str, caps: &ProbeResult) -> Result<Opened, Refusal> {
     let dir = entry_dir(p)?;
-    let meta: EntryMeta = {
-        let f = open_file(dir, META_FILE, META_CAP)?;
-        serde_json::from_slice(&read_all(f, META_CAP)?).map_err(|_| Refusal::Invalid)?
-    };
+    let meta_file = open_file(dir, META_FILE, META_CAP)?;
+    let meta_held = Held::of(&meta_file)?;
+    let meta: EntryMeta =
+        serde_json::from_slice(&read_all(&meta_file, META_CAP)?).map_err(|_| Refusal::Invalid)?;
     let key = meta.check().map_err(|_| Refusal::Invalid)?;
     if key.as_str() != p.key
         || meta.fingerprint != fingerprint
@@ -133,9 +192,11 @@ pub fn open(p: &ManifestProxy, fingerprint: &str, caps: &ProbeResult) -> Result<
     let (Some(table_file), Some(proxy_file)) = (listed(TABLE_FILE), listed(PROXY_FILE)) else {
         return Err(Refusal::Invalid);
     };
+    let table_held;
     let table = {
         let f = open_file(dir, TABLE_FILE, table_file.bytes)?;
-        let bytes = read_all(f, table_file.bytes)?;
+        table_held = Held::of(&f)?;
+        let bytes = read_all(&f, table_file.bytes)?;
         if bytes.len() as u64 != table_file.bytes
             || blake3::hash(&bytes).to_hex().as_str() != table_file.blake3
         {
@@ -143,10 +204,21 @@ pub fn open(p: &ManifestProxy, fingerprint: &str, caps: &ProbeResult) -> Result<
         }
         table_bin::decode(&bytes).map_err(|_| Refusal::Invalid)?
     };
-    let file = open_file(dir, PROXY_FILE, proxy_file.bytes)?;
-    if file.metadata().map_err(|_| Refusal::Changed)?.len() != proxy_file.bytes {
+    let mut file = open_file(dir, PROXY_FILE, proxy_file.bytes)?;
+    let proxy_held = Held::of(&file)?;
+    if proxy_held.stamp.len != proxy_file.bytes {
         return Err(Refusal::Changed);
     }
+    // The payload is the one the entry lists before a frame of it is believed: another valid
+    // MP4 of the same size and frame count would otherwise show its pictures.
+    let mut hasher = blake3::Hasher::new();
+    let hashed = std::io::copy(&mut (&file).take(proxy_file.bytes), &mut hasher)
+        .map_err(|_| Refusal::Changed)?;
+    if hashed != proxy_file.bytes || hasher.finalize().to_hex().as_str() != proxy_file.blake3 {
+        return Err(Refusal::Changed);
+    }
+    file.seek(SeekFrom::Start(0))
+        .map_err(|_| Refusal::Changed)?;
     let held = file.try_clone().map_err(|_| Refusal::Missing)?;
     let reader = FrameReader::open_with_limit(
         file,
@@ -171,16 +243,25 @@ pub fn open(p: &ManifestProxy, fingerprint: &str, caps: &ProbeResult) -> Result<
         table,
         rotation: shown.rotation,
         pixel_aspect: shown.pixel_aspect,
+        verified: Verified {
+            meta: meta_held,
+            table: table_held,
+            proxy: proxy_held,
+        },
     };
     Ok(Opened { reader, held, side })
 }
 
-/// Whether the entry `p` still opens to the file `held` (`proxy.mp4`): the reuse check of a
-/// warm worker's open sources (the entry may have been evicted and made again).
-pub fn still_there(p: &ManifestProxy, held: &File) -> bool {
-    entry_dir(p)
-        .and_then(|dir| open_file(dir, PROXY_FILE, u64::MAX))
-        .is_ok_and(|now| fin_library::same_file(&now, held))
+/// Whether each file of the entry `p` is still the one `side` was verified from, with the same
+/// facts: the reuse check of a warm worker's open sources (the entry may have been evicted and
+/// made again, or a file of it written, truncated, replaced or removed).
+pub fn still_there(p: &ManifestProxy, side: &ProxySide) -> bool {
+    let v = &side.verified;
+    entry_dir(p).is_ok_and(|dir| {
+        v.meta.unchanged(dir, META_FILE)
+            && v.table.unchanged(dir, TABLE_FILE)
+            && v.proxy.unchanged(dir, PROXY_FILE)
+    })
 }
 
 /// The tier a look reads.

@@ -259,7 +259,7 @@ impl OpenCache {
             Entry::Open(open) => open
                 .proxy
                 .as_ref()
-                .is_some_and(|_| proxy_source::still_there(p, &open.held)),
+                .is_some_and(|side| proxy_source::still_there(p, side)),
             Entry::Failed(_) => false,
         });
         if !reused {

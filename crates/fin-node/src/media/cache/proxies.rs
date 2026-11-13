@@ -1,9 +1,10 @@
 //! The proxies a media job's manifest lists (6B-1 plan Task 16; spec §4.2): for each source
-//! fingerprint, the current entry of each tier in the index, pinned for the job so eviction
-//! cannot take it while a worker reads it (`job:<id>`, released by the job's end hook), with
-//! its directory on this machine. Which entry is current: the tier's recipe at this build's
-//! recipe and render versions, listing `proxy.mp4` and `table.bin`, made by a codec the
-//! manifest knows; of several (an AV1 and an H.264 one), the newest.
+//! fingerprint, the current entry of each tier in the index, pinned for the job so eviction cannot
+//! take it while a worker reads it (`job:<id>`, released by the job's end hook), with its directory
+//! on this machine. A listed entry is a consumer's hit (Task 13): it now serves the job's project
+//! too, so that project reaches it and pins it while open. Which entry is current: the tier's
+//! recipe at this build's recipe and render versions, listing `proxy.mp4` and `table.bin`, made by
+//! a codec the manifest knows; of several (an AV1 and an H.264 one), the newest.
 
 use std::collections::BTreeMap;
 
@@ -12,7 +13,7 @@ use fin_media::RENDER_VERSION;
 use fin_media::cache::{CacheKey, EntryMeta};
 use fin_media::jobs::{ManifestProxy, ProxyCodec, ProxyTier};
 
-use super::state::{Cache, check_holder};
+use super::state::{Cache, check_holder, check_projects};
 
 /// The proxy video and the original's sample table in an entry (`media.proxy`'s output).
 const PROXY_FILES: [&str; 2] = ["proxy.mp4", "table.bin"];
@@ -35,15 +36,18 @@ fn current(meta: &EntryMeta, tier: ProxyTier) -> bool {
 
 impl Cache {
     /// The `tiers` proxies of each of `fingerprints` the cache holds (module docs), by
-    /// fingerprint (a fingerprint with none is absent), each pinned for `holder` and its last
-    /// use set to now. An entry whose directory has gone is dropped, not listed.
+    /// fingerprint (a fingerprint with none is absent), each pinned for `holder`, serving
+    /// `projects` (the job's) and its last use set to now. An entry whose directory has gone is
+    /// dropped, not listed.
     pub fn proxies_for(
         &mut self,
         fingerprints: &[String],
         holder: &str,
+        projects: &[String],
         tiers: &[ProxyTier],
     ) -> Result<BTreeMap<String, Vec<ManifestProxy>>, CoreError> {
         check_holder(holder)?;
+        check_projects(projects)?;
         let mut out = BTreeMap::new();
         for fp in fingerprints {
             let mut listed = Vec::new();
@@ -57,7 +61,10 @@ impl Cache {
                 entries.sort_by(|a, b| (b.created_at, &a.key).cmp(&(a.created_at, &b.key)));
                 for meta in entries {
                     // `lookup` also drops a row whose directory has gone.
-                    if self.lookup(&meta.key)?.is_none() || !self.pin(&meta.key, holder)? {
+                    if self.lookup(&meta.key)?.is_none()
+                        || !self.pin(&meta.key, holder)?
+                        || !self.serve(&meta.key, projects)?
+                    {
                         continue;
                     }
                     let (Ok(key), Some(codec)) = (CacheKey::parse(&meta.key), codec_of(&meta))

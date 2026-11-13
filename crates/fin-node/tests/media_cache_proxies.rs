@@ -114,7 +114,7 @@ fn the_1080_entry_is_listed_with_its_directory_and_pinned_for_the_job() {
     fx.commit(&mut c, "fp1", PROXY_540, "av1", 5, FILES);
     let other = fx.commit(&mut c, "fp2", PROXY_1080, "av1", 5, FILES);
     let found = c
-        .proxies_for(&fps(&["fp1", "fp3"]), "job:j1", &[ProxyTier::Preview])
+        .proxies_for(&fps(&["fp1", "fp3"]), "job:j1", &[], &[ProxyTier::Preview])
         .unwrap();
     assert_eq!(
         found.keys().map(String::as_str).collect::<Vec<_>>(),
@@ -145,7 +145,7 @@ fn a_pinned_entry_survives_eviction_for_the_jobs_life() {
     let fx = Fx::new();
     let mut c = fx.open();
     let key = fx.commit(&mut c, "fp1", PROXY_1080, "av1", 5, FILES);
-    c.proxies_for(&fps(&["fp1"]), "job:j1", &[ProxyTier::Preview])
+    c.proxies_for(&fps(&["fp1"]), "job:j1", &[], &[ProxyTier::Preview])
         .unwrap();
     c.gc(Some(0)).unwrap();
     assert!(c.lookup(&key).unwrap().is_some(), "pinned: not evicted");
@@ -161,7 +161,7 @@ fn the_newest_current_entry_wins_and_stale_ones_are_not_listed() {
     let old = fx.commit(&mut c, "fp1", PROXY_1080, "h264", 5, FILES);
     let new = fx.commit(&mut c, "fp1", PROXY_1080, "av1", 9, FILES);
     let found = c
-        .proxies_for(&fps(&["fp1"]), "job:j1", &[ProxyTier::Preview])
+        .proxies_for(&fps(&["fp1"]), "job:j1", &[], &[ProxyTier::Preview])
         .unwrap();
     assert_eq!(found["fp1"].len(), 1, "one entry per tier");
     assert_eq!(found["fp1"][0].key, new);
@@ -174,7 +174,7 @@ fn the_newest_current_entry_wins_and_stale_ones_are_not_listed() {
     };
     let c2 = fx.commit(&mut c, "fp4", stale, "av1", 9, FILES);
     let found = c
-        .proxies_for(&fps(&["fp4"]), "job:j2", &[ProxyTier::Preview])
+        .proxies_for(&fps(&["fp4"]), "job:j2", &[], &[ProxyTier::Preview])
         .unwrap();
     assert!(found.is_empty(), "{found:?}");
     assert!(c.pins_of(&c2).unwrap().is_empty());
@@ -194,7 +194,7 @@ fn an_entry_without_its_files_or_with_an_unknown_codec_is_not_listed() {
     );
     fx.commit(&mut c, "fp2", PROXY_1080, "vp9", 5, FILES);
     let found = c
-        .proxies_for(&fps(&["fp1", "fp2"]), "job:j1", &[ProxyTier::Preview])
+        .proxies_for(&fps(&["fp1", "fp2"]), "job:j1", &[], &[ProxyTier::Preview])
         .unwrap();
     assert!(found.is_empty(), "{found:?}");
 }
@@ -204,7 +204,54 @@ fn a_bad_holder_is_refused() {
     let fx = Fx::new();
     let mut c = fx.open();
     let e = c
-        .proxies_for(&fps(&["fp1"]), "nobody", &[ProxyTier::Preview])
+        .proxies_for(&fps(&["fp1"]), "nobody", &[], &[ProxyTier::Preview])
+        .unwrap_err();
+    assert_eq!(e.code, "INVALID_OP");
+}
+
+/// Task 13: a consumer's hit registers its project. An entry made for project A and listed for a
+/// look of project B now serves B (B reaches it, `media.url`) and is pinned for B while B is
+/// open, beside the job's pin.
+#[test]
+fn a_listed_entry_serves_the_consuming_project() {
+    let fx = Fx::new();
+    let mut c = fx.open();
+    let a = "01jpa000000000000000000001".to_string();
+    let b = "01jpb000000000000000000002".to_string();
+    let key = {
+        let input = KeyInput::new(
+            "fp1",
+            PROXY_1080,
+            json!({ "codec": "av1" }),
+            VendorClass::Software,
+        );
+        CacheKey::compute(&input).to_string()
+    };
+    let made = fx.commit(&mut c, "fp1", PROXY_1080, "av1", 5, FILES);
+    assert_eq!(made, key);
+    c.serve(&key, std::slice::from_ref(&a)).unwrap();
+    c.pin_project(&b).unwrap();
+    c.proxies_for(
+        &fps(&["fp1"]),
+        "job:j1",
+        std::slice::from_ref(&b),
+        &[ProxyTier::Preview],
+    )
+    .unwrap();
+    let mut projects = c.projects_of(&key).unwrap();
+    projects.sort();
+    assert_eq!(projects, [a, b.clone()]);
+    let mut pins = c.pins_of(&key).unwrap();
+    pins.sort();
+    assert_eq!(pins, ["job:j1".to_string(), format!("project:{b}")]);
+    // A bad project id is refused, as `serve` refuses it.
+    let e = c
+        .proxies_for(
+            &fps(&["fp1"]),
+            "job:j2",
+            &fps(&["../x"]),
+            &[ProxyTier::Preview],
+        )
         .unwrap_err();
     assert_eq!(e.code, "INVALID_OP");
 }

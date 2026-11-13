@@ -276,10 +276,12 @@ export function mediaLookKind(deps: MediaKindDeps): KindSpec<LookJobParams, Look
           JSON.stringify(request),
         );
         // The proxies the cache holds for the manifest's assets (6B-1 Task 16), pinned for this
-        // job's life (released when it ends: `releaseLookPins`), and the files the worker reads
-        // from them. A look of originals lists none; a cache that is down lists none.
+        // job's life (released when it ends: `releaseLookPins`) and serving the project (a hit:
+        // it reaches them and pins them while open), and the files the worker reads from them.
+        // A look of originals lists none; a cache that is down lists none.
+        const projectId = p.projectId;
         const cache = p.originals === true ? undefined : deps.proxy?.cache();
-        const proxyFiles = cache === undefined ? [] : yield* Effect.tryPromise({ try: () => cache.attachProxies(join(dirs.job, "in"), `job:${ctx.job.id}`), catch: toFinError });
+        const proxyFiles = cache === undefined ? [] : yield* Effect.tryPromise({ try: () => cache.attachProxies(join(dirs.job, "in"), `job:${ctx.job.id}`, [projectId]), catch: toFinError });
         const reads = yield* Effect.promise(() => canonicalReads([...(done.sources ?? []), ...proxyFiles, join(deps.serverData, "fonts")]));
         return { extra: { planSamples: done.planSamples, rev: done.rev, reads } };
       }),

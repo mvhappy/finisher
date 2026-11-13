@@ -2,17 +2,19 @@
 // cache and a real proxy made by `media.proxy`: the manifest lists the `1080` proxy the cache
 // holds, pinned for the job; a frame says where it was read from and is named for it; `originals`
 // reads originals only and pins nothing; a proxy gone between the manifest and the open falls
-// back to the original, naming no path; the job's pins end with the job (the wiring's hook).
+// back to the original, naming no path; the job's pins end with the job (the wiring's hook); a
+// look of another project registers it with the entry (Task 13's `serve` on a hit).
 // The worker draws on the GPU (`FIN_GPU`; skipped without an adapter unless `FIN_REQUIRE_GPU=1`).
 import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import type { FinError, JobView } from "@finisher/contracts";
+import type { FinError, JobView, Principal } from "@finisher/contracts";
 import type { LookParams, LookResult } from "@finisher/core-types";
 import { Engine, MediaCache } from "@finisher/fin-node";
 import { Effect } from "effect";
 import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import { toFinError } from "../src/errors.ts";
+import { CapTokens, mediaUrl } from "../src/media/cap-tokens.ts";
 import { registerMediaKinds } from "../src/jobs/kinds/media.look.ts";
 import { mediaCapabilities } from "../src/media/caps.ts";
 import type { MediaCacheService } from "../src/media/cache.ts";
@@ -45,22 +47,33 @@ afterAll(() => rmSync(work, { recursive: true, force: true }));
 
 const run = <A>(e: Effect.Effect<A, FinError>) => Effect.runPromise(e);
 
-/** A project (asset `a1` on the clip, fingerprint `fp-a1`), the cache, the media kinds, a proxy service. */
+/**
+ * Two projects on the same clip (asset `a1`, fingerprint `fp-a1`, in each), the cache, the media
+ * kinds, a proxy service. `p` is the one proxies are made for; `q` looks at them too.
+ */
 async function setup() {
   const serverData = realpathSync(mkdtempSync(join(work, "sd-")));
   const p = await lookProject(serverData, join(realpathSync(mkdtempSync(join(work, "proj-"))), "p"), media);
   engines.push(p.engine);
+  const q = await lookProject(serverData, join(realpathSync(mkdtempSync(join(work, "proj-"))), "q"), media);
+  engines.push(q.engine);
+  const byId = (projectId: string) => [p, q].find((x) => x.engine.projectId === projectId);
   const cache = await MediaCache.open(serverData);
   let caps: ReturnType<typeof mediaCapabilities> | undefined;
-  const onBranch = <A>(projectId: string, branch: string, f: (e: Engine, b: string) => Promise<string>) =>
-    projectId !== p.engine.projectId ? Effect.fail(toFinError(new Error("unknown project"))) : Effect.tryPromise({ try: async () => JSON.parse(await f(p.engine, branch)) as A, catch: toFinError });
+  const unknown = () => Effect.fail(toFinError(new Error("unknown project")));
+  const onBranch = <A>(projectId: string, branch: string, f: (e: Engine, b: string) => Promise<string>) => {
+    const x = byId(projectId);
+    return x === undefined ? unknown() : Effect.tryPromise({ try: async () => JSON.parse(await f(x.engine, branch)) as A, catch: toFinError });
+  };
   const projects: Pick<ProjectRegistryShape, "prepareMediaJob" | "dirOf" | "onBranch"> = {
     onBranch,
-    prepareMediaJob: (projectId, branch, timeline, at, inputDir, fontCache, paramsJson) =>
-      projectId !== p.engine.projectId
-        ? Effect.fail(toFinError(new Error("unknown project")))
-        : Effect.tryPromise({ try: async () => JSON.parse(await p.engine.prepareMediaJob(branch, timeline, [...at], inputDir, { fontCache: fontCache ?? null, paramsJson: paramsJson ?? null })), catch: toFinError }),
-    dirOf: (projectId) => (projectId === p.engine.projectId ? p.dir : undefined),
+    prepareMediaJob: (projectId, branch, timeline, at, inputDir, fontCache, paramsJson) => {
+      const x = byId(projectId);
+      return x === undefined
+        ? unknown()
+        : Effect.tryPromise({ try: async () => JSON.parse(await x.engine.prepareMediaJob(branch, timeline, [...at], inputDir, { fontCache: fontCache ?? null, paramsJson: paramsJson ?? null })), catch: toFinError });
+    },
+    dirOf: (projectId) => byId(projectId)?.dir,
   };
   const t = await testEngine({ serverData, register: (r) => registerMediaKinds(r, { serverData, projects, proxy: { cache: () => cache, report: () => caps?.current() } }) });
   caps = mediaCapabilities({ engine: t.engine });
@@ -73,7 +86,8 @@ async function setup() {
   const proxies = makeProxyService({ registry, engine: t.engine, capabilities: caps, cache: () => cache });
   const params = (over: Partial<LookParams> = {}): LookParams => ({ timeline: "tl1", at: ["0", "1/10"] as never, size: { width: 80, height: 45 }, outName: "look", projectId: p.engine.projectId, branch: "main", rev: 1, ...over });
   const look = (over?: Partial<LookParams>) => t.runJob("media.look", params(over), { project: p.engine.projectId });
-  return { p, t, cache, proxies, serverData, look, params, pid: p.engine.projectId, projects, registry };
+  const lookOf = (projectId: string) => t.runJob("media.look", params({ projectId }), { project: projectId });
+  return { p, t, cache, proxies, serverData, look, lookOf, params, pid: p.engine.projectId, qid: q.engine.projectId, projects, registry };
 }
 
 /** The look's result, or `undefined` (the test stops) when this host has no GPU adapter. */
@@ -179,5 +193,28 @@ describe("a look reads the proxy the cache holds", () => {
     expect(res.frames.map((f) => f.source)).toEqual(["original", "original"]);
     for (const f of res.frames) for (const fb of f.proxyFallbacks ?? []) expect(fb).toEqual({ asset: "a1", reason: "missing" });
     expect(JSON.stringify(res)).not.toContain(dir);
+  }, 180_000);
+
+  test("a look of another project: it now reaches the entry (media.url) and pins it while open", async () => {
+    const s = await setup();
+    const key = await proxied(s);
+    if (key === undefined) return;
+    expect(await s.cache.projectsOf(key)).toEqual([s.pid]);
+    const onlyQ: Principal = { kind: "agent", id: "01agentqqqqqqqqqqqqqqqqqqqq", scopes: ["project.read"], projects: [s.qid], branches: "*", human: false };
+    const deps = { cache: { cache: s.cache } as unknown as MediaCacheService, tokens: new CapTokens() };
+    const before = await Effect.runPromise(Effect.result(mediaUrl(deps, onlyQ, { key, file: "proxy.mp4" })));
+    expect(before._tag === "Failure" && before.failure.code).toBe("NOT_FOUND");
+    // `q` is open here (the registry's open hook pins its entries), then looks.
+    await s.cache.pinProject(s.qid);
+    const res = resultOf(await s.lookOf(s.qid));
+    if (res === undefined) return;
+    expect(res.frames.map((f) => f.source)).toEqual(["proxy", "proxy"]);
+    expect([...(await s.cache.projectsOf(key))].sort()).toEqual([s.pid, s.qid].sort());
+    expect(await s.cache.pinsOf(key)).toContain(`project:${s.qid}`);
+    const got = await Effect.runPromise(mediaUrl(deps, onlyQ, { key, file: "proxy.mp4" }));
+    expect(got.url).toMatch(/^\/media\/cap\//);
+    // Closed: its pin goes, and it still reaches the entry.
+    await s.cache.unpinProject(s.qid);
+    expect(await s.cache.pinsOf(key)).not.toContain(`project:${s.qid}`);
   }, 180_000);
 });

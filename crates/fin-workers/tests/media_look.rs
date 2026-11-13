@@ -16,7 +16,8 @@ use fin_jobs::{HostMsg, Role};
 use fin_media::jobs::{LookFrame, LookResult, LookSource};
 use fin_media::testing::{Rect, read_id_rgba};
 use media_support::{
-    Fixture, OUT, gpu_or_skip, make_proxy, psnr_rgb, r, read_png, worker_env, write_params,
+    Fixture, OUT, gpu_or_skip, make_proxy, psnr_rgb, r, read_png, ssim_luma, worker_env,
+    write_params,
 };
 use serde_json::Value;
 use support::{Ev, Job, Proc, Run, no_calls, spawn_with};
@@ -662,8 +663,18 @@ fn look_with(
     manifest: &fin_media::jobs::RenderManifest,
     originals: bool,
 ) -> (LookResult, Vec<Vec<u8>>) {
+    look_at(fx, manifest, originals, &times())
+}
+
+/// [`look_with`] at `at`.
+fn look_at(
+    fx: &Fixture,
+    manifest: &fin_media::jobs::RenderManifest,
+    originals: bool,
+    at: &[fin_core::Rational],
+) -> (LookResult, Vec<Vec<u8>>) {
     let job = fx.job(Some(manifest));
-    let mut params = fx.params(&times());
+    let mut params = fx.params(at);
     params.originals = originals;
     let mut p = warm_worker();
     let run = look(&mut p, &job, &params);
@@ -705,11 +716,18 @@ fn look_from_proxy_same_frame_ids() {
     }
 }
 
-/// T5's frame ids are exact; its PSNR floor (38 dB) is for an export "at the template
-/// bitrate". A `1080` proxy is encoded at CRF 32 (`proxy.rs`), and this fixture is a hard-edged
-/// id pattern, the worst case for a lossy codec: SVT-AV1 measures 35.5 to 38.0 dB here, so the
-/// floor is 34 dB with room for another machine's rounding.
-const PROXY_FLOOR_DB: f64 = 34.0;
+/// T5 (spec §13.2) is exact frame ids, PSNR ≥ 38 dB and SSIM ≥ 0.97 for an export "at the
+/// template bitrate". A `1080` proxy of this fixture (a hard-edged id pattern, the worst case for
+/// a lossy codec) does not reach 38 dB at any CRF: measured on Linux x86_64 (lavapipe), the
+/// lowest frame's PSNR / mean luma SSIM against the original's look is 35.48 dB / 0.9927 at the
+/// tier's CRF 32 (107 KB), 35.67 / 0.9934 at 28, 35.91 / 0.9938 at 24, 36.06 / 0.9946 at 20,
+/// 37.03 / 0.9954 at 8 (2.2× the size) and 37.60 / 0.9967 at 1 (6.1×). The gap barely closes as
+/// the CRF falls: it comes from re-encoding the decoded original (a second 4:2:0 pass over hard
+/// edges), not from the tier's quality. So the proxy keeps
+/// CRF 32 and is held to T5's SSIM and to a PSNR floor half a dB under the lowest measured
+/// frame (the owner's question, a proxy-specific tolerance below T5, is in TASKS.md).
+const PROXY_FLOOR_DB: f64 = 35.0;
+const PROXY_FLOOR_SSIM: f64 = 0.97;
 
 #[test]
 fn look_from_proxy_within_t5_of_original() {
@@ -731,11 +749,13 @@ fn look_from_proxy_within_t5_of_original() {
             (LookSource::Proxy, LookSource::Original)
         );
         // The same plan, so the same frame ids (T5: frame ids exact), and the pictures agree
-        // within the proxy's PSNR floor (SSIM is the encoder suite's).
+        // within T5's SSIM and the proxy's PSNR floor.
         assert_eq!(pf.plan, of.plan);
         assert_eq!(frame_id(&a[i]), frame_id(&b[i]), "frame {i}");
         let db = psnr_rgb(&a[i], &b[i]);
-        assert!(db >= PROXY_FLOOR_DB, "frame {i}: {db:.1} dB");
+        assert!(db >= PROXY_FLOOR_DB, "frame {i}: {db:.2} dB");
+        let ssim = ssim_luma(&a[i], &b[i], OUT.width);
+        assert!(ssim >= PROXY_FLOOR_SSIM, "frame {i}: SSIM {ssim:.4}");
     }
 }
 
@@ -880,4 +900,196 @@ fn a_warm_worker_reuses_a_proxy_and_notices_it_gone() {
     let job = fx.job(Some(&listed));
     let fourth = result(&look(&mut p, &job, &params));
     assert_eq!(fourth.frames[0].source, LookSource::Proxy);
+}
+
+/// The frame ids a look at `at` reads through the proxy of `fx`'s AV1 clip and through the clip
+/// itself, after checking every frame came from the source it was meant to.
+fn ids_both_ways(fx: &Fixture, at: &[fin_core::Rational]) -> (Vec<Option<u32>>, Vec<Option<u32>>) {
+    let proxy = make_proxy(fx);
+    let (via_proxy, a) = look_at(fx, &fx.manifest_with(&proxy), false, at);
+    let (via_original, b) = look_at(fx, &fx.manifest(), false, at);
+    for (pf, of) in via_proxy.frames.iter().zip(&via_original.frames) {
+        assert_eq!(
+            (pf.source, of.source),
+            (LookSource::Proxy, LookSource::Original)
+        );
+        assert!(pf.proxy_fallbacks.is_empty(), "{:?}", pf.proxy_fallbacks);
+        assert_eq!(pf.plan, of.plan);
+    }
+    (
+        a.iter().map(|p| frame_id(p)).collect(),
+        b.iter().map(|p| frame_id(p)).collect(),
+    )
+}
+
+/// Plan Decision 7: a proxy frame is found through the original's table, never the proxy's own
+/// CFR one. VFR durations cycle 1, 1, 2, 1, 3 ticks of 1/30 s (frames at ticks 0, 1, 2, 4, 5,
+/// 8, …): tick 3 is the midpoint of frames 2 and 4 (the earlier wins), tick 6.5 of frames 4 and
+/// 5, and a tick's hundredth past 3 picks frame 3. A CFR table would give 3, 6 and 3.
+#[test]
+fn look_from_proxy_at_vfr_midpoints() {
+    if !gpu_or_skip("look_from_proxy_at_vfr_midpoints") {
+        return;
+    }
+    let fx = Fixture::with_clip(fin_codecs::fixture::ClipSpec {
+        vfr: true,
+        ..Default::default()
+    });
+    let at = [r("1/10"), r("13/60"), r("301/3000")];
+    let (via_proxy, via_original) = ids_both_ways(&fx, &at);
+    assert_eq!(
+        via_original,
+        [Some(2), Some(4), Some(3)],
+        "the originals' frames"
+    );
+    assert_eq!(
+        via_proxy, via_original,
+        "the proxy shows the originals' frames"
+    );
+}
+
+/// An edit list: 5 ticks of nothing, media frames 5–14, then 0–9 again (a cut at presented
+/// frame 10, tick 15, and media frame 7 shown twice, at ticks 7 and 22). The proxy holds one
+/// frame per presented frame from tick 0, so its own table is 5 ticks early everywhere.
+#[test]
+fn look_from_proxy_across_edit_list_cuts_and_repeats() {
+    if !gpu_or_skip("look_from_proxy_across_edit_list_cuts_and_repeats") {
+        return;
+    }
+    let tick = 1000;
+    let fx = Fixture::with_clip(fin_codecs::fixture::ClipSpec {
+        edits: Some(vec![
+            (5 * tick, None),
+            (10 * tick, Some(5 * tick)),
+            (10 * tick, Some(0)),
+        ]),
+        ..Default::default()
+    });
+    // Either side of the cut (and its midpoint), then the repeated frame twice.
+    let at = [r("29/60"), r("1/2"), r("31/60"), r("7/30"), r("11/15")];
+    let (via_proxy, via_original) = ids_both_ways(&fx, &at);
+    assert_eq!(
+        via_original,
+        [Some(14), Some(0), Some(0), Some(7), Some(7)],
+        "the originals' frames"
+    );
+    assert_eq!(
+        via_proxy, via_original,
+        "the proxy shows the originals' frames"
+    );
+}
+
+/// The byte at the middle of `proxy.mp4`'s `mdat` payload, flipped in place (same file, same size).
+fn flip_payload_byte(path: &Path) {
+    use std::io::{Seek, SeekFrom, Write};
+    let bytes = std::fs::read(path).unwrap();
+    let at = bytes.windows(4).position(|w| w == b"mdat").unwrap() - 4;
+    let (header, size) = match u32::from_be_bytes(bytes[at..at + 4].try_into().unwrap()) {
+        // A 64-bit size follows the type.
+        1 => (
+            16,
+            u64::from_be_bytes(bytes[at + 8..at + 16].try_into().unwrap()) as usize,
+        ),
+        // To the end of the file.
+        0 => (8, bytes.len() - at),
+        n => (8, n as usize),
+    };
+    let mid = at + header + (size - header) / 2;
+    let mut f = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+    f.seek(SeekFrom::Start(mid as u64)).unwrap();
+    f.write_all(&[bytes[mid] ^ 0x5a]).unwrap();
+}
+
+#[test]
+fn a_same_size_proxy_payload_falls_back() {
+    if !gpu_or_skip("a_same_size_proxy_payload_falls_back") {
+        return;
+    }
+    let fx = Fixture::new();
+    let p = make_proxy(&fx);
+    let before = std::fs::metadata(p.dir.join("proxy.mp4")).unwrap().len();
+    flip_payload_byte(&p.dir.join("proxy.mp4"));
+    assert_eq!(
+        std::fs::metadata(p.dir.join("proxy.mp4")).unwrap().len(),
+        before
+    );
+    // Still a valid container with the original's frame count: only its digest tells.
+    let (res, pixels) = look_with(&fx, &fx.manifest_with(&p), false);
+    let (_, expected) = look_with(&fx, &fx.manifest(), false);
+    assert_eq!(pixels, expected, "the original's pixels");
+    for f in &res.frames {
+        assert_eq!(f.source, LookSource::Original);
+        assert_eq!(f.proxy_fallbacks[0].reason, "changed");
+    }
+}
+
+/// A change made to an entry's directory: its name, the change, and the fallback reason it gives.
+type Case = (&'static str, fn(&Path), &'static str);
+
+/// A warm worker reuses an open proxy only while its three files are as they were verified:
+/// any change sends it back through the full checks (the digest too), here to a fallback.
+#[test]
+fn a_warm_worker_revalidates_a_changed_proxy_entry() {
+    if !gpu_or_skip("a_warm_worker_revalidates_a_changed_proxy_entry") {
+        return;
+    }
+    let fx = Fixture::new();
+    let params = fx.params(&[r("1/2")]);
+    let cases: [Case; 4] = [
+        (
+            "proxy.mp4 rewritten in place",
+            |d| flip_payload_byte(&d.join("proxy.mp4")),
+            "changed",
+        ),
+        (
+            "proxy.mp4 truncated",
+            |d| {
+                let f = std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(d.join("proxy.mp4"))
+                    .unwrap();
+                let len = f.metadata().unwrap().len();
+                f.set_len(len - 1000).unwrap();
+            },
+            "changed",
+        ),
+        (
+            "table.bin replaced",
+            |d| {
+                let mut table = std::fs::read(d.join("table.bin")).unwrap();
+                let last = table.len() - 1;
+                table[last] ^= 1;
+                std::fs::write(d.join("table.new"), table).unwrap();
+                std::fs::rename(d.join("table.new"), d.join("table.bin")).unwrap();
+            },
+            "changed",
+        ),
+        (
+            "meta.json removed",
+            |d| std::fs::remove_file(d.join("meta.json")).unwrap(),
+            "missing",
+        ),
+    ];
+    for (name, change, reason) in cases {
+        let proxy = make_proxy(&fx);
+        let manifest = fx.manifest_with(&proxy);
+        let mut p = warm_worker();
+        let mut again = || {
+            let job = fx.job(Some(&manifest));
+            result(&look(&mut p, &job, &params))
+        };
+        let first = again();
+        assert_eq!(first.frames[0].source, LookSource::Proxy, "{name}");
+        let second = again();
+        assert_eq!(second.frames[0].source, LookSource::Proxy, "{name}");
+        assert_eq!(
+            (second.stats.sources_opened, second.stats.sources_reused),
+            (0, 1),
+            "{name}: reused"
+        );
+        change(&proxy.dir);
+        let third = again();
+        assert_eq!(third.frames[0].source, LookSource::Original, "{name}");
+        assert_eq!(third.frames[0].proxy_fallbacks[0].reason, reason, "{name}");
+    }
 }

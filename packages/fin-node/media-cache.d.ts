@@ -83,10 +83,11 @@ export declare class MediaCache {
    * Lists, in the job's `in/manifest.json` (`inDir`, written by `prepareMediaJob`), the `1080`
    * proxy of each asset's fingerprint the index holds (`ManifestAsset.proxies`: tier, key,
    * absolute directory, codec), pinned for `holder` (`job:<id>`; release it when the job
-   * ends). Resolves to the files a worker reads from those entries (absolute, for the job's
+   * ends). Each listed entry is a hit: it now serves `projects` (the job's, as `serve`), so they
+   * reach it and pin it while open. Resolves to the files a worker reads from those entries (absolute, for the job's
    * `reads`): none when no asset has a proxy, and then the manifest is left as it is.
    */
-  attachProxies(inDir: string, holder: string): Promise<string[]>;
+  attachProxies(inDir: string, holder: string, projects: ReadonlyArray<string>): Promise<string[]>;
   /** The entries made from the source with this fingerprint. */
   entriesFor(asset: { readonly fingerprint: string }): Promise<EntryMeta[]>;
   /** The projects `key` serves (reach for media bytes, spec §7.3). */

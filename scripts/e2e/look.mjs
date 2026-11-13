@@ -185,8 +185,11 @@ export async function run() {
     step(10, "diagnostics: job.done carries the media object; media.capabilities and render.stats name no adapter");
     await diagnostics(server);
 
-    step(11, "fin look reads the 1080 proxies through the originals' tables: same frame ids, named for their source");
+    step(11, "fin look reads the 1080 proxies through the originals' tables: same frame ids at the CFR times and the VFR midpoints, named for their source");
     await proxyLook(f, result, cfr0());
+
+    step(12, "an edit-listed clip (a gap, a cut, a repeated frame) looks the same through its proxy as through the original");
+    proxyLookEdits(sd, tmp);
 
     log(`PASS look in ${((Date.now() - started) / 1000).toFixed(1)}s`);
   } finally {
@@ -202,28 +205,63 @@ const cfr0 = () => Array.from({ length: 90 }, (_, i) => i);
 
 /**
  * `fin look` without `--originals` after both assets have their `1080` proxy: every frame says
- * `proxy`, its file is named for it (beside, never over, the original's), and the CFR clip's frame
- * ids at the first four times are the ones the originals gave.
+ * `proxy`, its file is named for it (beside, never over, the original's), and the frame ids are the
+ * ones the originals gave: the CFR clip's at the first four times, and the VFR clip's at its two
+ * exact midpoints (the proxy is CFR: its own table would pick other frames there, plan Decision 7).
  */
 async function proxyLook(f, originals, cfr) {
   for (const asset of ["a1", "a2"]) {
     const made = f(["media", "proxy", asset, "--tier", "1080"]);
     assertEqual([made.tier, made.state], ["1080", "ready"], `the 1080 proxy of ${asset}`);
   }
-  const first = AT.slice(0, 4);
-  const look = f(["look", "--at", first.join(",")]);
-  assertEqual(look.frames.map((fr) => fr.source), first.map(() => "proxy"), "frames read from the proxies");
-  assertEqual(look.frames.map((fr) => fr.plan), originals.frames.slice(0, 4).map((fr) => fr.plan), "the same plans");
+  const look = f(["look", "--at", AT.join(",")]);
+  assertEqual(look.frames.map((fr) => fr.source), AT.map(() => "proxy"), "frames read from the proxies");
+  assertEqual(look.frames.map((fr) => fr.plan), originals.frames.map((fr) => fr.plan), "the same plans");
+  const vfr = vfrPts(60);
+  const ids = [
+    ...[0, 1, 2, 3].map((i) => ({ i, place: placeFlat, scale: 1.125, want: nearestFrame(cfr, [0, 15, 30, 45][i]) })),
+    ...VFR_MIDPOINTS.map((tick, k) => ({ i: 5 + k, place: placeRotated, scale: 2, want: nearestFrame(vfr, tick) })),
+  ];
   for (const [i, fr] of look.frames.entries()) {
     if (!fr.file.endsWith("-proxy.png")) throw new Error(`a proxy frame is not named for its source: ${fr.file}`);
     if (fr.file === originals.frames[i].file) throw new Error("a proxy frame replaced the original's file");
-    const want = nearestFrame(cfr, [0, 15, 30, 45][i]);
-    assertEqual(readFrameId(readPng(fr.file), placeFlat, 1.125), want, `frame id at ${first[i]} through the proxy`);
+  }
+  for (const { i, place, scale, want } of ids) {
+    assertEqual(readFrameId(readPng(look.frames[i].file), place, scale), want, `frame id at ${AT[i]} through the proxy`);
   }
   // `--originals` still reads the originals, and its files are as they were.
-  const again = f(["look", "--at", first.join(","), "--originals"]);
-  assertEqual(again.frames.map((fr) => fr.source), first.map(() => "original"), "--originals");
-  assertEqual(again.frames.map((fr) => fr.file), originals.frames.slice(0, 4).map((fr) => fr.file), "the originals' files");
+  const again = f(["look", "--at", AT.join(","), "--originals"]);
+  assertEqual(again.frames.map((fr) => fr.source), AT.map(() => "original"), "--originals");
+  assertEqual(again.frames.map((fr) => fr.file), originals.frames.map((fr) => fr.file), "the originals' files");
+}
+
+/**
+ * The edit-listed clip `c.mp4`, 960×540 at 30 fps: 5 frames of nothing, media frames 5–14, then
+ * 0–9 again. In a project of its own (the first project's plans and T0 hashes stay as they are),
+ * looked at either side of the cut (presented frame 10, tick 15, and its midpoint) and at the two
+ * presentations of media frame 7 (ticks 7 and 22), through the proxy and through the original.
+ * The proxy holds one frame per presented frame from tick 0: its own table is 5 ticks early.
+ */
+const EDITS_AT = ["29/60", "1/2", "31/60", "7/30", "11/15"];
+const EDITS_IDS = [14, 0, 0, 7, 7];
+
+function proxyLookEdits(sd, tmp) {
+  const clip = join(tmp, "c.mp4");
+  cargo(["run", "-q", "--release", "-p", "fin-codecs", "--features", "testing", "--example", "make_fixture", "--", clip, "--size", "960x540", "--rate", "30", "--frames", "20", "--seed", "3", "--edits", "5:-,10:5,10:0"]);
+  const dir = join(tmp, "edits");
+  fin(sd, tmp, ["project", "create", dir, "--name", "Edits"]);
+  const f = (args) => fin(sd, dir, args);
+  assertEqual(f(["asset", "add", clip]).resolved.kind, "media", "the edit-listed asset");
+  f(["clip", "insert", "--track", "t1", "--asset", "a1", "--at", "0", "--dur", "5/6"]);
+  const made = f(["media", "proxy", "a1", "--tier", "1080"]);
+  assertEqual([made.tier, made.state], ["1080", "ready"], "the 1080 proxy of the edit-listed clip");
+  const ids = (look) => look.frames.map((fr) => readFrameId(readPng(fr.file), placeFlat, 1.125));
+  const original = f(["look", "--at", EDITS_AT.join(","), "--originals"]);
+  assertEqual(ids(original), EDITS_IDS, "the original's frame ids across the cut and the repeat");
+  const proxied = f(["look", "--at", EDITS_AT.join(",")]);
+  assertEqual(proxied.frames.map((fr) => fr.source), EDITS_AT.map(() => "proxy"), "frames read from the proxy");
+  assertEqual(proxied.frames.map((fr) => fr.plan), original.frames.map((fr) => fr.plan), "the same plans");
+  assertEqual(ids(proxied), EDITS_IDS, "the proxy's frame ids across the cut and the repeat");
 }
 
 /** The journal's `job.done` of the two `media.look` jobs (the 7-frame look; the killed 64-frame one, run twice), and the media kinds. */

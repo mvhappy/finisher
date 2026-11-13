@@ -77,8 +77,8 @@ export class MediaCache {
     return call(this.#native.readFile(key, file, offset, len));
   }
 
-  attachProxies(inDir, holder) {
-    return call(this.#native.attachProxies(inDir, holder));
+  attachProxies(inDir, holder, projects) {
+    return call(this.#native.attachProxies(inDir, holder, [...projects]));
   }
 
   entriesFor(asset) {

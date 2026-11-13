@@ -12,8 +12,9 @@
 //!   `status()`, `gc(targetBytes?)`, `setCap(capBytes?)`, `entryDir(key)`, and
 //!   `readFile(key, file, offset, len)` (an entry's listed file for HTTP; `read.rs`).
 //!
-//! - `attachProxies(inDir, holder)` lists, in a job's `in/manifest.json`, the `1080` proxy of
-//!   each asset's fingerprint the index holds, pinned for `holder` (`proxies.rs`, Task 16).
+//! - `attachProxies(inDir, holder, projects)` lists, in a job's `in/manifest.json`, the `1080`
+//!   proxy of each asset's fingerprint the index holds, pinned for `holder` and serving
+//!   `projects` (`proxies.rs`, Task 16).
 //!
 //! Eviction runs after each commit (here) and every 10 minutes (finisherd's timer calls `gc`).
 
@@ -256,7 +257,7 @@ impl MediaCache {
     /// Fills the `proxies` of the assets in the job's `in/manifest.json` (`inDir`, written by
     /// `prepareMediaJob`) from the index: each asset's fingerprint's current `1080` proxy, its
     /// directory on this machine, pinned for `holder` (`job:<id>`; release it when the job
-    /// ends). Resolves to the files a worker reads from those entries (absolute paths, for the
+    /// ends) and serving `projects` (the job's: `serve`, pinned for those open). Resolves to the files a worker reads from those entries (absolute paths, for the
     /// job's `reads`). Assets with no proxy are left as they are.
     #[napi(catch_unwind, ts_return_type = "Promise<string[]>")]
     pub fn attach_proxies<'e>(
@@ -264,6 +265,7 @@ impl MediaCache {
         env: &'e Env,
         in_dir: String,
         holder: String,
+        projects: Vec<String>,
     ) -> Result<Object<'e>> {
         self.run(env, move |c| {
             let dir = std::path::Path::new(&in_dir);
@@ -273,7 +275,7 @@ impl MediaCache {
                 .iter()
                 .map(|a| a.fingerprint.clone())
                 .collect();
-            let found = c.proxies_for(&fingerprints, &holder, LISTED_TIERS)?;
+            let found = c.proxies_for(&fingerprints, &holder, &projects, LISTED_TIERS)?;
             inputs::with_proxies(&mut manifest, &found);
             if !found.is_empty() {
                 inputs::write_json(dir, "manifest.json", &manifest)?;
