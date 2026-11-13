@@ -19,7 +19,10 @@
 //   tail) or a queued run's that never started (`live-limits.ts`), passes `returned` as it is
 //   written: hook context, known by its node id (never by its text), is held again for the next
 //   run and named in `hookContextHeld {nodeIds}`; only the person's steers stay in
-//   `steerReturned`, so `resendReturned` never resends a block as a prompt.
+//   `steerReturned`, so `resendReturned` never resends a block as a prompt. An id is known while
+//   its provider may still hand it back: through its run and the session's next one (a late
+//   tail), and at most `HELD_MAX` per session (the oldest evicted). An id no longer known comes
+//   back as a person's steer (its block's text), as a steer the runtime never sent.
 // - **Command order** (`CommandOrder`): a session's commands run one after another in the order
 //   they came, each with its `UserPrompt` hook inside its turn, so a slow hook never lets a later
 //   command (a steer, an end) overtake it. The order is its own queue, in front of the session's
@@ -49,7 +52,7 @@ export interface ContextInternals {
   live(sessionId: string): Live | undefined;
   append(n: { sessionId: string; runId: string; kind: NodeKind; payload: unknown }): Promise<{ readonly node: { readonly id: string; readonly createdAt: number } }>;
   /** Queues `text` (recorded as `payload`) with the session's run waiting for a live slot: its node's id; undefined when it has none. */
-  queued(sessionId: string, text: string, payload: Readonly<Record<string, unknown>>): Promise<{ readonly nodeId?: string } | undefined>;
+  queued(sessionId: string, text: string, payload: Readonly<Record<string, unknown>>): Promise<{ readonly nodeId?: string; readonly runId: string } | undefined>;
   /** In the session's queue (`RuntimeEngine.background`). */
   background(sessionId: string, what: string, f: () => Promise<void>): void;
   log(message: string, details: Record<string, unknown>): void;
@@ -58,8 +61,10 @@ export interface ContextInternals {
 export class HookContexts {
   readonly #d: ContextInternals;
   readonly #held = new Map<string, Held[]>();
-  /** Context steered to a provider or a queued run, by its `userMessage` node's id. */
-  readonly #sent = new Map<string, { readonly sessionId: string; readonly item: HookContextItem }>();
+  /** Per session: context steered to a provider or a queued run, by its `userMessage` node's id, oldest first. */
+  readonly #sent = new Map<string, Map<string, { readonly runId: string; readonly item: HookContextItem }>>();
+  /** Per session: the run `open` saw last (its ids and the one before's are kept). */
+  readonly #runs = new Map<string, string>();
 
   constructor(d: ContextInternals) {
     this.#d = d;
@@ -79,6 +84,10 @@ export class HookContexts {
   async open(sessionId: string, runId: string, extra?: HookContextItem): Promise<string> {
     const items: Held[] = [...(this.#held.get(sessionId) ?? []), ...(extra === undefined ? [] : [{ context: extra }])];
     this.#held.delete(sessionId);
+    const prev = this.#runs.get(sessionId);
+    this.#runs.set(sessionId, runId);
+    const sent = this.#sent.get(sessionId);
+    for (const [id, e] of sent ?? []) if (e.runId !== prev) sent!.delete(id);
     const texts: string[] = [];
     for (const h of items) {
       if ("notice" in h) {
@@ -99,10 +108,11 @@ export class HookContexts {
     const text = hookContextBlock([item.text]);
     const payload = { text, trigger: "hook", hookContext: { event: item.event, hooks: item.hooks } };
     const queued = s?.status === "running" ? await this.#d.queued(sessionId, text, payload) : undefined;
-    if (queued !== undefined) return void (queued.nodeId === undefined || this.#sent.set(queued.nodeId, { sessionId, item }));
+    if (queued !== undefined) return void (queued.nodeId === undefined || this.#remember(sessionId, queued.nodeId, queued.runId, item));
     if ((s?.status === "running" || s?.status === "waitingApproval") && live?.runId != null && live.caps.steer) {
-      const { node } = await this.#d.append({ sessionId, runId: live.runId, kind: "userMessage", payload });
-      this.#sent.set(node.id, { sessionId, item });
+      const runId = live.runId;
+      const { node } = await this.#d.append({ sessionId, runId, kind: "userMessage", payload });
+      this.#remember(sessionId, node.id, runId, item);
       const err = await call(live.provider.steer({ text, nodeId: node.id, at: node.createdAt }));
       if (err !== null) this.#d.log("agent runtime: the provider refused hook context", { sessionId, code: err.code });
       return;
@@ -117,16 +127,16 @@ export class HookContexts {
   }
 
   /** A node about to be written: a `steerReturned` notice without its hook context, which is held again (module docs). */
-  returned<N extends { readonly kind: NodeKind; readonly payload: unknown }>(n: N): N {
+  returned<N extends { readonly sessionId: string; readonly kind: NodeKind; readonly payload: unknown }>(n: N): N {
     const p = n.payload as { steerReturned?: { steers?: unknown } } | null;
     const steers = n.kind === "notice" ? p?.steerReturned?.steers : undefined;
     if (!Array.isArray(steers)) return n;
-    const ids = steers.flatMap((x: { nodeId?: unknown }) => (typeof x.nodeId === "string" && this.#sent.has(x.nodeId) ? [x.nodeId] : []));
+    const sent = this.#sent.get(n.sessionId);
+    const ids = steers.flatMap((x: { nodeId?: unknown }) => (typeof x.nodeId === "string" && sent?.has(x.nodeId) ? [x.nodeId] : []));
     if (ids.length === 0) return n;
     for (const id of ids) {
-      const { sessionId, item } = this.#sent.get(id)!;
-      this.#sent.delete(id);
-      this.#hold(sessionId, { context: item });
+      this.#hold(n.sessionId, { context: sent!.get(id)!.item });
+      sent!.delete(id);
     }
     const person = steers.filter((x: { nodeId?: unknown }) => !ids.includes(x.nodeId as string));
     const { steerReturned, ...rest } = p as { steerReturned: Record<string, unknown> };
@@ -136,7 +146,16 @@ export class HookContexts {
   /** The session ended: what it held is dropped, and what it sent forgotten. */
   forget(sessionId: string): void {
     this.#held.delete(sessionId);
-    for (const [id, e] of this.#sent) if (e.sessionId === sessionId) this.#sent.delete(id);
+    this.#sent.delete(sessionId);
+    this.#runs.delete(sessionId);
+  }
+
+  /** Records a steered block's id (the session's oldest beyond `HELD_MAX` evicted). */
+  #remember(sessionId: string, nodeId: string, runId: string, item: HookContextItem): void {
+    const sent = this.#sent.get(sessionId) ?? new Map();
+    sent.set(nodeId, { runId, item });
+    if (sent.size > HELD_MAX) sent.delete(sent.keys().next().value!);
+    this.#sent.set(sessionId, sent);
   }
 
   #notice(sessionId: string, payload: Readonly<Record<string, unknown>>): void {

@@ -319,6 +319,24 @@ describe("hook context a provider hands back (7F with 7D Decision 13)", () => {
     expect(h.adapter.log.turns[1]!.text).toBe(`next${block([CTX, CTX])}`);
   });
 
+  test("context_only_notice_keeps_earlier_resend: a later hand-back of context alone leaves the person's steer to resend", async () => {
+    const script: FakeScript = { name: "twice", holdSteers: true, turns: [[{ emit: [msg("working")] }, { returnHeld: 800 }, { returnHeld: 800 }, { awaitAnswer: "never" }], [{ emit: [msg("again")] }, { awaitAnswer: "never" }]] };
+    const h = hooked([script], UP());
+    await h.runtime.boot();
+    const { session } = await run(h.runtime.start({ projectId: "P1", prompt: "go" }, PEOPLE, META));
+    await until(() => h.adapter.log.turns.length === 1, "the run");
+    await run(h.runtime.steer(session.id, "trim", PEOPLE));
+    await until(() => texts(session.id).length === 1, "the first hand-back");
+    h.wiring.session.deliver({ projectId: session.projectId, session: store.get(session.id)!, principal: AGENT }, "Notification", { ran: 1, context: "CI is red", contextHooks: ["ci"] });
+    const notices = () => store.nodes(session.id).filter((n) => n.kind === "notice" && (payload(n).steerReturned !== undefined || payload(n).hookContextHeld !== undefined));
+    await until(() => notices().length === 2, "the second hand-back");
+    expect(Object.keys(payload(notices()[1]!))).toEqual(["hookContextHeld"]);
+    await run(h.runtime.interrupt(session.id, PEOPLE));
+    await run(h.runtime.resume(session.id, PEOPLE, undefined, true));
+    await until(() => h.adapter.log.turns.length === 2, "the resend");
+    expect(h.adapter.log.turns[1]!.text).toBe(`trim${block([CTX, "CI is red", CTX])}`);
+  });
+
   test("hand_back_after_admission_keeps_context_out: steered in at admission, handed back at the interrupt", async () => {
     const h = hooked([HOLDING], UP(), { limits: { maxLiveBuiltin: 1 } });
     await h.runtime.boot();

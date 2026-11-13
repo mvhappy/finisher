@@ -164,12 +164,12 @@ export class LiveLimits {
   }
 
   /** A steer to the session's queued run: recorded (its `userMessage`, `payload`) and held, its node's id answered; undefined when it has none. */
-  async hold(sessionId: string, text: string, payload: Readonly<Record<string, unknown>> = { text, trigger: "steer" }): Promise<{ readonly nodeId?: string } | undefined> {
+  async hold(sessionId: string, text: string, payload: Readonly<Record<string, unknown>> = { text, trigger: "steer" }): Promise<{ readonly nodeId?: string; readonly runId: string } | undefined> {
     const q = this.#queue.find((x) => x.sessionId === sessionId);
     if (q === undefined || !this.#d.current(sessionId, q.runId)) return undefined;
     const node = await this.#d.turns.append({ sessionId, runId: q.runId, kind: "userMessage", payload });
     q.steers.push({ text, ...(node === undefined ? {} : { nodeId: node.id, at: node.createdAt }) });
-    return node === undefined ? {} : { nodeId: node.id };
+    return { runId: q.runId, ...(node === undefined ? {} : { nodeId: node.id }) };
   }
 
   isQueued(sessionId: string): boolean {
