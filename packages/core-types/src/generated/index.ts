@@ -1791,6 +1791,45 @@ export type HelloRole = "worker" | "helper";
  */
 export type PlacementOutcome = "clean" | "relocated" | "conflict";
 /**
+ * An event a hook can subscribe to (arch §10 without `PreOp`/`PostOp`, spec §9.1).
+ * `PreRender` and `PostRender` are accepted and inert until a render job kind exists.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "HookEvent".
+ */
+export type HookEvent =
+  | "SessionStart"
+  | "SessionEnd"
+  | "UserPrompt"
+  | "PreCommand"
+  | "PostCommand"
+  | "BranchReady"
+  | "PreMerge"
+  | "PostMerge"
+  | "PreRender"
+  | "PostRender"
+  | "JobDone"
+  | "Approval"
+  | "Notification";
+/**
+ * A hook's answer (Decision 2): one JSON object on stdout, or a `plugin.hook` job's result.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "HookReply".
+ */
+export type HookReply =
+  | {
+      reply: "allow";
+    }
+  | {
+      reason: string;
+      reply: "block";
+    }
+  | {
+      reply: "context";
+      text: string;
+    };
+/**
  * The host methods of host API 1.1.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -6578,6 +6617,71 @@ export interface HookInput {
    */
   tmp: string;
   toolchains?: string[];
+}
+/**
+ * The project an event belongs to.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "HookProject".
+ */
+export interface HookProject {
+  /**
+   * The project folder (read-only to the hook).
+   */
+  dir: string;
+  id: string;
+}
+/**
+ * What a hook reads: one JSON line on stdin, then EOF (Decision 9).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "HookRequest".
+ */
+export interface HookRequest {
+  event: HookEvent;
+  /**
+   * The event's payload (over 1 MiB: `{payloadOmitted: true, bytes}`).
+   */
+  payload: unknown;
+  project: HookProject;
+  /**
+   * Absent for events outside a session (`JobDone` of a job, a person's merge, `UserPrompt`
+   * before `agent.session.start` opens the session).
+   */
+  session?: HookSession;
+  /**
+   * [`HOOK_PROTOCOL_VERSION`].
+   */
+  v: number;
+}
+/**
+ * The session an event belongs to.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "HookSession".
+ */
+export interface HookSession {
+  harness: Harness;
+  id: string;
+  mode: AgentMode;
+  /**
+   * The session's role name.
+   */
+  role: string;
+  /**
+   * The branch the session's root works on, when it has one.
+   */
+  rootBranch?: string;
+}
+/**
+ * A `plugin.hook` v1 job's params: the manifest handler to call with the request.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "HookRun".
+ */
+export interface HookRun {
+  handler: string;
+  request: HookRequest;
 }
 /**
  * `start`: the job, its limits, its mapped files, its helpers and directories.

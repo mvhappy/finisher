@@ -553,6 +553,9 @@ pub(super) const UNAVAILABLE_CODES: &[&str] = &[
     "SANDBOX_SOCKETS_EXPOSED",
     "TOOL_TIMEOUT",
     "HOOK_TIMEOUT",
+    // A project's `finisher.hooks.json` not trusted, or changed since (7F): a warning in a
+    // session's start and the hook listing, never the error a command exits with.
+    "PROJECT_HOOKS_UNTRUSTED",
     "SECRET_STORE_BUSY",
     "SECRET_STORE_UNAVAILABLE",
     // Devices (5B Decision 13): too many pairing or token requests; wait for `Retry-After`.

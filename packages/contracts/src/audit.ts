@@ -2,6 +2,7 @@
 // `control.db` `audit`; they are read only by the owner (`auth.audit.list`, Task 8).
 import { Schema } from "effect";
 import { PLATFORMS, ROUTE_KINDS, SETTINGS_PATHS } from "./devices.ts";
+import { HookEvent, HookLayer } from "./hooks.ts";
 
 /**
  * Every audit kind (spec §3.3); the six after `console.refused` are reserved for sub-projects 7
@@ -279,6 +280,21 @@ const SANDBOX = {
   pathHash: Schema.optional(Schema.String.check(Schema.isPattern(/^[0-9a-f]{16,64}$/))),
 };
 
+/**
+ * `hook.block` (7F plan Task 1): the event, the hook (its id, or `<layer>.unreadable` for a
+ * layer that fails closed) and its layer, the session and project, and `after: true` for a
+ * `PostCommand` block (the command had landed). Never the reason text (the session's notice
+ * holds it), so COMMON's `reason` is not taken either.
+ */
+const { reason: _reason, ...COMMON_BUT_REASON } = COMMON;
+const HOOK_FIELDS = {
+  event: Schema.optional(HookEvent),
+  hookId: Schema.optional(Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,63}(?:\.unreadable)?$/))),
+  layer: Schema.optional(HookLayer),
+  session: Schema.optional(Id),
+  after: Schema.optional(Schema.Literal(true)),
+};
+
 const REVIEW_KINDS_AUDITED: ReadonlyArray<AuditKind> = ["history.drop", "review.merge", "review.policy"];
 const PAIRING: ReadonlyArray<AuditKind> = ["pair.offer", "pair.redeem", "pair.approve", "pair.reject", "pair.expire"];
 /** Kinds whose details may name a device or credential. */
@@ -302,11 +318,12 @@ const PluginDetails = Schema.Struct({ ...COMMON, ...PLUGIN_FIELDS });
 const RuleDetails = Schema.Struct({ ...COMMON, ...RULE_FIELDS });
 const DenialDetails = Schema.Struct({ ...COMMON, ...DENIAL_FIELDS });
 const SandboxDetails = Schema.Struct({ ...COMMON, ...SANDBOX });
+const HookDetails = Schema.Struct({ ...COMMON_BUT_REASON, ...HOOK_FIELDS });
 const LibraryDetails = Schema.Struct({ ...COMMON, ...LIBRARY });
 const ReviewDetails = Schema.Struct({ ...COMMON, ...REVIEW_FIELDS });
 const NamedDetails = Schema.Struct({ ...COMMON, ...SERVER, ...NAMES });
 const AddressedDetails = Schema.Struct({ ...COMMON, ...SERVER, ...NAMES, ...ADDRESS });
-type DetailsSchema = typeof PlainDetails | typeof LibraryDetails | typeof NamedDetails | typeof AddressedDetails | typeof PluginDetails | typeof RuleDetails | typeof DenialDetails | typeof SandboxDetails | typeof ReviewDetails;
+type DetailsSchema = typeof PlainDetails | typeof LibraryDetails | typeof NamedDetails | typeof AddressedDetails | typeof PluginDetails | typeof RuleDetails | typeof DenialDetails | typeof SandboxDetails | typeof ReviewDetails | typeof HookDetails;
 
 /** Kinds whose details may name a plugin, a registry and a version. */
 export const AUDIT_PLUGIN_KINDS: ReadonlySet<AuditKind> = new Set<AuditKind>(AUDIT_KINDS.filter((k) => k.startsWith("plugin.") || k.startsWith("registry.")));
@@ -316,6 +333,7 @@ export const AUDIT_RULE_KINDS: ReadonlySet<AuditKind> = new Set<AuditKind>(["age
 
 function detailsSchema(kind: AuditKind): DetailsSchema {
   if (kind === "sandbox.violation") return SandboxDetails;
+  if (kind === "hook.block") return HookDetails;
   if (kind === "auth.denied") return DenialDetails;
   if (AUDIT_RULE_KINDS.has(kind)) return RuleDetails;
   if (AUDIT_REVIEW_KINDS.has(kind)) return ReviewDetails;
@@ -332,6 +350,7 @@ export const AUDIT_DETAILS: { readonly [K in AuditKind]: DetailsSchema } = Objec
 
 const DECODE = {
   sandbox: Schema.decodeUnknownExit(SandboxDetails),
+  hook: Schema.decodeUnknownExit(HookDetails),
   rule: Schema.decodeUnknownExit(RuleDetails),
   denial: Schema.decodeUnknownExit(DenialDetails),
   plugin: Schema.decodeUnknownExit(PluginDetails),
@@ -346,6 +365,8 @@ const DECODE = {
 export function auditDetailsValid(kind: AuditKind, details: unknown): boolean {
   const decode = kind === "sandbox.violation"
     ? DECODE.sandbox
+    : kind === "hook.block"
+    ? DECODE.hook
     : kind === "auth.denied"
     ? DECODE.denial
     : AUDIT_RULE_KINDS.has(kind)
