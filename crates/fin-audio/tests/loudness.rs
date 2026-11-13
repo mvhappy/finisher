@@ -307,6 +307,8 @@ fn normalise_pcm_warns_on_transient_loss() {
     let s = stereo(x.clone(), x);
     let (out, d, warning) = normalise_pcm(&s, -14.0, -1.0);
     assert!(d.limit);
+    // The fast prediction misses it; only the second pass catches it.
+    assert!(d.warning.is_none(), "{:?}", d.warning);
     assert_eq!(out.len(), s.len());
     let after = measure(&out).integrated.unwrap();
     assert!(-14.0 - after > 1.0, "{after} LUFS");
@@ -320,4 +322,53 @@ fn normalise_pcm_warns_on_transient_loss() {
     let (out, _, warning) = normalise_pcm(&pink, -14.0, -1.0);
     assert!(warning.is_none(), "{warning:?}");
     assert!((measure(&out).integrated.unwrap() + 14.0).abs() <= 0.2);
+}
+
+const CREST: [f32; 4] = [0.707_106_77, 0.707_106_77, -0.707_106_77, -0.707_106_77];
+
+/// Short streams whose crest is last: the whole stream fits in the meter's retained tail, so
+/// the end-of-stream reading sees it unfaded. Mono and stereo, within +0.2 / −0.4 dB of the 8×
+/// reference: the crest alone, after 20 zeros, and streams of 1, 31, 63, 64 and 65 frames (a
+/// quiet sine, then the crest's last frames).
+#[test]
+fn true_peak_of_short_streams() {
+    let mut cases: Vec<(String, Vec<f32>)> = vec![
+        ("crest alone".into(), CREST.to_vec()),
+        ("20 zeros then crest".into(), {
+            let mut v = vec![0.0; 20];
+            v.extend(CREST);
+            v
+        }),
+    ];
+    for n in [1usize, 31, 63, 64, 65] {
+        let k = n.min(4);
+        let mut v: Vec<f32> = (0..n - k)
+            .map(|i| (0.05 * libm::sin(TAU * 997.0 * i as f64 / f64::from(RATE))) as f32)
+            .collect();
+        v.extend(&CREST[4 - k..]);
+        cases.push((format!("{n} frames"), v));
+    }
+    for (name, x) in cases {
+        for channels in [1u16, 2] {
+            let s = stereo(
+                x.clone(),
+                if channels == 1 {
+                    vec![0.0; x.len()]
+                } else {
+                    x.clone()
+                },
+            );
+            // A true peak is never below the sample peak; the reference kernel's passband
+            // ripple reads a lone impulse 0.4 dB low, so the sample peak bounds it.
+            let reference = reference_true_peak(&stereo(x.clone(), x.clone()))
+                .max(fin_audio::testing::analyse::peak_dbfs(&x));
+            let mut m = Meter::new(channels);
+            m.push(&s);
+            let tp = m.measured().true_peak.unwrap();
+            assert!(
+                tp - reference <= 0.2 && reference - tp <= 0.4,
+                "{name}, {channels} ch: meter {tp} dBTP, reference {reference}"
+            );
+        }
+    }
 }

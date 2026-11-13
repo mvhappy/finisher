@@ -7,8 +7,9 @@
 //! a few frames, so a crest in the last frames would never be read. The meter keeps the true
 //! peak in its own `TRUE_PEAK` instance (the loudness instance runs `I | LRA | SAMPLE_PEAK`,
 //! untouched) and the last `TAIL` frames; `measured()` feeds those frames, the first half
-//! faded in with a raised cosine (so the fresh interpolator's onset cannot ring above the
-//! signal), then `TAIL` zeros, to a throwaway `TRUE_PEAK` instance, and reports the larger of
+//! faded in with a raised cosine when they start mid-stream (so the fresh interpolator's onset
+//! cannot ring above the signal; a stream no longer than `TAIL` is fed unfaded, since its true
+//! onset is the zero history a fresh instance assumes), then `TAIL` zeros, to a throwaway `TRUE_PEAK` instance, and reports the larger of
 //! the two. The streaming state is never flushed, so readings can be taken at any time and the
 //! stream continues undisturbed.
 
@@ -44,6 +45,8 @@ pub struct Meter {
     tp: EbuR128,
     /// The last `TAIL` (or fewer) frames, per channel.
     tail: [Vec<f32>; 2],
+    /// Frames pushed in all.
+    frames: u64,
     channels: u32,
     /// Frames since the last short-term reading.
     since_hop: usize,
@@ -68,6 +71,7 @@ impl Meter {
             ebu,
             tp: true_peak_meter(channels),
             tail: [Vec::new(), Vec::new()],
+            frames: 0,
             channels,
             since_hop: 0,
             short_term_max: f64::NEG_INFINITY,
@@ -91,6 +95,7 @@ impl Meter {
                 t.drain(..drop);
             }
             at += n;
+            self.frames += n as u64;
             self.since_hop += n;
             if self.since_hop == HOP {
                 self.since_hop = 0;
@@ -106,7 +111,12 @@ impl Meter {
         if self.tail[0].is_empty() {
             return 0.0;
         }
-        let half = TAIL / 2;
+        // The retained frames are the whole stream: no fade.
+        let half = if self.frames > self.tail[0].len() as u64 {
+            TAIL / 2
+        } else {
+            0
+        };
         let feed = |x: &[f32]| -> Vec<f32> {
             let mut v: Vec<f32> = x
                 .iter()
