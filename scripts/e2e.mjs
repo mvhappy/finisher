@@ -6,7 +6,7 @@
 // through the `fin` binary, and asserts the subscriber saw every committed rev in order and
 // that its last rev equals `snapshot.get`'s. The server and the temp dir are always cleaned up.
 //
-// Usage: node scripts/e2e.mjs [--skip-build] [basic|storage|history|reel|diagnostics|plugins|plugin-code|auth|look|agent|library|sandbox|remote|review ...]  (default: every scenario)
+// Usage: node scripts/e2e.mjs [--skip-build] [basic|storage|history|reel|diagnostics|plugins|plugin-code|auth|look|agent|library|sandbox|remote|review|subagents ...]  (default: every scenario)
 //
 // Builds go to `CARGO_TARGET_DIR` when it is set (else `target/`), and so does the run's
 // `fin` and `fin-plugin`. Scenario temp dirs fall back to `/tmp` when `TMPDIR` is so deep that the
@@ -91,6 +91,14 @@
 // copied to a second server data (the drop holds, the agent branch is re-derived), the policy
 // (`AUTO_MERGE_UNAVAILABLE`, `HUMAN_ONLY`) and what `events/` and the audit hold (plan 5E Task 11).
 //
+// The "subagents" scenario (scripts/e2e/subagents*.mjs) runs built-in sessions of the local preset
+// against a scripted model server: a rule `ask` waits on a card (`APPROVAL_PENDING`, exit 8) and a
+// `remember: session` answer lets the next identical call pass; an editor spawns two clip finders,
+// waits with `fin agent wait --any`, the carves settle on it, it merges one child and a person rolls
+// the merge back; a spawn chain stops at depth 3 (`DEPTH_EXCEEDED`); a saved prompt starts a
+// session; a run past 75 % of the window compacts; an `auto` session's review request leaves the
+// item open, the `auto` merge trigger answering `unavailable` (plan 7B Task 13).
+//
 // After the builds, each scenario has a deadline (E2E_DEADLINE_MS, default 180 s): when it passes,
 // the server is killed and the script exits non-zero. Test hooks (scripts/e2e.test.mjs):
 // E2E_SERVER_CMD (a JSON array, `{serverData}` substituted) replaces the finisherd command,
@@ -111,6 +119,7 @@ import { run as runLibrary } from "./e2e/library.mjs";
 import { run as runSandbox } from "./e2e/sandbox.mjs";
 import { run as runRemote } from "./e2e/remote.mjs";
 import { run as runReview } from "./e2e/review.mjs";
+import { run as runSubagents } from "./e2e/subagents.mjs";
 
 // The servers of every scenario keep their secrets in files, never in the OS keychain (5B Decision 4).
 process.env.FIN_SECRETS ??= "file";
@@ -119,7 +128,7 @@ export { parseFrames } from "./e2e/lib.mjs";
 export { checkRevs };
 
 const DEADLINE_MS = Number(process.env.E2E_DEADLINE_MS ?? 180_000);
-const SCENARIOS = { basic: runBasic, storage: runStorage, history: runHistory, reel: runReel, diagnostics: runDiagnostics, plugins: runPlugins, "plugin-code": runPluginCode, auth: runAuth, look: runLook, agent: runAgent, library: runLibrary, sandbox: runSandbox, remote: runRemote, review: runReview };
+const SCENARIOS = { basic: runBasic, storage: runStorage, history: runHistory, reel: runReel, diagnostics: runDiagnostics, plugins: runPlugins, "plugin-code": runPluginCode, auth: runAuth, look: runLook, agent: runAgent, library: runLibrary, sandbox: runSandbox, remote: runRemote, review: runReview, subagents: runSubagents };
 
 async function main(argv) {
   const names = argv.filter((a) => !a.startsWith("--"));

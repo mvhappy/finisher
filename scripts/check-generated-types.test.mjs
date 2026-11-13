@@ -10,11 +10,14 @@ mkdirSync(join(out, "schema"), { recursive: true });
 mkdirSync(join(out, "src/generated"), { recursive: true });
 writeFileSync(join(out, "schema/fin-core.schema.json"), "{}\\n");
 writeFileSync(join(out, "src/generated/index.ts"), "export type A = 1;\\n");
+mkdirSync(join(out, "../contracts/src/generated"), { recursive: true });
+writeFileSync(join(out, "../contracts/src/generated/schemas.ts"), "export const ASchema = 1;\\n");
 `;
-const files = (ts) => ({
+const files = (ts, effect = "export const ASchema = 1;\n") => ({
   "packages/core-types/scripts/generate.mjs": generator,
   "packages/core-types/schema/fin-core.schema.json": "{}\n",
   "packages/core-types/src/generated/index.ts": ts,
+  "packages/contracts/src/generated/schemas.ts": effect,
 });
 const gate = (root) => runGate("./check-generated-types.mjs", ["--root", root]);
 
@@ -27,4 +30,10 @@ test("a hand-edited generated file is drift", () => {
   const r = gate(fixtureRoot(files("export type A = 2;\n")));
   assert.equal(r.code, 1);
   assert.match(r.out, /GENERATED_TYPES_DRIFT: packages\/core-types\/src\/generated\/index\.ts/);
+});
+
+test("a stale contracts Effect schema file is drift", () => {
+  const r = gate(fixtureRoot(files("export type A = 1;\n", "export const ASchema = 2;\n")));
+  assert.equal(r.code, 1);
+  assert.match(r.out, /GENERATED_TYPES_DRIFT: packages\/contracts\/src\/generated\/schemas\.ts/);
 });

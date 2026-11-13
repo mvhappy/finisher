@@ -51,6 +51,7 @@ export const SAMPLE_PAYLOADS: { readonly [T in FinRpcTag]: Record<string, unknow
   "project.acknowledgeSalvage": { projectId: P, copy: "x" },
   "project.events": { projectId: P },
   "tx.get": { projectId: P, txId: "01bbbbbbbbbbbbbbbbbbbbbbbb" },
+  "history.log": { projectId: P, branch: "main", limit: 20 },
   "eval.frame": { projectId: P, at: "0" },
   "eval.audio": { projectId: P, from: "0", to: "1" },
   "fonts.catalog": {},

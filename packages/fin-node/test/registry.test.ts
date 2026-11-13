@@ -166,9 +166,9 @@ describe("Registry", () => {
       await validateManifest(tree("bad", manifest("1.0.0", { contributes: { skills: [{ file: "x" }] } }))),
     ) as ValidationReport;
     expect(bad.ok).toBe(false);
-    expect(bad.errors.map((e) => e.code)).toContain("PLUGIN_CONTRIBUTION_UNSUPPORTED");
+    expect((bad.errors ?? []).map((e) => e.code)).toContain("PLUGIN_CONTRIBUTION_UNSUPPORTED");
     const missing = JSON.parse(await validateManifest(join(tmp, "nothing"))) as ValidationReport;
-    expect(missing.errors[0]?.details.reason).toBe("missing");
+    expect(missing.errors?.[0]?.details.reason).toBe("missing");
     // Reserved publishers are bundled-only.
     const reserved = tree("reserved", { ...manifest(), id: "@finisher/pack" });
     expect((JSON.parse(await validateManifest(reserved)) as ValidationReport).ok).toBe(false);

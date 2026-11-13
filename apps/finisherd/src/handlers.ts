@@ -438,6 +438,7 @@ export const HandlersLive = FinRpcs.toLayer(
       "project.acknowledgeSalvage": ({ projectId, copy }, options) =>
         guard("project.acknowledgeSalvage", withCredential(options, (meta) => Effect.map(registry.acknowledgeSalvage(projectId, copy, meta), (acknowledged) => ({ acknowledged })))),
       "tx.get": ({ projectId, txId }) => guard("tx.get", registry.txGet(projectId, txId)),
+      "history.log": ({ projectId, branch, before, limit }) => guard("history.log", registry.historyLog(projectId, branch, before, limit)),
       "eval.frame": ({ projectId, branch, timeline, at, rev }) =>
         guard("eval.frame", registry.evalFrame(projectId, branch ?? "main", timeline, at, rev)),
       "eval.audio": ({ projectId, branch, timeline, from, to, rev }) =>

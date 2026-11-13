@@ -712,3 +712,15 @@ fn linux_probe_sees_other_sync_markers() {
         assert!(detect(dir.path(), None).is_sync(), "{marker}");
     }
 }
+
+#[test]
+fn schema_lists_every_storage_kind() {
+    let schema = serde_json::to_value(schemars::schema_for!(StorageKind)).unwrap();
+    let listed: Vec<String> = serde_json::from_value(schema["enum"].clone()).unwrap();
+    let kinds = all_storage_kinds();
+    assert_eq!(listed.len(), 8);
+    for (kind, name) in kinds.iter().zip(&listed) {
+        assert_eq!(serde_json::to_value(kind).unwrap(), serde_json::json!(name));
+        assert_eq!(&name.parse::<StorageKind>().unwrap(), kind);
+    }
+}

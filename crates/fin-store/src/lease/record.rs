@@ -36,6 +36,12 @@ pub struct LeaseRecord {
     /// this record. Observers judge staleness against their own server time, never their
     /// wall clock.
     pub probe_server_ms: i64,
+    /// Written once by the holder's clean close ([`super::Lease::release`]), as its last
+    /// write: the lease is free, and anyone may take it at once (at a fresh epoch through a
+    /// claim, like a missing record). Only the holder writes it, after the same fence as a
+    /// heartbeat. Omitted while held, so a held record reads as before.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub released: bool,
 }
 
 impl LeaseRecord {
@@ -54,6 +60,7 @@ impl LeaseRecord {
             heartbeat,
             holder: holder.to_string(),
             probe_server_ms,
+            released: false,
         }
     }
 }

@@ -49,7 +49,8 @@
 //! # Holding
 //!
 //! A [`Lease`] owns a heartbeat thread (stopped and joined on drop; dropping releases
-//! nothing, so others wait out staleness). [`Lease::check`] is the fence: it reads the record
+//! nothing, so others wait out staleness, as after a crash). A clean close calls
+//! [`Lease::release`] instead, which marks the record released so others take it at once. [`Lease::check`] is the fence: it reads the record
 //! and returns the epoch only while the record is still exactly what this lease last wrote and
 //! the self-fence deadline has not passed. Once lost, a lease stays lost; re-acquiring makes a
 //! new one at a new epoch.
@@ -58,6 +59,7 @@ mod acquire;
 pub mod claim;
 pub mod clock;
 mod fence;
+mod handle;
 mod heartbeat;
 #[cfg(any(test, feature = "test-hooks"))]
 mod hooks;
@@ -65,6 +67,7 @@ mod previous;
 pub mod record;
 mod refusal;
 mod registry;
+mod release;
 mod server_lock;
 
 use std::path::{Path, PathBuf};
@@ -83,6 +86,7 @@ pub use clock::FakeClock;
 use clock::lock;
 pub use clock::{MonoClock, ServerClock, SystemClock};
 use fence::Fence;
+pub(crate) use handle::LeaseFence;
 #[cfg(any(test, feature = "test-hooks"))]
 pub use hooks::{
     HangPoint, LeaseHooks, ReadFault, crash_before_publishing_record_for_test,
@@ -146,7 +150,7 @@ impl Params {
 }
 
 /// The lease as one server sees it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 #[serde(
     tag = "state",
     rename_all = "camelCase",
@@ -435,8 +439,10 @@ impl std::fmt::Debug for Lease {
     }
 }
 
-impl Drop for Lease {
-    fn drop(&mut self) {
+impl Lease {
+    /// Stops the heartbeat thread, waiting up to [`JOIN_WAIT`] for it: whether it ended (a
+    /// thread still stuck in I/O checks `stop` before any write).
+    fn stop_heartbeat(&mut self) -> bool {
         *lock(&self.inner.stop) = true;
         self.inner.wake.notify_all();
         let exited = lock(&self.inner.exited);
@@ -450,7 +456,13 @@ impl Drop for Lease {
         if done && let Some(t) = self.thread.take() {
             let _ = t.join();
         }
-        // A thread still stuck in I/O checks `stop` before any write.
+        done
+    }
+}
+
+impl Drop for Lease {
+    fn drop(&mut self) {
+        self.stop_heartbeat();
         registry::stopped(&self.inner.key, self.inner.epoch);
     }
 }

@@ -24,6 +24,7 @@ pub enum TrackCmd {
     Remove(RemoveArgs),
     Move(MoveArgs),
     Set(SetArgs),
+    Ls(super::inspect::TrackLsArgs),
 }
 
 fn is_false(b: &bool) -> bool {
@@ -122,11 +123,13 @@ pub fn name(cmd: &TrackCmd) -> &'static str {
         TrackCmd::Remove(_) => "track.remove",
         TrackCmd::Move(_) => "track.move",
         TrackCmd::Set(_) => "track.set",
+        TrackCmd::Ls(_) => "track.ls",
     }
 }
 
 pub fn plan(b: &mut Builder<'_>, cmd: &TrackCmd, suffix: &str) -> Result<Value, CoreError> {
     match cmd {
+        TrackCmd::Ls(_) => Err(super::inspect::not_a_write(name(cmd))),
         TrackCmd::Add(a) => {
             let timeline = match &b.timeline {
                 Some(t) => b.id(t),

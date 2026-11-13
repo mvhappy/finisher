@@ -18,6 +18,7 @@ pub enum EffectCmd {
     Add(AddArgs),
     Remove(RemoveArgs),
     Move(MoveArgs),
+    Ls(super::inspect::EffectLsArgs),
 }
 
 /// Add an effect of `kind` (colorAdjust, lut, blur) to an item; binds $fx.
@@ -65,11 +66,13 @@ pub fn name(cmd: &EffectCmd) -> &'static str {
         EffectCmd::Add(_) => "effect.add",
         EffectCmd::Remove(_) => "effect.remove",
         EffectCmd::Move(_) => "effect.move",
+        EffectCmd::Ls(_) => "effect.ls",
     }
 }
 
 pub fn plan(b: &mut Builder<'_>, cmd: &EffectCmd, suffix: &str) -> Result<Value, CoreError> {
     match cmd {
+        EffectCmd::Ls(_) => Err(super::inspect::not_a_write(name(cmd))),
         EffectCmd::Add(a) => {
             let item = b.id(&a.item);
             let (tl, _, _) = addr::item(&b.work, &item)?;

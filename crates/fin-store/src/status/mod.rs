@@ -47,7 +47,9 @@ use std::path::{Path, PathBuf};
 
 use fin_core::{CommittedTx, CoreError};
 use rusqlite::params;
+use schemars::JsonSchema;
 use serde::Serialize;
+use serde_json::Value;
 
 use crate::import::{ImportReport, ReadOnlyReason};
 use crate::lease::LeaseState;
@@ -87,14 +89,14 @@ pub enum StoreEvent {
     Collect(crate::collect::CollectPolicy),
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ReadOnly {
     pub reason: ReadOnlyReason,
     pub fix: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct BranchStatus {
     /// The branch id.
@@ -114,7 +116,7 @@ pub struct BranchStatus {
 }
 
 /// Records set aside now (`current` quarantine rows).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct QuarantineSummary {
     pub count: u32,
@@ -125,15 +127,24 @@ pub struct QuarantineSummary {
     pub reasons: BTreeMap<String, u32>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// One status warning (`StatusWarning` in the schema). The store's carry a code and a message; the server's font warnings
+/// (fin-node, 4C Decision 34) also `details` and a `fix`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
+#[schemars(rename = "StatusWarning")]
 pub struct Warning {
     pub code: String,
     pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Value")]
+    pub details: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub fix: Option<String>,
 }
 
 /// `fin project status` (serialised camelCase).
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectStatus {
     pub project_id: String,
@@ -191,23 +202,35 @@ pub(crate) struct Follow {
     pub(crate) queued: Vec<StoreEvent>,
 }
 
+/// Conflict copies of the project file in `project_dir` (none when it cannot be listed).
+pub(crate) fn project_file_copies(project_dir: &Path) -> Vec<String> {
+    std::fs::read_dir(project_dir)
+        .map(|rd| {
+            let mut v: Vec<String> = rd
+                .filter_map(|e| e.ok()?.file_name().into_string().ok())
+                .filter(|n| crate::conflict_names::classify_project_file(n).is_some())
+                .collect();
+            v.sort();
+            v
+        })
+        .unwrap_or_default()
+}
+
 impl Follow {
     pub(crate) fn arriving(&self) -> bool {
         !self.arriving_files.is_empty()
     }
 
-    pub(crate) fn observe(&mut self, r: &ImportReport, kind: StorageKind, project_dir: &Path) {
+    /// What an import pass `r` found; `copies`: [`project_file_copies`], read with it.
+    pub(crate) fn observe(
+        &mut self,
+        r: &ImportReport,
+        kind: StorageKind,
+        project_dir: &Path,
+        copies: Vec<String>,
+    ) {
         self.import_error = r.error.clone();
-        self.project_file_copies = std::fs::read_dir(project_dir)
-            .map(|rd| {
-                let mut v: Vec<String> = rd
-                    .filter_map(|e| e.ok()?.file_name().into_string().ok())
-                    .filter(|n| crate::conflict_names::classify_project_file(n).is_some())
-                    .collect();
-                v.sort();
-                v
-            })
-            .unwrap_or_default();
+        self.project_file_copies = copies;
         if r.error.as_ref().is_some_and(|e| e.code == "IO_ERROR") {
             return; // the folder could not be listed: what it held before still stands
         }

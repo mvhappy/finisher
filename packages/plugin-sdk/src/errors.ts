@@ -19,7 +19,7 @@ import type { JobError, PluginError as PluginErrorData } from "@finisher/core-ty
 export class PluginError extends Error implements PluginErrorData {
   readonly code: string;
   readonly details: { [k: string]: unknown };
-  readonly fix?: string | null;
+  readonly fix?: string;
 
   constructor(code: string, message: string, details: { [k: string]: unknown } = {}, fix?: string) {
     super(message);
@@ -87,7 +87,8 @@ export function toPluginError(e: unknown): PluginError {
 
 /** A reply's `JobError` as a thrown `PluginError`. */
 export function fromJobError(e: JobError): PluginError {
-  const details = { ...(e.details ?? {}) };
+  // `details` is any JSON value on the wire; only an object's fields carry over.
+  const details: Record<string, unknown> = isObject(e.details) ? { ...e.details } : {};
   const fix = typeof details["fix"] === "string" ? details["fix"] : undefined;
   if (fix !== undefined) delete details["fix"];
   return new PluginError(e.code, e.message, details, fix);

@@ -87,6 +87,10 @@ export class Engine {
     return call(this.#native.txGet(txId));
   }
 
+  log(branch, before, limit) {
+    return call(this.#native.log(branch, before ?? null, limit));
+  }
+
   acknowledgeRewind(branch, generation, metaJson) {
     return call(this.#native.acknowledgeRewind(branch, generation, metaJson));
   }
@@ -211,6 +215,29 @@ export class Engine {
   /** @internal Test builds only: whether the maintenance thread runs. */
   maintenanceRunningForTest() {
     return this.#hook("maintenanceRunningForTest")();
+  }
+
+  /** @internal Test builds only: the next tick stops (`hang…`) or panics (`panic…`) in its folder I/O at a `TickPoint`. */
+  hangNextTickForTest(point) {
+    sync(() => this.#hook("hangNextTickForTest")(point));
+  }
+  panicNextTickIoForTest(point) {
+    sync(() => this.#hook("panicNextTickIoForTest")(point));
+  }
+
+  /** @internal Test builds only: the grace period between compaction's phases is `ms`. */
+  setCompactionGraceForTest(ms) {
+    sync(() => this.#hook("setCompactionGraceForTest")(ms));
+  }
+
+  /** @internal Test builds only: whether a tick is stopped at the armed point. */
+  tickHungForTest() {
+    return this.#hook("tickHungForTest")();
+  }
+
+  /** @internal Test builds only: lets the stopped tick go on. */
+  releaseTickForTest() {
+    this.#hook("releaseTickForTest")();
   }
 
   /** @internal Test builds only: forces two font status refreshes to interleave around a commit of `txJson`. */

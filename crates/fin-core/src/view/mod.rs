@@ -45,6 +45,10 @@ pub struct Entry {
     pub between: Option<[String; 2]>,
     /// How many lines the `merge` step folded into this one (0: not a merged line).
     pub folded: usize,
+    /// The line's place in its section's time order (from 0), before any budget step: a
+    /// merged line has its earliest member's. `fin view --offset` and a tail entry's `offset`
+    /// count in it.
+    pub index: usize,
 }
 
 /// One timeline's lines.
@@ -62,7 +66,8 @@ pub struct Filter<'a> {
     pub track: Option<&'a str>,
     pub from: Option<Rational>,
     pub to: Option<Rational>,
-    /// `--detail`: an item's keyframes are listed with their ids and times.
+    /// `--detail`: an item's keyframes are listed with their ids and times, its effects with
+    /// their stored params.
     pub detail: bool,
 }
 
@@ -215,6 +220,7 @@ pub fn sections(
                     tail: String::new(),
                     between: None,
                     folded: 0,
+                    index: 0,
                 });
             }
         }
@@ -256,6 +262,7 @@ pub fn sections(
                     tail,
                     between: None,
                     folded: 0,
+                    index: 0,
                 });
             }
             for tr in &t.transitions {
@@ -291,14 +298,18 @@ pub fn sections(
                     tail: String::new(),
                     between: Some(tr.between.clone()),
                     folded: 0,
+                    index: 0,
                 });
             }
         }
         entries.retain(|e| filter.keeps(e.start, e.end));
         entries.sort_by_key(|a| (a.start, a.rank, a.track));
+        for (i, e) in entries.iter_mut().enumerate() {
+            e.index = i;
+        }
         out.push(Section {
             timeline: tl.id.clone(),
-            header: lines::header(tl, timeline_end(tl)?),
+            header: lines::header(tl, timeline_end(tl)?, filter.track),
             entries,
         });
     }

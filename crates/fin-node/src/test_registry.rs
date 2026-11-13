@@ -27,10 +27,10 @@ use crate::{encode, reject};
 #[serde(untagged)]
 enum PackageSpec {
     Short(String),
-    Full(FullPackage),
+    Full(Box<FullPackage>),
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct FullPackage {
     id: String,
@@ -114,18 +114,7 @@ fn full(p: &PackageSpec) -> Result<FullPackage> {
                 manifest: None,
             }
         }
-        PackageSpec::Full(f) => FullPackage {
-            id: f.id.clone(),
-            version: f.version.clone(),
-            kind: f.kind.clone(),
-            permissions: f.permissions.clone(),
-            license: f.license.clone(),
-            fonts: f.fonts.clone(),
-            styles: f.styles.clone(),
-            files: f.files.clone(),
-            contributes: f.contributes.clone(),
-            manifest: f.manifest.clone(),
-        },
+        PackageSpec::Full(f) => FullPackage::clone(f),
     })
 }
 

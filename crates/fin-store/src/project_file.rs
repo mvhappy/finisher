@@ -129,6 +129,11 @@ pub struct ProjectFile {
     pub storage_override: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub genesis: Option<Genesis>,
+    /// The key this project was created with (`Store::create`'s `idem`), hashed
+    /// (`blake3:<hex>`, keyed by the project id): a retry of that create returns this project
+    /// on any server, with or without its database. Never the key itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub create_key: Option<String>,
     /// The collection flag (`crate::collect`): `"never"`, or absent. Raw, so a value from a
     /// newer Finisher round-trips (and reads as `never`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -150,6 +155,7 @@ impl ProjectFile {
             storage: Some(storage),
             storage_override: None,
             genesis: Some(genesis),
+            create_key: None,
             collect: None,
             other: serde_json::Map::new(),
         }

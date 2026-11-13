@@ -39,7 +39,7 @@ export function registryEngine(registry: Pick<ProjectRegistryShape, "resolveBran
       }),
     resolveBranch: registry.resolveBranch,
     branches: (projectId) => Effect.map(registry.branches(projectId, true), (r) => r.branches),
-    plan: (projectId, from, into) => Effect.map(registry.history(projectId, "reviewPlan", { projectId, from, into }), (r) => r as ReviewPlan),
+    plan: (projectId, from, into) => registry.history(projectId, "reviewPlan", { projectId, from, into }),
     write: registry.history,
   };
 }

@@ -177,6 +177,7 @@ test("the group exposes exactly the protocol 2 RPC tags", () => {
       "training.closedTargets.set",
       "tx.commit",
       "tx.get",
+      "history.log",
     ].sort(),
   );
 });
@@ -212,10 +213,30 @@ test("project.events items keep every field of each event kind", async () => {
   const encode = (v: unknown) => Effect.runPromise(Schema.encodeUnknownEffect(item as PlainSchema)(v));
   const rewound = { type: "rewound", branch: "main", fromRev: 3, quarantined: 2, own: false, generation: 1, incarnation: "i" };
   expect(await encode(rewound)).toEqual(rewound);
-  expect(await encode({ type: "status", status: { lease: { state: "held" } } })).toEqual({
-    type: "status",
-    status: { lease: { state: "held" } },
-  });
+  const status = {
+    projectId: "p",
+    storage: "sync:dropbox",
+    storageWarning: null,
+    lease: { state: "heldElsewhere", holder: "h", epoch: 2, ageServerMs: null },
+    leaseCheck: null,
+    readOnly: { reason: "LEASE_HELD", fix: "wait" },
+    branches: [{ branch: "main", name: "main", parent: null, forkSeq: 0, state: "active", head: 3, exportedThrough: 3, generation: 0 }],
+    lastExportMs: null,
+    exportError: null,
+    importError: { code: "IO_ERROR", message: "m", details: { path: "x" } },
+    quarantine: { count: 1, origins: ["folder"], reasons: { STALE_EPOCH: 1 } },
+    foreign: [],
+    waiting: [],
+    pending: [],
+    unknownBranches: [],
+    warnings: [{ code: "QUARANTINE", message: "m" }, { code: "FONT_MISSING", message: "m", details: { key: "k" }, fix: "f" }],
+    incarnation: "i",
+    compaction: { pending: [], lastRunMs: null, lastError: null },
+    fonts: { missing: [{ key: "k", sha256: "s", reason: "offline" }], fetching: [], failed: [] },
+  };
+  expect(await encode({ type: "status", status })).toEqual({ type: "status", status });
+  // A status that is not one is refused, not passed on.
+  await expect(encode({ type: "status", status: { lease: { state: "held" } } })).rejects.toThrow();
   expect(await encode({ type: "rebuilt", incarnation: "i2" })).toEqual({ type: "rebuilt", incarnation: "i2" });
 });
 

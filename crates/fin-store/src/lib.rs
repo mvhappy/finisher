@@ -38,6 +38,7 @@ mod migrations;
 pub mod names;
 mod newer;
 mod open;
+pub mod orphans;
 mod paths;
 pub mod project_file;
 mod rebuild;
@@ -75,7 +76,10 @@ pub use compact::{
 pub use copies::mount_root_for_test as copies_mount_root_for_test;
 pub use create::validate_name;
 #[cfg(any(test, feature = "test-hooks"))]
-pub use create::{delay_next_create_start_for_test, fail_next_create_marker_for_test};
+pub use create::{
+    crash_next_create_after_db_rename_for_test, delay_next_create_start_for_test,
+    fail_next_create_marker_for_test,
+};
 pub use db::{SNAPSHOT_EVERY, replay_record};
 pub use export::ExportReport;
 #[cfg(any(test, feature = "test-hooks"))]
@@ -106,10 +110,13 @@ pub use server_id::{ServerIdentity, server_id, server_identity};
 pub use status::{
     BranchStatus, INCOMPLETE_POLLS, ProjectStatus, QuarantineSummary, ReadOnly, StoreEvent, Warning,
 };
-pub use tick::{DueWork, TickOptions, TickReport};
+#[cfg(any(test, feature = "test-hooks"))]
+pub use tick::hooks::{TickHooks, TickPoint};
+pub use tick::{DueWork, StoreAccess, TickOptions, TickReport};
 pub use verify::{Check, VerifyReport};
 pub use wire::{
-    BranchCreated, BranchView, DropReq, EngineEvent, HistoryResult, MergeReport, RecoverGroup,
+    BranchCreated, BranchView, Busy, DropReq, EngineEvent, FontFailed, FontFetching, FontMissing,
+    FontsSummary, HistoryLog, HistoryResult, MergeReport, ProjectStatusView, RecoverGroup,
     RecoverReport, ReviewHead, ReviewPlan, SetAside, SkippedFile, TxSetAside,
 };
 pub use write::WriteOutcome;
@@ -242,7 +249,7 @@ pub struct Store {
     /// failed attempt (retried after [`tick::BACKUP_RETRY_MS`]).
     daily: tick::DailyState,
     /// Heavy work a tick found due but left to [`Store::run_due_backup`] /
-    /// [`Store::run_due_compaction`] ([`TickOptions`]).
+    /// [`Store::run_due_compaction_step_phased`] ([`TickOptions`]).
     due: tick::DueWork,
     /// The shared `db.lock` this store holds while it has the database open (`dblock`).
     db_lock: Option<std::fs::File>,
@@ -262,6 +269,8 @@ pub struct Store {
     /// What history writes do with an item whose neighbours are both gone
     /// ([`Store::with_when_lost`]).
     when_lost: fin_core::rebase::placement::WhenLost,
+    /// The phased tick's state: one tick at a time, and what its unlocked I/O revalidates.
+    phase: tick::Phase,
     #[cfg(any(test, feature = "test-hooks"))]
     fail_after_apply: bool,
 }
@@ -351,6 +360,26 @@ impl Store {
             return Err(branch_not_found(branch).into());
         }
         branch::lineage::records_since(&self.conn, &id, after)
+    }
+
+    /// `history.log` (review batch L): the branch head and its last `limit` committed txs below
+    /// rev `before` (default: through the head), oldest first; below the fork they are its
+    /// ancestors' (each `tx.branch` names the branch that holds it).
+    pub fn log(
+        &self,
+        branch: &str,
+        before: Option<u64>,
+        limit: u64,
+    ) -> Result<HistoryLog, StoreError> {
+        let id = self.resolve_branch(branch)?;
+        if db::latest_rev(&self.conn, &id)?.is_none() {
+            return Err(branch_not_found(branch).into());
+        }
+        let head = self.head_of(&id);
+        let through = before.map_or(head, |b| b.saturating_sub(1).min(head));
+        let after = through.saturating_sub(limit);
+        let records = branch::lineage::records_between(&self.conn, &id, after, through)?;
+        Ok(HistoryLog { head, records })
     }
 
     /// Committed txs on `branch` with `rev > after`, with the branch's generation, read

@@ -87,7 +87,7 @@ use crate::{Head, MAIN, ServerIdentity, Store, StoreError, copies, db, dblock, e
 const OPEN_WAITS: Duration = Duration::from_secs(30);
 
 /// What a rebuild did.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct RebuildReport {
     /// `missing`, `corrupt` or `manual`.

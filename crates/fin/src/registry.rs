@@ -153,7 +153,7 @@ pub const COMMANDS: &[Command] = &[
         name: "status",
         group: "read",
         args: "",
-        summary: "branch, head, lease, read-only, exports, unmerged branches, timelines, fonts, warnings",
+        summary: "summary: branch, head, lease, read-only, exports, branches, timelines, fonts, warnings (lists cut at 20, *Next names the ls)",
         write: false,
         schema: || schema_of::<view::StatusArgs>("status"),
     },
@@ -168,8 +168,8 @@ pub const COMMANDS: &[Command] = &[
     Command {
         name: "view",
         group: "read",
-        args: "[--track <t>] [--range <a..b>] [--budget <tokens>] [--detail]",
-        summary: "screenplay lines of every timeline (or --timeline's), fit to a token budget",
+        args: "[--track <t>] [--range <a..b>] [--budget <tokens> | --full] [--offset <n>] [--detail]",
+        summary: "screenplay lines of every timeline (or --timeline's); default a 4000-token page (elided tail next), --budget fits",
         write: false,
         schema: || schema_of::<view::ViewArgs>("view"),
     },
@@ -240,8 +240,8 @@ pub const COMMANDS: &[Command] = &[
     Command {
         name: "merge",
         group: "history",
-        args: "<branch> [--into <b>] [--skip-conflicting] [--include <txId>…] [--up-to <seq>]",
-        summary: "merge a branch (CONFLICT lists conflicts)",
+        args: "<branch> [--into <b>] [--skip-conflicting] [--include <txId>…] [--up-to <seq>] [--conflicts-from <n>]",
+        summary: "merge a branch (CONFLICT lists 20 conflicts; conflictsNext pages)",
         write: true,
         schema: || schema_of::<history::MergeArgs>("merge"),
     },
@@ -313,7 +313,7 @@ pub const COMMANDS: &[Command] = &[
         name: "review.merge",
         group: "review",
         args: "<id> [--accept-pending] [--expect <json>] [--idem-key <k>]",
-        summary: "merge only what was reviewed; a moved target merges and says targetMoved. REVIEW_UNDECIDED: pending (a count) under requireReview, nothingAccepted, or txIds acceptedDropped/rejectedUndropped; REVIEW_STALE: --expect mismatch, replan (with --accept-pending) or truncated. --idem-key applies to merge only",
+        summary: "merge only what was reviewed; a moved target merges and says targetMoved. REVIEW_UNDECIDED (exit 3): pending (a count) under requireReview, or nothingAccepted; REVIEW_STALE (exit 4): --expect mismatch, replan (with --accept-pending), truncated, or txIds acceptedDropped/rejectedUndropped (the branch changed under the review: decide again). --idem-key applies to merge only",
         write: true,
         schema: || schema_of::<review::MergeArgs>("review.merge"),
     },
@@ -442,6 +442,7 @@ pub fn commands() -> impl Iterator<Item = &'static Command> {
     let tail = COMMANDS.iter().filter(|c| LAST.contains(&c.group));
     head.chain(crate::registry_edit::EDIT_COMMANDS)
         .chain(crate::registry_settings::SETTINGS_COMMANDS)
+        .chain(crate::registry_inspect::INSPECT_COMMANDS)
         .chain(crate::registry_plugins::PLUGIN_COMMANDS)
         .chain(crate::registry_plugins::JOB_COMMANDS)
         .chain(crate::registry_library::LIBRARY_COMMANDS)

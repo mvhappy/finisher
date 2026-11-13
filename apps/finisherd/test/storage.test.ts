@@ -405,9 +405,8 @@ describe("engine events in the registry", () => {
     expect(r.isOpen(projectId)).toBe(true);
     expect(r.dirOf(projectId)).toBe(join(tmp, "p"));
     expect(r.openDirs()).toEqual([join(tmp, "p")]);
-    // Closed means released: another engine takes the lease at once and sees the commit.
-    // Closed means the lease stopped: the reopened engine re-takes it at once (this process
-    // wrote the record), not after the ~60 s staleness wait.
+    // Closed means released (the close wrote a released lease record): the reopened engine
+    // takes it at once, not after the ~60 s staleness wait.
     const end = Date.now() + 10_000;
     while (((await run(r.status(projectId))) as Status).lease.state !== "held") {
       if (Date.now() > end) throw new Error("the reopened engine never took the lease");

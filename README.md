@@ -231,8 +231,11 @@ fin review close <id> --rejected | --dismissed        # --rejected keeps every u
   request) unless you pass `--accept-pending`; when the project requires review, any pending
   one stops the merge (`REVIEW_UNDECIDED`). With nothing accepted and transactions still open,
   the merge is `REVIEW_UNDECIDED` too. A conflict is `REVIEW_HAS_CONFLICTS` and nothing is
-  written. If the target moved since the snapshot, the merge still goes ahead on what was
-  reviewed and says `targetMoved`. An agent's branch is archived once nothing of it is left.
+  written. If an accepted transaction was dropped, or a rejected one undropped, since you
+  decided, the branch changed under the review: the merge is `REVIEW_STALE` (exit 4,
+  `reason` `acceptedDropped` or `rejectedUndropped`, with the `txIds`) and nothing is written;
+  decide those again, then merge. If the target moved since the snapshot, the merge still goes
+  ahead on what was reviewed and says `targetMoved`. An agent's branch is archived once nothing of it is left.
 - **Merge conflicts** from any `fin merge` appear as `mergeConflict` items, and a plugin's
   suggestion as a `pluginSuggestion` item; close those with `fin review close`.
 - **Server moves.** Rejections travel with the project. Open reviews and their comments and
@@ -563,6 +566,35 @@ fin merge <branch>                           # take its work into your branch
 - **Windows sandbox limits.** Node tools that spawn child processes with piped stdio (npm
   scripts, Node hooks, Node MCP servers) fail fast with `WINDOWS_NODE_PIPES` inside the Windows
   sandbox, until Node ships libuv's fix. Warm media workers run cold there under the sandbox.
+
+**Rules, approvals and subagents.** Command rules (`allow`, `ask` or `deny` on a command
+pattern) apply to every agent call the server gets, however it arrives. They come from
+`managed-settings.json`, your local rules, `agents.rules` in `settings.json`, the session's role
+and, once you trust the project, its `finisher.rules.json`; a `deny` from any of them wins, then
+an `ask`. An `ask` puts an approval card in front of you and the agent waits; `allow` lets that
+one call, with exactly those arguments, through once, and `--remember` also adds a rule. A
+session can start child sessions on child branches, each with a share of its budget, and merge
+their work into its own branch.
+
+```bash
+finisherd agent rules ls [--project <dir|id>] [--session <id>]
+finisherd agent rules add ask asset.add --project <dir|id> [--branch …] [--mode …] [--bytes-over …]
+finisherd agent rules rm <rule>                  # type the rule id's first 8 characters
+finisherd project trust <dir|id>                 # shows its rules and saved prompts, then trusts them
+finisherd agent approve <approval> allow|deny [--remember session|project|projectLocal]
+finisherd agent prompts [--project <dir|id>]     # saved prompts, such as make-shorts
+finisherd agent run make-shorts --project <dir|id> --param count=3
+finisherd agent rollback <session> --to-run <seq> # undo the edits of its later runs (0: every run)
+```
+
+- `--remember session` keeps the rule for that session, `projectLocal` for the project on this
+  server only, and `project` writes it into the project's shared `finisher.rules.json`. When a
+  project's rules or saved-prompt files change, they stop applying until you trust it again.
+- Agents use `fin agent spawn|wait|ls|send|stop|rollback` for their own children and
+  `fin approval wait|ls` for their own cards. A command waiting for your answer exits 8 ("wait,
+  then repeat"); a denied one exits 7. Children go at most 3 deep, with 8 live per root session
+  (`agents.subagents.maxDepth`, `.maxLive`); at most 4 CLI and 8 built-in sessions run at once
+  (`agents.maxLiveProviders`, `agents.maxLiveBuiltin`), and the rest queue.
 
 ## Plugins
 

@@ -8,12 +8,16 @@
 //!   into place on its own connection (a WAL snapshot; `fin_store::backup` module docs). A
 //!   long call (`verify`, `rebuild`, …, `close`) cancels it first and waits for it to stop; a
 //!   cancelled backup is due again (and still waits for a quiet engine).
-//! - **Compaction:** under the store mutex on the maintenance thread, one step per tick (a
-//!   manifest's phase 2 or a branch's phase 1): calls wait for the step, as for a tick's
-//!   import, instead of failing.
+//! - **Compaction:** on the maintenance thread, one step per tick (a manifest's phase 2 or a
+//!   branch's phase 1), through the tick's step-by-step access
+//!   (`Store::run_due_compaction_step_phased`): its folder I/O (the fresh reads, the pack
+//!   writes, the fences) runs without the store mutex, so calls answer meanwhile; the checks
+//!   against the database and each delete take it briefly (fin-store's `compact` module docs,
+//!   "Locking"). A long call that takes the store meanwhile ends the step there.
 //!
-//! A compaction failure is a non-fatal `error` event; a panic, a fatal one (the engine is
-//! dead and the maintenance thread ends). A failed backup is retried after the store's retry
+//! A compaction failure is a non-fatal `error` event; a panic, in a step under the mutex or in
+//! its folder I/O between steps, a fatal one (the engine is dead and the maintenance thread
+//! ends). A failed backup is retried after the store's retry
 //! wait (10 min).
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -23,7 +27,6 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use fin_store::{BackupCancel, BackupOutcome, DailyBackup};
-use serde_json::json;
 
 use crate::engine::{Shared, State, lock};
 
@@ -195,29 +198,7 @@ pub(crate) fn stop_backup(inner: &Shared) -> Unreported {
 }
 
 fn compaction_step(inner: &Shared) -> bool {
-    let mut guard = lock(&inner.state);
-    let State::Open(store) = &mut *guard else {
-        return true;
-    };
-    match catch_unwind(AssertUnwindSafe(|| store.run_due_compaction_step())) {
-        Ok(Ok(_)) => true,
-        Ok(Err(e)) => {
-            drop(guard);
-            let e: fin_core::CoreError = e.into();
-            inner
-                .events
-                .emit(crate::maintenance::error_json(&json!(e), false));
-            true
-        }
-        Err(payload) => {
-            let store = std::mem::replace(&mut *guard, State::Panicked);
-            drop(guard);
-            let _ = catch_unwind(AssertUnwindSafe(move || drop(store)));
-            let e = crate::panic_error(payload.as_ref());
-            inner
-                .events
-                .emit(crate::maintenance::error_json(&json!(e), true));
-            false
-        }
-    }
+    crate::maintenance::phased(inner, false, |access| {
+        fin_store::Store::run_due_compaction_step_phased(access).map(|_| ())
+    })
 }

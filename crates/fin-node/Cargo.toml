@@ -24,6 +24,7 @@ test-hooks = [
     "fin-journal/test-hooks",
     "fin-library/test-hooks",
     "fin-sandbox/test-hooks",
+    "fin-store/test-hooks",
     "dep:fin-testfonts",
 ]
 

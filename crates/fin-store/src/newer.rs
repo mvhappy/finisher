@@ -37,6 +37,7 @@ impl Store {
         if matches!(self.export.lease, StoreLease::Lease(_)) {
             // Dropping the lease stops and joins its heartbeat thread.
             self.export.lease = StoreLease::NotHeld;
+            self.phase.io_gen += 1;
             self.ctl.gate = Gate::Open;
             self.ctl.check_error = None;
         }

@@ -163,7 +163,7 @@ export function stagePlan(deps: PlanDeps, req: PluginPlanRequest, by: Asker, reg
           pluginId: plan.plugin.id,
           version: plan.plugin.version,
           source: plan.source.kind,
-          ...(plan.source.registryId === undefined || plan.source.registryId === null ? {} : { registryId: plan.source.registryId }),
+          ...(plan.source.registryId === undefined ? {} : { registryId: plan.source.registryId }),
           action: plan.action,
           byKind: by.kind,
           byId: by.id,

@@ -7,7 +7,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use fin_core::CoreError;
 
-use crate::lease::Lease;
+use crate::lease::{Lease, LeaseFence};
 use crate::names;
 use crate::storage_kind::StorageKind;
 
@@ -114,6 +114,79 @@ impl StoreLease {
                     reason: "the test lease is lost".to_string(),
                 }))
             }
+        }
+    }
+}
+
+impl StoreLease {
+    /// The fence of the lease in force, for folder I/O run without the store ([`Fence`]).
+    pub(crate) fn fence(&self) -> Fence {
+        match self {
+            StoreLease::NotHeld => Fence::NotHeld,
+            StoreLease::Lease(l) => Fence::Lease(l.fence()),
+            #[cfg(any(test, feature = "test-hooks"))]
+            StoreLease::Fixed { epoch, held } => Fence::Fixed {
+                epoch: *epoch,
+                held: *held,
+            },
+        }
+    }
+}
+
+/// [`StoreLease`]'s checks taken out of the store: a tick's folder I/O runs without the store
+/// lock (`crate::tick`), and every write in it is fenced by the lease that was in force when it
+/// was planned. One that the store let go (or replaced) since fails ([`LeaseFence`]).
+#[derive(Clone)]
+pub(crate) enum Fence {
+    NotHeld,
+    Lease(LeaseFence),
+    #[cfg(any(test, feature = "test-hooks"))]
+    Fixed {
+        epoch: u64,
+        held: bool,
+    },
+}
+
+impl Fence {
+    fn not_held() -> CoreError {
+        CoreError::from(crate::lease::LeaseLost {
+            transient: false,
+            reason: "this server does not hold the lease".to_string(),
+        })
+    }
+
+    /// [`StoreLease::check`] (folder I/O).
+    pub(crate) fn check(&self) -> Result<u64, CoreError> {
+        match self {
+            Fence::NotHeld => Err(Fence::not_held()),
+            Fence::Lease(l) => l.check().map_err(CoreError::from),
+            #[cfg(any(test, feature = "test-hooks"))]
+            Fence::Fixed { epoch, held } => StoreLease::Fixed {
+                epoch: *epoch,
+                held: *held,
+            }
+            .check(),
+        }
+    }
+
+    /// [`StoreLease::quick_check`] (in memory).
+    pub(crate) fn quick_check(&self) -> Result<u64, CoreError> {
+        match self {
+            Fence::Lease(l) => l.quick_check().map_err(CoreError::from),
+            other => other.check(),
+        }
+    }
+
+    /// Whether `lease` (the store's now) is still the lease this fence was taken from.
+    pub(crate) fn is_current(&self, lease: &StoreLease) -> bool {
+        match (self, lease) {
+            (Fence::NotHeld, StoreLease::NotHeld) => true,
+            (Fence::Lease(f), StoreLease::Lease(l)) => f.is(l),
+            #[cfg(any(test, feature = "test-hooks"))]
+            (Fence::Fixed { epoch, held }, StoreLease::Fixed { epoch: e, held: h }) => {
+                epoch == e && held == h
+            }
+            _ => false,
         }
     }
 }

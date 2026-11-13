@@ -280,6 +280,8 @@ impl Store {
     /// `dismiss` are allowed while read-only. A dry run plans everything (the import
     /// included) and keeps nothing, on a follower too.
     pub fn recover(&mut self, r: RecoverReq) -> Result<RecoverReport, StoreError> {
+        // It may move folder files and set records aside: an import read before is stale.
+        self.phase.io_gen += 1;
         let manual = manual(self.read_only());
         if r.create.is_some() {
             check_key(&r.tx_id)?;

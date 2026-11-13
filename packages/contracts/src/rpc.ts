@@ -1,7 +1,21 @@
-import type { CommittedTx, EngineEvent, Probe, Project, Tx, TxSetAside } from "@finisher/core-types";
+import type {
+  CommittedTx,
+  EngineEvent,
+  Project,
+  Tx,
+  TxSetAside,
+} from "@finisher/core-types";
 import { Schema } from "effect";
 import { Rpc, RpcGroup } from "effect/rpc";
 import { TxSetAsideSchema } from "./tx-set-aside.ts";
+import {
+  CommittedTxSchema,
+  CompactReportSchema,
+  ProbeSchema,
+  ProjectStatusViewSchema,
+  RebuildReportSchema,
+  VerifyReportSchema,
+} from "./generated/schemas.ts";
 import { DEVICE_RPCS } from "./device-rpcs.ts";
 import { REVIEW_RPCS } from "./review-rpcs.ts";
 import {
@@ -112,22 +126,10 @@ import {
 } from "./job-rpcs.ts";
 import { JobViewSchema } from "./jobs.ts";
 import {
-  BranchCreatePayload,
-  BranchCreateSuccess,
-  BranchListPayload,
-  BranchListSuccess,
-  BranchSetPayload,
-  HistoryCheckpointPayload,
-  HistoryCherryPickPayload,
-  HistoryMergePayload,
-  HistoryRedoPayload,
-  HistoryResultSuccess,
-  HistoryRevertPayload,
-  HistoryUndoPayload,
-  MergeReportSuccess,
-  ProjectRecoverPayload,
-  RecordSuccess,
-  RecoverReportSuccess,
+  BranchCreatePayload, BranchCreateSuccess, BranchListPayload, BranchListSuccess, BranchSetPayload,
+  HistoryCheckpointPayload, HistoryCherryPickPayload, HistoryLogPayload, HistoryLogSuccess,
+  HistoryMergePayload, HistoryRedoPayload, HistoryResultSuccess, HistoryRevertPayload, HistoryUndoPayload,
+  MergeReportSuccess, ProjectRecoverPayload, RecordSuccess, RecoverReportSuccess,
 } from "./history.ts";
 import {
   PluginInfoPayload,
@@ -252,68 +254,13 @@ export const ProjectRefSuccess = Schema.Struct({
 
 /** Protocol 2: the probe is for `projectId` (reach: in that project's folder for an agent or MCP principal; a device's allowed roots, 5B Decision 32). */
 export const AssetProbePayload = Schema.Struct({ projectId: Schema.String, path: Schema.String });
-const Optional = <S extends Schema.Top>(s: S) => Schema.optionalKey(Schema.NullOr(s));
-const ImageInfoSchema = Schema.Struct({ height: Schema.Number, width: Schema.Number });
-const LottieInfoSchema = Schema.Struct({
-  duration: Schema.String,
-  fonts: Schema.optionalKey(Schema.mutable(Schema.Array(Schema.String))),
-  height: Schema.Number,
-  rate: Schema.String,
-  slots: Schema.optionalKey(
-    Schema.mutable(Schema.Array(Schema.Struct({ id: Schema.String, kind: Schema.String }))),
-  ),
-  width: Schema.Number,
-});
-const FontFileSchema = Schema.Struct({
-  faces: Schema.mutable(
-    Schema.Array(
-      Schema.Struct({
-        family: Schema.String,
-        index: Schema.Number,
-        italic: Schema.Boolean,
-        scripts: Schema.mutable(Schema.Array(Schema.String)),
-        weight: Schema.Number,
-      }),
-    ),
-  ),
-  format: Schema.Literals(["ttf", "otf", "ttc"]),
-  sha256: Schema.String,
-  size: Schema.Number,
-});
 /**
- * What `asset.probe` answers: fin-probe's `Probe` (the generated type; `envelopes.test.ts`
- * checks the fields): the asset kind its bytes show and that kind's fields, absent ones omitted.
+ * What `asset.probe` answers: fin-probe's `Probe` (generated, as its schema): the asset kind
+ * its bytes show and that kind's fields, absent ones omitted; for MP4/MOV `media`, fin-media's
+ * `MediaInfo` (display size, rotation, colour, HDR, VFR; never in `asset.add`).
  */
-export const ProbeSchema = Schema.Struct({
-  audio: Optional(Schema.Struct({ channels: Schema.Number, sampleRate: Schema.Number })),
-  duration: Optional(Schema.String),
-  fingerprint: Schema.String,
-  font: Optional(FontFileSchema),
-  image: Optional(ImageInfoSchema),
-  kind: Schema.Literals(["media", "image", "svg", "lottieTemplate", "font", "lut"]),
-  lottie: Optional(LottieInfoSchema),
-  lut: Optional(Schema.Struct({ size: Schema.Number })),
-  // MP4/MOV only: fin-media's `MediaInfo` (the generated type), what the file is (display size,
-  // rotation, colour, HDR, VFR). Validated in Rust and passed through; never in `asset.add`.
-  media: Optional(Schema.Unknown),
-  size: Schema.Number,
-  // Schema 4 (6B-1 Task 11): the display geometry too; each absent when unknown.
-  video: Optional(
-    Schema.Struct({
-      display: Schema.optionalKey(Schema.Struct({ height: Schema.Number, width: Schema.Number })),
-      height: Schema.Number,
-      pixelAspect: Schema.optionalKey(Schema.String),
-      rate: Schema.String,
-      rotation: Schema.optionalKey(Schema.Literals([0, 90, 180, 270])),
-      width: Schema.Number,
-    }),
-  ),
-});
+export { ProbeSchema };
 export const AssetProbeSuccess = ProbeSchema;
-// The schema's type and the generated `Probe` must stay assignable to each other (`media` is a
-// pass-through, typed by the generated `MediaInfo`).
-type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never;
-export const probeMatchesGenerated: Same<Omit<typeof ProbeSchema.Type, "media">, Omit<Probe, "media">> = true;
 
 /**
  * What a client read a branch at: the database's `incarnation` (new after every rebuild) and
@@ -336,7 +283,8 @@ export const TxCommitPayload = Schema.Struct({
   tx: Schema.Unknown,
   generation: GenerationSchema,
 });
-export const CommittedTxSchema = Schema.Unknown;
+/** A committed record, passed through (fin-core validated it), typed as the generated `CommittedTx`. */
+export { CommittedTxSchema };
 
 export const SnapshotGetPayload = Schema.Struct({
   projectId: Schema.String,
@@ -351,8 +299,11 @@ export const SnapshotGetSuccess = Schema.Struct({
 
 /** Every project-scoped storage RPC takes just the project. */
 export const ProjectIdPayload = Schema.Struct({ projectId: Schema.String });
-/** fin-store's `ProjectStatus` (camelCase) plus `busy: null | { operation, sinceMs }`. */
-export const ProjectStatusSchema = Schema.Unknown;
+/**
+ * fin-store's `ProjectStatusView`: the `ProjectStatus` with the server's font summary (`fonts`)
+ * and, from `project.status`, `busy: null | { operation, sinceMs }` (generated).
+ */
+export const ProjectStatusSchema = ProjectStatusViewSchema;
 export const ProjectTakeoverPayload = Schema.Struct({
   projectId: Schema.String,
   /** Needed on sync folders, which never take over without a person's say-so. */
@@ -470,11 +421,10 @@ export const FinRpcs = RpcGroup.make(
   Rpc.make("project.status", { payload: ProjectIdPayload, success: ProjectStatusSchema, error: FinError }),
   Rpc.make("project.takeover", { payload: ProjectTakeoverPayload, success: ProjectStatusSchema, error: FinError }),
   /** fin-store's `VerifyReport`: `{ ok, checks: [{ name, ok, details }] }`. */
-  Rpc.make("project.verify", { payload: ProjectIdPayload, success: Schema.Unknown, error: FinError }),
-  /** fin-store's `RebuildReport`. */
-  Rpc.make("project.rebuild", { payload: ProjectIdPayload, success: Schema.Unknown, error: FinError }),
+  Rpc.make("project.verify", { payload: ProjectIdPayload, success: VerifyReportSchema, error: FinError }),
+  Rpc.make("project.rebuild", { payload: ProjectIdPayload, success: RebuildReportSchema, error: FinError }),
   /** fin-store's `CompactReport` (a forced run). */
-  Rpc.make("project.compact", { payload: ProjectIdPayload, success: Schema.Unknown, error: FinError }),
+  Rpc.make("project.compact", { payload: ProjectIdPayload, success: CompactReportSchema, error: FinError }),
   /** fin-store's `RecoverReport`: the groups found, the branches made, every record written. A long call. */
   Rpc.make("project.recover", { payload: ProjectRecoverPayload, success: RecoverReportSuccess, error: FinError }),
   /** Plan 4B Task 18: branches and history. Every committed record reaches its branch's subscribers. */
@@ -487,6 +437,7 @@ export const FinRpcs = RpcGroup.make(
   Rpc.make("history.merge", { payload: HistoryMergePayload, success: MergeReportSuccess, error: FinError }),
   Rpc.make("history.cherryPick", { payload: HistoryCherryPickPayload, success: HistoryResultSuccess, error: FinError }),
   Rpc.make("history.revert", { payload: HistoryRevertPayload, success: HistoryResultSuccess, error: FinError }),
+  Rpc.make("history.log", { payload: HistoryLogPayload, success: HistoryLogSuccess, error: FinError }),
   Rpc.make("project.acknowledgeRewind", {
     payload: ProjectAcknowledgeRewindPayload,
     success: AcknowledgeSuccess,

@@ -4,7 +4,7 @@
 00:00.0–00:04.0  A1  c4 clip a1 [0.0s+4.0s]  ⟷ lk2
 00:00.0–00:02.0  C1  cap1 "Hello world" (st1)
 00:01.0–00:03.0  V2  img1 image a3 scale 0.5
-00:04.0–00:07.5  V1  c2 clip a1 [2.0s+5.25s] x1.5 opacity 0.8 fx: blur  ⟷ lk1
+00:04.0–00:07.5  V1  c2 clip a1 [2.0s+5.25s] x1.5 opacity 0.8 fx: blur=fx1  ⟷ lk1
 00:04.0–00:07.5  A1  c5 clip a1 [2.0s+5.25s] x1.5 gain -6dB fade 0.5s/0.0s  ⟷ lk1
 00:05.0–00:08.0  V2  g1 graphic a2 title="Hi"
 00:05.0–00:06.2  C1  cap2 "Let's go" (preset:bold) (unmeasured: font unpinned)
@@ -15,4 +15,4 @@
 00:08.0–00:10.0  V2  nst1 nested tl2 [0.0s+2.0s]
 == tl2 "Alt" 1920x1080 29.97fps 00:02.001  V1=t5
 00:00.0–00:01.001  V1  c6 clip a1 [20.0s+1.001s]
-00:01.001–00:02.001  V1  adj1 adjustment blend screen fx: colorAdjust(off)
+00:01.001–00:02.001  V1  adj1 adjustment blend screen fx: colorAdjust=fx2(off)

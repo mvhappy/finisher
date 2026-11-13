@@ -12,7 +12,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::StoreEvent;
+use crate::{ProjectStatus, StoreEvent};
 
 /// One engine event (`Engine.onEvent`), tagged by `type`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -25,9 +25,9 @@ use crate::StoreEvent;
 pub enum EngineEvent {
     /// A record imported from the folder.
     Applied { tx: CommittedTx },
-    /// The status changed (fin-store's `ProjectStatus`).
+    /// The status changed: [`ProjectStatusView`] (without `busy`).
     Status {
-        #[schemars(with = "Value")]
+        #[schemars(with = "ProjectStatusView")]
         status: Value,
     },
     /// An import took `branch`'s revs from `from_rev` on out of its history: `quarantined`
@@ -85,6 +85,74 @@ impl EngineEvent {
             StoreEvent::Collect(collect) => EngineEvent::Collect { collect: *collect },
         }
     }
+}
+
+/// A project's status as fin-node serves it (`status()`, `takeover()` and the `status` event:
+/// `project.status`, `project.takeover`, `project.events`): the store's [`ProjectStatus`] with
+/// the server's font summary merged in (`fonts`, and its warnings after the store's; 4C
+/// Decision 34) and, from `status()` only, `busy`. fin-node merges the parts as JSON; this type
+/// names the result for the schema.
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectStatusView {
+    #[serde(flatten)]
+    pub status: ProjectStatus,
+    /// What the project's font pins lack on this server; absent until the server has read the
+    /// project's pins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fonts: Option<FontsSummary>,
+    /// `status()` only (absent elsewhere): the long call running now, `null` when none is. The
+    /// rest is then the status cached after the last tick or long call.
+    pub busy: Option<Busy>,
+}
+
+/// The long call a status was answered during (`status()`'s `busy`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Busy {
+    pub operation: String,
+    /// Unix ms the call started.
+    pub since_ms: i64,
+}
+
+/// A project's font summary (fin-node, 4C Decision 34): the pinned files missing on this
+/// server, being fetched, and whose fetch failed.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct FontsSummary {
+    pub missing: Vec<FontMissing>,
+    pub fetching: Vec<FontFetching>,
+    pub failed: Vec<FontFailed>,
+}
+
+/// A pinned font file not available: `key` (the face key), its `sha256` and why (`offline`,
+/// `notInCatalog`, `notFetched`, `damaged`, `hashMismatch`, or an asset file's problem).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct FontMissing {
+    pub key: String,
+    pub sha256: String,
+    pub reason: String,
+}
+
+/// A pinned font file being fetched (queued: `bytes` 0): `bytes` of `total` so far.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct FontFetching {
+    pub key: String,
+    pub sha256: String,
+    pub bytes: u64,
+    pub total: u64,
+}
+
+/// A pinned font file whose fetch failed, retried after `retry_at` (unix ms).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct FontFailed {
+    pub key: String,
+    pub sha256: String,
+    pub reason: String,
+    pub retry_at: i64,
 }
 
 /// `tx.get` for a transaction that is not (or no longer) on its branch.
@@ -195,6 +263,15 @@ pub struct MergeReport {
     /// its `skipped` is empty).
     #[serde(default)]
     pub placements: Vec<Placement>,
+}
+
+/// `history.log`: the branch's head rev and a window of its records, oldest first (review
+/// batch L; `fin log` summarises them).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HistoryLog {
+    pub head: u64,
+    pub records: Vec<CommittedTx>,
 }
 
 /// A branch head as a review plan saw it: the branch id, its head seq and the `txHash` of the

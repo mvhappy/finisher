@@ -74,6 +74,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use fin_core::{Project, new_project};
 use rusqlite::Connection;
+use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -81,7 +82,7 @@ use crate::storage_kind::StorageKind;
 use crate::{MAIN, Store, StoreError, db};
 
 /// One check's outcome.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Check {
     pub name: String,
@@ -90,7 +91,7 @@ pub struct Check {
 }
 
 /// [`Store::verify`]: `ok` when every check is.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct VerifyReport {
     pub ok: bool,

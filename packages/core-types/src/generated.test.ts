@@ -47,10 +47,14 @@ test("CoreError.details is required", () => {
 test("the envelope types above fin-core are generated too", () => {
   // fin-probe's Probe (asset.probe), with its kind and Rational times.
   expect(block("Probe")).toMatch(/kind: AssetKind;/);
-  expect(block("Probe")).toMatch(/duration\?: Rational \| null;/);
-  expect(block("Probe")).toMatch(/font\?: FontFile \| null;/);
+  // Fields the wire omits when absent (never `null`): optional, not nullable.
+  expect(block("Probe")).toMatch(/duration\?: Rational;/);
+  expect(block("Probe")).toMatch(/font\?: FontFile;/);
   expect(block("Probe")).toMatch(/size: number;/);
-  expect(block("Probe")).toMatch(/video\?: VideoInfo \| null;|video: VideoInfo \| null;/);
+  for (const f of ["audio?: AudioInfo;", "video?: VideoInfo;", "image?: ImageInfo;", "lottie?: LottieInfo;", "lut?: LutInfo;", "media?: MediaInfo;"]) {
+    expect(block("Probe")).toContain(f);
+  }
+  expect(block("Probe")).not.toContain("null");
   // fin-store's Generation, tx.get's set-aside answer, and the engine events.
   expect(block("Generation")).toMatch(/incarnation: string;/);
   expect(block("Generation")).toMatch(/n: number;/);
@@ -63,7 +67,15 @@ test("the envelope types above fin-core are generated too", () => {
 });
 
 test("Tx carries the optional argsHash", () => {
-  expect(block("Tx")).toMatch(/argsHash\?: string \| null;|argsHash\?: string;/);
+  expect(block("Tx")).toMatch(/argsHash\?: string;/);
+});
+
+test("a field the wire omits is optional, never null; an Option written as null stays nullable", () => {
+  // `skip_serializing_if` (fin_core::json_schema_with): `CoreError.fix`, `Tx.argsHash`.
+  expect(block("CoreError")).toMatch(/\n  fix\?: string;/);
+  expect(block("HistoryResult")).toMatch(/noOp\?: string;/);
+  // No `skip_serializing_if`: `status()`'s `busy` is written as `null` when no call runs.
+  expect(block("ProjectStatusView")).toMatch(/busy\?: Busy \| null;/);
 });
 
 test("the sandbox profiles' inputs are generated, the policy is not (plan 7C Decision 1)", () => {
@@ -72,7 +84,7 @@ test("the sandbox profiles' inputs are generated, the policy is not (plan 7C Dec
   }
   expect(block("AgentInput")).toMatch(/sessionId: string;/);
   expect(block("AgentInput")).toMatch(/mode: AgentMode;/);
-  expect(block("AgentInput")).toMatch(/fin\?: FinEndpoint \| null;/);
+  expect(block("AgentInput")).toMatch(/fin\?: FinEndpoint;/);
   expect(block("WorkerInput")).toMatch(/scope: WorkerScope;/);
   expect(ts).toMatch(/export type WorkerScope =[\s\S]*?kind: "cold";[\s\S]*?kind: "warm";/);
   expect(ts).toMatch(/export type FinEndpoint =[\s\S]*?kind: "tcp";[\s\S]*?kind: "unixSocket";[\s\S]*?kind: "pipe";/);

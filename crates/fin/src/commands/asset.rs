@@ -23,6 +23,7 @@ pub enum AssetCmd {
     Move(MoveArgs),
     Remove(RemoveArgs),
     Reprobe(ReprobeArgs),
+    Ls(super::inspect::AssetLsArgs),
 }
 
 /// The asset edits that are not probes (`fin asset move|remove`).

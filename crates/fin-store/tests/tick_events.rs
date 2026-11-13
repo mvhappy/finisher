@@ -7,13 +7,22 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use fin_store::lease::MonoClock;
-use fin_store::{DueWork, Store, StoreEvent, TickOptions, TickReport};
+use fin_store::{DueWork, Store, StoreAccess, StoreEvent, TickOptions, TickReport};
 use integration_support::*;
 
 const LIGHT: TickOptions = TickOptions {
     backup: false,
     compaction: false,
 };
+
+/// A store the test has throughout, as the phased step's access.
+struct Owned<'a>(&'a mut Store);
+
+impl StoreAccess for Owned<'_> {
+    fn with<R>(&mut self, f: impl FnOnce(&mut Store) -> R) -> Option<R> {
+        Some(f(self.0))
+    }
+}
 
 fn light_poll(e: &Env, s: &mut Store) -> TickReport {
     s.poll_now_for_test();
@@ -145,7 +154,9 @@ fn a_light_tick_leaves_compaction_to_the_caller() {
     let r = light_poll(&e, &mut a);
     assert_eq!(r.compact.deleted, 0, "the light tick deletes nothing");
     assert!(a.due_work().compaction);
-    let done = a.run_due_compaction().unwrap();
+    let done = Store::run_due_compaction_step_phased(&mut Owned(&mut a))
+        .unwrap()
+        .expect("the step ran");
     assert_eq!(done.deleted, 3, "{done:?}");
     assert!(!a.due_work().compaction);
     let json = serde_json::to_value(&done).unwrap();
@@ -199,7 +210,9 @@ fn a_due_compaction_runs_one_step_at_a_time() {
     for left in [2, 1] {
         light_poll(&e, &mut a);
         assert!(a.due_work().compaction, "{left} manifests left");
-        let step = a.run_due_compaction_step().unwrap();
+        let step = Store::run_due_compaction_step_phased(&mut Owned(&mut a))
+            .unwrap()
+            .expect("the step ran");
         assert_eq!(step.finished.len(), 1, "{step:?}");
     }
     light_poll(&e, &mut a);

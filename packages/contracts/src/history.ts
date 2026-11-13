@@ -1,17 +1,21 @@
 // Branch and history RPC payloads and results (plan 4B Task 18). The result types are the
-// generated ones (`@finisher/core-types`); the Effect schemas that validate them at runtime
-// are `Schema.Unknown` narrowed to those types, except `BranchViewSchema` and `ConflictSchema`,
-// which `envelopes.test.ts` checks against the generated schema.
-import type {
-  BranchCreated,
-  BranchView,
-  CommittedTx,
-  Conflict,
-  HistoryResult,
-  MergeReport,
-  RecoverReport,
-} from "@finisher/core-types";
+// generated ones (`@finisher/core-types`), and so are their Effect schemas
+// (`generated/schemas.ts`, from the same JSON Schema): exact, since a `Struct` drops any field
+// it does not list. A `CommittedTx` (the records in each result) is passed through unvalidated,
+// typed as the generated type (fin-core validated it on commit).
+import type { HistoryLog } from "@finisher/core-types";
 import { Schema } from "effect";
+import {
+  BranchCreatedSchema,
+  BranchStateSchema,
+  BranchViewSchema,
+  CommittedTxSchema,
+  ConflictSchema,
+  HistoryLogSchema,
+  HistoryResultSchema,
+  MergeReportSchema,
+  RecoverReportSchema,
+} from "./generated/schemas.ts";
 
 export type {
   BranchCreated,
@@ -27,37 +31,8 @@ export type {
   ReviewPlan,
 } from "@finisher/core-types";
 
-type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never;
-
-export const BranchStateSchema = Schema.Union([
-  Schema.Literal("active"),
-  Schema.Literal("archived"),
-  Schema.Literal("merged"),
-]);
-
-/** fin-store's `BranchView`; `envelopes.test.ts` checks it against the generated schema. */
-export const BranchViewSchema = Schema.Struct({
-  id: Schema.String,
-  name: Schema.String,
-  display: Schema.String,
-  parent: Schema.optionalKey(Schema.NullOr(Schema.String)),
-  forkSeq: Schema.Number,
-  head: Schema.Number,
-  state: BranchStateSchema,
-  createdBy: Schema.String,
-});
-export const branchViewMatchesGenerated: Same<typeof BranchViewSchema.Type, BranchView> = true;
-
-/** fin-core's `Conflict`: one op that cannot be carried to the head (`CONFLICT` details.conflicts). */
-export const ConflictSchema = Schema.Struct({
-  txId: Schema.String,
-  opIndex: Schema.Number,
-  reason: Schema.String,
-  againstTx: Schema.optionalKey(Schema.NullOr(Schema.String)),
-  details: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
-  fix: Schema.String,
-});
-export const conflictMatchesGenerated: Same<typeof ConflictSchema.Type, Conflict> = true;
+/** fin-store's `BranchView` and its `BranchState`; fin-core's `Conflict` (`CONFLICT` details.conflicts). */
+export { BranchStateSchema, BranchViewSchema, ConflictSchema };
 
 /**
  * Every write takes `txId` (the idempotency key: a retry answers from the log), `author`,
@@ -86,7 +61,7 @@ export const BranchCreatePayload = Schema.Struct({
   from: Schema.String,
   at: Schema.optional(BranchAtSchema),
 });
-export const BranchCreateSuccess = Schema.Unknown;
+export const BranchCreateSuccess = BranchCreatedSchema;
 export const BranchListPayload = Schema.Struct({ projectId: Schema.String, all: Schema.optional(Schema.Boolean) });
 export const BranchListSuccess = Schema.Struct({ branches: Schema.Array(BranchViewSchema) });
 /** Rename (`name`), archive (`archived: true`) or restore (`archived: false`). */
@@ -144,9 +119,9 @@ export const HistoryDropPayload = Schema.Struct({
 export const HistoryCherryPickPayload = Schema.Struct({ ...Write, origin: Schema.String, into: Schema.String });
 export const HistoryRevertPayload = Schema.Struct({ ...Write, mergeId: Schema.String, branch: Schema.String });
 /** The `CommittedTx` a `branch.set` or `history.checkpoint` answers with. */
-export const RecordSuccess = Schema.Unknown;
-export const HistoryResultSuccess = Schema.Unknown;
-export const MergeReportSuccess = Schema.Unknown;
+export const RecordSuccess = CommittedTxSchema;
+export const HistoryResultSuccess = HistoryResultSchema;
+export const MergeReportSuccess = MergeReportSchema;
 
 /**
  * `create`: `"all"` or one group's id (12 hex); without it the groups are only listed.
@@ -163,11 +138,22 @@ export const ProjectRecoverPayload = Schema.Struct({
   dismiss: Schema.optional(Schema.String),
   dryRun: Schema.optional(Schema.Boolean),
 });
-export const RecoverReportSuccess = Schema.Unknown;
+export const RecoverReportSuccess = RecoverReportSchema;
 
-/** Narrowed views of the `Schema.Unknown` results. */
-export type BranchCreatedPayload = BranchCreated;
-export type HistoryResultPayload = HistoryResult;
-export type MergeReportPayload = MergeReport;
-export type RecoverReportPayload = RecoverReport;
-export type RecordPayload = CommittedTx;
+/** The most records one `history.log` page holds (`fin log --limit`). */
+export const HISTORY_LOG_MAX = 100;
+/**
+ * `history.log` (review batch L): the branch's head and its last `limit` records below rev
+ * `before` (default: through the head), oldest first; `fin log` summarises them.
+ */
+export const HistoryLogPayload = Schema.Struct({
+  projectId: Schema.String,
+  branch: Schema.String,
+  before: Schema.optional(
+    Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER)),
+  ),
+  limit: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(HISTORY_LOG_MAX)),
+});
+export const HistoryLogSuccess = HistoryLogSchema;
+export type HistoryLogResult = HistoryLog;
+

@@ -1,6 +1,7 @@
 // `project.events` (`ProjectRegistry.events`): the status now, then every status change and
 // rewind/rebuild/background error, in the order the engines emitted them.
 import type { FinError, ProjectEvent } from "@finisher/contracts";
+import type { ProjectStatusView } from "@finisher/core-types";
 import { Effect, PubSub, Stream } from "effect";
 import { finError } from "./errors.ts";
 import { follower, gapless, type Hubs } from "./hubs.ts";
@@ -17,7 +18,7 @@ export interface SourcedEvent {
 
 /** A status and the last event its engine (`source`) emitted before it was read. */
 export interface StatusAt {
-  readonly status: unknown;
+  readonly status: ProjectStatusView;
   readonly source: number;
   readonly seq: number;
 }

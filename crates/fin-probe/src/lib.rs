@@ -47,7 +47,8 @@ const WHOLE_FILE_LIMIT: u64 = 3 * SAMPLE;
 
 /// What the server needs to register an asset: its kind and that kind's fields (the
 /// `asset.add` fields, plan 4C Task 7). Its serde form is what `asset.probe` answers
-/// (`@finisher/core-types` exports it as `Probe`); absent fields are omitted.
+/// (`@finisher/core-types` exports it as `Probe`); absent fields are omitted, never `null`
+/// (the contract schema types each one optional, not nullable: `fin_core::json_schema_with`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Probe {
@@ -73,7 +74,6 @@ pub struct Probe {
     /// rotation, colour, HDR, VFR, edit lists. In the `asset.probe` answer only: an
     /// `asset.add` never carries it (spec §4.4).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "MediaInfo")]
     pub media: Option<MediaInfo>,
     pub fingerprint: String,
     pub size: u64,

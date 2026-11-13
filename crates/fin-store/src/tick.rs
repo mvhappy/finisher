@@ -33,6 +33,32 @@
 //!
 //! Every call ends with [`StoreEvent::Status`] if the status changed (lease ages ignored).
 //!
+//! # Locking
+//!
+//! [`Store::tick_phased`] runs a tick through a [`StoreAccess`] (fin-node: the engine's
+//! mutex), taking the store only around database work and in-memory steps, never across
+//! folder I/O ([`Store::tick_with`] is the same tick on a store the caller has):
+//! - an import pass is planned with the store (`Store::import_plan` takes out the scanner and
+//!   the verified-segment cache), reads the folder without it (project-file reread, scan,
+//!   hydration, verification, the full lease check, the lease files) and is applied with it
+//!   (`Store::import_apply`: the one transaction) unless something changed what it read
+//!   against since it was planned (`Phase::io_gen`: another pass, a marked export,
+//!   compaction, a rebuild, a recovery, the lease in force, a project-file write); then the
+//!   next poll reads afresh, and the pass's project-file read is not observed either;
+//! - an export writes segment by segment: rows read with the store, the fence, encoding,
+//!   write and read-back without it (fenced by the planned lease: one the store let go since
+//!   fails), marked with it only if the rows are still exactly the next unexported ones; it
+//!   exports what was pending when its delay passed;
+//! - the re-check's folder read runs without the store, applied only to the lease it checked;
+//!   acquisition and the backup run with it;
+//! - compaction (a run, or the light tick's due check) is phased too: its listing, fresh reads,
+//!   writes and fences run without the store, its checks against the database and every
+//!   delete with it, and a run something overtook ends (`crate::compact` module docs,
+//!   "Locking"); [`Store::run_due_compaction_step_phased`] is the light tick's due step the
+//!   same way;
+//! - one tick at a time ([`Store::tick_phased`] returns `None` while another runs); a store
+//!   that goes away between two steps ends the tick there.
+//!
 //! # The ordering rule
 //!
 //! After every acquisition (at open, an automatic re-acquisition or takeover, a manual
@@ -62,7 +88,7 @@ use fin_core::CoreError;
 
 use crate::export::{self, ExportReport, StoreLease};
 use crate::import::ImportReport;
-use crate::lease::{Contender, Lease, LeaseState, Params, ServerLock, describe_holder};
+use crate::lease::{Contender, Lease, LeaseLost, LeaseState, Params, ServerLock, describe_holder};
 use crate::status::StoreEvent;
 use crate::storage_kind::StorageKind;
 use crate::{Store, StoreError};
@@ -178,7 +204,7 @@ impl LeaseCtl {
 /// The daily backup (`VACUUM INTO`) and compaction can take seconds (minutes on a slow share).
 /// A caller that must not hold the store that long inside its tick turns them off: the tick
 /// then only notes that they are due ([`Store::due_work`]) and the caller runs them when it
-/// can ([`Store::run_due_backup`], [`Store::run_due_compaction`]).
+/// can ([`Store::run_due_backup`], [`Store::run_due_compaction_step_phased`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TickOptions {
     pub backup: bool,
@@ -228,63 +254,18 @@ impl Store {
     /// [`Store::tick_report`], running the heavy steps only as `opts` says (else noting them
     /// in [`Store::due_work`]).
     pub fn tick_with(&mut self, now: Instant, opts: TickOptions) -> Result<TickReport, StoreError> {
-        let mut out = TickReport::default();
-        let every = poll_every(self.storage_kind());
-        let due = self
-            .ctl
-            .last_poll
-            .is_none_or(|t| now.saturating_duration_since(t) >= every);
-        if due {
-            self.ctl.last_poll = Some(now);
-            let r = self.import_pass()?;
-            out.imports.push(r);
-        }
-        out.export = export::export_pending(self, now, false)?;
-        if out.export.segments_written > 0 {
-            self.follow.last_export_ms = Some(crate::commit::now_ms());
-        }
-        if due && !self.ctl.fixed {
-            if self.holding() {
-                self.recheck();
-            }
-            if !self.holding() {
-                self.release_lost();
-                if self.try_acquire() && self.ctl.gate_needs_no_wait() {
-                    let r = self.import_pass()?;
-                    out.imports.push(r);
-                }
-            }
-            let now_ms = crate::commit::now_ms();
-            if opts.backup {
-                self.daily_tick(now_ms);
-            } else if self.backup_due(now_ms) {
-                self.due.backup = true;
-            }
-        }
-        if due {
-            // Holder only, writable, caught up (`compact`); after the export and lease steps.
-            let now_ms = crate::commit::now_ms();
-            if opts.compaction {
-                out.compact = crate::compact::run(self, now_ms, false)?;
-            } else if crate::compact::due(self)? {
-                self.due.compaction = true;
-            }
-        }
-        out.events.append(&mut self.follow.queued);
-        if let Some(status) = self.status_if_changed() {
-            out.events.push(StoreEvent::Status(Box::new(status)));
-        }
-        Ok(out)
+        // `None`: a phased tick of this store is running (another thread's, between its steps).
+        Ok(Store::tick_phased(&mut Direct(self), now, opts)?.unwrap_or_default())
     }
 
     /// Flushes the export without waiting for the delay (when writable), then closes the
-    /// store. The lease is not released: it stops heartbeating, and other servers wait out
-    /// its staleness (45 s plus confirmation) before taking over; this process may re-take
-    /// its own stopped lease at once. Dropping a `Store` does not flush: folder I/O can block
-    /// for seconds on a network share, and a drop must not.
+    /// store. A holder with nothing left unexported releases the lease (`export::close`), so
+    /// another server takes it at once; otherwise others wait out its staleness. Dropping a
+    /// `Store` flushes and releases nothing: folder I/O can block for seconds on a network
+    /// share, and a drop must not.
     pub fn close(mut self) -> Result<ExportReport, StoreError> {
         let now = self.ctl.now();
-        export::export_pending(&mut self, now, true)
+        export::close(&mut self, now)
     }
 
     /// Takes the lease over (`fin project takeover [--confirm]`, spec §3.5): see
@@ -323,12 +304,6 @@ impl Store {
     pub fn run_due_backup(&mut self) {
         self.due.backup = false;
         self.daily_tick(crate::commit::now_ms());
-    }
-
-    /// Runs the compaction a tick found due.
-    pub fn run_due_compaction(&mut self) -> Result<crate::CompactReport, StoreError> {
-        self.due.compaction = false;
-        crate::compact::run(self, crate::commit::now_ms(), false)
     }
 
     /// Whether the daily backup of unix ms `now_ms` is still to take.
@@ -434,6 +409,7 @@ impl Store {
         self.ctl.check_error = None;
         self.ctl.seen = lease.state();
         self.export.lease = StoreLease::Lease(lease);
+        self.phase.io_gen += 1;
     }
 
     /// `lease.json` was missing (deleted, or not synced yet): whether the folder still shows
@@ -453,12 +429,9 @@ impl Store {
         }
     }
 
-    /// The fencing re-check of a poll (module docs, step 3).
-    fn recheck(&mut self) {
-        let StoreLease::Lease(lease) = &self.export.lease else {
-            return;
-        };
-        match lease.check() {
+    /// What the fencing re-check of a poll found (module docs, step 3).
+    fn recheck_result(&mut self, checked: Result<u64, LeaseLost>) {
+        match checked {
             Ok(_) => self.ctl.check_error = None,
             Err(l) if l.transient => self.ctl.check_error = Some(l.reason),
             Err(_) => self.release_lost(),
@@ -473,15 +446,14 @@ impl Store {
             self.ctl.check_error = None;
             self.ctl.gate = Gate::Open;
             self.export.lease = StoreLease::NotHeld;
+            self.phase.io_gen += 1;
         }
     }
 
-    /// An import pass that also lifts the ordering rule's block when it may (module docs).
-    /// Its rewinds, then its applied records, are queued for the next `tick`'s events.
-    pub(crate) fn import_pass(&mut self) -> Result<ImportReport, StoreError> {
-        let started = self.ctl.now();
-        self.reread_project_file();
-        let r = self.import()?;
+    /// After an import pass that started at `started` (by the lease's clock): queues its
+    /// events, notes what it found for status and lifts the ordering rule's block when it may
+    /// (module docs). `copies`: the project file's conflict copies, listed with the pass.
+    fn after_pass(&mut self, started: Instant, r: &ImportReport, copies: Vec<String>) {
         // A newer project file or segment lets go of the lease (`crate::newer`).
         self.follow_if_newer();
         self.follow
@@ -497,7 +469,7 @@ impl Store {
             .queued
             .extend(r.applied.iter().cloned().map(StoreEvent::Applied));
         let kind = self.storage_kind();
-        self.follow.observe(&r, kind, &self.project_dir);
+        self.follow.observe(r, kind, &self.project_dir, copies);
         if let Gate::Pending { wait_until } = self.ctl.gate
             && wait_until.is_none_or(|t| started >= t)
             && r.waiting.is_empty()
@@ -507,7 +479,6 @@ impl Store {
         {
             self.ctl.gate = Gate::Open;
         }
-        Ok(r)
     }
 
     /// What the project file says now: a newer `minReaderVersion` or `schemaVersion` (another
@@ -562,6 +533,7 @@ impl Store {
     #[doc(hidden)]
     pub fn set_test_lease(&mut self, epoch: u64, held: bool) {
         self.export.lease = StoreLease::Fixed { epoch, held };
+        self.phase.io_gen += 1;
         self.ctl.seen = self.lease_state();
         self.ctl.fixed = true;
         self.ctl.gate = Gate::Open;
@@ -593,5 +565,11 @@ impl LeaseCtl {
     }
 }
 
+#[cfg(any(test, feature = "test-hooks"))]
+pub mod hooks;
+mod phased;
 #[cfg(test)]
 mod tests;
+
+pub use phased::StoreAccess;
+pub(crate) use phased::{Direct, Phase};

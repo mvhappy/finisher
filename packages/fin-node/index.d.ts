@@ -16,6 +16,13 @@ export interface PrepareMediaOptions {
 }
 
 /**
+ * @internal Where a test tick stops or panics in its folder I/O: an import's read, an export's
+ * write, or the automatic compaction step's `compaction/` listing, fresh read, pack write or
+ * delete.
+ */
+export type TickPoint = "import" | "export" | "compactList" | "compactRead" | "compactWrite" | "compactDelete";
+
+/**
  * One project's op log. Short calls run on the libuv thread pool; long calls (`create`,
  * `open`, `takeover`, `verify`, `rebuild`, `compact`, `close`) run one at a time, in call
  * order, on the engine's own worker thread. Automatic maintenance never holds the store that
@@ -87,6 +94,11 @@ export declare class Engine {
    * `CONFLICT_COPY`; `origin`: `local`, `folder`, `foreign`, `salvage`); or `null` when unknown.
    */
   txGet(txId: string): Promise<string | null>;
+  /**
+   * The `HistoryLog` JSON of `branch`: its head and its last `limit` records below rev `before`
+   * (absent: through the head), oldest first (`history.log`, review batch L).
+   */
+  log(branch: string, before: number | undefined | null, limit: number): Promise<string>;
   /**
    * Stops status reporting the rewind of `branch` that started `generation`; `false` if none.
    * `metaJson`'s guard names the caller's credential, refused once ended (`CREDENTIAL_REVOKED`).
@@ -229,6 +241,20 @@ export declare class Engine {
   emitRewoundForTest(branch: string, fromRev: number): void;
   /** @internal Test builds only: whether the maintenance thread runs. */
   maintenanceRunningForTest(): boolean;
+  /**
+   * @internal Test builds only: the next tick stops in its folder I/O, outside the store mutex
+   * (`import`: after the scan, before the apply; `export`: before a segment's write; a point
+   * of the automatic compaction step, `TickPoint`), until `releaseTickForTest`.
+   */
+  hangNextTickForTest(point: TickPoint): void;
+  /** @internal Test builds only: the next tick panics in its folder I/O, outside the store mutex. */
+  panicNextTickIoForTest(point: TickPoint): void;
+  /** @internal Test builds only: the grace period between compaction's phases is `ms`. */
+  setCompactionGraceForTest(ms: number): void;
+  /** @internal Test builds only: whether a tick is stopped at the armed point. */
+  tickHungForTest(): boolean;
+  /** @internal Test builds only: lets the stopped tick go on. */
+  releaseTickForTest(): void;
   /**
    * @internal Test builds only: a status refresh computes the summary of the pins now and
    * pauses before publishing it while `txJson` is committed (rescanning the pins); the newer

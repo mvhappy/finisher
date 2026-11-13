@@ -1726,6 +1726,65 @@
     },
     {
       "argKinds": {},
+      "group": "track",
+      "identity": [
+        "projectId",
+        "branch"
+      ],
+      "name": "track.ls",
+      "rpcs": [],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "asset",
+      "identity": [
+        "projectId",
+        "branch"
+      ],
+      "name": "asset.ls",
+      "rpcs": [],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "bin",
+      "identity": [
+        "projectId",
+        "branch"
+      ],
+      "name": "bin.ls",
+      "rpcs": [],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "effect",
+      "identity": [
+        "projectId",
+        "branch"
+      ],
+      "name": "effect.ls",
+      "rpcs": [],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "history",
+      "identity": [
+        "projectId",
+        "branch"
+      ],
+      "name": "log",
+      "rpcs": [
+        {
+          "method": "history.log"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
       "group": "plugin",
       "identity": [
         "text",

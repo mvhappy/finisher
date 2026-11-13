@@ -19,6 +19,10 @@
 //!    - **ours**: if one of our leases in this process still heartbeats it → held; if it is
 //!      at an epoch this process held and that lease is lost or dropped → ours to re-take at
 //!      once ([`registry`]);
+//!    - **released** by its holder's clean close ([`LeaseRecord::released`]) → free: taken
+//!      at once (after the checks of ours above), through a fresh claim like any acquisition.
+//!      On a sync folder only by a confirmed takeover (`Stale`): the holder may re-take its
+//!      own released record offline, and another machine taking it too would fork;
 //!    - otherwise **held**, with age = this round's server time − the record's stamp.
 //! 3. Staleness, all of:
 //!    - age > 45 s in two counting rounds ≥ 5 s apart (monotonic), with no non-stale counting
@@ -181,6 +185,10 @@ enum Expected {
 enum Verdict {
     Free,
     Leftover(LeaseRecord),
+    /// A record its holder released on a clean close ([`LeaseRecord::released`]): free to
+    /// take, through a fresh claim above it; on a sync folder only with confirmation (its
+    /// holder may re-take it offline, and two machines taking it would fork).
+    Released(LeaseRecord),
     Stale {
         holder: String,
         epoch: u64,
@@ -248,6 +256,11 @@ impl Contender {
                 self.leftover = true;
                 self.take(Expected::Record(r))
             }
+            Verdict::Released(r) if self.params.auto_takeover => self.take(Expected::Record(r)),
+            Verdict::Released(r) => Err(LeaseState::Stale {
+                holder: released_by(&r),
+                epoch: r.epoch,
+            }),
             Verdict::Stale { expected, .. } if self.params.auto_takeover => self.take(expected),
             Verdict::Stale { holder, epoch, .. } => Err(LeaseState::Stale { holder, epoch }),
             Verdict::Held { .. } if let Some(own) = self.own_lost.take() => Err(LeaseState::Lost {
@@ -284,6 +297,14 @@ impl Contender {
         let taken = match verdict {
             Verdict::Free => self.take(Expected::Missing),
             Verdict::Leftover(r) => self.take(Expected::Record(r)),
+            Verdict::Released(r) if auto || confirm => self.take(Expected::Record(r)),
+            Verdict::Released(r) => {
+                return Err(refused(
+                    "CONFIRM_REQUIRED",
+                    "the holder released the lease on a clean close, but on a sync folder it may re-take it offline; taking it needs confirmation",
+                    Some((&released_by(&r), r.epoch, None)),
+                ));
+            }
             Verdict::Stale { expected, .. } if auto || confirm => self.take(expected),
             Verdict::Stale { holder, epoch, .. } => {
                 return Err(refused(
@@ -438,6 +459,10 @@ impl Contender {
                         }
                     }
                 }
+                if r.released {
+                    self.evidence = None;
+                    return Ok(Verdict::Released(r));
+                }
                 let age = server_now.map(|n| n - r.probe_server_ms);
                 let (holder, epoch) = (r.holder.clone(), r.epoch);
                 Ok(self.judge(
@@ -567,4 +592,9 @@ impl Contender {
             held("STALE_UNCONFIRMED")
         }
     }
+}
+
+/// The holder of a released record, as status and refusals name it.
+fn released_by(r: &LeaseRecord) -> String {
+    format!("{} (released on a clean close)", r.holder)
 }

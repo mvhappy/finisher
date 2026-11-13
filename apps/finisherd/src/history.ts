@@ -1,6 +1,6 @@
 // Branch and history calls (plan 4B Task 18): which engine call serves each RPC, how a payload
 // becomes the engine's request JSON, and which records of a result are published to which hub.
-import type { CommittedTx } from "@finisher/core-types";
+import type { BranchCreated, CommittedTx, HistoryResult, MergeReport, RecoverReport, ReviewPlan } from "@finisher/core-types";
 import { blake3Hex, type Engine } from "@finisher/fin-node";
 import type { Hubs } from "./hubs.ts";
 
@@ -19,6 +19,21 @@ export type HistoryOp =
   // A read (5E Decision 7): the change list a merge would make now. Under the commit lock like
   // the writes, so a review never plans against a write half made; it publishes nothing.
   | "reviewPlan";
+
+/** What each call answers (the generated types; the RPC success schemas check them). */
+export interface HistoryResults {
+  readonly branchCreate: BranchCreated;
+  readonly branchSet: CommittedTx;
+  readonly undo: HistoryResult;
+  readonly redo: HistoryResult;
+  readonly checkpoint: CommittedTx;
+  readonly merge: MergeReport;
+  readonly cherryPick: HistoryResult;
+  readonly revert: HistoryResult;
+  readonly drop: CommittedTx;
+  readonly recover: RecoverReport;
+  readonly reviewPlan: ReviewPlan;
+}
 
 /** An RPC payload of a history call: the project, `dryRun` and the request's own fields. */
 export interface HistoryPayload {

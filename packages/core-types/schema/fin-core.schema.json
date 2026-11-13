@@ -226,17 +226,14 @@
       "description": "A CLI agent session (spec §8.1, §8.5, §8.6; plan 7C Decision 6).",
       "properties": {
         "fin": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/FinEndpoint"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/$defs/FinEndpoint"
         },
         "harness": {
-          "$ref": "#/$defs/Harness",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Harness"
+            }
+          ],
           "description": "`claudeCode`, `codex` or `fake`; the built-in agent needs no sandbox (spec §8.9)."
         },
         "home": {
@@ -269,17 +266,11 @@
         },
         "sharedDir": {
           "description": "`<projectDir>/workspace/shared`; written only outside `plan` mode.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "signInStore": {
           "description": "The harness's sign-in store file, inside `<serverData>/providers/<harness>/home/`\n(spec §8.6): read and written in place, never its directory.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "toolchains": {
           "default": [],
@@ -1286,32 +1277,23 @@
           "description": "From the redeem to the owner's answer (`approved`, `rejected`).",
           "format": "uint64",
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "outcome": {
           "$ref": "#/$defs/PairOutcome"
         },
         "platform": {
-          "anyOf": [
+          "allOf": [
             {
               "$ref": "#/$defs/PairPlatform"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "The device's platform, once a device redeemed the offer."
         },
         "route": {
-          "anyOf": [
+          "allOf": [
             {
               "$ref": "#/$defs/PairRoute"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "How the device reached the server, once it redeemed."
@@ -1549,6 +1531,61 @@
       ],
       "type": "string"
     },
+    "BranchStatus": {
+      "properties": {
+        "branch": {
+          "description": "The branch id.",
+          "type": "string"
+        },
+        "exportedThrough": {
+          "description": "The highest seq in the folder (0: none).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "forkSeq": {
+          "description": "The parent's seq it forks at (0 for `main`).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "generation": {
+          "description": "Bumped whenever an import takes records out of this branch's history (a rewind).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "head": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "name": {
+          "description": "Its display name (`main` for `main`; a branch without an index row: its id).",
+          "type": "string"
+        },
+        "parent": {
+          "description": "The parent's id (`None` for `main`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/BranchState"
+        }
+      },
+      "required": [
+        "branch",
+        "name",
+        "forkSeq",
+        "state",
+        "head",
+        "exportedThrough",
+        "generation"
+      ],
+      "type": "object"
+    },
     "BranchView": {
       "additionalProperties": false,
       "description": "A branch as listings show it ([`Store::branches`](crate::Store::branches), `branch.list`):\n`display` is the reference that names it (its name, or `<name>#<id>` for an archived\nbranch or the second holder of a duplicate name); `head` its head seq (its fork seq until\nits first record).",
@@ -1602,6 +1639,24 @@
         "release"
       ],
       "type": "string"
+    },
+    "Busy": {
+      "description": "The long call a status was answered during (`status()`'s `busy`).",
+      "properties": {
+        "operation": {
+          "type": "string"
+        },
+        "sinceMs": {
+          "description": "Unix ms the call started.",
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "operation",
+        "sinceMs"
+      ],
+      "type": "object"
     },
     "CacheGcResult": {
       "description": "What one `gc` (or eviction pass) did.",
@@ -1892,7 +1947,11 @@
           "type": "string"
         },
         "source": {
-          "$ref": "#/$defs/CaptionSource",
+          "allOf": [
+            {
+              "$ref": "#/$defs/CaptionSource"
+            }
+          ],
           "description": "The caption's source (none: no source)."
         },
         "words": {
@@ -2026,10 +2085,7 @@
         },
         "title": {
           "description": "A message key in the `en` catalogue for the style's display name.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         }
       },
       "required": [
@@ -2154,12 +2210,9 @@
           "type": "integer"
         },
         "variable": {
-          "anyOf": [
+          "allOf": [
             {
               "$ref": "#/$defs/Variable"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "A variable font's `wght` axis. Only a variable file may serve several styles (one per\nweight in the range; the request's weight drives the axis)."
@@ -2178,28 +2231,15 @@
       "description": "Where a file can be fetched. A plain source serves the file itself; an archive source\nserves an archive (its own `sha256` and `size`) holding the file as `archive.member`.",
       "properties": {
         "archive": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ArchiveMember"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/$defs/ArchiveMember"
         },
         "sha256": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "size": {
           "format": "uint64",
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "url": {
           "type": "string"
@@ -2323,6 +2363,24 @@
         "updated"
       ],
       "type": "string"
+    },
+    "Check": {
+      "description": "One check's outcome.",
+      "properties": {
+        "details": true,
+        "name": {
+          "type": "string"
+        },
+        "ok": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "ok",
+        "details"
+      ],
+      "type": "object"
     },
     "Chroma": {
       "description": "Chroma subsampling.",
@@ -2561,10 +2619,7 @@
           "format": "uint16",
           "maximum": 65535,
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "title": {
           "description": "A message key in the `en` catalogue.",
@@ -2671,10 +2726,7 @@
         },
         "snapshot": {
           "description": "The host's handle on the snapshot it read for this run at submit (opaque to plugins):\nevery page the run reads comes from that snapshot, of this run only, so a rewind or\nrebuild that reaches `rev` again in a newer history is never served from an older one.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         }
       },
       "required": [
@@ -2727,12 +2779,9 @@
           "$ref": "#/$defs/Diff"
         },
         "link": {
-          "anyOf": [
+          "allOf": [
             {
               "$ref": "#/$defs/Link"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "The record's kind and links; omitted for an `edit`. Boxed: most txs are edits, and a\nlink would double the size of every `CommittedTx`."
@@ -2751,6 +2800,122 @@
         "tx",
         "diff",
         "bindings"
+      ],
+      "type": "object"
+    },
+    "CompactReport": {
+      "description": "What one compaction run did (serialised camelCase; `waiting` and `abandoned` as\n`[name, why]` pairs).",
+      "properties": {
+        "abandoned": {
+          "description": "`(manifest, why)`: abandoned this run.",
+          "items": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "deleted": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "finished": {
+          "description": "Manifests finished (phase 2) and the segment files deleted.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "manifests": {
+          "description": "Manifests written (phase 1).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "packsWritten": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "replaced": {
+          "description": "Segments the new manifests replace.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "skipped": {
+          "description": "Why nothing ran (not holding the lease, read-only).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "waiting": {
+          "description": "`(manifest or branch, why)`: steps that wait and are retried.",
+          "items": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "type": "array"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "manifests",
+        "packsWritten",
+        "replaced",
+        "finished",
+        "deleted",
+        "waiting",
+        "abandoned"
+      ],
+      "type": "object"
+    },
+    "CompactionStatus": {
+      "description": "Compaction in `fin project status`.",
+      "properties": {
+        "lastError": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lastRunMs": {
+          "description": "Unix ms of the last run that wrote or deleted something.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "pending": {
+          "description": "Manifests seen while holding the lease.",
+          "items": {
+            "$ref": "#/$defs/PendingCompaction"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "pending"
       ],
       "type": "object"
     },
@@ -2997,10 +3162,7 @@
         },
         "details": true,
         "fix": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "message": {
           "type": "string"
@@ -3271,10 +3433,7 @@
       "description": "Closes one listing of `dir` (Decision 25): every entry of that listing precedes it in the\njob's batches. `complete: false` (an error, a timeout, a placeholder or automount\ndirectory, a nested mount unmounted or replaced) marks nothing missing; `code` says why.\n`entries` counts the listing's entries. `volume`: the volume measured at `dir` when it is a\nnested mount root (Decision 17, per directory), which the indexer keeps as\n[`KnownDir::volume`].",
       "properties": {
         "code": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "complete": {
           "type": "boolean"
@@ -3288,20 +3447,10 @@
           "type": "integer"
         },
         "mtimeNs": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "volume": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/VolumeIdentity"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/$defs/VolumeIdentity"
         }
       },
       "required": [
@@ -3401,10 +3550,7 @@
       "description": "[`Store::drop`](crate::Store::drop)'s request (`history.drop`, plan 5E Decision 5).\n\n- `tx_id`: the idempotency key, the `drop` record's txId;\n- `author`: the record's author;\n- `into`: the branch the rejection binds (a reference; the record is written there);\n- `from`: the source branch (a reference; it may be archived);\n- `drops`, `undrops`: origin-root txIds of records on `from`'s lineage after its common\n  point with `into`, at least one in all; sorted and deduplicated at write;\n- `dry_run`: plan against the local database and keep nothing, on a follower too;\n- `args_hash`: the command input's hash, stored on the record's intent; a retry of the\n  txId with another hash is `IDEM_KEY_REUSED`.",
       "properties": {
         "argsHash": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "author": {
           "type": "string"
@@ -3668,9 +3814,11 @@
         },
         {
           "additionalProperties": false,
-          "description": "The status changed (fin-store's `ProjectStatus`).",
+          "description": "The status changed: [`ProjectStatusView`] (without `busy`).",
           "properties": {
-            "status": true,
+            "status": {
+              "$ref": "#/$defs/ProjectStatusView"
+            },
             "type": {
               "const": "status",
               "type": "string"
@@ -3877,14 +4025,7 @@
           "$ref": "#/$defs/VendorClass"
         },
         "encoder": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/EntryEncoder"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/$defs/EntryEncoder"
         },
         "files": {
           "items": {
@@ -3899,12 +4040,9 @@
           "type": "string"
         },
         "media": {
-          "anyOf": [
+          "allOf": [
             {
               "$ref": "#/$defs/MediaInfo"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "The original's `MediaInfo` (proxies: rotation and pixel aspect are applied from it)."
@@ -4888,10 +5026,7 @@
           "items": {
             "type": "string"
           },
-          "type": [
-            "array",
-            "null"
-          ]
+          "type": "array"
         }
       },
       "required": [
@@ -4923,16 +5058,10 @@
       "properties": {
         "dev": {
           "description": "The catalogued entry's device (`ScanEntry.dev`). Nested mounts are catalogued, so the\nopener crosses them and checks the opened handle against this device; without one,\nthe handle must be on the root's mount.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "fileId": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "mtimeNs": {
           "type": "string"
@@ -5296,6 +5425,59 @@
       ],
       "type": "object"
     },
+    "FontFailed": {
+      "description": "A pinned font file whose fetch failed, retried after `retry_at` (unix ms).",
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "retryAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "sha256",
+        "reason",
+        "retryAt"
+      ],
+      "type": "object"
+    },
+    "FontFetching": {
+      "description": "A pinned font file being fetched (queued: `bytes` 0): `bytes` of `total` so far.",
+      "properties": {
+        "bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "key": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "total": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "key",
+        "sha256",
+        "bytes",
+        "total"
+      ],
+      "type": "object"
+    },
     "FontFile": {
       "description": "An imported font file (plan 4C Decision 37): its whole-file SHA-256, size, format and faces.",
       "properties": {
@@ -5399,6 +5581,26 @@
         "ttc"
       ],
       "type": "string"
+    },
+    "FontMissing": {
+      "description": "A pinned font file not available: `key` (the face key), its `sha256` and why (`offline`,\n`notInCatalog`, `notFetched`, `damaged`, `hashMismatch`, or an asset file's problem).",
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "sha256",
+        "reason"
+      ],
+      "type": "object"
     },
     "FontPin": {
       "description": "One face of one exact file: `face` is the index inside a collection (0 for a single font).",
@@ -5647,10 +5849,7 @@
             },
             "details": true,
             "fix": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             },
             "message": {
               "type": "string"
@@ -5675,6 +5874,35 @@
         "autoFetch",
         "damaged",
         "files"
+      ],
+      "type": "object"
+    },
+    "FontsSummary": {
+      "description": "A project's font summary (fin-node, 4C Decision 34): the pinned files missing on this\nserver, being fetched, and whose fetch failed.",
+      "properties": {
+        "failed": {
+          "items": {
+            "$ref": "#/$defs/FontFailed"
+          },
+          "type": "array"
+        },
+        "fetching": {
+          "items": {
+            "$ref": "#/$defs/FontFetching"
+          },
+          "type": "array"
+        },
+        "missing": {
+          "items": {
+            "$ref": "#/$defs/FontMissing"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "missing",
+        "fetching",
+        "failed"
       ],
       "type": "object"
     },
@@ -6202,6 +6430,28 @@
       ],
       "type": "object"
     },
+    "HistoryLog": {
+      "additionalProperties": false,
+      "description": "`history.log`: the branch's head rev and a window of its records, oldest first (review\nbatch L; `fin log` summarises them).",
+      "properties": {
+        "head": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "records": {
+          "items": {
+            "$ref": "#/$defs/CommittedTx"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "head",
+        "records"
+      ],
+      "type": "object"
+    },
     "HistoryResult": {
       "additionalProperties": false,
       "description": "The answer of a history operation ([`Store::undo`](crate::Store::undo),\n[`Store::redo`](crate::Store::redo)): the records it committed, in order (or planned and\nrolled back, `dry_run`; a retry of a committed operation answers with its records,\n`dry_run` false), and what they act on: the units an undo undoes, the undo a redo\nreverses, or the merge group a revert reverts. `no_op`: why a cherry-pick or revert\ncommitted nothing (`ALREADY_PRESENT`: the target holds the record's origin root;\n`ALREADY_REVERTED`: the merge group's effect is gone there); absent otherwise.\n`origins`: the txIds the operation acted on, each with the records its `origin` chain\nleads to (a copy of a copy), first seen first: an undo's units, a cherry-pick's origin, a\nreverted group's records; empty (and omitted) for a redo and for nothing done (7A\nDecision 27).",
@@ -6216,10 +6466,7 @@
           "type": "boolean"
         },
         "noOp": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "origins": {
           "items": {
@@ -6288,12 +6535,9 @@
       "description": "A hook command (spec §8.10; plan 7C Decision 7).",
       "properties": {
         "fin": {
-          "anyOf": [
+          "allOf": [
             {
               "$ref": "#/$defs/HookFin"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Present only when the hook declares `fin`: its credential file and the endpoint. Without\nit the hook has no network and no credential."
@@ -6316,10 +6560,7 @@
           "description": "The hook's time limit (`Limits.wall_ms`): the launcher ends the whole tree when it passes\n(on Windows also the backstop for a Node process stuck on piped stdio, Decision 25).",
           "format": "uint64",
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "tmp": {
           "description": "A private temporary directory, the only write root.",
@@ -6491,10 +6732,7 @@
       "properties": {
         "bodyB64": {
           "description": "At most 756 KiB (`PAGE_BYTES`) before base64.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "headers": {
           "items": {
@@ -6599,10 +6837,7 @@
         },
         "from": {
           "description": "The installed version an update or downgrade replaces.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "licence": {
           "$ref": "#/$defs/PlanLicence"
@@ -6630,10 +6865,7 @@
           "format": "uint16",
           "maximum": 65535,
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "risk": {
           "$ref": "#/$defs/Risk"
@@ -6643,10 +6875,7 @@
         },
         "targetSha256": {
           "description": "The signed target's SHA-256, for registry plans.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "treeHash": {
           "description": "`package::tree_hash` of the staged tree; re-checked at commit.",
@@ -6699,19 +6928,13 @@
           "type": "array"
         },
         "registryId": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "source": {
           "$ref": "#/$defs/SourceKind"
         },
         "targetSha256": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "treeHash": {
           "type": "string"
@@ -7587,7 +7810,11 @@
           "type": "boolean"
         },
         "profiles": {
-          "$ref": "#/$defs/JobHostProfiles",
+          "allOf": [
+            {
+              "$ref": "#/$defs/JobHostProfiles"
+            }
+          ],
           "description": "What each sandbox profile gets (plan 7C Decision 4)."
         },
         "sandbox": {
@@ -8016,7 +8243,11 @@
           "type": "string"
         },
         "cgroups": {
-          "$ref": "#/$defs/JobHostCgroups",
+          "allOf": [
+            {
+              "$ref": "#/$defs/JobHostCgroups"
+            }
+          ],
           "description": "Delegated cgroups where they are ours (Linux; default `auto`)."
         },
         "eventQueue": {
@@ -8148,7 +8379,11 @@
           "type": "boolean"
         },
         "resolution": {
-          "$ref": "#/$defs/ResolutionBucket",
+          "allOf": [
+            {
+              "$ref": "#/$defs/ResolutionBucket"
+            }
+          ],
           "description": "The largest frame the job produced."
         },
         "rtFactorMilli": {
@@ -8218,12 +8453,9 @@
       "description": "A plugin job's rights: invoker ∩ grants (Decision 8), with the authority they run under\n(class + `rights_hash` + `generation`, spec §3.3 and Decision 28).",
       "properties": {
         "branch": {
-          "anyOf": [
+          "allOf": [
             {
               "$ref": "#/$defs/RightsBranch"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Set for an agent session: its branch subtree."
@@ -8249,7 +8481,11 @@
           "$ref": "#/$defs/Reach"
         },
         "principal": {
-          "$ref": "#/$defs/RightsPrincipal",
+          "allOf": [
+            {
+              "$ref": "#/$defs/RightsPrincipal"
+            }
+          ],
           "description": "The invoker the plugin acts for (audit and journal name `plugin:<id>@<version>` acting\nfor it)."
         },
         "projects": {
@@ -8428,7 +8664,11 @@
           "type": "string"
         },
         "limits": {
-          "$ref": "#/$defs/JobSpawnLimits",
+          "allOf": [
+            {
+              "$ref": "#/$defs/JobSpawnLimits"
+            }
+          ],
           "description": "Limits the host applies whatever the spawner does (sp8b Decision 9)."
         },
         "profile": {
@@ -8591,7 +8831,11 @@
       "description": "What a cache key is computed from (Decision 11).",
       "properties": {
         "decoderClass": {
-          "$ref": "#/$defs/VendorClass",
+          "allOf": [
+            {
+              "$ref": "#/$defs/VendorClass"
+            }
+          ],
           "description": "The vendor class of the backend that decoded the source."
         },
         "fingerprint": {
@@ -8653,23 +8897,13 @@
       "description": "`keyframe.remove`: the key `key` (or, in the client time form, the key at `at`) of `path`\nof `item`.",
       "properties": {
         "at": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Rational"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/$defs/Rational"
         },
         "item": {
           "type": "string"
         },
         "key": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "path": {
           "type": "string"
@@ -8717,14 +8951,7 @@
       "description": "`keyframe.set`: the key `key` (or, in the client time form, the key at `at`) of `path` of\n`item`, at `at` (default: where it is) with `value` and `interp`.",
       "properties": {
         "at": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Rational"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/$defs/Rational"
         },
         "interp": {
           "$ref": "#/$defs/Interp"
@@ -8734,10 +8961,7 @@
         },
         "key": {
           "description": "A key id (`kf<n>`), or a `$name` placeholder for a new key.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "path": {
           "type": "string"
@@ -8793,30 +9017,17 @@
         "listedGen": {
           "format": "uint64",
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "mountRoot": {
           "default": false,
           "type": "boolean"
         },
         "mtimeNs": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "volume": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/VolumeIdentity"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/$defs/VolumeIdentity"
         }
       },
       "required": [
@@ -8892,7 +9103,11 @@
           "$ref": "#/$defs/MaskPlan"
         },
         "nested": {
-          "$ref": "#/$defs/NestedPlan",
+          "allOf": [
+            {
+              "$ref": "#/$defs/NestedPlan"
+            }
+          ],
           "description": "A nested item's timeline, time and frame size."
         },
         "opacity": {
@@ -8900,7 +9115,11 @@
           "type": "number"
         },
         "source": {
-          "$ref": "#/$defs/SourceRef",
+          "allOf": [
+            {
+              "$ref": "#/$defs/SourceRef"
+            }
+          ],
           "description": "The asset and its time: a clip's source time (through speed), an image's 0, a\ngraphic's template time."
         },
         "track": {
@@ -8924,6 +9143,100 @@
         "blend"
       ],
       "type": "object"
+    },
+    "LeaseState": {
+      "description": "The lease as one server sees it.",
+      "oneOf": [
+        {
+          "description": "This server writes, at `epoch`.",
+          "properties": {
+            "epoch": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "state": {
+              "const": "held",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "epoch"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Another server holds it. `age_server_ms`: server time since its last stamp, when this\nround's probe could tell.",
+          "properties": {
+            "ageServerMs": {
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "epoch": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "holder": {
+              "type": "string"
+            },
+            "state": {
+              "const": "heldElsewhere",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "holder",
+            "epoch"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The holder is confirmed stopped, but this storage kind needs confirmation to take over.",
+          "properties": {
+            "epoch": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "holder": {
+              "type": "string"
+            },
+            "state": {
+              "const": "stale",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "holder",
+            "epoch"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "This server's lease is lost (or could not be acquired: the folder is unreachable).",
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "state": {
+              "const": "lost",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "reason"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "LegacyCodecCaps": {
       "description": "v1: one codec's support, the shape of `fin-codecs`' `CodecSupport`.",
@@ -9064,10 +9377,7 @@
         "readBps": {
           "format": "uint64",
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "root": {
           "type": "string"
@@ -9121,10 +9431,7 @@
           "items": {
             "type": "string"
           },
-          "type": [
-            "array",
-            "null"
-          ]
+          "type": "array"
         },
         "files": {
           "default": "in/files.ndjson",
@@ -9148,16 +9455,17 @@
           "description": "The library's bandwidth budget for this job's slot, in bytes per second (Decision 36).",
           "format": "uint64",
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "root": {
           "type": "string"
         },
         "volume": {
-          "$ref": "#/$defs/VolumeIdentity",
+          "allOf": [
+            {
+              "$ref": "#/$defs/VolumeIdentity"
+            }
+          ],
           "description": "The stored identity the root is judged against before and during the job."
         }
       },
@@ -9325,10 +9633,7 @@
           "items": {
             "$ref": "#/$defs/RawRel"
           },
-          "type": [
-            "array",
-            "null"
-          ]
+          "type": "array"
         },
         "excludes": {
           "$ref": "#/$defs/ExcludeSpec"
@@ -9353,29 +9658,20 @@
           "description": "Read threads; absent means 64 (local roots), the service passes 32 for network and\nsync roots (Decision 9).",
           "format": "uint32",
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "timing": {
-          "anyOf": [
+          "allOf": [
             {
               "$ref": "#/$defs/Timing"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Scaled deadlines. Test builds only: a release worker refuses the field."
         },
         "volume": {
-          "anyOf": [
+          "allOf": [
             {
               "$ref": "#/$defs/VolumeIdentity"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "The library's stored volume identity, which the first stat is judged against\n(Decision 17); absent for the first scan of a new library."
@@ -9408,7 +9704,11 @@
           "type": "integer"
         },
         "identity": {
-          "$ref": "#/$defs/VolumeIdentity",
+          "allOf": [
+            {
+              "$ref": "#/$defs/VolumeIdentity"
+            }
+          ],
           "description": "The identity the first stat measured (refreshed into the library after a full scan)."
         },
         "incomplete": {
@@ -9661,16 +9961,10 @@
               "type": "string"
             },
             "originHash": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             },
             "recovers": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             }
           },
           "required": [
@@ -9708,10 +10002,7 @@
               "type": "string"
             },
             "recovers": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             }
           },
           "required": [
@@ -9732,10 +10023,7 @@
               "type": "integer"
             },
             "forkHash": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             },
             "forkSeq": {
               "format": "uint64",
@@ -9750,10 +10038,7 @@
               "type": "string"
             },
             "recovers": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             }
           },
           "required": [
@@ -9769,10 +10054,7 @@
           "description": "Renames, archives or restores branch `branch_id`. `recovers`: the quarantined\n`branchSet` record a recovered one stands for.",
           "properties": {
             "archived": {
-              "type": [
-                "boolean",
-                "null"
-              ]
+              "type": "boolean"
             },
             "branchId": {
               "type": "string"
@@ -9782,16 +10064,10 @@
               "type": "string"
             },
             "name": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             },
             "recovers": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             }
           },
           "required": [
@@ -9817,10 +10093,7 @@
               "type": "string"
             },
             "recovers": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             },
             "undrops": {
               "items": {
@@ -10028,17 +10301,11 @@
         },
         "branch": {
           "description": "The branch of the snapshot (an id, a name or `<name>#<id>`).",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "outDir": {
           "description": "Where the kind's `onSucceeded` moves the frames: absolute, or relative to the project\nfolder; `workspace/shared/look/` when absent. Never inside `.finisher/` or `assets/`\n(`EXPORT_DESTINATION`). The worker ignores it.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "outName": {
           "description": "The stem of the files written: `out/<outName>-<i>.png`. `[A-Za-z0-9_-]`, 1 to\n[`OUT_NAME_MAX`] characters.",
@@ -10054,22 +10321,20 @@
         },
         "projectId": {
           "description": "The project the look is of. Only the host reads it (the kind's `dedupe` and `prepare`);\nthe worker works from the job directory.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "rev": {
           "description": "The branch's rev the submitter saw: part of the job's identity (`dedupe`). `prepare`\nsnapshots the head it finds, and `in/snapshot.json` says which rev that was.",
           "format": "uint64",
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "size": {
-          "$ref": "#/$defs/Size",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Size"
+            }
+          ],
           "description": "The frame size; the timeline's resolution when absent. Each side 1 to\n[`LOOK_MAX_SIDE`]."
         },
         "timeline": {
@@ -10268,10 +10533,7 @@
         },
         "messages": {
           "description": "The package directory holding `<locale>.json` ICU catalogues.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "models": {
           "items": {
@@ -10296,12 +10558,9 @@
           "$ref": "#/$defs/Publisher"
         },
         "runtime": {
-          "anyOf": [
+          "allOf": [
             {
               "$ref": "#/$defs/Runtime"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Code plugins only."
@@ -10663,7 +10922,11 @@
           "$ref": "#/$defs/ContainerKind"
         },
         "duration": {
-          "$ref": "#/$defs/Rational",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Rational"
+            }
+          ],
           "description": "Seconds: the longest interpreted track after edit lists."
         },
         "fragmented": {
@@ -10759,10 +11022,7 @@
       "description": "A model a code plugin needs (spec §8.2); never inside the package.",
       "properties": {
         "attribution": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "bytes": {
           "format": "uint64",
@@ -10776,10 +11036,7 @@
           "type": "string"
         },
         "provenance": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "purpose": {
           "description": "A message key in the `en` catalogue.",
@@ -10841,10 +11098,7 @@
       "description": "`net.fetch`: brokered HTTPS egress (Decision 10). `grant` names a secret grant; in 8B\nevery such request answers `SECRET_MISSING {name}` (injection is 8G's).",
       "properties": {
         "grant": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "request": {
           "$ref": "#/$defs/HttpRequest"
@@ -10875,10 +11129,7 @@
         },
         "redirectNotFollowed": {
           "description": "A cross-origin redirect, returned unfollowed (its `location` is in `headers`).",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "status": {
           "format": "uint16",
@@ -12467,6 +12718,49 @@
       ],
       "description": "A parameter value: finite numbers round-trip bit for bit through stored JSON (serde_json's\n`float_roundtrip`). Times, rationals, colours (`#rrggbb[aa]`) and enum values are text; an\nasset reference is `{\"asset\": id}`, so every id a value carries is found without the\nregistry (plan 4C Decision 24)."
     },
+    "PendingCompaction": {
+      "description": "One manifest as status shows it.",
+      "properties": {
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "graceEndsMs": {
+          "description": "Unix ms (this machine's clock, informational) when the grace period ends, once it runs.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "manifest": {
+          "type": "string"
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "description": "`arriving` (its packs or snapshot are not all here yet), `grace`, `waiting`,\n`abandoned` or `unreadable`.",
+          "type": "string"
+        },
+        "writerId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "manifest",
+        "state"
+      ],
+      "type": "object"
+    },
     "Permission": {
       "description": "One permission, tagged by `perm`. The set is closed: an unknown `perm` or field fails the\nparse (a unit permission with any other field too, which serde's tagged enums allow).",
       "oneOf": [
@@ -12889,10 +13183,7 @@
       "additionalProperties": false,
       "properties": {
         "attribution": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "bytes": {
           "format": "uint64",
@@ -12967,10 +13258,7 @@
           "$ref": "#/$defs/SourceKind"
         },
         "registryId": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         }
       },
       "required": [
@@ -13094,7 +13382,11 @@
           "$ref": "#/$defs/Permission"
         },
         "risk": {
-          "$ref": "#/$defs/Risk",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Risk"
+            }
+          ],
           "description": "Within the whole set (combinations count, spec §4.3)."
         }
       },
@@ -13291,17 +13583,11 @@
         },
         "branch": {
           "description": "A branch name, id or `name#id`; `main` when absent.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "dryRun": {
           "description": "Validate the returned transaction against the snapshot the plugin saw; commit nothing.",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "name": {
           "description": "`plugin:<id>/<command>`.",
@@ -13325,20 +13611,14 @@
         },
         "dryRun": {
           "description": "A dry run: nothing was committed.",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "ops": {
           "description": "The proposed ops (dry run, conflict).",
           "items": {
             "$ref": "#/$defs/Op"
           },
-          "type": [
-            "array",
-            "null"
-          ]
+          "type": "array"
         },
         "outcome": {
           "$ref": "#/$defs/CommandOutcome"
@@ -13347,17 +13627,11 @@
           "description": "The committed revision; for a dry run or a conflict, the revision the plugin saw.",
           "format": "uint64",
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "txId": {
           "description": "The committed transaction's id (accepted, rebased).",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         }
       },
       "required": [
@@ -13424,10 +13698,7 @@
       "properties": {
         "data": {
           "description": "The caller's `pluginData` directory, only when `fs pluginData` is granted (spec §5.1):\n`plugins/data/@pub/name/<projectId|_>/` for uniform `person`/`system` rights, else\n`plugins/authdata/@pub/name/<projectId|_>/<authorityKey>/`.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "plugin": {
           "description": "The installed package (read-only).",
@@ -13551,10 +13822,7 @@
           "type": "object"
         },
         "fix": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "message": {
           "type": "string"
@@ -13675,10 +13943,7 @@
           "description": "The manifest's declared memory need (default 2 GiB, at most 16 GiB; sp8 §3.3).",
           "format": "uint64",
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "models": {
           "default": [],
@@ -13690,18 +13955,12 @@
         },
         "onnxRuntime": {
           "description": "ONNX Runtime's library.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "pluginData": {
-          "anyOf": [
+          "allOf": [
             {
               "$ref": "#/$defs/PluginData"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "The per-project plugin data directory, when the manifest is granted `fs pluginData`."
@@ -13770,7 +14029,11 @@
       "description": "`plugin.lifecycle`: one plugin call (plan, install, update, downgrade, remove, enable,\ndisable, revoke).",
       "properties": {
         "action": {
-          "$ref": "#/$defs/Name",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Name"
+            }
+          ],
           "description": "From `PLUGIN_ACTIONS`."
         },
         "bytesLog2": {
@@ -14064,88 +14327,52 @@
       "description": "`settings.json` `privacy` (Decision 8). Absent keys fall through to the defaults; unknown\nkeys are ignored.",
       "properties": {
         "diagnostics": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Switch"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/$defs/Switch"
         },
         "maxMiB": {
           "description": "The size cap in MiB over the files and blobs, 16–4096 (default 128).",
           "format": "uint32",
           "maximum": 4096,
           "minimum": 16,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "retentionDays": {
           "description": "The age cap in days, 1–365 (default 30).",
           "format": "uint32",
           "maximum": 365,
           "minimum": 1,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "tracesMaxMiB": {
           "description": "The agent-trace store's size cap in MiB, 64–65536 (default 2048).",
           "format": "uint32",
           "maximum": 65536,
           "minimum": 64,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "tracesRetentionDays": {
           "description": "The agent-trace store's age cap in days, 1–365 (default 90; sp7 §12.1).",
           "format": "uint32",
           "maximum": 365,
           "minimum": 1,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "training": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Switch"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/$defs/Switch"
         }
       },
       "type": "object"
     },
     "Probe": {
-      "description": "What the server needs to register an asset: its kind and that kind's fields (the\n`asset.add` fields, plan 4C Task 7). Its serde form is what `asset.probe` answers\n(`@finisher/core-types` exports it as `Probe`); absent fields are omitted.",
+      "description": "What the server needs to register an asset: its kind and that kind's fields (the\n`asset.add` fields, plan 4C Task 7). Its serde form is what `asset.probe` answers\n(`@finisher/core-types` exports it as `Probe`); absent fields are omitted, never `null`\n(the contract schema types each one optional, not nullable: `fin_core::json_schema_with`).",
       "properties": {
         "audio": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/AudioInfo"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/$defs/AudioInfo"
         },
         "duration": {
-          "anyOf": [
+          "allOf": [
             {
               "$ref": "#/$defs/Rational"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Seconds: `media` and `lottieTemplate` only."
@@ -14154,23 +14381,17 @@
           "type": "string"
         },
         "font": {
-          "anyOf": [
+          "allOf": [
             {
               "$ref": "#/$defs/FontFile"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "A font's whole-file SHA-256, format and faces (Decision 37)."
         },
         "image": {
-          "anyOf": [
+          "allOf": [
             {
               "$ref": "#/$defs/ImageInfo"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "`image` and `svg`: the pixel size."
@@ -14179,27 +14400,17 @@
           "$ref": "#/$defs/AssetKind"
         },
         "lottie": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/LottieInfo"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/$defs/LottieInfo"
         },
         "lut": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/LutInfo"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/$defs/LutInfo"
         },
         "media": {
-          "$ref": "#/$defs/MediaInfo",
+          "allOf": [
+            {
+              "$ref": "#/$defs/MediaInfo"
+            }
+          ],
           "description": "MP4/MOV, WebM/Matroska: what the file is (sub-project 6 spec §6.3): display size and\nrotation, colour, HDR, VFR, edit lists. In the `asset.probe` answer only: an\n`asset.add` never carries it (spec §4.4)."
         },
         "size": {
@@ -14208,14 +14419,7 @@
           "type": "integer"
         },
         "video": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/VideoInfo"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/$defs/VideoInfo"
         }
       },
       "required": [
@@ -14234,16 +14438,10 @@
         },
         "branch": {
           "description": "The branch whose head names the asset (`main` when absent). Host only.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "capsDigest": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "display": {
           "$ref": "#/$defs/Size"
@@ -14254,19 +14452,13 @@
         },
         "projectId": {
           "description": "The project the asset is in. Only the host reads it (`prepare` writes the manifest\nfrom it); the worker works from the job directory.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "renderVersion": {
           "description": "The worker's `RENDER_VERSION` and a digest of its capability report, which with the\nfingerprint make the job's identity (`dedupe`): another decoder set probes again.\nHost only.",
           "format": "uint32",
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         }
       },
       "required": [
@@ -14290,7 +14482,11 @@
           "$ref": "#/$defs/VendorClass"
         },
         "codec": {
-          "$ref": "#/$defs/VideoCodec",
+          "allOf": [
+            {
+              "$ref": "#/$defs/VideoCodec"
+            }
+          ],
           "description": "The video track's codec."
         },
         "decodable": {
@@ -14585,10 +14781,7 @@
         "page": {
           "format": "uint32",
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         }
       },
       "type": "object"
@@ -14624,6 +14817,297 @@
       ],
       "type": "object"
     },
+    "ProjectStatus": {
+      "description": "`fin project status` (serialised camelCase).",
+      "properties": {
+        "branches": {
+          "items": {
+            "$ref": "#/$defs/BranchStatus"
+          },
+          "type": "array"
+        },
+        "compaction": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/CompactionStatus"
+            }
+          ],
+          "description": "Pending compaction manifests, the last run, its last problem."
+        },
+        "exportError": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CoreError"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "foreign": {
+          "description": "Foreign files, relative to the project folder.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "importError": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CoreError"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The last import pass's error (a record that cannot be applied, an unlistable folder)."
+        },
+        "incarnation": {
+          "description": "The database's incarnation: with a branch's `generation`, what a caller passes to\ncommit against what it read (`Generation`). New whenever the database is rebuilt.",
+          "type": "string"
+        },
+        "lastExportMs": {
+          "description": "Unix ms of the last export that wrote a segment (this process).",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "lease": {
+          "$ref": "#/$defs/LeaseState"
+        },
+        "leaseCheck": {
+          "description": "The last fencing check failed only because `.finisher/` could not be listed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pending": {
+          "description": "Segments neither imported nor set aside yet (beyond a fork, behind a gap).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "quarantine": {
+          "$ref": "#/$defs/QuarantineSummary"
+        },
+        "readOnly": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReadOnly"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "storage": {
+          "$ref": "#/$defs/StorageKind"
+        },
+        "storageWarning": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "unknownBranches": {
+          "description": "Folder branch directories waiting for their `branch` record (never read-only).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "waiting": {
+          "description": "Missing predecessor segments (gaps): imported once they arrive.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "warnings": {
+          "items": {
+            "$ref": "#/$defs/StatusWarning"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "projectId",
+        "storage",
+        "lease",
+        "branches",
+        "quarantine",
+        "foreign",
+        "waiting",
+        "pending",
+        "unknownBranches",
+        "warnings",
+        "incarnation",
+        "compaction"
+      ],
+      "type": "object"
+    },
+    "ProjectStatusView": {
+      "description": "A project's status as fin-node serves it (`status()`, `takeover()` and the `status` event:\n`project.status`, `project.takeover`, `project.events`): the store's [`ProjectStatus`] with\nthe server's font summary merged in (`fonts`, and its warnings after the store's; 4C\nDecision 34) and, from `status()` only, `busy`. fin-node merges the parts as JSON; this type\nnames the result for the schema.",
+      "properties": {
+        "branches": {
+          "items": {
+            "$ref": "#/$defs/BranchStatus"
+          },
+          "type": "array"
+        },
+        "busy": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Busy"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "`status()` only (absent elsewhere): the long call running now, `null` when none is. The\nrest is then the status cached after the last tick or long call."
+        },
+        "compaction": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/CompactionStatus"
+            }
+          ],
+          "description": "Pending compaction manifests, the last run, its last problem."
+        },
+        "exportError": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CoreError"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fonts": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/FontsSummary"
+            }
+          ],
+          "description": "What the project's font pins lack on this server; absent until the server has read the\nproject's pins."
+        },
+        "foreign": {
+          "description": "Foreign files, relative to the project folder.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "importError": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CoreError"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The last import pass's error (a record that cannot be applied, an unlistable folder)."
+        },
+        "incarnation": {
+          "description": "The database's incarnation: with a branch's `generation`, what a caller passes to\ncommit against what it read (`Generation`). New whenever the database is rebuilt.",
+          "type": "string"
+        },
+        "lastExportMs": {
+          "description": "Unix ms of the last export that wrote a segment (this process).",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "lease": {
+          "$ref": "#/$defs/LeaseState"
+        },
+        "leaseCheck": {
+          "description": "The last fencing check failed only because `.finisher/` could not be listed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pending": {
+          "description": "Segments neither imported nor set aside yet (beyond a fork, behind a gap).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "quarantine": {
+          "$ref": "#/$defs/QuarantineSummary"
+        },
+        "readOnly": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReadOnly"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "storage": {
+          "$ref": "#/$defs/StorageKind"
+        },
+        "storageWarning": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "unknownBranches": {
+          "description": "Folder branch directories waiting for their `branch` record (never read-only).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "waiting": {
+          "description": "Missing predecessor segments (gaps): imported once they arrive.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "warnings": {
+          "items": {
+            "$ref": "#/$defs/StatusWarning"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "projectId",
+        "storage",
+        "lease",
+        "branches",
+        "quarantine",
+        "foreign",
+        "waiting",
+        "pending",
+        "unknownBranches",
+        "warnings",
+        "incarnation",
+        "compaction"
+      ],
+      "type": "object"
+    },
     "ProjectView": {
       "additionalProperties": false,
       "description": "`project.view`: the `fin view` text of the call's branch, capped at 756 KiB (`PAGE_BYTES`).",
@@ -14632,17 +15116,11 @@
           "description": "`fin view --budget`.",
           "format": "uint32",
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "range": {
           "description": "`fin view --range` (`2s..5s`, `2s..`, `..5s`).",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         }
       },
       "type": "object"
@@ -14692,10 +15170,7 @@
           "type": "string"
         },
         "url": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         }
       },
       "required": [
@@ -14784,6 +15259,38 @@
       "type": "array",
       "uniqueItems": true
     },
+    "QuarantineSummary": {
+      "description": "Records set aside now (`current` quarantine rows).",
+      "properties": {
+        "count": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "origins": {
+          "description": "`folder`, `local`, `foreign`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "reasons": {
+          "additionalProperties": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "description": "Count per reason (`STALE_EPOCH`, `MALFORMED`, `DIVERGED_TAIL`, `SUPERSEDED`,\n`CONFLICT_COPY`, `ID_COLLISION`, `IMPORTED`, `SALVAGED`, `MISSING_FROM_FOLDER`).",
+          "type": "object"
+        }
+      },
+      "required": [
+        "count",
+        "origins",
+        "reasons"
+      ],
+      "type": "object"
+    },
     "Range": {
       "oneOf": [
         {
@@ -14841,6 +15348,152 @@
         "all"
       ],
       "type": "string"
+    },
+    "ReadOnly": {
+      "properties": {
+        "fix": {
+          "type": "string"
+        },
+        "reason": {
+          "$ref": "#/$defs/ReadOnlyReason"
+        }
+      },
+      "required": [
+        "reason",
+        "fix"
+      ],
+      "type": "object"
+    },
+    "ReadOnlyReason": {
+      "description": "Why the project is read-only (spec §3.7). Import sets `ChainFork`, `ConflictCopy`,\n`NewerFormat` and `ImportError`; the lease sets `LeaseHeld`, `LeaseLost` and\n`CatchingUp` (`Store::read_only` combines them).\n\nNot in the spec's table (Task 20 adds them):\n- `ImportError`: a record on the resolved chain cannot be applied\n  ([`ImportReport::error`]). Writing past it would build a line that servers able to\n  replay it see as a fork, so commits and export wait until a later pass no longer\n  reports it.\n- `CatchingUp`: the lease was just acquired, and no import pass at the new epoch has yet\n  resolved every branch with nothing waiting (after waiting out the directory-cache\n  window when another server wrote before). Until then a commit or an export could extend\n  a line the folder has already moved past (plan Task 11, ordering rule).\n\nPrecedence, highest first: `ChainFork`, `ConflictCopy`, `NewerFormat`, `ImportError`\n(the folder's content: a person or an update must act, whoever holds the lease), then\n`LeaseLost`, `LeaseHeld`, `CatchingUp` (the lease: resolved by waiting or a takeover).",
+      "enum": [
+        "LEASE_HELD",
+        "LEASE_LOST",
+        "CHAIN_FORK",
+        "CONFLICT_COPY",
+        "NEWER_FORMAT",
+        "IMPORT_ERROR",
+        "CATCHING_UP"
+      ],
+      "type": "string"
+    },
+    "RebuildReport": {
+      "description": "What a rebuild did.",
+      "properties": {
+        "corruptCopy": {
+          "description": "Where the old database was kept (`project.fdb.corrupt-<ts>`, or\n`project.fdb.replaced-<ts>` after a manual rebuild).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "genesisMismatch": {
+          "description": "The project file's genesis does not describe the old database's rev 0 (that rev 0\nwas used).",
+          "type": "boolean"
+        },
+        "importError": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CoreError"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Why the import stopped early (it stopped where any open would)."
+        },
+        "keptForRecovery": {
+          "description": "Kept copies whose salvage could not read everything and that are not acknowledged:\nnever pruned (`Store::acknowledge_salvage`).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "missingFromFolder": {
+          "description": "Of those, exported records the folder no longer yields (`MISSING_FROM_FOLDER`).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "problem": {
+          "description": "What made the old database count as damaged (`corrupt`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reason": {
+          "description": "`missing`, `corrupt` or `manual`.",
+          "type": "string"
+        },
+        "rebuiltThrough": {
+          "description": "The head of `main` in the new database.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "records": {
+          "description": "Records in the new database.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "salvageComplete": {
+          "description": "Everything in the old databases could be read.",
+          "type": "boolean"
+        },
+        "salvageErrors": {
+          "description": "What could not be read.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "salvaged": {
+          "description": "Rows salvaged into quarantine: records the new database lacks (`SALVAGED`,\n`MISSING_FROM_FOLDER`) and the old databases' own quarantine rows.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "salvagedCopies": {
+          "description": "Earlier kept copies salvaged too.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "seededFromSnapshot": {
+          "description": "The seq of the folder snapshot the rebuild was seeded from.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "verify": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/VerifyReport"
+            }
+          ],
+          "description": "The checks of the new database that need no replay."
+        }
+      },
+      "required": [
+        "reason",
+        "records",
+        "salvaged",
+        "missingFromFolder",
+        "rebuiltThrough",
+        "salvageComplete",
+        "salvageErrors",
+        "salvagedCopies",
+        "keptForRecovery",
+        "genesisMismatch",
+        "verify"
+      ],
+      "type": "object"
     },
     "RecipeUsage": {
       "description": "One recipe's share of the cache.",
@@ -15061,10 +15714,7 @@
           "format": "uint16",
           "maximum": 65535,
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "targetsVersion": {
           "format": "uint64",
@@ -15144,7 +15794,11 @@
           "type": "boolean"
         },
         "code": {
-          "$ref": "#/$defs/Code",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Code"
+            }
+          ],
           "description": "A `TUF_*` code, `CLOCK_SUSPECT`, `REGISTRY_UNREACHABLE`, ..."
         },
         "micros": {
@@ -15251,9 +15905,7 @@
         "trusted",
         "plugins",
         "advisories",
-        "staleDays",
-        "maxStaleDays",
-        "lastRefreshAt"
+        "maxStaleDays"
       ],
       "type": "object"
     },
@@ -15388,10 +16040,7 @@
           "type": "string"
         },
         "blame": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "branch": {
           "type": "string"
@@ -15412,10 +16061,7 @@
           "type": "string"
         },
         "reason": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "seq": {
           "format": "uint64",
@@ -15450,10 +16096,7 @@
           "type": "string"
         },
         "hash": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "seq": {
           "format": "uint64",
@@ -15676,10 +16319,7 @@
               "type": "boolean"
             },
             "rootFileId": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             },
             "sample": {
               "items": {
@@ -15877,10 +16517,7 @@
       "description": "One top-level entry of a root, kept to confirm a volume change (Decision 17). No name:\nentries are matched by file id, size and mtime.",
       "properties": {
         "fileId": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "mtimeNs": {
           "type": "string"
@@ -16135,10 +16772,7 @@
           "type": "boolean"
         },
         "dev": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "dir": {
           "$ref": "#/$defs/RawRel"
@@ -16147,16 +16781,10 @@
           "$ref": "#/$defs/EntryType"
         },
         "excluded": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "fileId": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "mountRoot": {
           "type": "boolean"
@@ -16174,14 +16802,7 @@
           "type": "string"
         },
         "placeholder": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Placeholder"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/$defs/Placeholder"
         },
         "relKey": {
           "type": "string"
@@ -16189,10 +16810,7 @@
         "reparseTag": {
           "format": "uint32",
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "size": {
           "format": "uint64",
@@ -16648,10 +17266,7 @@
           "type": "string"
         },
         "url": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "versions": {
           "description": "A semver range of affected versions.",
@@ -16873,6 +17488,26 @@
       ],
       "type": "object"
     },
+    "StatusWarning": {
+      "description": "One status warning (`StatusWarning` in the schema). The store's carry a code and a message; the server's font warnings\n(fin-node, 4C Decision 34) also `details` and a `fix`.",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "details": true,
+        "fix": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "type": "object"
+    },
     "StopReason": {
       "enum": [
         "endTurn",
@@ -16881,6 +17516,20 @@
         "stopSequence",
         "refusal",
         "other"
+      ],
+      "type": "string"
+    },
+    "StorageKind": {
+      "description": "The project folder's storage kind: `local`, `network` or `sync:<provider>`.",
+      "enum": [
+        "local",
+        "network",
+        "sync:dropbox",
+        "sync:syncthing",
+        "sync:icloud",
+        "sync:onedrive",
+        "sync:googledrive",
+        "sync:unknown"
       ],
       "type": "string"
     },
@@ -18334,10 +18983,7 @@
         }
       },
       "required": [
-        "root",
-        "timestamp",
-        "snapshot",
-        "targets"
+        "root"
       ],
       "type": "object"
     },
@@ -18355,10 +19001,7 @@
       "properties": {
         "argsHash": {
           "description": "What produced the tx, for a client that sends an idempotency key as `txId`:\n`blake3:<64 hex>` of the command input (op kinds and canonical args, before they were\nresolved against a snapshot). A retry rebuilds `ops` against a newer head (positions\nmove; the stored tx is rebased), so `ops` cannot tell a retry from another command;\nthis can. The store refuses a `txId` it holds with another `argsHash`\n(`IDEM_KEY_REUSED`). Stored with the record, so every server that imported it checks.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "author": {
           "type": "string"
@@ -18460,7 +19103,11 @@
           "type": "array"
         },
         "source": {
-          "$ref": "#/$defs/UnitSource",
+          "allOf": [
+            {
+              "$ref": "#/$defs/UnitSource"
+            }
+          ],
           "description": "The record whose stored `inverse` an undo uses: the unit's records, or the redo\nrecord that recreated it (Decision 23)."
         }
       },
@@ -18545,22 +19192,14 @@
           "type": "array"
         },
         "manifest": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Manifest"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/$defs/Manifest"
         },
         "ok": {
           "type": "boolean"
         }
       },
       "required": [
-        "ok",
-        "errors"
+        "ok"
       ],
       "type": "object"
     },
@@ -18645,6 +19284,25 @@
         "autoMerge"
       ],
       "type": "string"
+    },
+    "VerifyReport": {
+      "description": "[`Store::verify`]: `ok` when every check is.",
+      "properties": {
+        "checks": {
+          "items": {
+            "$ref": "#/$defs/Check"
+          },
+          "type": "array"
+        },
+        "ok": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "ok",
+        "checks"
+      ],
+      "type": "object"
     },
     "Version": {
       "pattern": "^[0-9]{1,5}\\.[0-9]{1,5}\\.[0-9]{1,5}(-[0-9a-z.]{1,32})?$",
@@ -18801,14 +19459,22 @@
           "$ref": "#/$defs/VideoCodec"
         },
         "coded": {
-          "$ref": "#/$defs/Size",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Size"
+            }
+          ],
           "description": "The sample entry's coded size."
         },
         "colour": {
           "$ref": "#/$defs/ColourTags"
         },
         "display": {
-          "$ref": "#/$defs/Size",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Size"
+            }
+          ],
           "description": "`coded` after the pixel aspect and the rotation ([`display_size`])."
         },
         "fourcc": {
@@ -18835,11 +19501,19 @@
           "type": "integer"
         },
         "nominalRate": {
-          "$ref": "#/$defs/Rational",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Rational"
+            }
+          ],
           "description": "Frames per second of the most common frame duration."
         },
         "pixelAspect": {
-          "$ref": "#/$defs/Rational",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Rational"
+            }
+          ],
           "description": "Horizontal over vertical spacing (`pasp`); 1 when absent."
         },
         "profile": {
@@ -18898,10 +19572,7 @@
           "type": "boolean"
         },
         "rootFileId": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "sample": {
           "items": {
