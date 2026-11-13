@@ -1,27 +1,16 @@
 // Types of `media-thumbs.js` (re-exported by `index.d.ts`): the plan of `media.thumbs` (6B-1 plan
-// Task 15, Decision 11).
+// Task 15, Decision 11). The request and the answer are fin-media's `ThumbsPlanRequest` and
+// `ThumbsPlan`, generated into `@finisher/core-types`.
+import type { ThumbsPlan, ThumbsPlanRequest } from "@finisher/core-types";
 
-/** What `mediaThumbsPlan` is asked. */
-export interface MediaThumbsPlanRequest {
-  readonly fingerprint: string;
-  /** `{thumbs: {times, maxSide}}` or `{strip: {tileHeight, sprites?}}` (`sprites` 0 or absent: from `duration`). */
-  readonly mode: { readonly thumbs: { readonly times: ReadonlyArray<string>; readonly maxSide: number } } | { readonly strip: { readonly tileHeight: number; readonly sprites?: number } };
-  readonly sourceCodec: string;
-  readonly decoders: ReadonlyArray<string>;
-  /** The source's duration (`MediaInfo.duration`, a rational string); a filmstrip needs it. */
-  readonly duration?: string | undefined;
-}
+/** What `mediaThumbsPlan` is asked (the generated `ThumbsPlanRequest`). */
+export type MediaThumbsPlanRequest = ThumbsPlanRequest;
 
 /**
  * 6B-1 Task 15 (Decision 11): the cache key a `media.thumbs` job of the source will commit under,
- * the decoder (and its vendor class) the report names first, the mode with a filmstrip's sprite
- * count filled in, and the job's items. Throws `CODEC_UNAVAILABLE` when no listed backend decodes
- * the codec, `INVALID_REQUEST` for a request that does not parse.
+ * from the original's codec (the decoder the report names first, and its vendor class) or from the
+ * decoder class a `1080` proxy entry records; the mode with a filmstrip's sprite count filled in,
+ * and the job's items. Throws `CODEC_UNAVAILABLE` when no listed backend decodes the codec,
+ * `INVALID_REQUEST` for a request that does not parse or gives both or neither sources.
  */
-export declare function mediaThumbsPlan(request: MediaThumbsPlanRequest): {
-  key: string;
-  decoder: string;
-  decoderClass: "os" | "gpu" | "software" | "plugin";
-  mode: MediaThumbsPlanRequest["mode"];
-  items: string[];
-};
+export declare function mediaThumbsPlan(request: ThumbsPlanRequest): ThumbsPlan;

@@ -19229,14 +19229,6 @@
         "projectId": {
           "description": "The project that asked (host only: `prepare` writes the manifest from its branch head,\n`onSucceeded` commits the entry for it).",
           "type": "string"
-        },
-        "proxy": {
-          "allOf": [
-            {
-              "$ref": "#/$defs/ThumbsProxy"
-            }
-          ],
-          "description": "Read this proxy instead of the original (a proxy that cannot be read falls back to the\noriginal)."
         }
       },
       "required": [
@@ -19248,25 +19240,94 @@
       ],
       "type": "object"
     },
-    "ThumbsProxy": {
+    "ThumbsPlan": {
       "additionalProperties": false,
-      "description": "A `1080` proxy entry the worker reads instead of the original: its key and directory in\nthe media cache (the host looked it up and holds it for the job) and its codec.",
+      "description": "What `mediaThumbsPlan` answers.",
       "properties": {
-        "codec": {
-          "$ref": "#/$defs/ProxyCodec"
-        },
-        "dir": {
-          "description": "The entry's directory (absolute, canonical): `proxy.mp4`, `table.bin` and `meta.json`\nare opened below it with the no-follow opener.",
+        "decoder": {
+          "description": "The backend the report names first for the original's codec (absent when planned from\na proxy's `decoderClass`).",
           "type": "string"
+        },
+        "decoderClass": {
+          "$ref": "#/$defs/VendorClass"
+        },
+        "items": {
+          "description": "The job's items.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "key": {
           "type": "string"
+        },
+        "mode": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/ThumbsMode"
+            }
+          ],
+          "description": "The mode with a filmstrip's sprite count filled in."
         }
       },
       "required": [
         "key",
-        "dir",
-        "codec"
+        "decoderClass",
+        "mode",
+        "items"
+      ],
+      "type": "object"
+    },
+    "ThumbsPlanRequest": {
+      "additionalProperties": false,
+      "description": "What `mediaThumbsPlan` (fin-node) is asked: the key of a `media.thumbs` job before it is\nsubmitted. The decoder class comes from the original (`sourceCodec` and the report's\n`decoders` for it: the first that decodes it) or, when the original is not read, from the\n`1080` proxy entry the worker will read (`decoderClass`, which its `meta.json` records:\nDecision 11 keys the original's decoder class either way). Exactly one of the two.",
+      "properties": {
+        "decoderClass": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/VendorClass"
+            }
+          ],
+          "description": "The original's decoder class as a proxy entry records it (instead of `sourceCodec`)."
+        },
+        "decoders": {
+          "description": "The report's backends for `source_codec`, in the order they are tried.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "duration": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/Rational"
+            }
+          ],
+          "description": "The source's duration in seconds (`MediaInfo.duration`; filmstrips)."
+        },
+        "fingerprint": {
+          "type": "string"
+        },
+        "mode": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/ThumbsMode"
+            }
+          ],
+          "description": "A filmstrip with `sprites: 0` (or none) is planned from `duration`."
+        },
+        "sourceCodec": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/VideoCodec"
+            }
+          ],
+          "description": "The original's video codec (the asset's `video.codec`)."
+        }
+      },
+      "required": [
+        "fingerprint",
+        "mode"
       ],
       "type": "object"
     },
@@ -19285,7 +19346,7 @@
           "type": "integer"
         },
         "proxyFailed": {
-          "description": "The error code of a proxy that could not be read (the original was read instead).",
+          "description": "Why the proxy the manifest lists could not be read (the original was read instead):\n`missing`, `changed` or `invalid`, as a look's `proxyFallbacks` give it.",
           "type": "string"
         },
         "source": {

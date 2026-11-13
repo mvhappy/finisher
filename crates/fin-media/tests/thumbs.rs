@@ -7,8 +7,8 @@ use fin_media::backend::VendorClass;
 use fin_media::cache::{CacheKey, STRIP, THUMBS};
 use fin_media::jobs::{
     DEFAULT_TILE_HEIGHT, MAX_STRIP_SPRITES, MAX_THUMB_SIDE, MAX_THUMBS, STRIP_SPRITE_SECONDS,
-    ThumbsMode, ThumbsParams, plan_thumbs_key, strip_sprites, strip_tiles, thumb_size, thumbs_key,
-    tile_size,
+    ThumbsMode, ThumbsParams, ThumbsPlanRequest, plan_thumbs, plan_thumbs_key, strip_sprites,
+    strip_tiles, thumb_size, thumbs_key, tile_size,
 };
 use fin_media::{Rotation, VideoCodec};
 use serde_json::json;
@@ -29,7 +29,6 @@ fn params(mode: ThumbsMode) -> ThumbsParams {
         mode,
         decoder_class: VendorClass::Software,
         key,
-        proxy: None,
         only: None,
         project_id: None,
         branch: None,
@@ -256,4 +255,51 @@ fn the_host_plans_the_key_from_the_first_decoder_that_reads_the_source() {
     assert_eq!(e.code, "CODEC_UNAVAILABLE");
     // Rotation does not enter the key: the source's geometry is part of its fingerprint.
     let _ = Rotation::R90;
+}
+
+/// Review of Task 15: a plan from the vendor class a `1080` proxy entry records (the original
+/// offline) gives the key a plan from the original's codec gives for the same class; a request
+/// gives exactly one of the two; a filmstrip's sprites come from the duration either way.
+#[test]
+fn plans_from_the_original_or_a_proxys_decoder_class() {
+    let req = |codec: Option<VideoCodec>, class: Option<VendorClass>, mode| ThumbsPlanRequest {
+        fingerprint: "fp".into(),
+        mode,
+        source_codec: codec,
+        decoders: if codec.is_some() {
+            vec!["dav1d".into()]
+        } else {
+            vec![]
+        },
+        decoder_class: class,
+        duration: Some(r(25, 1)),
+    };
+    let mode = thumbs(vec![r(0, 1)], 256);
+    let from_codec = plan_thumbs(req(Some(VideoCodec::Av1), None, mode.clone())).unwrap();
+    assert_eq!(from_codec.decoder.as_deref(), Some("dav1d"));
+    let from_proxy = plan_thumbs(req(None, Some(from_codec.decoder_class), mode.clone())).unwrap();
+    assert_eq!(from_proxy.key, from_codec.key);
+    assert_eq!(from_proxy.decoder, None);
+    let strip = ThumbsMode::Strip {
+        tile_height: 90,
+        sprites: 0,
+    };
+    let planned = plan_thumbs(req(None, Some(VendorClass::Software), strip)).unwrap();
+    assert_eq!(planned.items.len(), 3);
+    for bad in [
+        req(
+            Some(VideoCodec::Av1),
+            Some(VendorClass::Software),
+            mode.clone(),
+        ),
+        req(None, None, mode.clone()),
+    ] {
+        assert_eq!(plan_thumbs(bad).unwrap_err().code, "INVALID_REQUEST");
+    }
+    let wire = serde_json::to_value(req(None, Some(VendorClass::Software), mode)).unwrap();
+    assert_eq!(
+        wire,
+        json!({ "fingerprint": "fp", "mode": { "thumbs": { "times": ["0"], "maxSide": 256 } },
+            "decoderClass": "software", "duration": "25" })
+    );
 }

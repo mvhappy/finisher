@@ -247,17 +247,7 @@ fn make(p: &ProxyParams, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<ProxyR
             json!({ "kind": "videoTrack" }),
         )
     })?;
-    // Decision 9 (spec §10.1): Dolby Vision profile 5 has no backward-compatible base layer;
-    // profile 8's base layer is what the decoder outputs.
-    if let Some(dv) = video.hdr.and_then(|h| h.dolby_vision)
-        && dv.profile == 5
-    {
-        return Err(item(
-            "CODEC_UNAVAILABLE",
-            "Dolby Vision profile 5 has no base layer this machine can show".into(),
-            json!({ "codec": video.codec, "direction": "decode", "reason": "dolbyVisionProfile5" }),
-        ));
-    }
+    refuse_dolby_vision_5(&video)?;
     let table = reader.table().clone();
     let frames = table.len() as u64;
     // A source that presents no frame has nothing to proxy: typed, never an empty proxy.
@@ -366,6 +356,22 @@ fn make(p: &ProxyParams, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<ProxyR
         tone_mapped,
         fell_back: encoded.fell_back,
     })
+}
+
+/// Decision 9 (spec §10.1): Dolby Vision profile 5 has no backward-compatible base layer, so
+/// nothing reads it (`CODEC_UNAVAILABLE {reason: dolbyVisionProfile5}`); profile 8's base layer
+/// is what the decoder outputs. Proxies and thumbnails of an original both refuse it.
+pub(super) fn refuse_dolby_vision_5(video: &VideoTrackInfo) -> Result<(), Fail> {
+    if let Some(dv) = video.hdr.and_then(|h| h.dolby_vision)
+        && dv.profile == 5
+    {
+        return Err(item(
+            "CODEC_UNAVAILABLE",
+            "Dolby Vision profile 5 has no base layer this machine can show".into(),
+            json!({ "codec": video.codec, "direction": "decode", "reason": "dolbyVisionProfile5" }),
+        ));
+    }
+    Ok(())
 }
 
 pub(super) fn now_ms() -> i64 {

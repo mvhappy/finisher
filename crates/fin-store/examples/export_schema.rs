@@ -109,6 +109,8 @@ fn main() {
         g.subschema_for::<fin_media::jobs::ThumbItem>();
         g.subschema_for::<fin_media::jobs::StripIndex>();
         g.subschema_for::<fin_media::jobs::ThumbsRun>();
+        g.subschema_for::<fin_media::jobs::ThumbsPlanRequest>();
+        g.subschema_for::<fin_media::jobs::ThumbsPlan>();
         g.subschema_for::<fin_library::RawRel>();
         g.subschema_for::<fin_library::Expect>();
         g.subschema_for::<fin_library::ScanEntry>();

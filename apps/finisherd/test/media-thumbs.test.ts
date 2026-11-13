@@ -1,23 +1,26 @@
 // `media.thumbs` (6B-1 plan Task 15, Decision 17): the kind, its params and plan, and the job
 // through the real worker and cache: thumbnails and a filmstrip made, committed and served, the
-// `1080` proxy handed to the worker when its entry exists, items restricted for a retry, and the
-// refusals. The GPU scale pass runs on SwiftShader here (`FIN_GPU=software`); a host without any
+// `1080` proxy listed in the job's manifest and pinned for the job when its entry exists, the
+// cache answering with the original offline, items restricted for a retry, and the refusals. The GPU scale pass runs on SwiftShader here (`FIN_GPU=software`); a host without any
 // adapter skips (`FIN_REQUIRE_GPU=1` fails instead).
-import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { copyFileSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { FinError } from "@finisher/contracts";
-import type { EntryMeta, StripIndex, ThumbsParams } from "@finisher/core-types";
+import type { EntryMeta, RenderManifest, StripIndex, ThumbsMode, ThumbsParams } from "@finisher/core-types";
 import { Engine, MediaCache, mediaThumbsPlan, validateJobParams } from "@finisher/fin-node";
 import { Effect } from "effect";
-import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import { toFinError } from "../src/errors.ts";
 import { registerMediaKinds } from "../src/jobs/kinds/media.look.ts";
 import { MEDIA_THUMBS, mediaThumbsKind, thumbsDedupe, thumbsItems } from "../src/jobs/kinds/media.thumbs.ts";
 import { mediaCapabilities } from "../src/media/caps.ts";
 import { BATCH_MEMORY, BATCH_MEMORY_LARGE } from "../src/media/memory.ts";
 import { makeProxyService } from "../src/media/proxy.ts";
+import type { MediaCacheService } from "../src/media/cache.ts";
 import { makeThumbsService } from "../src/media/thumbs.ts";
+import { mediaWiring } from "../src/media/wiring.ts";
+import { jobDirs } from "../src/jobs/files.ts";
 import { closeTestEngines, testEngine } from "./support/jobs.ts";
 import { makeAv1Fixture } from "./support/media.ts";
 
@@ -42,10 +45,10 @@ afterEach(async () => {
 
 afterAll(() => rmSync(work, { recursive: true, force: true }));
 
-const planOf = (fp: string, mode: Parameters<typeof mediaThumbsPlan>[0]["mode"], duration?: string) =>
+const planOf = (fp: string, mode: ThumbsMode, duration?: string) =>
   mediaThumbsPlan({ fingerprint: fp, mode, sourceCodec: "av1", decoders: ["dav1d"], ...(duration === undefined ? {} : { duration }) });
 
-const THUMBS_MODE = { thumbs: { times: ["0", "1/10", "1/5"], maxSide: 128 } } as const;
+const THUMBS_MODE: ThumbsMode = { thumbs: { times: ["0", "1/10", "1/5"], maxSide: 128 } };
 
 function params(over: Record<string, unknown> = {}): ThumbsParams {
   const planned = planOf("fp-a1", THUMBS_MODE);
@@ -115,24 +118,24 @@ describe("the kind", () => {
 
 const tx = (txId: string, baseRev: number, ops: unknown[]) => JSON.stringify({ txId, author: "test", branch: "main", baseRev, schemaVersion: 2, ops });
 
-/** A project with asset `a1` (fingerprint `fp`) on the clip, and `a2` audio-only. */
-async function project(serverData: string, fp: string): Promise<Engine> {
+/** A project with asset `a1` (fingerprint `fp`) on the clip at `clip`, and `a2` audio-only. */
+async function project(serverData: string, fp: string, clip = media): Promise<Engine> {
   const dir = join(mkdtempSync(join(work, "proj-")), "p");
   const engine = await Engine.create(serverData, dir, "Thumbs", "30");
   engines.push(engine);
   await engine.commit(
     tx("t1", 0, [
-      { op: "asset.add", id: "$a1", path: media, duration: "2/5", video: { width: 160, height: 90, rate: "30" }, fingerprint: fp },
+      { op: "asset.add", id: "$a1", path: clip, duration: "2/5", video: { width: 160, height: 90, rate: "30" }, fingerprint: fp },
       { op: "asset.add", id: "$a2", path: join(work, "sound.wav"), duration: "1", audio: { sampleRate: 48000, channels: 2 }, fingerprint: "fp-sound" },
     ]),
   );
   return engine;
 }
 
-/** A real engine with the media kinds, the cache and the proxy and thumbs services over one project. */
-async function setup(fp = "fp-a1") {
+/** A real engine with the media kinds, the cache and the proxy and thumbs services over one project (its clip `clip`). */
+async function setup(fp = "fp-a1", clip = media) {
   const serverData = realpathSync(mkdtempSync(join(work, "sd-")));
-  const engine = await project(serverData, fp);
+  const engine = await project(serverData, fp, clip);
   const cache = await MediaCache.open(serverData);
   let caps: ReturnType<typeof mediaCapabilities> | undefined;
   const projects = {
@@ -152,9 +155,11 @@ async function setup(fp = "fp-a1") {
     snapshot: (_: string, b: string) => Effect.tryPromise({ try: async () => JSON.parse(await engine.snapshot(b)) as { rev: number; project: unknown }, catch: toFinError }),
     dirOf: projects.dirOf,
   };
-  const proxies = makeProxyService({ registry, engine: t.engine, capabilities: caps, cache: () => cache });
-  const thumbs = makeThumbsService({ engine: t.engine, capabilities: caps, proxies, cache: () => cache });
-  return { t, cache, engine, proxies, thumbs, serverData, pid: engine.projectId };
+  const services = () => {
+    const proxies = makeProxyService({ registry, engine: t.engine, capabilities: caps, cache: () => cache });
+    return { proxies, thumbs: makeThumbsService({ engine: t.engine, capabilities: caps, proxies, cache: () => cache }) };
+  };
+  return { t, cache, engine, registry, services, ...services(), serverData, pid: engine.projectId };
 }
 
 const run = <A>(e: Effect.Effect<A, FinError>) => Effect.runPromise(e);
@@ -207,24 +212,80 @@ describe("the job and the RPC", () => {
     expect(index.sprites).toEqual([{ file: "s0.png", tiles: [{ at: "0", frame: 0 }] }]);
   }, 240_000);
 
-  test("reads_proxy_when_present: the 1080 proxy entry is handed to the job, the key is the same", async () => {
-    const { t, thumbs, proxies, pid } = await setup();
+  test("reads_proxy_when_present: the 1080 proxy is listed in the job's manifest and pinned for the job", async () => {
+    const { t, cache, thumbs, proxies, serverData, pid } = await setup();
     const withoutProxy = await Effect.runPromise(Effect.result(thumbs.request(OWNER, { projectId: pid, asset: "a1", at: ["0"], maxSide: 64 })));
     if (withoutProxy._tag === "Failure" && noGpu(withoutProxy.failure)) return;
     if (withoutProxy._tag === "Failure") throw withoutProxy.failure;
-    const first = withoutProxy.success;
-    const firstJob = await t.engine.get(first.job!).pipe(Effect.runPromise);
-    expect((firstJob.params as ThumbsParams).proxy).toBeUndefined();
+    const first = await t.engine.get(withoutProxy.success.job!).pipe(Effect.runPromise);
+    const firstManifest = JSON.parse(readFileSync(join(jobDirs(join(serverData, "jobs"), first.id).job, "in", "manifest.json"), "utf8")) as RenderManifest;
+    expect(firstManifest.assets[0]!.proxies ?? []).toEqual([]);
     // Make the 1080 proxy.
     const proxy = await run(proxies.request(OWNER, { projectId: pid, asset: "a1", tier: "1080" }));
     expect(proxy.state).toBe("ready");
-    expect((await run(proxies.peek(OWNER, { projectId: pid, asset: "a1" })))?.key).toBe(proxy.key);
-    // Other thumbnails of the same asset now read it; the answer is the same shape.
+    // Other thumbnails of the same asset now read it (the worker's tests check the pixels); the
+    // answer is the same shape.
     const made = await run(thumbs.request(OWNER, { projectId: pid, asset: "a1", at: ["0", "1/10"], maxSide: 64 }));
     expect(made.state).toBe("ready");
-    const job = await t.engine.get(made.job!).pipe(Effect.runPromise);
-    expect((job.params as ThumbsParams).proxy).toMatchObject({ key: proxy.key, codec: "av1" });
     expect(made.files?.map((f) => f.name)).toEqual(["t0.png", "t1.png"]);
+    const job = await t.engine.get(made.job!).pipe(Effect.runPromise);
+    expect(job.params).not.toHaveProperty("proxy");
+    const manifest = JSON.parse(readFileSync(join(jobDirs(join(serverData, "jobs"), job.id).job, "in", "manifest.json"), "utf8")) as RenderManifest;
+    expect(manifest.assets[0]!.proxies).toEqual([expect.objectContaining({ tier: "1080", key: proxy.key, codec: "av1" })]);
+    // Pinned for the job's life: no wiring here releases it, so the pin is still there.
+    expect(await cache.pinsOf(proxy.key)).toContain(`job:${job.id}`);
+  }, 300_000);
+
+  test("a thumbnails job's pin on its proxy ends with the job (the wiring's hook)", async () => {
+    const s = await setup();
+    const proxy = await Effect.runPromise(Effect.result(s.proxies.request(OWNER, { projectId: s.pid, asset: "a1", tier: "1080" })));
+    if (proxy._tag === "Failure" && noGpu(proxy.failure)) return;
+    if (proxy._tag === "Failure") throw proxy.failure;
+    const key = proxy.success.key;
+    const wiring = mediaWiring({ cache: s.cache } as unknown as MediaCacheService, { onDrop: () => {} }, () => {});
+    wiring.start(s.t.engine, { registerStage: () => {}, registry: { list: () => [] } } as never, s.registry as never);
+    // While the job runs, its manifest's proxy is pinned for it (`prepare`, before the worker starts).
+    const held: string[][] = [];
+    const watch = setInterval(() => void s.cache.pinsOf(key).then((p) => held.push(p)), 5);
+    const made = await run(s.thumbs.request(OWNER, { projectId: s.pid, asset: "a1", at: ["0", "1/5"], maxSide: 64 }));
+    clearInterval(watch);
+    expect(held.some((p) => p.includes(`job:${made.job}`))).toBe(true);
+    // Released when it ends.
+    await vi.waitFor(async () => expect((await s.cache.pinsOf(key)).filter((p) => p.startsWith("job:"))).toEqual([]), { timeout: 10_000 });
+  }, 300_000);
+
+  test("the original offline: after a restart the cache answers, and new thumbnails are made from the proxy", async () => {
+    // A clip of its own, which goes offline below.
+    const clip = join(mkdtempSync(join(work, "offline-")), "clip.mp4");
+    copyFileSync(media, clip);
+    const s = await setup("fp-a1", clip);
+    const proxy = await Effect.runPromise(Effect.result(s.proxies.request(OWNER, { projectId: s.pid, asset: "a1", tier: "1080" })));
+    if (proxy._tag === "Failure" && noGpu(proxy.failure)) return;
+    if (proxy._tag === "Failure") throw proxy.failure;
+    const req = { projectId: s.pid, asset: "a1", at: ["0", "1/10"], maxSide: 64 };
+    const made = await run(s.thumbs.request(OWNER, req));
+    expect(made.state).toBe("ready");
+    // A restart (services with nothing remembered), the library offline.
+    renameSync(clip, `${clip}.away`);
+    const after = s.services();
+    const hit = await run(after.thumbs.request(OWNER, req));
+    expect(hit).toEqual({ ...made, cached: true, job: undefined, files: made.files });
+    // Thumbnails never made before: planned from the proxy's meta.json, read from the proxy.
+    const fresh = await run(after.thumbs.request(OWNER, { ...req, at: ["1/5"] }));
+    expect(fresh.state).toBe("ready");
+    const job = await s.t.engine.get(fresh.job!).pipe(Effect.runPromise);
+    // Its original is away: only the proxy could have made it.
+    expect(job.state).toBe("succeeded");
+    expect(job.result).toMatchObject({ items: { "0": { at: "1/5", file: "t0.png" } }, itemErrors: [] });
+    // The same key a plan from the original gives (Decision 11).
+    expect(fresh.key).toBe(planOf("fp-a1", { thumbs: { times: ["1/5"], maxSide: 64 } }).key);
+    // With no proxy either, the original is needed: its error names no path of this host.
+    for (const holder of await s.cache.pinsOf(proxy.success.key)) await s.cache.release(holder);
+    await s.cache.gc(0);
+    expect(await s.cache.lookup(proxy.success.key)).toBeNull();
+    const e = await fail(s.services().thumbs.request(OWNER, { ...req, at: ["1/3"] }));
+    expect(JSON.stringify({ message: e.message, details: e.details, fix: e.fix })).not.toContain(clip);
+    expect(e.details).toMatchObject({ asset: "a1" });
   }, 300_000);
 
   test("bad requests, an audio asset, an unknown asset and a moved fingerprint are refused", async () => {

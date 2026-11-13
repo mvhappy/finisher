@@ -14,8 +14,9 @@
 //!   and an offset without decoding anything.
 //! - **Items:** one per thumbnail (`"0"`, `"1"`, … in `times` order) or per sprite, so a crash
 //!   keeps what was done and a retry makes only the rest (`only`).
-//! - **Source:** the `1080` proxy when the host found its entry ([`ThumbsProxy`]), else the
-//!   original. Both give the same key (Decision 11): the key names the original's content and
+//! - **Source:** the `1080` proxy the job's manifest lists for the asset
+//!   ([`ManifestAsset::proxies`](super::ManifestAsset::proxies): the host lists it and pins it
+//!   for the job's life, Decision 12), else the original. Both give the same key (Decision 11): the key names the original's content and
 //!   the vendor class of the backend that decodes the original (a proxy's `meta.json` records
 //!   it), so a thumbnail's entry does not depend on which source made it.
 
@@ -25,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::invalid;
-use super::proxy::{ProxyCodec, no_decoder};
+use super::proxy::no_decoder;
 use crate::backend::VendorClass;
 use crate::cache::{CacheKey, KeyInput, Recipe, STRIP, THUMBS};
 use crate::format::VideoCodec;
@@ -111,18 +112,6 @@ impl ThumbsMode {
     }
 }
 
-/// A `1080` proxy entry the worker reads instead of the original: its key and directory in
-/// the media cache (the host looked it up and holds it for the job) and its codec.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ThumbsProxy {
-    pub key: String,
-    /// The entry's directory (absolute, canonical): `proxy.mp4`, `table.bin` and `meta.json`
-    /// are opened below it with the no-follow opener.
-    pub dir: String,
-    pub codec: ProxyCodec,
-}
-
 /// `media.thumbs` v1: thumbnails or a filmstrip of the asset `asset` (content `fingerprint`),
 /// which the cache knows as `key`. A batch kind whose items are the thumbnails or sprites.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -137,11 +126,6 @@ pub struct ThumbsParams {
     pub decoder_class: VendorClass,
     /// [`thumbs_key`] of the fields above: where the host commits the entry.
     pub key: String,
-    /// Read this proxy instead of the original (a proxy that cannot be read falls back to the
-    /// original).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "ThumbsProxy")]
-    pub proxy: Option<ThumbsProxy>,
     /// The items still to make (a retry after a crash: the engine restricts the params to the
     /// items it has not acknowledged); all of them when absent. Files of the others are kept.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -265,6 +249,83 @@ pub fn plan_thumbs_key<S: AsRef<str>>(
     Ok((thumbs_key(fingerprint, mode, b.class), b))
 }
 
+/// What `mediaThumbsPlan` (fin-node) is asked: the key of a `media.thumbs` job before it is
+/// submitted. The decoder class comes from the original (`sourceCodec` and the report's
+/// `decoders` for it: the first that decodes it) or, when the original is not read, from the
+/// `1080` proxy entry the worker will read (`decoderClass`, which its `meta.json` records:
+/// Decision 11 keys the original's decoder class either way). Exactly one of the two.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ThumbsPlanRequest {
+    pub fingerprint: String,
+    /// A filmstrip with `sprites: 0` (or none) is planned from `duration`.
+    pub mode: ThumbsMode,
+    /// The original's video codec (the asset's `video.codec`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "VideoCodec")]
+    pub source_codec: Option<VideoCodec>,
+    /// The report's backends for `source_codec`, in the order they are tried.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub decoders: Vec<String>,
+    /// The original's decoder class as a proxy entry records it (instead of `sourceCodec`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "VendorClass")]
+    pub decoder_class: Option<VendorClass>,
+    /// The source's duration in seconds (`MediaInfo.duration`; filmstrips).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Rational")]
+    pub duration: Option<Rational>,
+}
+
+/// What `mediaThumbsPlan` answers.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ThumbsPlan {
+    pub key: String,
+    /// The backend the report names first for the original's codec (absent when planned from
+    /// a proxy's `decoderClass`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub decoder: Option<String>,
+    pub decoder_class: VendorClass,
+    /// The mode with a filmstrip's sprite count filled in.
+    pub mode: ThumbsMode,
+    /// The job's items.
+    pub items: Vec<String>,
+}
+
+/// Plans a `media.thumbs` job ([`ThumbsPlanRequest`]): `INVALID_REQUEST` for a filmstrip
+/// without a duration or a request with both or neither decoder sources, `CODEC_UNAVAILABLE`
+/// when no listed backend decodes the original's codec.
+pub fn plan_thumbs(mut req: ThumbsPlanRequest) -> Result<ThumbsPlan, CoreError> {
+    let bad = |why: &str| CoreError::new("INVALID_REQUEST", format!("mediaThumbsPlan: {why}"));
+    if let ThumbsMode::Strip { sprites, .. } = &mut req.mode
+        && *sprites == 0
+    {
+        let duration = req
+            .duration
+            .ok_or_else(|| bad("a filmstrip needs the source's duration"))?;
+        *sprites = strip_sprites(duration);
+    }
+    let (key, decoder, decoder_class) = match (req.source_codec, req.decoder_class) {
+        (Some(codec), None) => {
+            let (key, b) = plan_thumbs_key(&req.fingerprint, &req.mode, codec, &req.decoders)?;
+            (key, Some(b.name.to_string()), b.class)
+        }
+        (None, Some(class)) if req.decoders.is_empty() => {
+            (thumbs_key(&req.fingerprint, &req.mode, class), None, class)
+        }
+        _ => return Err(bad("give sourceCodec (with decoders) or decoderClass")),
+    };
+    Ok(ThumbsPlan {
+        key: key.to_string(),
+        decoder,
+        decoder_class,
+        items: req.mode.items(),
+        mode: req.mode,
+    })
+}
+
 /// A thumbnail's size (Decision 17): the display size with its longest side at `max_side`,
 /// never above the display size itself, each side at least 2.
 pub fn thumb_size(display: Size, max_side: u32) -> Size {
@@ -368,7 +429,8 @@ pub struct ThumbsRun {
     pub made: u32,
     /// `proxy` or `original`.
     pub source: String,
-    /// The error code of a proxy that could not be read (the original was read instead).
+    /// Why the proxy the manifest lists could not be read (the original was read instead):
+    /// `missing`, `changed` or `invalid`, as a look's `proxyFallbacks` give it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "String")]
     pub proxy_failed: Option<String>,

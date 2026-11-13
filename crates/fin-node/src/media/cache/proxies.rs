@@ -35,6 +35,43 @@ fn current(meta: &EntryMeta, tier: ProxyTier) -> bool {
 }
 
 impl Cache {
+    /// The current `tier` proxies of `fingerprint` in the index, newest first (the key breaks a
+    /// tie so the choice is the same every time).
+    fn current_entries(
+        &mut self,
+        fingerprint: &str,
+        tier: ProxyTier,
+    ) -> Result<Vec<EntryMeta>, CoreError> {
+        let mut entries: Vec<EntryMeta> = self
+            .entries_for(fingerprint)?
+            .into_iter()
+            .filter(|m| current(m, tier))
+            .collect();
+        entries.sort_by(|a, b| (b.created_at, &a.key).cmp(&(a.created_at, &b.key)));
+        Ok(entries)
+    }
+
+    /// The `tier` proxy of `fingerprint` that [`proxies_for`](Self::proxies_for) would list,
+    /// serving `projects` (pinned for those open) and its last use set to now; `None` when the
+    /// cache holds none. Pins nothing for a job: a planner reads its `meta.json` (the
+    /// original's media information and decoder class) without the original (plan 6B-1 Task
+    /// 15, review).
+    pub fn current_proxy(
+        &mut self,
+        fingerprint: &str,
+        tier: ProxyTier,
+        projects: &[String],
+    ) -> Result<Option<EntryMeta>, CoreError> {
+        check_projects(projects)?;
+        for meta in self.current_entries(fingerprint, tier)? {
+            // `lookup` also drops a row whose directory has gone.
+            if self.lookup(&meta.key)?.is_some() && self.serve(&meta.key, projects)? {
+                return Ok(Some(meta));
+            }
+        }
+        Ok(None)
+    }
+
     /// The `tiers` proxies of each of `fingerprints` the cache holds (module docs), by
     /// fingerprint (a fingerprint with none is absent), each pinned for `holder`, serving
     /// `projects` (the job's) and its last use set to now. An entry whose directory has gone is
@@ -52,14 +89,7 @@ impl Cache {
         for fp in fingerprints {
             let mut listed = Vec::new();
             for &tier in tiers {
-                let mut entries: Vec<EntryMeta> = self
-                    .entries_for(fp)?
-                    .into_iter()
-                    .filter(|m| current(m, tier))
-                    .collect();
-                // Newest first; the key breaks a tie so the choice is the same every time.
-                entries.sort_by(|a, b| (b.created_at, &a.key).cmp(&(a.created_at, &b.key)));
-                for meta in entries {
+                for meta in self.current_entries(fp, tier)? {
                     // `lookup` also drops a row whose directory has gone.
                     if self.lookup(&meta.key)?.is_none()
                         || !self.pin(&meta.key, holder)?

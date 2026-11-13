@@ -88,6 +88,13 @@ export declare class MediaCache {
    * `reads`): none when no asset has a proxy, and then the manifest is left as it is.
    */
   attachProxies(inDir: string, holder: string, projects: ReadonlyArray<string>): Promise<string[]>;
+  /**
+   * The `1080` proxy entry of the content `fingerprint` that `attachProxies` would list (the newest
+   * current one), now serving `projects` (pinned for those open), or `null` when there is none.
+   * Pins nothing for a job: `media.thumbs` plans from its `meta.json` (the original's media
+   * information and decoder class) when the original is not read.
+   */
+  currentProxy(fingerprint: string, projects: ReadonlyArray<string>): Promise<EntryMeta | null>;
   /** The entries made from the source with this fingerprint. */
   entriesFor(asset: { readonly fingerprint: string }): Promise<EntryMeta[]>;
   /** The projects `key` serves (reach for media bytes, spec §7.3). */

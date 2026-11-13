@@ -14,6 +14,7 @@ import type { ListenerPolicy } from "../http/policy.ts";
 import type { JobEngine } from "../jobs/api.ts";
 import { MEDIA_LOOK } from "../jobs/kinds/media.look.ts";
 import type { ProxyKindDeps } from "../jobs/kinds/media.proxy.ts";
+import { MEDIA_THUMBS } from "../jobs/kinds/media.thumbs.ts";
 import type { LibraryService } from "../library/service.ts";
 import type { ProjectRegistryShape } from "../projects.ts";
 import type { MediaCacheService } from "./cache.ts";
@@ -73,9 +74,10 @@ export function mediaWiring(mediaCache: MediaCacheService, tickets: Pick<Tickets
         },
       });
       caps = capabilities;
-      // A look's pins on the proxies its manifest lists (6B-1 Task 16) end with the job, however it ends.
+      // The pins of a look or thumbnails job on the proxies its manifest lists (6B-1 Tasks 16 and
+      // 15) end with the job, however it ends.
       engine.onDone((job) => {
-        if (job.kind === MEDIA_LOOK) void mediaCache.cache?.release(`job:${job.id}`).catch(() => undefined);
+        if (job.kind === MEDIA_LOOK || job.kind === MEDIA_THUMBS) void mediaCache.cache?.release(`job:${job.id}`).catch(() => undefined);
       });
       const delay = testHooks === undefined ? 0 : Number(process.env.FIN_TEST_PROXY_DELAY_MS ?? 0);
       proxies = makeProxyService({ registry: projects, engine, capabilities, cache: () => mediaCache.cache, log, ...(Number.isFinite(delay) && delay > 0 ? { testDelayMs: delay } : {}) });

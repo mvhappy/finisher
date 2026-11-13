@@ -74,11 +74,14 @@ pub struct ProxySide {
     verified: Verified,
 }
 
-/// An entry opened: the reader, a second handle on `proxy.mp4`, and the side facts.
+/// An entry opened: the reader, a second handle on `proxy.mp4`, the side facts, and the
+/// entry's `meta.json` as verified (its media information, decoder class and tone mapping are
+/// the original's: `media.thumbs` reads them).
 pub struct Opened {
     pub reader: FrameReader<File>,
     pub held: File,
     pub side: ProxySide,
+    pub meta: EntryMeta,
 }
 
 /// A file's facts that change when it is written, truncated or replaced: its size, its
@@ -249,7 +252,12 @@ pub fn open(p: &ManifestProxy, fingerprint: &str, caps: &ProbeResult) -> Result<
             proxy: proxy_held,
         },
     };
-    Ok(Opened { reader, held, side })
+    Ok(Opened {
+        reader,
+        held,
+        side,
+        meta,
+    })
 }
 
 /// Whether each file of the entry `p` is still the one `side` was verified from, with the same

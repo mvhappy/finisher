@@ -21,9 +21,9 @@ use fin_media::backend::VendorClass;
 use fin_media::cache::{EntryMeta, META_FILE};
 use fin_media::colour::{ChromaSiting, Matrix, Primaries, Range, Transfer};
 use fin_media::jobs::{
-    MANIFEST_VERSION, ManifestAsset, ManifestFonts, OriginalFile, ProxyCodec, ProxyParams,
-    ProxyResult, ProxyTier, RenderManifest, StripIndex, ThumbItem, ThumbsMode, ThumbsParams,
-    ThumbsProxy, ThumbsRun, ToneMapped, proxy_key, thumbs_key,
+    MANIFEST_VERSION, ManifestAsset, ManifestFonts, ManifestProxy, OriginalFile, ProxyCodec,
+    ProxyParams, ProxyResult, ProxyTier, RenderManifest, StripIndex, ThumbItem, ThumbsMode,
+    ThumbsParams, ThumbsRun, ToneMapped, proxy_key, thumbs_key,
 };
 use fin_media::testing::{Rect, read_id_rgba, read_id_y};
 use fin_media::{ColourTags, Rotation, SampleTable, Size, frame_at};
@@ -78,6 +78,11 @@ fn spec(frames: u32, size: Size) -> ClipSpec {
 
 /// A job whose manifest names asset `a1` (fingerprint `fp`) at `path`, or no file.
 fn job_for(fp: &str, path: Option<&Path>) -> Job {
+    job_with(fp, path, None)
+}
+
+/// [`job_for`], its manifest listing `proxy` for the asset (as the host's `attachProxies` does).
+fn job_with(fp: &str, path: Option<&Path>, proxy: Option<&Filed>) -> Job {
     let job = Job::new();
     let m = RenderManifest {
         version: MANIFEST_VERSION,
@@ -86,7 +91,7 @@ fn job_for(fp: &str, path: Option<&Path>) -> Job {
             kind: fin_core::AssetKind::Media,
             fingerprint: fp.into(),
             original: path.map(original),
-            proxies: vec![],
+            proxies: proxy.map(|f| vec![f.listed.clone()]).unwrap_or_default(),
         }],
         fonts: ManifestFonts::default(),
     };
@@ -105,7 +110,6 @@ fn params(fp: &str, mode: ThumbsMode) -> ThumbsParams {
         key: thumbs_key(fp, &mode, VendorClass::Software).to_string(),
         mode,
         decoder_class: VendorClass::Software,
-        proxy: None,
         only: None,
         project_id: None,
         branch: None,
@@ -488,11 +492,34 @@ fn made_proxy(c: &Clip) -> (Job, String) {
     (job, key)
 }
 
-fn proxy_of(job: &Job, key: &str) -> ThumbsProxy {
-    ThumbsProxy {
+/// A proxy entry filed as the media cache files it (`<root>/<key[0..2]>/<key>/`).
+struct Filed {
+    _root: tempfile::TempDir,
+    dir: PathBuf,
+    listed: ManifestProxy,
+}
+
+/// Files the `out/<key>/` that `made_proxy`'s job made the way the cache does.
+fn file_proxy(job: &Job, key: &str) -> Filed {
+    let root = tempfile::tempdir().unwrap();
+    let dir = std::fs::canonicalize(root.path())
+        .unwrap()
+        .join(&key[..2])
+        .join(key);
+    std::fs::create_dir_all(&dir).unwrap();
+    for f in ["proxy.mp4", "table.bin", "meta.json"] {
+        std::fs::copy(entry(job, key).join(f), dir.join(f)).unwrap();
+    }
+    let listed = ManifestProxy {
+        tier: ProxyTier::Preview,
         key: key.into(),
-        dir: entry(job, key).to_str().unwrap().into(),
+        dir: dir.to_str().unwrap().into(),
         codec: ProxyCodec::Av1,
+    };
+    Filed {
+        _root: root,
+        dir,
+        listed,
     }
 }
 
@@ -515,10 +542,10 @@ fn reads_proxy_when_present() {
         .map(|i| r(f[i].pts + f[i + 1].pts, 2 * table.timescale() as i64))
         .chain([r(0, 1), r(1000, 1)])
         .collect();
-    let mut p = params(FP, times_mode(times.clone(), 512));
-    p.proxy = Some(proxy_of(&proxy_job, &key));
+    let p = params(FP, times_mode(times.clone(), 512));
+    let filed = file_proxy(&proxy_job, &key);
     // The asset's file is not on this machine: only the proxy can answer.
-    let job = job_for(FP, None);
+    let job = job_with(FP, None, Some(&filed));
     let run = go(&job, &p);
     let r = result(&run);
     assert_eq!(r.source, "proxy", "{:?}", run.end);
@@ -545,28 +572,21 @@ fn reads_proxy_when_present() {
     assert_eq!(m.decoder_class, VendorClass::Software);
 
     // The same request without the proxy needs the original, which is missing.
-    p.proxy = None;
     let job = job_for(FP, None);
     let run = go(&job, &p);
     assert_eq!(failed(&run)[0].1, "ORIGINALS_MISSING", "{:?}", run.events);
 
     // A proxy that cannot be read (its table is gone) falls back to the original, and says so.
-    let (proxy_job, key) = made_proxy(&c);
-    std::fs::remove_file(entry(&proxy_job, &key).join("table.bin")).unwrap();
-    let mut p = params(FP, times_mode(times.clone(), 512));
-    p.proxy = Some(proxy_of(&proxy_job, &key));
-    let job = job_for(FP, Some(&c.path));
+    std::fs::remove_file(filed.dir.join("table.bin")).unwrap();
+    let job = job_with(FP, Some(&c.path), Some(&filed));
     let run = go(&job, &p);
     let r = result(&run);
     assert_eq!(r.source, "original", "{:?}", run.end);
-    assert!(r.proxy_failed.is_some());
+    assert_eq!(r.proxy_failed.as_deref(), Some("missing"));
     assert_eq!(items(&run).len(), times.len());
     // No absolute path of this host reaches the answer.
     let text = format!("{:?}", run.events);
-    assert!(
-        !text.contains(proxy_job.dir.path().to_str().unwrap()),
-        "{text}"
-    );
+    assert!(!text.contains(filed.dir.to_str().unwrap()), "{text}");
     assert!(!text.contains(job.dir.path().to_str().unwrap()), "{text}");
 }
 
@@ -579,13 +599,124 @@ fn a_proxy_of_other_content_is_not_read() {
     let (proxy_job, key) = made_proxy(&c);
     // The meta.json of the entry names fingerprint `fp`: a request for other content that was
     // handed this proxy reads the original instead.
-    let mut p = params("other", times_mode(vec![r(0, 1)], 256));
-    p.proxy = Some(proxy_of(&proxy_job, &key));
-    let job = job_for("other", Some(&c.path));
+    let p = params("other", times_mode(vec![r(0, 1)], 256));
+    let filed = file_proxy(&proxy_job, &key);
+    let job = job_with("other", Some(&c.path), Some(&filed));
     let run = go(&job, &p);
     let r = result(&run);
     assert_eq!(r.source, "original", "{:?}", run.end);
-    assert!(r.proxy_failed.is_some());
+    assert_eq!(r.proxy_failed.as_deref(), Some("invalid"));
+}
+
+/// Flips one byte of `path` in place: the same size, another content.
+fn flip_byte(path: &Path, at: usize) {
+    let mut bytes = std::fs::read(path).unwrap();
+    bytes[at] ^= 0x5a;
+    std::fs::write(path, bytes).unwrap();
+}
+
+/// Review of Task 15 (B1): a proxy's payloads are believed only at the digests its `meta.json`
+/// lists. A `table.bin` with another timescale (byte 12: the same length, still decodable, but
+/// `frame_at` would pick other frames) and a `proxy.mp4` changed in place at the same size each
+/// send the run to the original (`proxyFailed: changed`), whose frames it shows.
+#[test]
+fn a_changed_proxy_payload_falls_back_to_the_original() {
+    if !gpu_or_skip("a_changed_proxy_payload_falls_back_to_the_original") {
+        return;
+    }
+    let c = clip(&ClipSpec {
+        vfr: true,
+        ..spec(12, Size::new(640, 360))
+    });
+    let table = table_of(&c.path);
+    let want_ids = ids(&c.path);
+    let (proxy_job, key) = made_proxy(&c);
+    let times = vec![r(1, 10), r(1, 3)];
+    let p = params(FP, times_mode(times.clone(), 256));
+    let size = |p: &Path| std::fs::metadata(p).unwrap().len();
+    let table_bin: fn(&Path) = |d| flip_byte(&d.join("table.bin"), 12);
+    let payload: fn(&Path) = |d| {
+        let f = d.join("proxy.mp4");
+        let mid = std::fs::metadata(&f).unwrap().len() as usize / 2;
+        flip_byte(&f, mid);
+    };
+    for (name, change) in [("table.bin", table_bin), ("proxy.mp4", payload)] {
+        let filed = file_proxy(&proxy_job, &key);
+        let before = size(&filed.dir.join(name));
+        change(&filed.dir);
+        assert_eq!(size(&filed.dir.join(name)), before, "{name}");
+        let job = job_with(FP, Some(&c.path), Some(&filed));
+        let run = go(&job, &p);
+        let res = result(&run);
+        assert_eq!(res.source, "original", "{name}: {:?}", run.end);
+        assert_eq!(res.proxy_failed.as_deref(), Some("changed"), "{name}");
+        let dir = entry(&job, &p.key);
+        let got = items(&run);
+        assert_eq!(got.len(), times.len(), "{name}");
+        for (n, (_, v)) in got.iter().enumerate() {
+            let at = frame_at(&table, times[n]).index;
+            assert_eq!(v.frame, Some(at as u64), "{name}");
+            let shown = Size::new(v.width, v.height);
+            assert_eq!(id_of(&dir.join(&v.file), 0, shown), want_ids[at], "{name}");
+        }
+        // Without the original the run refuses: it never reads the changed proxy.
+        let job = job_with(FP, None, Some(&filed));
+        let run = go(&job, &p);
+        assert_eq!(
+            failed(&run)[0].1,
+            "ORIGINALS_MISSING",
+            "{name}: {:?}",
+            run.events
+        );
+        assert!(items(&run).is_empty(), "{name}");
+    }
+}
+
+/// Review of Task 15: an original with Dolby Vision profile 5 is refused as `media.proxy`
+/// refuses it (Decision 9: `CODEC_UNAVAILABLE`), every item, and no picture is written.
+#[test]
+fn dolby_vision_profile_5_is_codec_unavailable() {
+    use fin_media::{DolbyVision, HdrInfo};
+    let c = clip(&ClipSpec {
+        hdr: Some(HdrInfo {
+            mastering: None,
+            content_light: None,
+            dolby_vision: Some(DolbyVision {
+                profile: 5,
+                level: 6,
+                rpu: true,
+                enhancement_layer: false,
+                base_layer: true,
+                compatibility: 0,
+            }),
+        }),
+        ..spec(2, Size::new(320, 180))
+    });
+    let p = params(FP, times_mode(vec![r(0, 1), r(1, 30)], 256));
+    let job = job_for(FP, Some(&c.path));
+    let run = go(&job, &p);
+    let f = failed(&run);
+    assert_eq!(f.len(), 2, "{:?}", run.events);
+    assert!(
+        f.iter().all(|(_, code)| code == "CODEC_UNAVAILABLE"),
+        "{f:?}"
+    );
+    assert!(items(&run).is_empty());
+    let dir = entry(&job, &p.key);
+    let pngs = std::fs::read_dir(&dir)
+        .map(|d| {
+            d.filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .path()
+                    .extension()
+                    .is_some_and(|x| x == "png")
+            })
+            .count()
+        })
+        .unwrap_or(0);
+    assert_eq!(pngs, 0);
+    assert!(!dir.join(META_FILE).exists());
 }
 
 #[test]

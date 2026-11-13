@@ -255,3 +255,42 @@ fn a_listed_entry_serves_the_consuming_project() {
         .unwrap_err();
     assert_eq!(e.code, "INVALID_OP");
 }
+
+/// Review of Task 15: `current_proxy` answers the entry `proxies_for` would list (the newest
+/// current one) with its `meta.json`, serving the project but pinned for no job; `None` when the
+/// cache holds none of the fingerprint.
+#[test]
+fn the_current_proxy_is_the_one_a_job_would_list() {
+    let fx = Fx::new();
+    let mut c = fx.open();
+    fx.commit(&mut c, "fp1", PROXY_1080, "h264", 5, FILES);
+    let new = fx.commit(&mut c, "fp1", PROXY_1080, "av1", 9, FILES);
+    fx.commit(&mut c, "fp2", PROXY_540, "av1", 9, FILES);
+    let a = "01jpa000000000000000000001".to_string();
+    let meta = c
+        .current_proxy("fp1", ProxyTier::Preview, std::slice::from_ref(&a))
+        .unwrap()
+        .unwrap();
+    assert_eq!(meta.key, new);
+    assert_eq!(c.projects_of(&new).unwrap(), [a]);
+    assert!(
+        c.pins_of(&new)
+            .unwrap()
+            .iter()
+            .all(|p| !p.starts_with("job:"))
+    );
+    let listed = c
+        .proxies_for(&fps(&["fp1"]), "job:j1", &[], &[ProxyTier::Preview])
+        .unwrap();
+    assert_eq!(listed["fp1"][0].key, meta.key);
+    assert!(
+        c.current_proxy("fp2", ProxyTier::Preview, &[])
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        c.current_proxy("fp3", ProxyTier::Preview, &[])
+            .unwrap()
+            .is_none()
+    );
+}

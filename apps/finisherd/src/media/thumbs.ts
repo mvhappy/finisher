@@ -1,17 +1,19 @@
 // Thumbnails and filmstrips of project assets (6B-1 plan Task 15, Decision 17; sub-project 6 spec
 // §3.2 item 6): the `media.thumbs` RPC.
-// - **The key** (Decision 11) is planned before anything is submitted: the source's video codec and
-//   duration (the proxy service's `source`), the capability report's decoders for it and
-//   `mediaThumbsPlan` (fin-media's `plan_thumbs_key`; a filmstrip's sprite count comes from the
-//   duration). The worker computes the key again from the original's decoder class.
-// - **The source** is the asset's `1080` proxy when the cache holds its entry (`peek`: nothing is
-//   submitted for it), else the original; the key is the same either way.
+// - **The cache first** (spec §7.2: a cached answer needs no original). The asset's content comes
+//   from the branch's snapshot (nothing read), then its current `1080` proxy entry (`currentProxy`,
+//   the one the job's manifest will list). With one, the key (Decision 11) is planned from what the
+//   entry's `meta.json` records of the original (its decoder class and duration): the key the worker
+//   computes from the same entry. Without one, the original is probed (the proxy service's
+//   `source`, its path kept out of any error) and the key planned with the capability report's
+//   decoders for its codec. Either way `mediaThumbsPlan` (fin-media's `plan_thumbs`).
 // - **A cache hit** answers at once (`serve` records that the entry serves the project and pins it
 //   while the project is open); otherwise a job is submitted (dedupe: the key) at `normal` priority
 //   and, unless `wait: false`, waited for. A job that already ended (the poisoned job dedupe
-//   answers) is answered with its error.
+//   answers) is answered with its error. The job's `prepare` lists the proxy in its manifest and
+//   pins it for the job's life (`attachProxies`, Decision 12).
 import type { FinError, JobOwner, JobView } from "@finisher/contracts";
-import type { EntryMeta, ThumbsParams } from "@finisher/core-types";
+import type { EntryMeta, ThumbsParams, ThumbsPlan, VideoCodec } from "@finisher/core-types";
 import { type MediaCache, mediaThumbsPlan } from "@finisher/fin-node";
 import { Effect } from "effect";
 import { attempt, finError } from "../errors.ts";
@@ -57,7 +59,7 @@ export interface ThumbsAnswer {
 export interface ThumbsServiceDeps {
   readonly engine: Pick<JobEngine, "submit" | "wait" | "get">;
   readonly capabilities: (owner: JobOwner) => Effect.Effect<unknown, FinError>;
-  readonly proxies: Pick<ProxyService, "source" | "peek">;
+  readonly proxies: Pick<ProxyService, "source" | "asset">;
   readonly cache: () => MediaCache | undefined;
 }
 
@@ -84,12 +86,21 @@ export function makeThumbsService(deps: ThumbsServiceDeps): ThumbsService {
       if (strip && req.maxSide !== undefined) return yield* Effect.fail(bad("maxSide", "goes with `at`"));
       if (!strip && req.tileHeight !== undefined) return yield* Effect.fail(bad("tileHeight", "goes with `strip`"));
       if (req.at !== undefined && (req.at.length === 0 || req.at.length > MAX_THUMBS)) return yield* Effect.fail(bad("at", `1 to ${MAX_THUMBS} times`));
-      const src = yield* deps.proxies.source(req.projectId, req.asset, req.branch);
-      const report = yield* deps.capabilities(owner);
+      const src = yield* deps.proxies.asset(req.projectId, req.asset, req.branch);
       const mode = strip ? { strip: { tileHeight: req.tileHeight ?? DEFAULT_TILE_HEIGHT } } : { thumbs: { times: [...(req.at ?? [])], maxSide: req.maxSide ?? DEFAULT_MAX_SIDE } };
-      const planned = yield* attempt(async () => mediaThumbsPlan({ fingerprint: src.fingerprint, mode, sourceCodec: src.sourceCodec, decoders: decodersOf(report, src.sourceCodec), ...(src.duration === undefined ? {} : { duration: src.duration }) }));
-      const base = { asset: req.asset, mode: strip ? ("strip" as const) : ("thumbs" as const), key: planned.key };
       const cache = deps.cache();
+      const proxy = cache === undefined ? null : yield* attempt(() => cache.currentProxy(src.fingerprint, [req.projectId]));
+      const recorded = proxy?.media;
+      const planned: ThumbsPlan =
+        proxy == null || recorded?.video == null
+          ? yield* Effect.gen(function* () {
+              const original = yield* deps.proxies.source(req.projectId, req.asset, req.branch);
+              const report = yield* deps.capabilities(owner);
+              const { duration } = original;
+              return yield* attempt(async () => mediaThumbsPlan({ fingerprint: src.fingerprint, mode, sourceCodec: original.sourceCodec as VideoCodec, decoders: decodersOf(report, original.sourceCodec), ...(duration === undefined ? {} : { duration }) }));
+            })
+          : yield* attempt(async () => mediaThumbsPlan({ fingerprint: src.fingerprint, mode, decoderClass: proxy.decoderClass, duration: recorded.duration }));
+      const base = { asset: req.asset, mode: strip ? ("strip" as const) : ("thumbs" as const), key: planned.key };
       if (cache !== undefined) {
         const meta = yield* attempt(() => cache.lookup(planned.key));
         if (meta !== null) {
@@ -97,16 +108,14 @@ export function makeThumbsService(deps: ThumbsServiceDeps): ThumbsService {
           return { ...base, state: "ready", cached: true, files: filesOf(meta) };
         }
       }
-      const proxy = yield* deps.proxies.peek(owner, req);
       const params: ThumbsParams = {
         fingerprint: src.fingerprint,
         asset: req.asset,
-        mode: planned.mode as ThumbsParams["mode"],
+        mode: planned.mode,
         decoderClass: planned.decoderClass,
         key: planned.key,
         projectId: req.projectId,
         branch: src.branch,
-        ...(proxy === undefined ? {} : { proxy: { key: proxy.key, dir: proxy.dir, codec: proxy.codec } }),
         ...(src.display === undefined ? {} : { display: src.display }),
       };
       const job = yield* deps.engine.submit(owner, { kind: MEDIA_THUMBS, params, project: req.projectId, priority: "normal" });

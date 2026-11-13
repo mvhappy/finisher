@@ -9,8 +9,10 @@
 //   source's display size (Decision 18).
 // - Identity (`dedupe`): the cache key (Decision 11). `rememberPoison`: an item that crashes the
 //   worker stays failed until the content or `RENDER_VERSION` changes, i.e. its key.
-// - `prepare` writes the one-asset manifest (`ASSET_CHANGED` when the fingerprint moved) and grants
-//   the worker the `1080` proxy entry's directory the service named, read only.
+// - `prepare` writes the one-asset manifest (`ASSET_CHANGED` when the fingerprint moved) and lists
+//   in it the asset's `1080` proxy the cache holds (`attachProxies`, as `media.look` does: pinned
+//   `job:<id>` for the job's life, Decision 12, and released by the wiring's end hook), granting
+//   the worker the original and the proxy's files, read only.
 // - `onSucceeded`: the first item's error fails the job (so a waiting caller sees the cause and a
 //   poisoned item fails it `POISON_ITEM`); otherwise `out/<key>/` is committed by
 //   `MediaCache.commit` (rename, then insert) for the project that asked.
@@ -109,7 +111,10 @@ export function mediaThumbsKind(deps: ThumbsKindDeps): KindSpec<ThumbsParams, un
         if (done.fingerprint !== p.fingerprint) {
           return yield* Effect.fail(finError("ASSET_CHANGED", `asset ${p.asset} changed since the thumbnails were asked for`, { asset: p.asset, reason: "fingerprint" }, "ask again"));
         }
-        const reads = yield* Effect.promise(() => canonical([...done.sources, ...(p.proxy == null ? [] : [p.proxy.dir])]));
+        const projectId = p.projectId;
+        const cache = deps.cache();
+        const proxyFiles = cache === undefined ? [] : yield* Effect.tryPromise({ try: () => cache.attachProxies(join(dirs.job, "in"), `job:${ctx.job.id}`, [projectId]), catch: toFinError });
+        const reads = yield* Effect.promise(() => canonical([...done.sources, ...proxyFiles]));
         return { extra: { rev: done.rev, reads } };
       }),
     reads: readsOf,

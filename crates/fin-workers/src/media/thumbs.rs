@@ -2,10 +2,10 @@
 //! thumbnails at chosen times, or a filmstrip, as one cache entry `out/<key>/`; cold, a batch
 //! whose items are the thumbnails or the sprites.
 //!
-//! 1. **The source** ([`thumbs_source`](super::thumbs_source)): the `1080` proxy entry the host
-//!    named, else the original through the manifest and 6A's no-follow opener
-//!    (`ORIGINALS_MISSING {reason}`). A proxy that cannot be read is replaced by the original
-//!    and the run says why (`proxyFailed`).
+//! 1. **The source** ([`thumbs_source`](super::thumbs_source)): the `1080` proxy entry the
+//!    manifest lists (verified as a look's, digests included), else the original through the
+//!    manifest and 6A's no-follow opener (`ORIGINALS_MISSING {reason}`). A proxy that cannot be read is replaced by the original
+//!    and the run says why (`proxyFailed`: the refusal's reason).
 //! 2. **The key** (Decision 11) is recomputed from the original's decoder class (the decoder
 //!    opened, or the one a proxy's `meta.json` records): another class than the host expected
 //!    is `PLAN_MISMATCH {reason: cacheKey}`; a filmstrip's sprite count is checked against the
@@ -24,9 +24,9 @@ use fin_jobs::worker::JobCtx;
 use fin_jobs::{JobError, StartJob};
 use fin_media::cache::{EntryFile, EntryMeta, META_FILE};
 use fin_media::jobs::{
-    STRIP_INDEX_FILE, STRIP_INDEX_VERSION, STRIP_SPRITE_SECONDS, STRIP_TILE_SECONDS, StripIndex,
-    StripSprite, StripTile, ThumbItem, ThumbsMode, ThumbsParams, ThumbsRun, strip_sprites,
-    strip_tiles, thumb_size, thumbs_key, tile_size, tile_time,
+    ProxyTier, STRIP_INDEX_FILE, STRIP_INDEX_VERSION, STRIP_SPRITE_SECONDS, STRIP_TILE_SECONDS,
+    StripIndex, StripSprite, StripTile, ThumbItem, ThumbsMode, ThumbsParams, ThumbsRun,
+    strip_sprites, strip_tiles, thumb_size, thumbs_key, tile_size, tile_time,
 };
 use fin_media::{Size, frame_at};
 use fin_shm::JobDir;
@@ -57,21 +57,21 @@ pub fn run(job: &StartJob, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<Valu
     }
 }
 
-/// The source of `p`: its proxy when one is named and readable, else the original; and the
-/// error code of a proxy that was named but could not be read.
+/// The source of `p`: the `1080` proxy the manifest lists for the asset when it is readable,
+/// else the original; and why a listed proxy could not be read.
 fn open(
     p: &ThumbsParams,
     ctx: &JobCtx<'_>,
     dir: &JobDir,
     warm: &Warm,
 ) -> Result<(Source, Option<String>), Fail> {
+    // The asset must still be this content, whichever file is read.
+    let asset = manifest_asset(ctx, dir, &p.asset, &p.fingerprint)?;
     let mut proxy_failed = None;
-    if let Some(px) = &p.proxy {
-        // The asset must still be this content, whichever file is read.
-        manifest_asset(ctx, dir, &p.asset, &p.fingerprint)?;
+    if let Some(px) = asset.proxy(ProxyTier::Preview) {
         match Source::proxy(px, &p.fingerprint, warm) {
             Ok(s) => return Ok((s, None)),
-            Err(e) => proxy_failed = Some(e.code),
+            Err(r) => proxy_failed = Some(r.reason().to_string()),
         }
     }
     let file = open_asset(ctx, dir, warm, &p.asset, &p.fingerprint)?;

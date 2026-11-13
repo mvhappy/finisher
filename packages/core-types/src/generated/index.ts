@@ -10023,27 +10023,62 @@ export interface ThumbsParams {
    * `onSucceeded` commits the entry for it).
    */
   projectId?: string;
-  /**
-   * Read this proxy instead of the original (a proxy that cannot be read falls back to the
-   * original).
-   */
-  proxy?: ThumbsProxy;
 }
 /**
- * A `1080` proxy entry the worker reads instead of the original: its key and directory in
- * the media cache (the host looked it up and holds it for the job) and its codec.
+ * What `mediaThumbsPlan` answers.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "ThumbsProxy".
+ * via the `definition` "ThumbsPlan".
  */
-export interface ThumbsProxy {
-  codec: ProxyCodec;
+export interface ThumbsPlan {
   /**
-   * The entry's directory (absolute, canonical): `proxy.mp4`, `table.bin` and `meta.json`
-   * are opened below it with the no-follow opener.
+   * The backend the report names first for the original's codec (absent when planned from
+   * a proxy's `decoderClass`).
    */
-  dir: string;
+  decoder?: string;
+  decoderClass: VendorClass;
+  /**
+   * The job's items.
+   */
+  items: string[];
   key: string;
+  /**
+   * The mode with a filmstrip's sprite count filled in.
+   */
+  mode: ThumbsMode;
+}
+/**
+ * What `mediaThumbsPlan` (fin-node) is asked: the key of a `media.thumbs` job before it is
+ * submitted. The decoder class comes from the original (`sourceCodec` and the report's
+ * `decoders` for it: the first that decodes it) or, when the original is not read, from the
+ * `1080` proxy entry the worker will read (`decoderClass`, which its `meta.json` records:
+ * Decision 11 keys the original's decoder class either way). Exactly one of the two.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ThumbsPlanRequest".
+ */
+export interface ThumbsPlanRequest {
+  /**
+   * The original's decoder class as a proxy entry records it (instead of `sourceCodec`).
+   */
+  decoderClass?: VendorClass;
+  /**
+   * The report's backends for `source_codec`, in the order they are tried.
+   */
+  decoders?: string[];
+  /**
+   * The source's duration in seconds (`MediaInfo.duration`; filmstrips).
+   */
+  duration?: Rational;
+  fingerprint: string;
+  /**
+   * A filmstrip with `sprites: 0` (or none) is planned from `duration`.
+   */
+  mode: ThumbsMode;
+  /**
+   * The original's video codec (the asset's `video.codec`).
+   */
+  sourceCodec?: VideoCodec;
 }
 /**
  * What a `media.thumbs` run answers: where its frames came from.
@@ -10061,7 +10096,8 @@ export interface ThumbsRun {
    */
   made: number;
   /**
-   * The error code of a proxy that could not be read (the original was read instead).
+   * Why the proxy the manifest lists could not be read (the original was read instead):
+   * `missing`, `changed` or `invalid`, as a look's `proxyFallbacks` give it.
    */
   proxyFailed?: string;
   /**

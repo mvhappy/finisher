@@ -14,7 +14,8 @@
 //!
 //! - `attachProxies(inDir, holder, projects)` lists, in a job's `in/manifest.json`, the `1080`
 //!   proxy of each asset's fingerprint the index holds, pinned for `holder` and serving
-//!   `projects` (`proxies.rs`, Task 16).
+//!   `projects` (`proxies.rs`, Task 16); `currentProxy(fingerprint, projects)` answers the
+//!   one it would list, unpinned for a job (Task 15's planner).
 //!
 //! Eviction runs after each commit (here) and every 10 minutes (finisherd's timer calls `gc`).
 
@@ -281,6 +282,23 @@ impl MediaCache {
                 inputs::write_json(dir, "manifest.json", &manifest)?;
             }
             Ok(inputs::proxy_files(&manifest))
+        })
+    }
+
+    /// The `EntryMeta` JSON of `fingerprint`'s current `1080` proxy (the one `attachProxies`
+    /// would list), serving `projects`; `null` when the cache holds none. `media.thumbs` plans
+    /// from it when the original is not read (6B-1 Task 15, review).
+    #[napi(catch_unwind, ts_return_type = "Promise<string | null>")]
+    pub fn current_proxy<'e>(
+        &self,
+        env: &'e Env,
+        fingerprint: String,
+        projects: Vec<String>,
+    ) -> Result<Object<'e>> {
+        self.run(env, move |c| {
+            c.current_proxy(&fingerprint, ProxyTier::Preview, &projects)?
+                .map(|m| json_of(&m))
+                .transpose()
         })
     }
 
