@@ -83,6 +83,11 @@ jobs:
           # The shipped code alone: --all-targets builds the dev-dependencies, and several crates
           # depend on themselves with `test-hooks`, so the line above never lints them without it.
           cargo clippy -- -D warnings
+          # Each `test-hooks` crate with the feature on, alone: fin-node's (its test registries)
+          # is on in neither line above, and the other two outside the workspace's unification.
+          cargo clippy -p fin-node --all-targets --features test-hooks -- -D warnings
+          cargo clippy -p fin-jobhost --all-targets --features test-hooks -- -D warnings
+          cargo clippy -p fin-workers --all-targets --features test-hooks -- -D warnings
       - name: Rust tests
         # The default members: everything but the cross-host harness, whose `test-hooks`
         # must not unify into fin or fin-node (scripts/check-test-hooks.mjs). With
