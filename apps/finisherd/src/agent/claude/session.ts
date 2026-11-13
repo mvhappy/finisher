@@ -13,7 +13,11 @@
 //   `claude/permissions.ts`: a `request` the runtime decides); answers to the host's own
 //   requests (`initialize`, `interrupt`) are matched by id.
 // - **Turns** (Decision 13): `startTurn` writes the user line (the run's facts first) and the
-//   turn ends at its `result` (`map.ts`); a steer is another user line.
+//   turn ends at its `result` (`map.ts`); a steer is another user line. Verified on 2.1.321 (7D
+//   Task 0, s1b/s1d): a steer never joins the running turn, whose `result` says
+//   `queued_turn_count: 0`; the CLI runs the lines queued during a turn as one next turn, each
+//   turn led by its own `system/init`. So the run's end is the instance's own record: it stays
+//   open while a line it wrote is not yet taken by a CLI turn (`#written` against `#taken`).
 // - **Interrupt** (Decision 16): the `interrupt` request, then up to `interruptWaitMs` (5 s) for
 //   the turn's `result`; then SIGINT and up to `sigintGraceMs`; then the sandbox's group kill.
 //   Never SIGTERM (it records no result).
@@ -68,7 +72,7 @@ export interface InstanceOptions {
   readonly plan: Pick<LaunchPlan, "argv" | "tools" | "mcpTools">;
   /** The session's UUID (`--session-id`/`--resume=`): every user line names it. */
   readonly uuid: string;
-  /** The init predicate's options (`signedIn` as detection saw it). */
+  /** The init predicate's options (`signInIgnored` from the `initialize` answer). */
   readonly check?: CheckOptions;
   /** The adapter's own events (a dropped tool's notice), released with the first ones the gate lets through. */
   readonly notices?: readonly ProviderEvent[];
@@ -100,6 +104,10 @@ export class ClaudeInstance {
   #pending: ProviderEvent[];
   #inited = false;
   #turnOpen = false;
+  /** User lines written in this instance (the prompt's and each steer's). */
+  #written = 0;
+  /** `#written` when the CLI's current turn began (its `system/init`): the lines that turn took. */
+  #taken = 0;
   #interrupting = false;
   /** The gate reserved for the open turn and no `usage` has settled it yet. */
   #reserved = false;
@@ -290,17 +298,23 @@ export class ClaudeInstance {
       return;
     }
     this.#flush();
-    if (l.kind === "init" && !this.#inited) {
-      this.#inited = true;
-      this.#deliver(this.#o.onInit?.(l) ?? []);
+    if (l.kind === "init") {
+      // A CLI turn begins: it takes every line written so far (2.1.321 merges queued lines).
+      this.#taken = this.#written;
+      if (!this.#inited) {
+        this.#inited = true;
+        this.#deliver(this.#o.onInit?.(l) ?? []);
+      }
     }
-    const events = this.#map.map(l, this.#interrupting);
+    // A steer not yet taken: this `result` ends a CLI turn, not the Finisher run.
+    const more = l.kind === "result" && !l.is_error && this.#turnOpen && (this.#written > this.#taken || (l.queued_turn_count ?? 0) > 0);
+    const mapped = this.#map.map(l, this.#interrupting);
+    const events = more ? mapped.filter((e) => e.type !== "turnCompleted") : mapped;
     if (events.some((e) => e.type === "usage")) this.#reserved = false;
     this.#deliver(events);
-    // TODO(7D Task 0 Step 1): a failed `result` while a steer is queued (the turn closes here
-    // while the CLI may still hold the queued turn); modelled by fake-claude as the queued line
-    // played as the next turn.
-    if (l.kind === "result" && (l.is_error || (l.queued_turn_count ?? 0) === 0)) {
+    // TODO(7D Task 0 Step 1): a failed `result` while a steer is queued (the run ends here while
+    // the CLI may still run the queued line; then it is a turn between runs); not observed.
+    if (l.kind === "result" && !more) {
       // A turn that reported no usage returns the gate's reservation (as the built-in loop does).
       if (this.#reserved) this.#o.gate?.release();
       this.#reserved = false;
@@ -412,15 +426,16 @@ export class ClaudeInstance {
           this.#turnOpen = true;
           this.#interrupting = false;
           this.#emit({ type: "turnStarted" });
-          this.#write(encodeUser([...(i.facts === undefined || i.facts === "" ? [] : [i.facts]), i.text], o.uuid));
+          if (this.#write(encodeUser([...(i.facts === undefined || i.facts === "" ? [] : [i.facts]), i.text], o.uuid))) this.#written++;
           return Effect.void;
         }),
       steer: (i: UserInput) =>
         Effect.suspend(() => {
           const gone = this.#gone();
           if (gone !== null) return fail(gone);
-          // Decision 13: another user line while the turn runs; the CLI queues it (see map.ts).
-          this.#write(encodeUser([i.text], o.uuid));
+          // Decision 13: another user line while the turn runs; the CLI runs it as a next turn
+          // inside this run (`#forwarded`).
+          if (this.#write(encodeUser([i.text], o.uuid)) && this.#turnOpen) this.#written++;
           return Effect.void;
         }),
       interrupt: () => Effect.promise(() => this.#interrupt()),

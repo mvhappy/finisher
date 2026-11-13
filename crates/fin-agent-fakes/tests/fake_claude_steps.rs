@@ -141,28 +141,53 @@ fn fake_unknown_line_has_a_type_no_cli_has() {
 }
 
 #[test]
-fn fake_steer_is_queued_and_counted() {
+fn fake_steer_runs_as_the_next_turn() {
+    // Verified on 2.1.321 (7D Task 0, s1b/s1d): the running turn ends with its own `result`
+    // (`queued_turn_count: 0`); lines queued during it run as one next turn.
     let dir = Dir::new("steer");
     let script = json!({"steps": [{"expect": "user", "sleep": 400, "cumulativeUsage": {"outputTokens": 1}, "text": "first"}]});
     let mut f = Fake::start(&dir, Some(script), &[], &[]);
     f.user("one");
     assert_eq!(f.read()["subtype"], "init");
-    f.user("steer");
+    f.user("steer 1");
+    f.user("steer 2");
     let first = f.read();
     assert_eq!(
         (
             first["result"].as_str(),
             first["queued_turn_count"].as_u64()
         ),
-        (Some("first"), Some(1))
+        (Some("first"), Some(0))
     );
     assert_eq!(f.read()["subtype"], "init", "every turn has its init");
     let second = f.read();
     assert_eq!(
         second["type"], "result",
-        "the queued line runs as the next turn"
+        "the queued lines run as the next turn"
     );
     assert_eq!(second["queued_turn_count"], 0);
+    assert!(f.silent_for(600), "the two steers ran as one turn");
+    assert!(f.finish().success());
+}
+
+#[test]
+fn fake_turn_init_override() {
+    let dir = Dir::new("turn-init");
+    let script = json!({"steps": [
+        {"expect": "user"},
+        {"expect": "user", "init": {"tools": ["Read", "Task"]}}
+    ]});
+    let mut f = Fake::start(&dir, Some(script), &["--tools", "Read"], &[]);
+    f.user("one");
+    assert_eq!(f.read()["tools"], json!(["Read"]));
+    f.user("two");
+    let init = loop {
+        let l = f.read();
+        if l["subtype"] == "init" {
+            break l;
+        }
+    };
+    assert_eq!(init["tools"], json!(["Read", "Task"]));
     assert!(f.finish().success());
 }
 

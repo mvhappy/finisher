@@ -27,7 +27,7 @@ import { finError } from "../../errors.ts";
 import type { Capabilities } from "../adapter.ts";
 import { openHostSandbox, type SandboxedChild, type SessionSandbox, type SessionSandboxDeps } from "../sandbox.ts";
 import { type ClaudeCodeSettings, claudeCodeSettings } from "../settings.ts";
-import { accountChanged, accountCheck, accountKey, accountProblem, ClaudeAccounts, labelOfOutput } from "./account.ts";
+import { accountChanged, accountCheck, accountIdentified, accountKey, accountProblem, ClaudeAccounts, labelOfOutput } from "./account.ts";
 
 /**
  * The lowest supported version (Decision 9): at least 2.1.314 (the `--setting-sources` leak fix)
@@ -46,10 +46,10 @@ const OUTPUT_CAP = 64 * 1024;
 
 /**
  * The sign-in methods kept by name; any other answer is `"other"`, never the CLI's text (it could
- * be a label). `claude.ai` and `console` are what the CLI documents. ASSUMPTION (plan Task 0's
- * signed-in half confirms the real values): `oauth` and `apiKey` are not known to be printed, so
- * they are not listed; add a value here once Task 0 sees it. Until then an API-key sign-in that
- * names no account is `other` and fails closed (`account.ts` `API_KEY_METHODS`).
+ * be a label). `claude.ai` and `console` are what the CLI documents; verified on 2.1.321 (7D
+ * Task 0): a claude.ai sign-in prints `claude.ai`. TODO(7D Task 0 Step 4): a Console or API-key
+ * sign-in's method (not run); `oauth` and `apiKey` are not listed until one is seen, so an
+ * API-key sign-in that names no account is `other` and not identified (`account.ts`).
  */
 const AUTH_METHODS: ReadonlySet<string> = new Set(["claude.ai", "console"]);
 
@@ -256,16 +256,22 @@ interface AuthAnswer {
   readonly problem?: FinError;
 }
 
-/** `auth status`'s answer with the account hashed at once (`account.ts`): the label goes no further. */
+/**
+ * `auth status`'s answer with the account hashed at once (`account.ts`): the label goes no
+ * further. Verified on 2.1.321 (7D Task 0): under detection's throwaway config dir a claude.ai
+ * sign-in names no account (`email`/`orgId`/`orgName` `null`): signed in with no hash and no
+ * problem; each instance's `initialize.account` names it (`adapter.ts`).
+ */
 function authAnswer(serverData: string, r: Ran): AuthAnswer {
   const a = parseAuthStatus(r.code, r.stdout);
   if (!a.signedIn) return a;
   const label = labelOfOutput(r.stdout);
+  const status = { ...a, ...(label === undefined ? {} : { label }) };
+  if (!accountIdentified(status)) return a;
   try {
-    const { hash } = accountCheck({ ...a, ...(label === undefined ? {} : { label }) }, accountKey(serverData), null);
-    return { ...a, accountHash: hash };
+    return { ...a, accountHash: accountCheck(status, accountKey(serverData), null).hash };
   } catch (e) {
-    // A subscription sign-in naming no account: signed in, but a change could not be seen.
+    // The key cannot be made: a change could not be seen.
     return { ...a, problem: e as FinError };
   }
 }

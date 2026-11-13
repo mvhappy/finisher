@@ -47,7 +47,11 @@ fn fake_answers_initialize_before_prompt() {
         .map(|a| a["name"].as_str().unwrap())
         .collect();
     assert_eq!(names, AGENTS);
-    assert_eq!(body["account"]["tokenSource"], "claude.ai");
+    // Verified on 2.1.321 (7D Task 0): signed in, no `tokenSource` key.
+    assert_eq!(
+        body["account"],
+        json!({"subscriptionType": "Claude Max", "apiProvider": "firstParty"})
+    );
     assert_eq!(
         body["capabilities"],
         json!([
@@ -665,15 +669,22 @@ fn fake_reports_the_configured_account_label() {
         }
         serde_json::from_slice::<Value>(&c.output().unwrap().stdout).unwrap()
     };
-    assert_eq!(status(None)["email"], "person-b@example.invalid");
+    // Verified on 2.1.321 (7D Task 0): a fresh config dir's `auth status` names no account.
+    let signed = status(None);
+    assert_eq!(
+        (&signed["email"], &signed["orgId"], &signed["orgName"]),
+        (&Value::Null, &Value::Null, &Value::Null)
+    );
+    assert_eq!(signed["subscriptionType"], "max");
+    assert_eq!(signed["configDirectory"], "/nonexistent/cfg");
     // Signed out: no label.
     assert!(status(Some(json!({"auth": {"loggedIn": false}})))["email"].is_null());
-    // A script's own label wins.
+    // A script's own label (a config dir holding the profile).
     assert_eq!(
         status(Some(json!({"auth": {"email": "own@example.invalid"}})))["email"],
         "own@example.invalid"
     );
-    // `initialize.account` carries it too.
+    // `initialize.account` carries it.
     let mut f = Fake::start(
         &dir,
         None,
@@ -681,8 +692,19 @@ fn fake_reports_the_configured_account_label() {
         &[("FAKE_CLAUDE_ACCOUNT", "person-b@example.invalid")],
     );
     let body = initialize(&mut f);
-    assert_eq!(body["account"]["email"], "person-b@example.invalid");
-    assert_eq!(body["account"]["tokenSource"], "claude.ai");
+    assert_eq!(
+        body["account"],
+        json!({"email": "person-b@example.invalid", "subscriptionType": "Claude Max", "apiProvider": "firstParty"})
+    );
+    assert!(f.finish().success());
+    // A script's `"email": "$remove"`: a first start before the profile fetch.
+    let mut f = Fake::start(
+        &dir,
+        Some(json!({"initialize": {"account": {"email": "$remove"}}})),
+        &["--session-id", UUID],
+        &[("FAKE_CLAUDE_ACCOUNT", "person-b@example.invalid")],
+    );
+    assert!(initialize(&mut f)["account"].get("email").is_none());
     assert!(f.finish().success());
 }
 

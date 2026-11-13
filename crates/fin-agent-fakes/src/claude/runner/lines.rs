@@ -228,6 +228,12 @@ impl Runner {
         None
     }
 
+    /// Takes every queued user line for one turn. Verified on 2.1.321 (7D Task 0, s1d): lines
+    /// queued during one turn run as one next turn.
+    pub(super) fn take_queued(&mut self) -> bool {
+        !std::mem::take(&mut self.pending).is_empty()
+    }
+
     pub(super) fn ui_invalidate(&self) -> Value {
         json!({"type": "system", "subtype": "ui_invalidate", "event": "ui.render",
             "uuid": fresh_uuid(), "session_id": self.session_id})

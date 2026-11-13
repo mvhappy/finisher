@@ -78,6 +78,9 @@ pub enum Expect {
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct Step {
     pub expect: Option<Expect>,
+    /// With `expect: "user"`: merged into the script's `init` from the turn it starts on, e.g. a
+    /// tool set that changes mid-instance.
+    pub init: Map<String, Value>,
     pub subtype: Option<String>,
     pub sleep: Option<u64>,
     pub write_file: Option<WriteFile>,

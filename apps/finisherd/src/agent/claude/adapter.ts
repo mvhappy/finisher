@@ -29,7 +29,7 @@ import { launchPlan, sessionUuid, writeLaunchFiles } from "./launch.ts";
 import { instanceAccount, instanceAccountHash, labelOf } from "./account.ts";
 import type { ClaudeModelCache } from "./models.ts";
 import { completeProbe, probe, probeFlagsHash } from "./probe.ts";
-import { unsignedAccount, untestedVersionNotices } from "./probe-check.ts";
+import { signInIgnored, untestedVersionNotices } from "./probe-check.ts";
 import { ClaudeSession, IDLE_CLOSE_MS } from "./instances.ts";
 import { claudePermissions } from "./permissions.ts";
 import { interruptedNote, resumeState } from "./resume.ts";
@@ -146,8 +146,8 @@ export function ClaudeCodeAdapter(deps: ClaudeDeps): ProviderAdapter {
         const flagsHash = probeFlagsHash(os);
         const found = yield* probe(asDetection(d), flagsHash, { sandbox: deps.sandbox, binary, os, extraRead });
         // Decision 15: a plan sign-in's money is shown, not charged (unless the owner asked), so
-        // it has no `--max-budget-usd` backstop. TODO(7D Task 0 Step 4): the `auth status`
-        // `authMethod` of a plan sign-in; modelled by fake-claude as `claude.ai` (its default).
+        // it has no `--max-budget-usd` backstop. Verified on 2.1.321 (7D Task 0): a plan
+        // sign-in's `auth status` prints `authMethod: "claude.ai"` (with `subscriptionType`).
         const planSignIn = d.authMethod === "claude.ai" && deps.chargePlanMoney?.() !== true;
         const baseline = baselineOf(s.usage);
         // Verified 2.1.321, Task 0 (s1d/s1e): `--resume` restores the CLI's totals after a clean
@@ -165,14 +165,13 @@ export function ClaudeCodeAdapter(deps: ClaudeDeps): ProviderAdapter {
         if (unseen && first) notices.push({ type: "notice", name: "unseenTail", details: { harness: "claudeCode", reason: "exitedWhileServerDown" } });
         first = false;
         const key = { version: d.version, flagsHash, os };
-        // Decision 8: the sign-in counts as ignored only when `auth status` reports one and this
-        // instance's own `initialize.account` is exactly unsigned (`apiKeySource: "none"` alone
-        // is what a claude.ai sign-in reports). Set from the `initialize` answer, before any init.
-        // TODO(7D Task 0 Step 1/Step 4): `initialize.account` and `apiKeySource` signed in with the
-        // CLI's own flow; modelled by fake-claude as `tokenSource: "claude.ai"` with `none`.
+        // Decision 8 (as 7D Task 0 amended it): the sign-in counts as ignored when `auth status`
+        // reports one and this instance's own `initialize.account` shows none (`signInIgnored`);
+        // verified on 2.1.321: `apiKeySource: "none"` is what a claude.ai sign-in reports, so it
+        // decides nothing. Set from the `initialize` answer, before any init.
         let ignoredSignIn = false;
         const check = {
-          get signedIn() {
+          get signInIgnored() {
             return ignoredSignIn;
           },
         };
@@ -188,7 +187,7 @@ export function ClaudeCodeAdapter(deps: ClaudeDeps): ProviderAdapter {
           // Resume re-checks the init too (Task 5's predicate on every process).
           onInit: (init) => {
             if (found.initPending === true) {
-              void Effect.runPromise(Effect.result(completeProbe(deps.sandbox.serverData, key, init, plan, { signedIn: ignoredSignIn }))).then((r) => {
+              void Effect.runPromise(Effect.result(completeProbe(deps.sandbox.serverData, key, init, plan, { signInIgnored: ignoredSignIn }))).then((r) => {
                 if (r._tag === "Failure") log("claude probe not completed", { sessionId: s.id, code: r.failure.code });
               });
             }
@@ -213,7 +212,7 @@ export function ClaudeCodeAdapter(deps: ClaudeDeps): ProviderAdapter {
         }
         if (body !== null && typeof body === "object") {
           const account = (body as { account?: unknown }).account;
-          ignoredSignIn = d.signedIn === true && unsignedAccount(account);
+          ignoredSignIn = d.signedIn === true && signInIgnored(account, d.authMethod);
           // A new session (no provider reference) may be refused; a resumed process never is.
           const seen = sessionAccount(deps.sandbox.serverData, d, account, spec.providerRef === null && !resume);
           if (seen.refused !== null) return yield* refuse(seen.refused);
@@ -260,10 +259,12 @@ export const UNKNOWN_ACCOUNT = "unknown";
 
 /**
  * The account check of one instance (Decision 19, `account.ts`): the label its `initialize.account`
- * names, else the hash detection's `auth status` gave. A new session (no provider reference yet)
- * is refused while a change waits; a running session's respawn or resume never is.
- * TODO(7D Task 0 Step 4): whether `initialize.account` names the account signed in; modelled by
- * fake-claude as `email` there when its sidecar `account` is set.
+ * names, else the hash detection's `auth status` gave, else none (`instanceAccount`: nothing
+ * recorded; a new session is refused only by a change already waiting). A new session (no
+ * provider reference yet) is refused while a change waits; a running session's respawn or resume
+ * never is. Verified on 2.1.321 (7D Task 0): `initialize.account.email` names the account once the
+ * CLI holds the profile in the session's config dir (a resumed process; a first start only when
+ * the profile fetch wins), and detection's `auth status` names none.
  */
 function sessionAccount(serverData: string, d: ClaudeDetection, account: unknown, newSession: boolean): { hash?: string; refused: FinError | null } {
   const label = labelOf(account);

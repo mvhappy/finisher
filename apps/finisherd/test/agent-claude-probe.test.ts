@@ -14,7 +14,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } fr
 import { type Detection, NO_CAPABILITIES } from "../src/agent/adapter.ts";
 import { CLI_TOOLS, cliTools, instancePlan, writeLaunchFiles } from "../src/agent/claude/launch.ts";
 import { checkInit, completeProbe, firstTurnGate, flagsHashOf, hostDirs, InstanceLines, type ProbeDeps, probe, probeCachePath, probeFlagsHash, readProbeCache, untestedVersionNotices } from "../src/agent/claude/probe.ts";
-import { CANARY_STYLE, checkInitialize, mcpReply } from "../src/agent/claude/probe-check.ts";
+import { CANARY_STYLE, checkInitialize, mcpReply, signInIgnored } from "../src/agent/claude/probe-check.ts";
 import { type CliLine, decodeLine, encodeControl, encodeUser, type SystemInit } from "../src/agent/claude/protocol.ts";
 import { openHostSandbox, type SessionSandbox, type SessionSandboxDeps } from "../src/agent/sandbox.ts";
 import type { SandboxStatus } from "../src/sandbox/status.ts";
@@ -129,10 +129,29 @@ const verdict = (i: SystemInit, opts: Parameters<typeof checkInit>[2] = {}) => {
 };
 
 describe("the init predicate", () => {
-  test("oauth_ignored_refused", () => {
-    expect(verdict(init())).toBeNull();
-    expect(verdict(init(), { signedIn: true })).toMatchObject({ code: "PROVIDER_VERSION", missing: "oauth" });
-    expect(verdict(init({ apiKeySource: "/login managed key" }), { signedIn: true })).toBeNull();
+  test("oauth_ignored_refused: from the account, never from apiKeySource", () => {
+    // Verified on 2.1.321 (7D Task 0, s1a, s3A–C): a claude.ai sign-in's init says
+    // `apiKeySource: "none"`; such a session is never refused for it.
+    expect(verdict(init({ apiKeySource: "none" }))).toBeNull();
+    expect(verdict(init({ apiKeySource: "none" }), { signInIgnored: false })).toBeNull();
+    expect(verdict(init({ apiKeySource: "none" }), { signInIgnored: true })).toMatchObject({ code: "PROVIDER_VERSION", missing: "oauth", item: "account" });
+    expect(verdict(init({ apiKeySource: "/login managed key" }), { signInIgnored: true })).toMatchObject({ missing: "oauth" });
+  });
+
+  test("sign_in_ignored_reads_initialize_account", () => {
+    // The signed-in shapes of 2.1.321 (7D Task 0, s1a): no `tokenSource`; `email` once the CLI
+    // has the profile; the `subscriptionType` text varies for one account.
+    expect(signInIgnored({ subscriptionType: "Claude Max", apiProvider: "firstParty" }, "claude.ai")).toBe(false);
+    expect(signInIgnored({ email: "a@example.invalid", subscriptionType: "Claude Ultra", apiProvider: "firstParty" }, "claude.ai")).toBe(false);
+    // Unsigned, or a plan sign-in without its plan: ignored.
+    expect(signInIgnored({ tokenSource: "none", apiProvider: "firstParty" }, "claude.ai")).toBe(true);
+    expect(signInIgnored({ apiProvider: "firstParty" }, "claude.ai")).toBe(true);
+    expect(signInIgnored({ subscriptionType: "", apiProvider: "firstParty" }, "claude.ai")).toBe(true);
+    expect(signInIgnored(undefined, "claude.ai")).toBe(true);
+    expect(signInIgnored(null, "console")).toBe(true);
+    // Another method (a Console sign-in's shape is unverified): only an unsigned account.
+    expect(signInIgnored({ apiProvider: "firstParty" }, "console")).toBe(false);
+    expect(signInIgnored({ tokenSource: "none", apiProvider: "firstParty" }, "other")).toBe(true);
   });
 
   test("session_uuid_mismatch_refused", () => {
@@ -211,6 +230,9 @@ describe("the init predicate", () => {
     });
     const unsigned = (account: unknown) => (checkInitialize(body(account), VERSION) as { unsigned?: boolean }).unsigned;
     expect(unsigned({ tokenSource: "none", apiProvider: "firstParty" })).toBe(true);
+    // A claude.ai sign-in (2.1.321, 7D Task 0): no `tokenSource` key.
+    expect(unsigned({ subscriptionType: "Claude Max", apiProvider: "firstParty" })).toBe(false);
+    expect(unsigned({ email: "a@example.invalid", subscriptionType: "Claude Ultra", apiProvider: "firstParty" })).toBe(false);
     // What 2.1.321 answers with an API key (in the env or a settings file's `env`), an
     // `apiKeyHelper`, Bedrock: each is signed in, as is anything else.
     expect(unsigned({ tokenSource: "none", apiKeySource: "ANTHROPIC_API_KEY", apiProvider: "firstParty" })).toBe(false);
@@ -331,10 +353,10 @@ describe("the probe", () => {
     const r = await run(probe(detection(), "h1", probeDeps(binary)));
     expect(r).toMatchObject({ initPending: true, tools: [], permissionPath: "stdio" });
     // The first real instance's init completes it; a failing init does not.
-    const bad = await failure(completeProbe(data(), key, init({ tools: ["Read", "Task"] }), PLAN, { signedIn: true }));
+    const bad = await failure(completeProbe(data(), key, init({ tools: ["Read", "Task"] }), PLAN));
     expect(bad).toMatchObject({ code: "PROVIDER_VERSION", details: { missing: "isolation", item: "tool:Task" } });
     expect((await readProbeCache(data()))[0]!.result.initPending).toBe(true);
-    const done = await run(completeProbe(data(), key, init({ apiKeySource: "/login managed key", capabilities: ["c1"] }), PLAN, { signedIn: true }));
+    const done = await run(completeProbe(data(), key, init({ apiKeySource: "/login managed key", capabilities: ["c1"] }), PLAN));
     expect(done.initPending).toBeUndefined();
     // `tools` is the CLI's set seen unsigned: a session's subset is never recorded there.
     expect(done.tools).toEqual([]);
@@ -490,7 +512,7 @@ describe("the first-turn gate", () => {
       await writeLaunchFiles(plan);
       const child = await Effect.runPromise(box.spawn(plan.argv, { cwd: box.workspace, stdio: "pipe", env: plan.env }));
       const io = new InstanceLines(child, plan.mcpTools);
-      const gate = firstTurnGate(plan, { signedIn: true });
+      const gate = firstTurnGate(plan);
       io.write(encodeControl("init-1", { subtype: "initialize" }));
       io.write(encodeUser(["hello"], UUID));
       const forwarded: CliLine[] = [];
@@ -562,6 +584,32 @@ describe("the first-turn gate", () => {
     expect(gate.push(init({ tools: ["Read", "Edit", "Bash", "Task"] }))).toMatchObject({ kind: "refuse", kill: true, error: { details: { missing: "isolation", item: "tool:Task" } } });
     expect(gate.state).toBe("refused");
     expect(gate.push(init())).toEqual({ kind: "drop" });
+  });
+
+  test("init_every_turn_rechecked: a later init equals the first, forwarded alone", () => {
+    // Verified on 2.1.321 (7D Task 0, s1a/s1b/s1d): an init leads every turn, the same each time.
+    const gate = firstTurnGate(PLAN);
+    const status = decodeLine(JSON.stringify({ type: "system", subtype: "status", status: "requesting" })) as CliLine;
+    const first = init();
+    expect(gate.push(status)).toEqual({ kind: "hold" });
+    expect(gate.push(first)).toEqual({ kind: "forward", lines: [status, first] });
+    // The next turn's lines: nothing held twice, nothing held at all.
+    const second = init();
+    expect(gate.push(status)).toEqual({ kind: "forward", lines: [status] });
+    expect(gate.push(second)).toEqual({ kind: "forward", lines: [second] });
+    // A later init that passes the predicate but differs from the first (a model, a server's
+    // status, the tool set, the mode) refuses.
+    for (const [over, item] of [
+      [{ model: "claude-sonnet-5-5" }, "init:model"],
+      [{ tools: ["Bash", "Edit", "Read"] }, "init:tools"],
+      [{ output_style: "Explanatory" }, "init:output_style"],
+      [{ cwd: "/elsewhere" }, "init:cwd"],
+    ] as const) {
+      const g = firstTurnGate(PLAN);
+      g.push(first);
+      expect(g.push(init(over)), item).toMatchObject({ kind: "refuse", kill: true, error: { code: "PROVIDER_VERSION", details: { missing: "isolation", item } } });
+      expect(g.state).toBe("refused");
+    }
   });
 
   test("gate_error_result_before_init_drops_held_lines", () => {

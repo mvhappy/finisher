@@ -105,7 +105,7 @@ struct Runner {
     /// A resumed transcript's calls without a result (`resume.rs`).
     dangling: Vec<(String, String, Value)>,
     observed: Observed,
-    /// User lines received while a turn runs (steers), played in order.
+    /// User lines received while a turn runs (steers): the next turn takes them all.
     pending: VecDeque<Value>,
     started: bool,
     init_sent: bool,
@@ -422,8 +422,7 @@ impl Runner {
         });
     }
 
-    /// The exit code once stdin is closed and the open turn has ended (Task 0): 1 after an
-    /// `is_error` result, else 0.
+    /// The exit code at stdin's end once the turn ended (Task 0): 1 after an `is_error` result.
     fn exit_code(&self) -> i32 {
         i32::from(self.last_is_error)
     }
@@ -433,6 +432,7 @@ impl Runner {
         for step in &steps {
             if step.expect == Some(Expect::User) {
                 self.close_turn();
+                self.script.init.extend(step.init.clone());
                 if !self.wait_user() {
                     return self.finish();
                 }
@@ -443,7 +443,7 @@ impl Runner {
         }
         self.close_turn();
         loop {
-            if self.pending.pop_front().is_some() {
+            if self.take_queued() {
                 self.default_turn();
                 continue;
             }
@@ -561,7 +561,7 @@ impl Runner {
     /// Takes the next user line (queued first) and starts its turn; false on EOF.
     fn wait_user(&mut self) -> bool {
         loop {
-            if self.pending.pop_front().is_some() {
+            if self.take_queued() {
                 self.start_turn();
                 return true;
             }

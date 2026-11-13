@@ -4,6 +4,12 @@
 // console confirms it (y/N, audited); `provider signin --confirm` lets the next change through;
 // and finisherd makes no file-system call under `<server-data>/providers/`. Everything runs
 // `fake-claude` (its `account` sidecar knob is the label), never the real CLI.
+//
+// On 2.1.321 (7D Task 0) detection's `auth status` names no account (its fresh config dir has no
+// profile): only each instance's `initialize.account.email` does. Detection hashes a label when
+// its answer names one (a config dir that holds the profile), which `setAccount` models here so
+// the record, confirm and expect machinery runs through `agent.providers`; the real flow (no
+// label at detection) is `no_label_subscription_*`.
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
@@ -12,7 +18,7 @@ import { type Principal, type ProviderInfo, ruleOf } from "@finisher/contracts";
 import { sandboxStatus } from "@finisher/fin-node";
 import { Effect, Exit } from "effect";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
-import { type AuthStatus, accountCheck, accountKey, accountProblem, ACCOUNT_FILE, ClaudeAccounts, EXPECT_TTL_MS, instanceAccount, labelOf, labelOfOutput, registerAccountAudit } from "../src/agent/claude/account.ts";
+import { type AuthStatus, accountCheck, accountIdentified, accountKey, accountProblem, ACCOUNT_FILE, ClaudeAccounts, EXPECT_TTL_MS, instanceAccount, labelOf, labelOfOutput, registerAccountAudit } from "../src/agent/claude/account.ts";
 import { CLAUDE_CAPABILITIES, claudeProviderInfo, type ClaudeDetectDeps, invalidateClaudeDetection } from "../src/agent/claude/detect.ts";
 import { probe } from "../src/agent/claude/probe.ts";
 import { BUNDLED_CATALOGUE, Catalogue } from "../src/agent/catalogue/catalogue.ts";
@@ -117,9 +123,17 @@ function installFake(name: string, o: { account?: string; script?: unknown } = {
   return { dir, bin };
 }
 
-/** The person signs the CLI in to another account (the sidecar's label); detection asks again. */
+/**
+ * The person signs the CLI in to another account (the sidecar's label, in `initialize.account`);
+ * its `auth status` names it too (`auth.email`, as a config dir holding the profile would);
+ * detection asks again.
+ */
 function setAccount(dir: string, account: string | undefined): void {
   writeFileSync(join(dir, "fake-claude.json"), JSON.stringify({ script: "script.json", ...(account === undefined ? {} : { account }) }));
+  if (account !== undefined) {
+    const script = JSON.parse(readFileSync(join(dir, "script.json"), "utf8")) as { auth?: Record<string, unknown> };
+    writeFileSync(join(dir, "script.json"), JSON.stringify({ ...script, auth: { ...script.auth, email: account } }));
+  }
   invalidateClaudeDetection();
 }
 
@@ -428,24 +442,48 @@ describe("the account record fails closed", () => {
     expect(accounts.confirm(c)).toEqual({ confirmed: false, accountHash: c });
   });
 
-  test("no_label_subscription_fails_closed: only an API-key method hashes without a label", () => {
+  test("no_label_subscription_is_not_identified: only an API-key method hashes without a label", () => {
     const k = Buffer.alloc(32, 1);
     for (const authMethod of ["claude.ai", "console", "other", undefined]) {
-      expect(() => accountCheck({ signedIn: true, ...(authMethod === undefined ? {} : { authMethod }) }, k, null), String(authMethod)).toThrow(
-        expect.objectContaining({ code: "PROVIDER_ACCOUNT_CHANGED", details: expect.objectContaining({ reason: "noAccountLabel" }) }),
-      );
+      const status = { signedIn: true, ...(authMethod === undefined ? {} : { authMethod }) };
+      expect(accountIdentified(status), String(authMethod)).toBe(false);
+      expect(() => accountCheck(status, k, null), String(authMethod)).toThrow(expect.objectContaining({ code: "INTERNAL" }));
     }
+    expect(accountIdentified({ signedIn: true, authMethod: "apiKey" })).toBe(true);
     expect(accountCheck({ signedIn: true, authMethod: "apiKey" }, k, null).hash).toMatch(/^[0-9a-f]{8}$/);
+    // The instance seam: nothing recorded, no refusal unless a change already waits.
+    const data = join(tmp, "data");
+    mkdirSync(data, { recursive: true, mode: 0o700 });
+    expect(instanceAccount(data, { signedIn: true, authMethod: "claude.ai" }, { newSession: true })).toEqual({ refused: null });
+    expect(new ClaudeAccounts(data).state()).toEqual({ v: 1 });
+    const accounts = new ClaudeAccounts(data);
+    accounts.observe(SIGNED_IN(LABEL_A), accountKey(data));
+    const waiting = accounts.observe(SIGNED_IN(LABEL_B), accountKey(data)).hash;
+    expect(instanceAccount(data, { signedIn: true, authMethod: "claude.ai" }, { newSession: true }).refused).toMatchObject({ code: "PROVIDER_ACCOUNT_CHANGED", details: { accountHash: waiting } });
+    expect(instanceAccount(data, { signedIn: true, authMethod: "claude.ai" }, { newSession: false })).toEqual({ refused: null });
+    // A record that cannot be read refuses a new session too.
+    writeFileSync(join(data, "agents", ACCOUNT_FILE), "{");
+    expect(instanceAccount(data, { signedIn: true, authMethod: "claude.ai" }, { newSession: true }).refused).toMatchObject({ code: "PROVIDER_ACCOUNT_CHANGED", details: { reason: "stateUnreadable" } });
   });
 
-  withFake("no_label_subscription_fails_closed: a claude.ai sign-in naming no account stops new sessions", async () => {
-    const { bin } = installFake("cli", { script: { auth: { email: "$remove" } } });
+  withFake("no_label_subscription_is_not_identified: a claude.ai sign-in naming no account (2.1.321's fresh config dir) plans; a waiting change still stops it", async () => {
+    // The fake's default `auth status` is 2.1.321's under a fresh config dir: labels `null`.
+    const { dir, bin } = installFake("cli");
     const data = join(tmp, "data");
     const d = detectDeps(data, bin);
     const l = await line(d);
-    expect(l).toMatchObject({ signedIn: true, authMethod: "claude.ai", problem: { code: "PROVIDER_ACCOUNT_CHANGED" } });
+    expect(l).toMatchObject({ signedIn: true, authMethod: "claude.ai" });
+    expect(l.problem).toBeUndefined();
     expect(l.accountHash).toBeUndefined();
     const planner = sessionPlanner({ roles: BUNDLED_ROLES, catalogue: Catalogue.load(BUNDLED_CATALOGUE), harnesses: () => new Set(["claudeCode"] as never[]), hasKey: () => false, local: () => undefined, localModels: async () => [], claude: claudeWiring(() => line(d), data).planning });
+    await planner.plan(startReq, PEOPLE);
+    // A change seen elsewhere (an instance's `initialize.account`) waits: detection shows it.
+    const accounts = new ClaudeAccounts(data);
+    accounts.observe(SIGNED_IN(LABEL_A), accountKey(data));
+    const waiting = accounts.observe(SIGNED_IN(LABEL_B), accountKey(data)).hash;
+    setAccount(dir, undefined);
+    const after = await line(d);
+    expect(after).toMatchObject({ signedIn: true, accountHash: waiting, problem: { code: "PROVIDER_ACCOUNT_CHANGED" } });
     await expect(planner.plan(startReq, PEOPLE)).rejects.toMatchObject({ code: "PROVIDER_ACCOUNT_CHANGED" });
   });
 
@@ -699,7 +737,7 @@ describe("the sign-in store", () => {
 
   withFake("finisherd_never_opens_sign_in_store: a scripted session with a permission prompt, an interrupt, a resume and the end", async () => {
     const turn = { expect: "user", ask: { tool: "Read", input: { file_path: "notes.txt" } }, onAllow: [], cumulativeUsage: { inputTokens: 1, outputTokens: 1 } };
-    const { bin } = installFake("cli", { account: LABEL_A, script: { init: { apiKeySource: "/login managed key" }, steps: [turn, { expect: "user", sleep: 60_000 }] } });
+    const { bin } = installFake("cli", { account: LABEL_A, script: { steps: [turn, { expect: "user", sleep: 60_000 }] } });
     const serverData = join(tmp, "server-data");
     mkdirSync(serverData, { recursive: true, mode: 0o700 });
     writeFileSync(join(serverData, "settings.json"), JSON.stringify({ agents: { claudeCode: { enabled: true, path: bin } } }));
@@ -727,7 +765,7 @@ describe("the sign-in store", () => {
       await until(id, "running");
       ok(await local.call("agent.session.interrupt", { sessionId: id }));
       await until(id, "interrupted");
-      writeFileSync(join(tmp, "cli", "script.json"), JSON.stringify({ init: { apiKeySource: "/login managed key" }, steps: [{ expect: "user", cumulativeUsage: { inputTokens: 1, outputTokens: 1 } }] }));
+      writeFileSync(join(tmp, "cli", "script.json"), JSON.stringify({ steps: [{ expect: "user", cumulativeUsage: { inputTokens: 1, outputTokens: 1 } }] }));
       ok(await local.call("agent.session.resume", { sessionId: id }));
       ok(await local.call("agent.session.prompt", { sessionId: id, text: "again" }));
       await until(id, "idle");
