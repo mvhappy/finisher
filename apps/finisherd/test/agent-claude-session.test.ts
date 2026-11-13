@@ -182,7 +182,8 @@ describe("a turn through the runtime", () => {
     expect(content[2]!.payload).toEqual({ role: "assistant", blocks: [{ type: "text", text: "Hello" }] });
     expect(content[3]!.payload).toEqual({ tool: "Read", input: { file_path: "cuts.txt" } });
     expect(content[4]).toMatchObject({ callId: content[3]!.callId, payload: { ok: true, output: "00:01 00:04" } });
-    expect(content[6]!.payload).toMatchObject({ input: 30, output: 7, cacheRead: 100, moneyMicros: 4200, costBasis: "reported" });
+    // The fake's sign-in is a plan (`claude.ai`): its money shown, not charged (Task 9).
+    expect(content[6]!.payload).toMatchObject({ input: 30, output: 7, cacheRead: 100, moneyMicros: 4200, costBasis: "subscription" });
     expect(runOf(s.id, content[0]!.runId!)).toMatchObject({ status: "completed" });
     // api_retry_is_notice; the version is untested (no transcript suite yet, spec §4.5).
     expect(notices(ns, "retry")).toEqual([{ attempt: 1, code: "PROVIDER_OVERLOADED", delayMs: 800 }]);
@@ -519,8 +520,9 @@ describe("the instance", () => {
     await run(w.provider.startTurn({ runId: "r1", text: "go" }));
     await waitFor(w, "turnCompleted");
     await until(async () => ((await readProbeCache(w.serverData))[0]?.result.initPending === undefined ? true : undefined));
-    // The gate held `turnStarted` back until the init passed, then released it first.
-    expect(w.events.map((e) => e.type)).toEqual(["turnStarted", "notice", "usage", "turnCompleted"]);
+    // The gate held `turnStarted` back until the init passed, then released it first; the
+    // result's per-model split is a notice (Task 9).
+    expect(w.events.map((e) => e.type)).toEqual(["turnStarted", "notice", "usage", "notice", "turnCompleted"]);
   });
 });
 

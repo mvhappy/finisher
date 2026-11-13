@@ -57,6 +57,14 @@ export interface LaunchContext {
   readonly remainingMoneyMicros: number | null;
   /** The sign-in is a subscription plan: its money is shown, not charged, so no backstop (Decision 15). */
   readonly planSignIn: boolean;
+  /**
+   * On a resume, the money the CLI counts from earlier runs against `--max-budget-usd` (Facts:
+   * "on `--resume` totals restored from earlier runs count"), so the flag is the remainder on
+   * top of it. TODO(7D Task 0 Step 1): restored totals on `--resume`; modelled by fake-claude as
+   * restored (its `resumeTotals` default). Set only once Task 0 pins `resumeTotals: restored`;
+   * until then 0 (fail closed, as `usage.ts` charges a resume): a restoring CLI stops early.
+   */
+  readonly restoredCostMicros?: number;
 }
 
 /** The CLI tools Finisher maps, in `--tools` order (Decision 2). */
@@ -185,11 +193,11 @@ export function launchEnv(tmp: string): Record<string, string> {
  * value <= 0 (`maxBudgetUsd>0`), which would be no cap at all, so a spent budget (or a remainder
  * that is no whole number of micros) never launches.
  */
-function maxBudgetUsd(s: Session, micros: number): string {
+function maxBudgetUsd(s: Session, micros: number, restored: number): string {
   if (!Number.isSafeInteger(micros) || micros <= 0) {
     throw finError("BUDGET_EXCEEDED", "the session's money budget is used up", { sessionId: s.id, kind: "money", remaining: String(micros) });
   }
-  return String(micros / 1_000_000);
+  return String((micros + (Number.isSafeInteger(restored) && restored > 0 ? restored : 0)) / 1_000_000);
 }
 
 /**
@@ -225,7 +233,7 @@ export function launchPlan(s: Session, spec: SessionSpec, probe: ProbeResult, os
     throw finError("PROVIDER_PROTOCOL", "the session's provider reference is not its Claude Code session", { sessionId: s.id, kind: ref.kind });
   }
   const { tools, shell, dropped } = cliTools(spec.tools, os === "win32" && probe.brokeredShell === true);
-  const budget = ctx.remainingMoneyMicros !== null && !ctx.planSignIn ? maxBudgetUsd(s, ctx.remainingMoneyMicros) : null;
+  const budget = ctx.remainingMoneyMicros !== null && !ctx.planSignIn ? maxBudgetUsd(s, ctx.remainingMoneyMicros, ref === null ? 0 : (ctx.restoredCostMicros ?? 0)) : null;
   const plan = instancePlan({ binary: ctx.binary, dirs, os, uuid, resume: ref !== null, tools, shell, probe, model: spec.model, system: spec.system, retentionDays: ctx.retentionDays, budgetUsd: budget });
   // The CLI's temporary directory is the sandbox's own (`assertSessionEnv` holds it to `TMPDIR`).
   assertSpawnEnv(plan.env, s, os);

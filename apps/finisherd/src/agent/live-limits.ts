@@ -114,7 +114,7 @@ export class LiveLimits {
       await this.#fail(sessionId, runId, toFinError(e));
       throw e;
     }
-    live.runId = runId;
+    live.runId = live.served = runId;
     await h.started(live, runId);
     const err = await call(live.provider.startTurn({ runId, text: q.texts[0]!, facts: h.facts(h.session(sessionId)) }));
     if (err) {

@@ -30,6 +30,7 @@ import type { ClaudeModelCache } from "./models.ts";
 import { completeProbe, probe, probeFlagsHash } from "./probe.ts";
 import { unsignedAccount, untestedVersionNotices } from "./probe-check.ts";
 import { ClaudeInstance, type RequestPort } from "./session.ts";
+import { baselineOf, ClaudeUsage, type ResumeTotals, turnProjection } from "./usage.ts";
 
 export { sessionUuid } from "./launch.ts";
 
@@ -45,11 +46,17 @@ export interface ClaudeDeps {
   /** `agents.retentionDays` (default 90): the CLI keeps its transcripts as long. */
   readonly retentionDays?: number;
   /**
-   * The money left in a session's budget, in micros, for `--max-budget-usd` (Decision 15's
-   * backstop); null without a money limit. TODO(7D Task 9): the runtime's remaining budget and
-   * the plan sign-in that turns the flag off.
+   * What is left of a session's budget (limit − used − reserved; null without a limit): money
+   * for `--max-budget-usd` (Decision 15's backstop, set on each (re)start), tokens to cap the
+   * per-turn projection the gate reserves (Task 9).
    */
-  readonly remainingMoneyMicros?: (sessionId: string) => number | null;
+  readonly remaining?: (sessionId: string) => { readonly tokens: number | null; readonly moneyMicros: number | null };
+  /** `agents.claudeCode.chargePlanMoney`: a plan sign-in's money is charged too (spec §13.1). */
+  readonly chargePlanMoney?: () => boolean;
+  /** What `--resume` does with the CLI's totals (`usage.ts`; default `reset`, fail closed, until Task 0). */
+  readonly resumeTotals?: ResumeTotals;
+  /** The per-turn projection, in tokens (default `TURN_ESTIMATE_TOKENS`). */
+  readonly turnEstimateTokens?: number;
   readonly os?: NodeJS.Platform;
   readonly ids?: Ids;
   /** Detection (default `detectClaude` over `sandbox`; tests). */
@@ -98,9 +105,15 @@ export function ClaudeCodeAdapter(deps: ClaudeDeps): ProviderAdapter {
         const extraRead = [dirname(binary)];
         const flagsHash = probeFlagsHash(os);
         const found = yield* probe(asDetection(d), flagsHash, { sandbox: deps.sandbox, binary, os, extraRead });
+        // Decision 15: a plan sign-in's money is shown, not charged (unless the owner asked), so
+        // it has no `--max-budget-usd` backstop. TODO(7D Task 0 Step 4): the `auth status`
+        // `authMethod` of a plan sign-in; modelled by fake-claude as `claude.ai` (its default).
+        const planSignIn = d.authMethod === "claude.ai" && deps.chargePlanMoney?.() !== true;
+        const baseline = baselineOf(s.usage);
         const plan = yield* attempt(() =>
-          launchPlan(s, spec, found, os, { binary, retentionDays: deps.retentionDays ?? 90, remainingMoneyMicros: deps.remainingMoneyMicros?.(s.id) ?? null, planSignIn: false }),
+          launchPlan(s, spec, found, os, { binary, retentionDays: deps.retentionDays ?? 90, remainingMoneyMicros: deps.remaining?.(s.id).moneyMicros ?? null, planSignIn, restoredCostMicros: deps.resumeTotals === "restored" ? baseline.costMicros : 0 }),
         );
+        const usage = new ClaudeUsage({ baseline, resumed: spec.providerRef !== null, basis: planSignIn ? "subscription" : "reported", ...(deps.resumeTotals === undefined ? {} : { resumeTotals: deps.resumeTotals }) });
         yield* attempt(() => writeLaunchFiles(plan, os));
         const child = yield* box.spawn(plan.argv, { cwd: box.workspace, stdio: "pipe", env: plan.env, extraRead });
         const notices: ProviderEvent[] = plan.dropped.map((tool) => ({ type: "notice", name: "toolDropped", details: { harness: "claudeCode", tool } }));
@@ -133,6 +146,8 @@ export function ClaudeCodeAdapter(deps: ClaudeDeps): ProviderAdapter {
             const n = untested(init.claude_code_version ?? d.version);
             return n === null ? [] : [n];
           },
+          usage,
+          ...(spec.gate === undefined ? {} : { gate: spec.gate, projection: () => turnProjection(deps.remaining?.(s.id).tokens ?? null, deps.turnEstimateTokens) }),
           ...(deps.requests === undefined ? {} : { requests: deps.requests() }),
           ...(deps.interruptWaitMs === undefined ? {} : { interruptWaitMs: deps.interruptWaitMs }),
           ...(deps.sigintGraceMs === undefined ? {} : { sigintGraceMs: deps.sigintGraceMs }),

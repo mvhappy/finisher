@@ -20,7 +20,21 @@ pub struct Script {
     pub mcp_timeout_ms: Option<u64>,
     /// Flag values this "version" refuses, e.g. `{"--permission-prompt-tool": ["stdio"]}`.
     pub refuse_flag_values: BTreeMap<String, Vec<String>>,
+    /// What `--resume` does with the transcript's cumulative totals (Task 9: unverified on the
+    /// real CLI, so both are modelled).
+    pub resume_totals: ResumeTotals,
     pub steps: Vec<Step>,
+}
+
+/// Whether a resumed process's `result` totals count the earlier runs.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ResumeTotals {
+    /// The transcript's totals carry on (the CLI reference: "totals restored from earlier runs").
+    #[default]
+    Restored,
+    /// The resumed process counts from zero.
+    Reset,
 }
 
 /// What an interrupt (the control request, or SIGINT) does.
@@ -58,6 +72,15 @@ pub struct Step {
     pub on_deny: Branch,
     pub not_logged_in: bool,
     pub cumulative_usage: Option<Usage>,
+    /// One model call's usage as `stream_event` lines (`message_start` with the input side,
+    /// `message_delta` with the output), added to the totals the next `result` reports.
+    pub live_usage: Option<Usage>,
+    /// Usage added to the totals with no line (spend the stream did not show, e.g. a call an
+    /// interrupt cut short): only the next `result` reports it.
+    pub hidden_usage: Option<Usage>,
+    /// The model `cumulative_usage`/`live_usage` is charged to in `modelUsage` (default: the
+    /// session's model).
+    pub usage_model: Option<String>,
     pub text: Option<String>,
     pub crash: Option<Crash>,
 }

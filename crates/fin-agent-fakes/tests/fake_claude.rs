@@ -516,6 +516,62 @@ fn fake_reports_cumulative_usage_after_resume() {
 }
 
 #[test]
+fn fake_resume_reset_counts_from_zero() {
+    let dir = Dir::new("usage-reset");
+    run_session(
+        &dir,
+        &["--session-id", UUID],
+        json!({"inputTokens": 100, "outputTokens": 10, "costUsd": 0.01}),
+    );
+    let resume = format!("--resume={UUID}");
+    let mut f = Fake::start(
+        &dir,
+        Some(
+            json!({"resumeTotals": "reset", "steps": [{"expect": "user", "cumulativeUsage": {"inputTokens": 50, "outputTokens": 20, "costUsd": 0.02}}]}),
+        ),
+        &[&resume],
+        &[],
+    );
+    f.user("work");
+    assert_eq!(f.read()["subtype"], "init");
+    let r = f.read();
+    assert!(f.finish().success());
+    assert_eq!(r["usage"]["input_tokens"], 50);
+    assert_eq!(r["usage"]["output_tokens"], 20);
+    assert!((r["total_cost_usd"].as_f64().unwrap() - 0.02).abs() < 1e-9);
+}
+
+#[test]
+fn fake_live_and_hidden_usage_reach_the_totals() {
+    let dir = Dir::new("usage-live");
+    let script = json!({"steps": [{"expect": "user",
+        "hiddenUsage": {"inputTokens": 7, "costUsd": 0.001},
+        "liveUsage": {"inputTokens": 40, "outputTokens": 9, "cacheReadInputTokens": 3, "costUsd": 0.002},
+        "usageModel": "claude-haiku-5-5"},
+        {"cumulativeUsage": {"inputTokens": 1, "outputTokens": 1}}]});
+    let mut f = Fake::start(&dir, Some(script), &["--session-id", UUID], &[]);
+    f.user("work");
+    assert_eq!(f.read()["subtype"], "init");
+    let start = f.read();
+    assert_eq!(start["type"], "stream_event");
+    assert_eq!(start["event"]["type"], "message_start");
+    assert_eq!(start["event"]["message"]["usage"]["input_tokens"], 40);
+    assert_eq!(start["event"]["message"]["usage"]["output_tokens"], 1);
+    assert_eq!(start["event"]["message"]["model"], "claude-haiku-5-5");
+    let delta = f.read();
+    assert_eq!(delta["event"]["type"], "message_delta");
+    assert_eq!(delta["event"]["usage"]["output_tokens"], 9);
+    assert_eq!(f.read()["event"]["type"], "message_stop");
+    let r = f.read();
+    assert!(f.finish().success());
+    assert_eq!(r["usage"]["input_tokens"], 48);
+    assert_eq!(r["usage"]["output_tokens"], 10);
+    assert_eq!(r["modelUsage"]["claude-haiku-5-5"]["inputTokens"], 47);
+    assert_eq!(r["modelUsage"]["claude-opus-5-5"]["inputTokens"], 1);
+    assert!((r["total_cost_usd"].as_f64().unwrap() - 0.003).abs() < 1e-9);
+}
+
+#[test]
 fn fake_records_env_names_only() {
     let dir = Dir::new("env");
     let secret = "s3cret-value-that-must-not-be-recorded";

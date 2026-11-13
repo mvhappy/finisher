@@ -158,7 +158,7 @@ export class Runtime extends RuntimeEngine {
     this.deps.requests?.close();
     const lives = [...this.lives.values()];
     this.lives.clear();
-    await Promise.allSettled(lives.map((l) => closeLive(l)));
+    await Promise.allSettled(lives.map((l) => closeLive(l, (m, d) => this.log(m, d))));
   }
 
   /** A crash, for tests: nothing more is written, nothing is cleaned up in the store. */

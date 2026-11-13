@@ -52,9 +52,10 @@ import { RuleStore } from "./rule-store.ts";
 import type { AclBroker } from "../sandbox/broker.ts";
 import { ClaudeCodeAdapter } from "./claude/adapter.ts";
 import { claudeProviderInfo } from "./claude/detect.ts";
+import { remainingIn } from "./claude/usage.ts";
 import { type ClaudeAccess, ClaudeModelCache, claudeAccess, withClaudePricing } from "./claude/models.ts";
 import { type SessionSandboxDeps, sessionSandboxes } from "./sandbox.ts";
-import { readAgentSettings, resolveFinPath } from "./settings.ts";
+import { claudeCodeSettings, readAgentSettings, resolveFinPath } from "./settings.ts";
 import type { AgentStore } from "./store.ts";
 import { AgentLookup } from "./store-lookup.ts";
 
@@ -299,7 +300,7 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
     // Claude Code (plan 7D Task 7): always registered, nothing run at boot; planning decides live
     // (detected and `agents.claudeCode.enabled`), and each open checks the setting again.
     const claude = claudeWiring(() => Effect.runPromise(claudeInfo()), serverData);
-    adapters.set("claudeCode", ClaudeCodeAdapter({ sandbox: sandboxDeps, sessions: core.store, models: claude.cache, ids: core.ids, ...(settings.retentionDays === undefined ? {} : { retentionDays: settings.retentionDays }), log: (m, x) => log(`${m} ${JSON.stringify(x)}`) }));
+    adapters.set("claudeCode", ClaudeCodeAdapter({ sandbox: sandboxDeps, sessions: core.store, models: claude.cache, ids: core.ids, remaining: remainingIn(() => core.store.ledger()), chargePlanMoney: () => claudeCodeSettings(serverData).chargePlanMoney === true, ...(settings.retentionDays === undefined ? {} : { retentionDays: settings.retentionDays }), log: (m, x) => log(`${m} ${JSON.stringify(x)}`) }));
     const rolePrompt = (role: string) => (roles.get(role) ?? roles.get("editor"))!.prompt.text;
     const builtinEnv = builtinEnvironment({ finPath, server: d.endpoint, projectDirOf: d.registry.dirOf, rolePrompt });
     const environment: SessionEnvironment = {

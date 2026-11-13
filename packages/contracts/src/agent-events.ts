@@ -91,6 +91,12 @@ const UsageEvent = ev("usage", {
   cacheWrite: Count,
   reasoning: Count,
   costMicros: Schema.optionalKey(Count),
+  /**
+   * How the adapter knows `costMicros` (plan 7D Decision 15): `reported` by the provider, or
+   * `subscription` (a plan sign-in: the money is shown, never charged against money budgets).
+   * Absent: the runtime's pricing decides.
+   */
+  costBasis: Schema.optionalKey(Schema.Literals(["reported", "subscription"])),
 });
 const TurnCompleted = ev("turnCompleted", { stopReason: Schema.String });
 const TurnFailed = ev("turnFailed", { error: ErrorShape });

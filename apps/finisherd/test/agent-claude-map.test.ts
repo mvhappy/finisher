@@ -4,7 +4,8 @@ import { readFileSync } from "node:fs";
 import { FinError, ProviderEvent } from "@finisher/contracts";
 import { Schema } from "effect";
 import { describe, expect, test } from "vitest";
-import { cumulativeUsage, LineMapper, resultError, SIGNIN_FIX } from "../src/agent/claude/map.ts";
+import { LineMapper, resultError, SIGNIN_FIX } from "../src/agent/claude/map.ts";
+import { ClaudeUsage } from "../src/agent/claude/usage.ts";
 import { type CliLine, decodeLine, type ResultMsg } from "../src/agent/claude/protocol.ts";
 
 const decodeEvent = Schema.decodeUnknownSync(ProviderEvent);
@@ -36,7 +37,13 @@ const result = (over: Record<string, unknown> = {}) =>
 
 describe("the session fixture", () => {
   test("prompt_to_nodes: reasoning with its signature, a message, a tool call and its results, notices, usage and the end", () => {
-    const events = all(new LineMapper(), fixture("session"));
+    const mapped = all(new LineMapper(), fixture("session"));
+    // Live usage (Task 9: `message_start`/`message_delta`) is checked below; the rest in order.
+    const events = mapped.filter((e) => e.type !== "usage" || mapped.indexOf(e) > mapped.findIndex((x) => x.type === "toolCompleted"));
+    expect(mapped.filter((e) => e.type === "usage").slice(0, 2)).toEqual([
+      { type: "usage", input: 12, output: 1, cacheRead: 3400, cacheWrite: 0, reasoning: 0, costMicros: 0, costBasis: "reported" },
+      { type: "usage", input: 0, output: 86, cacheRead: 0, cacheWrite: 0, reasoning: 0, costMicros: 0, costBasis: "reported" },
+    ]);
     const types = events.map((e) => e.type);
     // The init is the gate's; message_start/stop and signature/json deltas add nothing.
     expect(types.slice(0, 7)).toEqual(["reasoningDelta", "messageDelta", "reasoning", "message", "toolStarted", "toolCompleted", "toolCompleted"]);
@@ -48,7 +55,9 @@ describe("the session fixture", () => {
     expect(events).toContainEqual({ type: "notice", name: "retry", details: { attempt: 1, code: "PROVIDER_OVERLOADED", delayMs: 1200 } });
     expect(events).toContainEqual({ type: "notice", name: "compacted", details: { trigger: "auto", preTokens: 158000 } });
     const done = events.findIndex((e) => e.type === "turnCompleted");
-    expect(events[done - 1]).toEqual({ type: "usage", input: 24, output: 160, cacheRead: 6800, cacheWrite: 0, reasoning: 0, costMicros: 21300 });
+    // The result adds what the stream did not show, and the turn's money; then its per-model split.
+    expect(events[done - 2]).toEqual({ type: "usage", input: 12, output: 73, cacheRead: 3400, cacheWrite: 0, reasoning: 0, costMicros: 21300, costBasis: "reported" });
+    expect(events[done - 1]).toEqual({ type: "notice", name: "modelUsage", details: { "test-claude-big": { input: 24, output: 160, cacheRead: 6800, cacheWrite: 0, costMicros: 21300 } } });
     expect(events[done]).toEqual({ type: "turnCompleted", stopReason: "endTurn" });
   });
 
@@ -58,19 +67,21 @@ describe("the session fixture", () => {
     expect(ev({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Hi" } })).toEqual([{ type: "messageDelta", text: "Hi" }]);
     expect(ev({ type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "hm" } })).toEqual([{ type: "reasoningDelta", text: "hm" }]);
     expect(ev({ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: "{" } })).toEqual([]);
-    expect(ev({ type: "message_start", message: { id: "m", usage: { input_tokens: 3 } } })).toEqual([]);
+    // A message's usage is live usage (Task 9), never a delta.
+    expect(ev({ type: "message_start", message: { id: "m", usage: { input_tokens: 3 } } })).toEqual([{ type: "usage", input: 3, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, costMicros: 0, costBasis: "reported" }]);
     expect(ev({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "" } })).toEqual([]);
   });
 });
 
 describe("results", () => {
   test("usage is what each result added (cumulative per process)", () => {
-    const u = cumulativeUsage();
-    expect(u.usage(result({ total_cost_usd: 0.001, usage: { input_tokens: 10, output_tokens: 2, cache_read_input_tokens: 5 } }))).toEqual({ type: "usage", input: 10, output: 2, cacheRead: 5, cacheWrite: 0, reasoning: 0, costMicros: 1000 });
-    expect(u.usage(result({ total_cost_usd: 0.003, usage: { input_tokens: 25, output_tokens: 6, cache_read_input_tokens: 5 } }))).toEqual({ type: "usage", input: 15, output: 4, cacheRead: 0, cacheWrite: 0, reasoning: 0, costMicros: 2000 });
+    const u = new ClaudeUsage();
+    const ev = (input: number, output: number, cacheRead: number, costMicros: number) => ({ type: "usage", input, output, cacheRead, cacheWrite: 0, reasoning: 0, costMicros, costBasis: "reported" });
+    expect(u.usage(result({ total_cost_usd: 0.001, usage: { input_tokens: 10, output_tokens: 2, cache_read_input_tokens: 5 } }))).toEqual([ev(10, 2, 5, 1000)]);
+    expect(u.usage(result({ total_cost_usd: 0.003, usage: { input_tokens: 25, output_tokens: 6, cache_read_input_tokens: 5 } }))).toEqual([ev(15, 4, 0, 2000)]);
     // Nothing added: no event; a total that goes back charges nothing.
-    expect(u.usage(result({ total_cost_usd: 0.003, usage: { input_tokens: 25, output_tokens: 6, cache_read_input_tokens: 5 } }))).toBeNull();
-    expect(u.usage(result({ total_cost_usd: 0.001, usage: { input_tokens: 1, output_tokens: 1 } }))).toBeNull();
+    expect(u.usage(result({ total_cost_usd: 0.003, usage: { input_tokens: 25, output_tokens: 6, cache_read_input_tokens: 5 } }))).toEqual([]);
+    expect(u.usage(result({ total_cost_usd: 0.001, usage: { input_tokens: 1, output_tokens: 1 } }))).toEqual([]);
   });
 
   test("steer_stays_in_run: a result with a queued steer does not end the run", () => {
