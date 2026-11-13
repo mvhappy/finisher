@@ -122,6 +122,8 @@ pub static RPC_METHODS: NameTable = NameTable::new(
         "media.capabilities",
         "media.look",
         "media.probeDeep",
+        "media.proxy",
+        "media.proxy.status",
         "ops.subscribe",
         "plugin.command.run",
         "plugin.commands",

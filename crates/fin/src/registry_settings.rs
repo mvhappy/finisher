@@ -200,6 +200,22 @@ pub const SETTINGS_COMMANDS: &[Command] = &[
         || schema_of::<crate::commands::media_probe::ProbeArgs>("media.probe"),
     ),
     cmd(
+        "media.proxy",
+        "media",
+        "<asset> [--tier 540|1080] [--codec h264|av1] [--no-wait]",
+        "make or find a video asset's proxy (server only; H.264 without a hardware encoder: CODEC_UNAVAILABLE exit 5)",
+        false,
+        || schema_of::<crate::commands::media_proxy::ProxyArgs>("media.proxy"),
+    ),
+    cmd(
+        "media.status",
+        "media",
+        "<asset>",
+        "each proxy tier of an asset: ready, making (its job), failed or none (server only)",
+        false,
+        || schema_of::<crate::commands::media_proxy::StatusArgs>("media.status"),
+    ),
+    cmd(
         "fonts.ls",
         "fonts",
         "[--catalog|--cached|--pinned] [--detail]",

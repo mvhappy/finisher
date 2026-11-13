@@ -25,6 +25,7 @@ import { mkdirSafe } from "../fsafe.ts";
 import { type KindRegistry, type KindSpec, type MemoryRule, projectOfJob } from "../kinds.ts";
 import { mediaCapabilitiesKind } from "./media.capabilities.ts";
 import { mediaProbeDeepKind } from "./media.probeDeep.ts";
+import { type ProxyKindDeps, mediaProxyKind } from "./media.proxy.ts";
 
 export const MEDIA_FAMILY = "media";
 export const MEDIA_LOOK = "media.look";
@@ -58,6 +59,8 @@ export interface MediaKindDeps {
   readonly jobsRoot?: string;
   /** The libraries' roots (5D; every library in v1): what a confined warm media worker may read beside its project's `sources/`. */
   readonly libraryRoots?: () => ReadonlyArray<string>;
+  /** `media.proxy`'s cache and capability report (6B-1 Task 14); absent: the kind is not registered. */
+  readonly proxy?: Pick<ProxyKindDeps, "cache" | "report">;
 }
 
 /** The job's params as the kind reads them: `LookParams`, whose pins the submitter must set. */
@@ -223,8 +226,9 @@ export function registerMediaFamily(registry: KindRegistry, deps?: Pick<MediaKin
     ...(deps === undefined ? {} : { warmReads: (job: JobView) => mediaWarmReads(deps, job) }),
     program: { binary: "fin-workers", args: [MEDIA_FAMILY] },
     memory: { interactive: MEDIA_MEMORY, batch: MEDIA_MEMORY },
-    // 5C clears a worker's environment; `FIN_GPU` picks the adapter (`software` for CI).
-    env: ["FIN_GPU"],
+    // 5C clears a worker's environment; `FIN_GPU` picks the adapter (`software` for CI), and the
+    // Vulkan loader's `VK_ICD_FILENAMES` the driver (a host with only a user-space one, 6B-1 Task 14).
+    env: ["FIN_GPU", "VK_ICD_FILENAMES"],
     // The kinds the worker may send as `diag` (Task 14); the journal sink records them.
     diagKinds: ["media.capabilities", "render.stats"],
   });
@@ -355,11 +359,15 @@ function planSamplesOf(extra: unknown): ReadonlyArray<string> {
   return samples.map((s) => String(s.blake3));
 }
 
-/** Registers the family and its kinds (`media.look`, `media.capabilities`; `media.probeDeep` given `projects.onBranch`). */
+/**
+ * Registers the family and its kinds (`media.look`, `media.capabilities`; `media.probeDeep` given
+ * `projects.onBranch`; `media.proxy` given that and `proxy`, 6B-1 Task 14).
+ */
 export function registerMediaKinds(registry: KindRegistry, deps: MediaKindDeps): void {
   registerMediaFamily(registry, deps);
   registry.registerKind(mediaLookKind(deps));
   registry.registerKind(mediaCapabilitiesKind());
   const { onBranch } = deps.projects;
   if (onBranch !== undefined) registry.registerKind(mediaProbeDeepKind({ ...deps, projects: { onBranch } }));
+  if (onBranch !== undefined && deps.proxy !== undefined) registry.registerKind(mediaProxyKind({ ...deps, ...deps.proxy, projects: { onBranch } }));
 }

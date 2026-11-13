@@ -154,6 +154,8 @@ export interface RegistryOptions {
    */
   readonly idleCloseMs?: number;
   readonly onOpened?: (projectId: string) => void; // 5E Decision 22: a project was loaded (re-derived reviews)
+  /** A transaction was committed through `commit` (6B-1 Task 14: assets used for the first time get a 1080 proxy). */
+  readonly onCommitted?: (projectId: string, committed: CommittedTx) => void;
 }
 
 /** 10 minutes. */
@@ -164,7 +166,7 @@ const MAIN = "main";
 
 export function makeProjectRegistry(
   serverData: string,
-  { hubCapacity = DEFAULT_HUB_CAPACITY, libraryUse, idleCloseMs = DEFAULT_IDLE_CLOSE_MS, onOpened }: RegistryOptions = {},
+  { hubCapacity = DEFAULT_HUB_CAPACITY, libraryUse, idleCloseMs = DEFAULT_IDLE_CLOSE_MS, onOpened, onCommitted }: RegistryOptions = {},
 ): Effect.Effect<ProjectRegistryShape, never, Scope.Scope> {
   return Effect.gen(function* () {
     const index = yield* Effect.acquireRelease(
@@ -518,7 +520,11 @@ export function makeProjectRegistry(
                 call<CommittedTx>(p, (e) =>
                   e.commit(JSON.stringify(tx), generation === undefined ? undefined : JSON.stringify(generation), metaJson(meta)),
                 ),
-                (committed) => Effect.sync(() => hubs.publishTx(projectId, committed)),
+                (committed) =>
+                  Effect.sync(() => {
+                    hubs.publishTx(projectId, committed);
+                    onCommitted?.(projectId, committed);
+                  }),
               ),
             ),
           )),

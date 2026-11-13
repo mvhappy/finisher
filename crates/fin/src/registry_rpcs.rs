@@ -201,6 +201,16 @@ pub const ROWS: &[Row] = &[
         rpc!("media.probeDeep"),
         &["projectId", "branch", "asset"]
     ),
+    row!(
+        "media.proxy",
+        rpc!("media.proxy"),
+        &["projectId", "branch", "asset", "tier", "codec"]
+    ),
+    row!(
+        "media.status",
+        rpc!("media.proxy.status"),
+        &["projectId", "branch", "asset"]
+    ),
     row!("fonts.ls", rpc!("fonts.catalog"), NONE),
     row!(
         "fonts.fetch",

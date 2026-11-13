@@ -520,6 +520,16 @@ export function commitJobOutput(from, to, maxBytes, copy) {
   return call(native.commitJobOutput(from, to, maxBytes, copy ?? null));
 }
 
+/** A proxy's cache key before its job is submitted (6B-1 Task 14); see `index.d.ts`. */
+export function mediaProxyPlan(request) {
+  return JSON.parse(sync(() => native.mediaProxyPlan(JSON.stringify(request))));
+}
+
+/** This build's `RENDER_VERSION` and cache recipe versions; see `index.d.ts`. */
+export function mediaVersions() {
+  return JSON.parse(sync(() => native.mediaVersions()));
+}
+
 /** The plugin store and registries of a server (`registry.js`). */
 export const Registry = defineRegistry({ native, call, toFinError });
 

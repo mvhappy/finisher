@@ -460,3 +460,39 @@ fn progress_counts_frames() {
     assert!(p.windows(2).all(|w| w[0] <= w[1]), "{p:?}");
     assert_eq!(p.last().copied(), Some(12.0));
 }
+
+#[test]
+fn dolby_vision_profile_5_is_codec_unavailable() {
+    use fin_media::{DolbyVision, HdrInfo};
+    let dv = |profile| HdrInfo {
+        mastering: None,
+        content_light: None,
+        dolby_vision: Some(DolbyVision {
+            profile,
+            level: 6,
+            rpu: true,
+            enhancement_layer: false,
+            base_layer: true,
+            compatibility: if profile == 5 { 0 } else { 1 },
+        }),
+    };
+    let c = clip(&ClipSpec {
+        hdr: Some(dv(5)),
+        ..spec(2, Size::new(320, 180))
+    });
+    let job = job_for("fp", &c.path);
+    assert_eq!(
+        outcome(&run(&job, &params("fp", ProxyTier::Scrub)), "fp").unwrap_err(),
+        "CODEC_UNAVAILABLE"
+    );
+    // Profile 8 proxies its base layer.
+    if !gpu_or_skip("dolby_vision_profile_5_is_codec_unavailable") {
+        return;
+    }
+    let c = clip(&ClipSpec {
+        hdr: Some(dv(8)),
+        ..spec(2, Size::new(320, 180))
+    });
+    let job = job_for("fp", &c.path);
+    outcome(&run(&job, &params("fp", ProxyTier::Scrub)), "fp").unwrap();
+}

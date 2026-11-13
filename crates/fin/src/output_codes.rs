@@ -472,6 +472,8 @@ pub(super) const UNAVAILABLE_CODES: &[&str] = &[
     // full (`details.reason: full`, `freeBytes`, `neededBytes`; the job fails without a retry),
     // or its directory or index failed (`reason: io | index`).
     "CACHE_IO",
+    // The proxy a consumer needs is being made (6B-1 Task 14): `details.asset`, `tier`, `job`.
+    "PROXY_UNAVAILABLE",
     // A job's mapped file failed `fin-shm`'s checks (a link, a hard link, a special file, a
     // size against its ring header or cap, a truncation while read; sub-project 6 spec §17):
     // the job failed, not the request.

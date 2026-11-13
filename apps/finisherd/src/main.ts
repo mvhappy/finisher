@@ -56,6 +56,8 @@ import { LibrariesTag } from "./library/api.ts";
 import { CatalogsTag, layerCatalogs } from "./library/catalog/client.ts";
 import { LibraryServiceTag, librariesHolding, libraryWiring } from "./library/layer.ts";
 import { makeMediaCache, MediaCacheTag, releaseAll } from "./media/cache.ts";
+import { MediaProxyTag } from "./media/proxy.ts";
+import { mediaWiring } from "./media/wiring.ts";
 import { layerPlugins } from "./plugins/registries.ts";
 import { makePluginHost } from "./plugins/host/processes.ts";
 import { PluginCommandsTag, serverPluginCommands } from "./plugins/host/command-rpc.ts";
@@ -173,8 +175,9 @@ export const serve = ({
       // confined warm media worker (Decision 19). Bound once the service runs.
       let libraryRoots: () => ReadonlyArray<string> = () => [];
       let onOpened: ((projectId: string) => void) | undefined; // re-derived reviews (5E Decision 22), bound with the reviews
+      const media = mediaWiring(mediaCache, (m) => logSink("warning", m)); // proxies (6B-1 Task 14)
       const registryContext = yield* Layer.build(
-        layerProjectRegistry(serverData, { ...registry, libraryUse: (paths, projectId) => releaseAll([libraryHold?.(paths), mediaCache.holdProject(projectId)]), onOpened: (id) => onOpened?.(id) }),
+        layerProjectRegistry(serverData, { ...registry, libraryUse: (paths, projectId) => releaseAll([libraryHold?.(paths), mediaCache.holdProject(projectId)]), onOpened: (id) => (onOpened?.(id), media.onOpened(id)), onCommitted: media.onCommitted }),
       );
       const projects = Context.get(registryContext, ProjectRegistry);
       // The code plugins' processes (sp8b Tasks 4, 5): the `plugin` family is registered with
@@ -188,7 +191,7 @@ export const serve = ({
       const register = (r: Parameters<typeof libraries.register>[0]) => {
         pluginHost.register(r);
         r.registerKind(pluginCommands.kind);
-        registerMediaKinds(r, { serverData, projects, libraryRoots: () => libraryRoots() });
+        registerMediaKinds(r, { serverData, projects, libraryRoots: () => libraryRoots(), proxy: media.kindDeps });
         jobOptions?.register?.(r);
         libraries.register(r);
       };
@@ -211,6 +214,7 @@ export const serve = ({
       );
       libraryHold = (paths) => library.use(librariesHolding(library.registry, paths));
       libraryRoots = () => library.registry.list().map((l) => l.root);
+      const mediaProxy = media.start(engine, library, projects);
 
       const audit = Context.get(control, AuditTag);
       // Windows: the native pipe listener (Task 11); a client of another user is refused
@@ -455,6 +459,7 @@ export const serve = ({
           Layer.succeed(LibrariesTag, library),
           Layer.succeed(LibraryServiceTag, library),
           Layer.succeed(MediaCacheTag, mediaCache),
+          Layer.succeed(MediaProxyTag, mediaProxy),
           Layer.succeed(KeysTag, keys),
           Layer.succeed(HandshakeTag, handshake),
           Layer.succeed(CredentialsTag, credentials),

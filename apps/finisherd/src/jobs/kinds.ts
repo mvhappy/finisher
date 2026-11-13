@@ -291,8 +291,12 @@ export function resolveOrFn<P, T>(v: OrFn<P, T>, params: P): T {
 /** The warm slots a family of profile `plugin` may declare (sp8b Decision 3a); others 1 or 2. */
 export const MAX_PLUGIN_WARM_SLOTS = 16;
 
-/** The variables of `finisherd`'s environment a family may pass to its processes (`FamilySpec.env`). */
-export const FAMILY_ENV: ReadonlySet<string> = new Set(["FIN_GPU"]);
+/**
+ * The variables of `finisherd`'s environment a family may pass to its processes (`FamilySpec.env`):
+ * `FIN_GPU` (the adapter) and the Vulkan loader's `VK_ICD_FILENAMES` (its driver, set by whoever
+ * started `finisherd`, never by a client; 6B-1 Task 14).
+ */
+export const FAMILY_ENV: ReadonlySet<string> = new Set(["FIN_GPU", "VK_ICD_FILENAMES"]);
 
 const KNOWN_SCOPES: ReadonlySet<string> = new Set(SCOPES);
 const FAMILY = /^[a-z][a-z0-9]{0,31}$/;

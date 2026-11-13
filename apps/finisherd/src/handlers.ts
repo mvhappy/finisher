@@ -43,6 +43,7 @@ import { MediaCacheTag } from "./media/cache.ts";
 import { mediaCapabilities } from "./media/caps.ts";
 import { look as mediaLook } from "./media/look.ts";
 import { probeDeep } from "./media/probe-deep.ts";
+import { MediaProxyTag, type ProxyService } from "./media/proxy.ts";
 import { reprobe } from "./media/reprobe.ts";
 import { requireAbsolute, requireAbsoluteOpt } from "./paths.ts";
 import { dropPayload, metaJson } from "./history.ts";
@@ -153,7 +154,11 @@ export const HandlersLive = FinRpcs.toLayer(
     };
     // `media.look` and `media.capabilities` (6A Task 13): jobs on the engine's `media` family.
     const mediaDeps = { registry, engine };
-    const capabilitiesOf = mediaCapabilities(mediaDeps);
+    // 6B-1 Task 14: the server's one capability cache and its proxy service, when it has them.
+    const mediaProxy = Option.getOrUndefined(yield* Effect.serviceOption(MediaProxyTag));
+    const capabilitiesOf = mediaProxy?.capabilities ?? mediaCapabilities(mediaDeps);
+    const proxiesOf = <A>(f: (p: ProxyService) => Effect.Effect<A, FinError>): Effect.Effect<A, FinError> =>
+      mediaProxy === undefined ? Effect.fail(finError("SERVER_UNAVAILABLE", "proxies are not served here", { feature: "mediaProxy" })) : f(mediaProxy.proxies);
     const ownerOf = (options: object) => {
       const p = principalOf(options);
       return { kind: p.kind, id: p.id };
@@ -449,6 +454,9 @@ export const HandlersLive = FinRpcs.toLayer(
       "media.cache.status": () => guard("media.cache.status", mediaCache.status()),
       "media.cache.gc": ({ toGiB }) => guard("media.cache.gc", mediaCache.gc(toGiB)),
       "media.probeDeep": (req, options) => guard("media.probeDeep", probeDeep({ ...mediaDeps, capabilities: capabilitiesOf }, ownerOf(options), req)),
+      // 6B-1 Task 14: a proxy of a project asset, and the state of its tiers.
+      "media.proxy": (req, options) => guard("media.proxy", proxiesOf((p) => p.request(ownerOf(options), req))),
+      "media.proxy.status": (req, options) => guard("media.proxy.status", proxiesOf((p) => p.status(ownerOf(options), req))),
       "asset.reprobe": (req, options) =>
         guard(
           "asset.reprobe",

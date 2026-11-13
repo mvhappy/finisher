@@ -1,7 +1,8 @@
 //! `fin look`, `fin media caps` and `fin media probe` against a real finisherd and its `fin-workers media` (plan
 //! 6A Task 13): three times of a project rendered to PNGs, what a frame left out in `skipped`
 //! (the fixture clip is H.264, which 6A cannot decode), the error exits, `--no-wait`, and the
-//! worker's capabilities, the decode-level probe of an asset and `fin asset reprobe` (6B-1 Task 11). Rendering needs a GPU adapter: `FIN_GPU=software` (lavapipe, WARP)
+//! worker's capabilities, the decode-level probe of an asset and `fin asset reprobe` (6B-1 Task 11),
+//! and `fin media proxy|status` (6B-1 Task 14: the fixture's H.264 has no decoder on Linux). Rendering needs a GPU adapter: `FIN_GPU=software` (lavapipe, WARP)
 //! is set for the server; a machine with none skips the rendering checks unless
 //! `FIN_REQUIRE_GPU=1`.
 
@@ -267,6 +268,52 @@ fn asset_reprobe_reports_the_display_geometry() {
 }
 
 #[test]
+fn media_proxy_and_status_answer_typed() {
+    let Some(server) = Server::start_with("media_proxy", Vec::new(), None) else {
+        return;
+    };
+    let (sd, root) = (&server.sd, &server.root);
+    ok(fin(
+        sd,
+        root,
+        &["project", "create", "film", "--name", "Film"],
+    ));
+    let dir = root.join("film");
+    media(&dir.join("clip.mp4"), 1);
+    ok(fin(sd, &dir, &["asset", "add", "clip.mp4"]));
+    let rev = ok(fin(sd, &dir, &["status"]))["rev"].clone();
+    let made = fin(
+        sd,
+        &dir,
+        &["media", "proxy", "a1", "--tier", "540", "--no-wait"],
+    );
+    let status = fin(sd, &dir, &["media", "status", "a1"]);
+    if made.code == 0 {
+        // A decoder for H.264 here (macOS, Windows): a proxy is ready or being made.
+        assert!(
+            made.json["state"] == "ready" || made.json["state"] == "making",
+            "{}",
+            made.stdout
+        );
+        assert_eq!(ok(status)["tiers"].as_array().unwrap().len(), 2);
+    } else {
+        // No H.264 decoder (Linux until 6B-2): the key cannot be planned.
+        assert_error(&made, 5, "CODEC_UNAVAILABLE");
+        assert_eq!(made.json["error"]["details"]["direction"], "decode");
+        assert_error(&status, 5, "CODEC_UNAVAILABLE");
+    }
+    // Asking commits nothing.
+    assert_eq!(ok(fin(sd, &dir, &["status"]))["rev"], rev);
+    assert_error(
+        &fin(sd, &dir, &["media", "proxy", "a9"]),
+        3,
+        "ASSET_NOT_FOUND",
+    );
+    let bad = fin(sd, &dir, &["media", "proxy", "a1", "--codec", "hevc"]);
+    assert_eq!(bad.code, 2, "{}", bad.stdout);
+}
+
+#[test]
 fn look_and_caps_are_unavailable_offline() {
     let snapshot = json!({ "rev": 1, "project": fin_core::new_project("p".into(), "P".into(), "30".parse().unwrap()).unwrap() });
     let r = support::offline(&snapshot, &["look", "--at", "0"]);
@@ -276,6 +323,10 @@ fn look_and_caps_are_unavailable_offline() {
     let r = support::offline(&snapshot, &["media", "probe", "a1"]);
     assert_error(&r, 5, "SERVER_UNAVAILABLE");
     let r = support::offline(&snapshot, &["asset", "reprobe", "a1"]);
+    assert_error(&r, 5, "SERVER_UNAVAILABLE");
+    let r = support::offline(&snapshot, &["media", "proxy", "a1"]);
+    assert_error(&r, 5, "SERVER_UNAVAILABLE");
+    let r = support::offline(&snapshot, &["media", "status", "a1"]);
     assert_error(&r, 5, "SERVER_UNAVAILABLE");
 }
 

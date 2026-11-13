@@ -18,7 +18,8 @@
 //!    between frames.
 //!
 //! The item fails with the source's or the codec's own error (`CODEC_UNAVAILABLE` for a codec
-//! nothing here encodes, with `open_encoder`'s guidance); GPU loss and I/O fail the job, so the
+//! nothing here encodes, with `open_encoder`'s guidance, and for Dolby Vision profile 5: Decision
+//! 9); GPU loss and I/O fail the job, so the
 //! engine retries it.
 
 use std::fs::File;
@@ -217,6 +218,17 @@ fn make(p: &ProxyParams, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<ProxyR
             json!({ "kind": "videoTrack" }),
         )
     })?;
+    // Decision 9 (spec §10.1): Dolby Vision profile 5 has no backward-compatible base layer;
+    // profile 8's base layer is what the decoder outputs.
+    if let Some(dv) = video.hdr.and_then(|h| h.dolby_vision)
+        && dv.profile == 5
+    {
+        return Err(item(
+            "CODEC_UNAVAILABLE",
+            "Dolby Vision profile 5 has no base layer this machine can show".into(),
+            json!({ "codec": video.codec, "direction": "decode", "reason": "dolbyVisionProfile5" }),
+        ));
+    }
     let table = reader.table().clone();
     let frames = table.len() as u64;
     let size = p.tier.fit(video.coded);
