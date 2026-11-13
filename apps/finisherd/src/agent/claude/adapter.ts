@@ -9,11 +9,12 @@
 // account, Decision 11) and the first-turn gate. The first init that passes completes a probe
 // left `initPending` and gives the version's `untestedVersion` notice once (spec §4.5).
 //
-// The adapter is registered only when the CLI is detected and `agents.claudeCode.enabled` is on
-// (`claudeAdapterFor`, called by `wiring.ts` at boot).
+// The adapter is always registered; planning (live: detected and `agents.claudeCode.enabled`)
+// decides whether a session may start on it, and each open checks the setting again. Nothing
+// runs the CLI at boot.
 import { realpathSync } from "node:fs";
 import { dirname } from "node:path";
-import type { FinError, ProviderEvent, ProviderInfo, Session } from "@finisher/contracts";
+import type { FinError, ProviderEvent, Session } from "@finisher/contracts";
 import { Effect } from "effect";
 import { finError, toFinError } from "../../errors.ts";
 import type { Detection, ProviderAdapter, ProviderSession, SessionSpec } from "../adapter.ts";
@@ -21,21 +22,19 @@ import { parseClaudeInitialize } from "../catalogue/cli-models.ts";
 import type { Ids } from "../clock.ts";
 import { systemIds } from "../clock.ts";
 import type { SessionSandboxDeps } from "../sandbox.ts";
+import { claudeCodeSettings } from "../settings.ts";
 import { CLAUDE_CAPABILITIES, type ClaudeDetection, detectClaude } from "./detect.ts";
 import { launchPlan, sessionUuid, writeLaunchFiles } from "./launch.ts";
-import { type ClaudeModelCache, claudeHarnessAvailable } from "./models.ts";
+import { instanceAccount, instanceAccountHash, labelOf } from "./account.ts";
+import type { ClaudeModelCache } from "./models.ts";
 import { completeProbe, probe, probeFlagsHash } from "./probe.ts";
-import { untestedVersionNotices } from "./probe-check.ts";
+import { unsignedAccount, untestedVersionNotices } from "./probe-check.ts";
 import { ClaudeInstance, type RequestPort } from "./session.ts";
 
 export { sessionUuid } from "./launch.ts";
 
-/**
- * The account an instance's models are recorded under until Task 11 hashes the signed-in
- * account (`agent.providers.accountHash` is unset until then, so planning reads the version's
- * newest instance list, `ClaudeModelCache.models`). TODO(7D Task 11): the keyed account hash.
- */
-export const PENDING_ACCOUNT = "pending";
+/** How long an instance's `initialize` answer may take (Task 0: under a second). */
+export const INITIALIZE_TIMEOUT_MS = 30_000;
 
 export interface ClaudeDeps {
   /** The host sandboxes' dependencies (detection, the probe); sessions' processes use `spec.sandbox`. */
@@ -58,6 +57,9 @@ export interface ClaudeDeps {
   /** Decision 16's waits (tests shorten them). */
   readonly interruptWaitMs?: number;
   readonly sigintGraceMs?: number;
+  readonly closeGraceMs?: number;
+  /** `agents.claudeCode.enabled`, read at each open (default: `settings.json`); off refuses the open. */
+  readonly enabled?: () => boolean;
   /** Where CLI requests go (Task 8 fills it; default: refused). */
   readonly requests?: () => RequestPort;
   readonly log?: (message: string, details: Record<string, unknown>) => void;
@@ -86,6 +88,10 @@ export function ClaudeCodeAdapter(deps: ClaudeDeps): ProviderAdapter {
         if (box === undefined) return yield* Effect.fail(finError("SANDBOX_UNAVAILABLE", "a Claude Code session starts only in its session sandbox", { harness: "claudeCode", sessionId: spec.sessionId }));
         const s = deps.sessions.get(spec.sessionId);
         if (s === undefined) return yield* Effect.fail(finError("SESSION_NOT_FOUND", "no such session", { sessionId: spec.sessionId }));
+        // Planning reads the setting live; so does each open (it may have been turned off since).
+        if (!(deps.enabled ?? (() => claudeCodeSettings(deps.sandbox.serverData).enabled))()) {
+          return yield* Effect.fail(finError("PROVIDER_UNAVAILABLE", "Claude Code is off on this server", { harness: "claudeCode", reason: "disabled" }, "set agents.claudeCode.enabled to true in settings.json"));
+        }
         const d = yield* detect();
         const binary = yield* attempt(() => realpathSync(d.path));
         // Decision 7: the CLI's install tree, resolved, which its process reads.
@@ -99,28 +105,28 @@ export function ClaudeCodeAdapter(deps: ClaudeDeps): ProviderAdapter {
         const child = yield* box.spawn(plan.argv, { cwd: box.workspace, stdio: "pipe", env: plan.env, extraRead });
         const notices: ProviderEvent[] = plan.dropped.map((tool) => ({ type: "notice", name: "toolDropped", details: { harness: "claudeCode", tool } }));
         const key = { version: d.version, flagsHash, os };
+        // Decision 8: the sign-in counts as ignored only when `auth status` reports one and this
+        // instance's own `initialize.account` is exactly unsigned (`apiKeySource: "none"` alone
+        // is what a claude.ai sign-in reports). Set from the `initialize` answer, before any init.
+        // TODO(7D Task 0 Step 1/Step 4): `initialize.account` and `apiKeySource` signed in with the
+        // CLI's own flow; modelled by fake-claude as `tokenSource: "claude.ai"` with `none`.
+        let ignoredSignIn = false;
+        const check = {
+          get signedIn() {
+            return ignoredSignIn;
+          },
+        };
         const instance = yield* ClaudeInstance.start({
           instance: ids.ulid(),
           child,
           plan,
           uuid: sessionUuid(s.id),
           ref: { kind: "claudeCode", id: sessionUuid(s.id) },
-          // TODO(7D Task 0 Step 1): `system/init.apiKeySource` of a CLI signed in with its own
-          // flow; modelled by fake-claude as whatever the script's `init` sets (`none` refuses a
-          // signed-in instance as an ignored sign-in, Decision 8).
-          check: { signedIn: d.signedIn === true },
+          check,
           notices,
-          onInitialize: (body) => {
-            try {
-              const models = parseClaudeInitialize(body);
-              if (models.length > 0) deps.models.recordInstanceModels(d.version, PENDING_ACCOUNT, models);
-            } catch (e) {
-              log("claude initialize without models", { sessionId: s.id, error: String(e).slice(0, 200) });
-            }
-          },
           onInit: (init) => {
             if (found.initPending === true) {
-              void Effect.runPromise(Effect.result(completeProbe(deps.sandbox.serverData, key, init, plan, { signedIn: d.signedIn === true }))).then((r) => {
+              void Effect.runPromise(Effect.result(completeProbe(deps.sandbox.serverData, key, init, plan, { signedIn: ignoredSignIn }))).then((r) => {
                 if (r._tag === "Failure") log("claude probe not completed", { sessionId: s.id, code: r.failure.code });
               });
             }
@@ -130,14 +136,42 @@ export function ClaudeCodeAdapter(deps: ClaudeDeps): ProviderAdapter {
           ...(deps.requests === undefined ? {} : { requests: deps.requests() }),
           ...(deps.interruptWaitMs === undefined ? {} : { interruptWaitMs: deps.interruptWaitMs }),
           ...(deps.sigintGraceMs === undefined ? {} : { sigintGraceMs: deps.sigintGraceMs }),
+          ...(deps.closeGraceMs === undefined ? {} : { closeGraceMs: deps.closeGraceMs }),
         });
-        yield* Effect.addFinalizer(() => Effect.sync(() => instance.close()));
+        yield* Effect.addFinalizer(() => Effect.promise(() => instance.close()));
+        // The `initialize` answer: the account (Decision 19) and the models (Decision 11). A
+        // process that ends first (an unknown `--resume`) opens all the same: its lines say why.
+        const body = yield* Effect.promise(() => Promise.race([instance.initialized(), new Promise((r) => setTimeout(() => r(null), INITIALIZE_TIMEOUT_MS).unref())]));
+        if (body !== null && typeof body === "object") {
+          const account = (body as { account?: unknown }).account;
+          ignoredSignIn = d.signedIn === true && unsignedAccount(account);
+          const seen = sessionAccount(deps.sandbox.serverData, d, account, spec.providerRef === null);
+          if (seen.refused !== null) return yield* Effect.fail(seen.refused);
+          try {
+            const models = parseClaudeInitialize(body);
+            // Before Task 11's hash exists (signed out, or no account named) the version's own list.
+            if (models.length > 0) deps.models.recordInstanceModels(d.version, seen.hash ?? UNKNOWN_ACCOUNT, models);
+          } catch (e) {
+            log("claude initialize without models", { sessionId: s.id, error: String(e).slice(0, 200) });
+          }
+        }
         return instance.session() satisfies ProviderSession;
       }),
   };
 }
 
-/** The adapter when Claude Code may run sessions here (detected, `agents.claudeCode.enabled`), else none. */
-export function claudeAdapterFor(info: Pick<ProviderInfo, "detected" | "enabled">, deps: ClaudeDeps): ProviderAdapter | undefined {
-  return claudeHarnessAvailable(info) ? ClaudeCodeAdapter(deps) : undefined;
+/** The models of an instance whose account has no hash (signed out, or naming none). */
+export const UNKNOWN_ACCOUNT = "unknown";
+
+/**
+ * The account check of one instance (Decision 19, `account.ts`): the label its `initialize.account`
+ * names, else the hash detection's `auth status` gave. A new session (no provider reference yet)
+ * is refused while a change waits; a running session's respawn or resume never is.
+ * TODO(7D Task 0 Step 4): whether `initialize.account` names the account signed in; modelled by
+ * fake-claude as `email` there when its sidecar `account` is set.
+ */
+function sessionAccount(serverData: string, d: ClaudeDetection, account: unknown, newSession: boolean): { hash?: string; refused: FinError | null } {
+  const label = labelOf(account);
+  if (label === undefined && d.accountHash !== undefined) return instanceAccountHash(serverData, d.accountHash, d.authMethod, { newSession });
+  return instanceAccount(serverData, { signedIn: d.signedIn === true, ...(d.authMethod === undefined ? {} : { authMethod: d.authMethod }), ...(label === undefined ? {} : { label }) }, { newSession });
 }

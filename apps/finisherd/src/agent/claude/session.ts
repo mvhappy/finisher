@@ -33,6 +33,8 @@ import { type CliLine, type CliRequest, decodeLine, encodeAnswer, encodeControl,
 export const INTERRUPT_WAIT_MS = 5_000;
 /** How long the turn's `result` (or the exit) may take after SIGINT, before the group kill. */
 export const SIGINT_GRACE_MS = 2_000;
+/** How long a closed instance may take to exit after its stdin's end (writing its transcript, which `--resume` reads) before it is killed. */
+export const CLOSE_GRACE_MS = 2_000;
 
 /**
  * Where the CLI's requests other than the MCP handshake go (`can_use_tool`, `hook_callback`, a
@@ -79,6 +81,7 @@ export interface InstanceOptions {
   readonly usage?: UsageSource;
   readonly interruptWaitMs?: number;
   readonly sigintGraceMs?: number;
+  readonly closeGraceMs?: number;
   readonly ref: ProviderRef;
 }
 
@@ -102,6 +105,11 @@ export class ClaudeInstance {
   #exit: { code: number | null; signal: string | null } | null = null;
   #wake: (() => void)[] = [];
   #control = 0;
+  /** The open interrupt request's id and, once answered, its answer. */
+  #interruptAsk: { readonly id: string; answer?: "success" | "error" } | null = null;
+  /** The `initialize` answer's body; null when it was refused or the process ended first. */
+  readonly #initialized: Promise<unknown>;
+  #answerInitialize: (body: unknown) => void = () => {};
 
   private constructor(o: InstanceOptions, queue: Queue.Queue<BoundEvent, Cause.Done>) {
     this.#o = o;
@@ -110,6 +118,12 @@ export class ClaudeInstance {
     this.#map = new LineMapper(o.usage);
     this.#requests = o.requests ?? REFUSE_REQUESTS;
     this.#pending = [...(o.notices ?? [])];
+    this.#initialized = new Promise((resolve) => (this.#answerInitialize = resolve));
+  }
+
+  /** The `initialize` answer's body, or null when it was refused or the process ended first. */
+  initialized(): Promise<unknown> {
+    return this.#initialized;
   }
 
   /** Starts reading `o.child` and sends `initialize` (Decision 11: every instance's models). */
@@ -142,6 +156,7 @@ export class ClaudeInstance {
       // Its last lines first; a descendant holding stdout open cannot hold the exit back long.
       await Promise.race([ended, new Promise((r) => setTimeout(r, 500).unref())]);
       this.#exit = { code: e.code, signal: e.signal ?? null };
+      this.#answerInitialize(null);
       this.#turnOpen = false;
       this.#notify();
       if (!this.#closed) Queue.offerUnsafe(this.#queue, { instance: this.#o.instance, event: { type: "exited", code: e.code, signal: e.signal ?? null } });
@@ -201,7 +216,14 @@ export class ClaudeInstance {
       return;
     }
     if (l.kind === "controlResponse") {
-      if (l.response.request_id === INITIALIZE_ID && l.response.subtype === "success") this.#o.onInitialize?.(l.response.response);
+      const id = l.response.request_id;
+      if (id === INITIALIZE_ID) {
+        if (l.response.subtype === "success") this.#o.onInitialize?.(l.response.response);
+        this.#answerInitialize(l.response.subtype === "success" ? (l.response.response ?? null) : null);
+      } else if (this.#interruptAsk?.id === id) {
+        this.#interruptAsk.answer = l.response.subtype;
+        this.#notify();
+      }
       return;
     }
     if (l.kind === "controlCancel") {
@@ -234,17 +256,25 @@ export class ClaudeInstance {
       this.#deliver(this.#o.onInit?.(l) ?? []);
     }
     this.#deliver(this.#map.map(l, this.#interrupting));
+    // TODO(7D Task 0 Step 1): a failed `result` while a steer is queued (the turn closes here
+    // while the CLI may still hold the queued turn); modelled by fake-claude as the queued line
+    // played as the next turn.
     if (l.kind === "result" && (l.is_error || (l.queued_turn_count ?? 0) === 0)) {
       this.#turnOpen = false;
       this.#notify();
     }
   }
 
-  /** Waits until the open turn ended or the process exited (true), or `ms` passed (false). */
-  async #ended(ms: number): Promise<boolean> {
+  /** Waits until the open turn ended, the process exited or the instance closed (true), or `ms` passed (false). */
+  #ended(ms: number): Promise<boolean> {
+    return this.#until(() => !this.#turnOpen || this.#exit !== null || this.#closed, ms);
+  }
+
+  /** Waits until `done()` (true) or `ms` passed (false). */
+  async #until(done: () => boolean, ms: number): Promise<boolean> {
     const deadline = Date.now() + ms;
     for (;;) {
-      if (!this.#turnOpen || this.#exit !== null) return true;
+      if (done()) return true;
       const left = deadline - Date.now();
       if (left <= 0) return false;
       await new Promise<void>((resolve) => {
@@ -263,7 +293,11 @@ export class ClaudeInstance {
     return null;
   }
 
-  /** Decision 16, in order: the request, the `result` (≤ 5 s), SIGINT, the group kill. */
+  /**
+   * Decision 16, in order: the request; once it is answered, the `result` (≤ 5 s from the
+   * answer); then SIGINT (at once when the request is refused or not answered in 5 s); then the
+   * group kill.
+   */
   async #interrupt(): Promise<void> {
     if (!this.#turnOpen || this.#gone() !== null) return;
     const { child } = this.#o;
@@ -271,8 +305,13 @@ export class ClaudeInstance {
     // TODO(7D Task 0 Step 1): that the `interrupt` request ends the turn with a `result` (and
     // what the tool's process gets); modelled by fake-claude as an `error_during_execution`
     // result after the `control_response` (`onInterrupt: "result"`, the default).
-    this.#write(encodeControl(`finisher-interrupt-${++this.#control}`, { subtype: "interrupt" }));
-    if (await this.#ended(this.#o.interruptWaitMs ?? INTERRUPT_WAIT_MS)) return;
+    const ask: { readonly id: string; answer?: "success" | "error" } = { id: `finisher-interrupt-${++this.#control}` };
+    this.#interruptAsk = ask;
+    this.#write(encodeControl(ask.id, { subtype: "interrupt" }));
+    const wait = this.#o.interruptWaitMs ?? INTERRUPT_WAIT_MS;
+    await this.#until(() => ask.answer !== undefined || !this.#turnOpen || this.#exit !== null || this.#closed, wait);
+    if (ask.answer === "success" && (await this.#ended(wait))) return;
+    if (ask.answer !== "success" && (!this.#turnOpen || this.#exit !== null || this.#closed)) return;
     // TODO(7D Task 0 Step 1): that SIGINT ends a turn the request did not; modelled by
     // fake-claude as the same `result` (`onSigint: "result"`), or an exit 130 (`"exit"`).
     child.kill("SIGINT");
@@ -281,20 +320,27 @@ export class ClaudeInstance {
     child.kill("SIGKILL");
   }
 
-  /** Ends the instance (its scope closes): later lines are dropped, the process killed. */
-  close(): void {
+  /**
+   * Ends the instance (its scope closes): later lines are dropped; stdin's end lets the process
+   * finish its transcript (`--resume` reads it) for up to `closeGraceMs`, then it is killed.
+   */
+  async close(): Promise<void> {
     if (!this.#closed) {
       this.#closed = true;
       this.#pending = [];
       this.#notify();
     }
+    Queue.endUnsafe(this.#queue);
     try {
       this.#o.child.stdin.end();
     } catch {
       // Already closed.
     }
-    if (this.#exit === null) this.#o.child.kill("SIGKILL");
-    Queue.endUnsafe(this.#queue);
+    const grace = this.#o.closeGraceMs ?? CLOSE_GRACE_MS;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const exited = await Promise.race([this.#o.child.exited.then(() => true), new Promise<boolean>((r) => (timer = setTimeout(() => r(false), grace)))]);
+    clearTimeout(timer);
+    if (!exited) this.#o.child.kill("SIGKILL");
   }
 
   session(): ProviderSession {

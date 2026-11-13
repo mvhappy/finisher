@@ -12,7 +12,8 @@ import { sandboxStatus } from "@finisher/fin-node";
 import { Effect, Exit, Scope, Stream } from "effect";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import type { ProviderSession, SessionSpec } from "../src/agent/adapter.ts";
-import { ClaudeCodeAdapter, claudeAdapterFor, PENDING_ACCOUNT } from "../src/agent/claude/adapter.ts";
+import { ClaudeCodeAdapter, sessionUuid } from "../src/agent/claude/adapter.ts";
+import { accountCheck, accountKey, ClaudeAccounts } from "../src/agent/claude/account.ts";
 import { CLAUDE_FLOOR } from "../src/agent/claude/detect.ts";
 import { ClaudeModelCache } from "../src/agent/claude/models.ts";
 import { readProbeCache } from "../src/agent/claude/probe.ts";
@@ -67,17 +68,19 @@ function enforced(): boolean {
   return false;
 }
 
-/** A signed-in CLI's init (Decision 8: `apiKeySource: "none"` while signed in is an ignored sign-in). */
-const SIGNED = { init: { apiKeySource: "/login managed key" } };
+/** A Console API-key sign-in's init shape (`apiKeySource` names the key's source); a claude.ai sign-in reports `none` (the fake's default). */
+const CONSOLE_KEY = { init: { apiKeySource: "/login managed key" } };
+/** The account the fake reports signed in (`auth status` and `initialize.account`). */
+const ACCOUNT = "tester@example.invalid";
 const UUID_VAR = "$session_id";
 
 /** The fake installed as a CLI of its own: the binary, its sidecar and script; the observations in the session's config dir. */
-function install(script: Record<string, unknown>): string {
+function install(script: Record<string, unknown>, observedAt = "@config/observed.json", account = ACCOUNT): string {
   const dir = mkdtempSync(join(tmp, "cli-"));
   const binary = join(dir, "claude");
   copyFileSync(FAKE, binary);
-  writeFileSync(join(dir, "script.json"), JSON.stringify({ ...SIGNED, ...script }));
-  writeFileSync(join(dir, "fake-claude.json"), JSON.stringify({ script: "script.json", observed: "@config/observed.json", version: VERSION }));
+  writeFileSync(join(dir, "script.json"), JSON.stringify({ ...CONSOLE_KEY, ...script }));
+  writeFileSync(join(dir, "fake-claude.json"), JSON.stringify({ script: "script.json", observed: observedAt, version: VERSION, account }));
   return binary;
 }
 
@@ -182,7 +185,7 @@ describe("a turn through the runtime", () => {
     expect(content[6]!.payload).toMatchObject({ input: 30, output: 7, cacheRead: 100, moneyMicros: 4200, costBasis: "reported" });
     expect(runOf(s.id, content[0]!.runId!)).toMatchObject({ status: "completed" });
     // api_retry_is_notice; the version is untested (no transcript suite yet, spec §4.5).
-    expect(notices(ns, "retry")).toEqual([{ attempt: 1, code: 529, delayMs: 800 }]);
+    expect(notices(ns, "retry")).toEqual([{ attempt: 1, code: "PROVIDER_OVERLOADED", delayMs: 800 }]);
     expect(notices(ns, "untestedVersion")).toEqual([{ harness: "claudeCode", version: VERSION }]);
     // deltas_streamed_not_stored: the partial text is in no node.
     expect(JSON.stringify(ns)).not.toMatch(/"Hel"|"lo"/);
@@ -235,7 +238,7 @@ describe("a turn through the runtime", () => {
     // Interrupted through the request (the fake answers with its `result`), never a signal first.
     expect(observed(r.serverData, s.id)[0]!.controlRequests?.map((c) => c.subtype)).toEqual(["initialize", "interrupt"]);
     // The resumed process plays a plain turn.
-    writeFileSync(join(dirname(r.binary), "script.json"), JSON.stringify({ ...SIGNED, steps: [{ expect: "user", cumulativeUsage: { inputTokens: 1, outputTokens: 1 } }] }));
+    writeFileSync(join(dirname(r.binary), "script.json"), JSON.stringify({ ...CONSOLE_KEY, steps: [{ expect: "user", cumulativeUsage: { inputTokens: 1, outputTokens: 1 } }] }));
     ok(await r.local.call("agent.session.resume", { sessionId: s.id }));
     ok(await r.local.call("agent.session.prompt", { sessionId: s.id, text: "again" }));
     await until(() => (nodes(s.id).filter((n) => n.kind === "usage").length === 1 ? true : undefined));
@@ -274,7 +277,7 @@ describe("a turn through the runtime", () => {
   });
 
   withFake("init_mismatch_stops_instance: nothing of it reaches the runtime", async () => {
-    const r = await claudeServer({ init: { ...SIGNED.init, tools: ["Read", "Task"] }, steps: [{ expect: "user", emit: [assistant([{ type: "text", text: "never" }])] }, { sleep: 30_000 }] });
+    const r = await claudeServer({ init: { ...CONSOLE_KEY.init, tools: ["Read", "Task"] }, steps: [{ expect: "user", emit: [assistant([{ type: "text", text: "never" }])] }, { sleep: 30_000 }] });
     const s = await start(r);
     expect((await settle(r, s.id)).status).toBe("interrupted");
     const ns = nodes(s.id);
@@ -296,32 +299,31 @@ describe("a turn through the runtime", () => {
 });
 
 describe("registration", () => {
-  withFake("claude_registered_only_when_detected_and_enabled", async () => {
-    // Off: the harness is unknown, the CLI never run.
-    let r = await claudeServer({}, { enabled: false });
-    expect(server!.agents.adapters.has("claudeCode")).toBe(false);
+  withFake("registration_is_live: nothing runs at boot; the setting and detection are read per plan", async () => {
+    // Off at boot: the CLI is never run (its observations would land beside it), the start is refused.
+    const runs = join(tmp, "boot-observed.json");
+    const binary = install({}, runs);
+    let r = await claudeServer({}, { enabled: false, path: binary });
+    expect(existsSync(runs)).toBe(false);
     const off = await r.local.call("agent.session.start", { projectId: r.projectId, harness: "claudeCode", prompt: "go" });
     expect(off.ok ? undefined : off.error.code).toBe("HARNESS_UNKNOWN");
+    // Turned on while the server runs: the next start plans and opens, no HARNESS_UNKNOWN.
+    writeFileSync(join(r.serverData, "settings.json"), JSON.stringify({ agents: { claudeCode: { enabled: true, path: binary } } }));
+    const s = await start(r);
+    expect((await settle(r, s.id)).status).toBe("idle");
     await server!.stop();
     rmSync(join(tmp, "server-data"), { recursive: true, force: true });
     rmSync(join(tmp, "P"), { recursive: true, force: true });
-    // On but not detected.
+    // On but not installed: refused at planning.
     r = await claudeServer({}, { path: join(tmp, "nowhere", "claude") });
-    expect(server!.agents.adapters.has("claudeCode")).toBe(false);
-    await server!.stop();
-    rmSync(join(tmp, "server-data"), { recursive: true, force: true });
-    rmSync(join(tmp, "P"), { recursive: true, force: true });
-    // On and detected.
-    r = await claudeServer({});
-    expect(server!.agents.adapters.has("claudeCode")).toBe(true);
+    const missing = await r.local.call("agent.session.start", { projectId: r.projectId, harness: "claudeCode", prompt: "go" });
+    expect(missing.ok ? undefined : missing.error.code).toBe("HARNESS_UNKNOWN");
   });
 
-  test("claude_adapter_for_follows_the_provider_line", () => {
-    const deps = { sandbox: {} as SessionSandboxDeps, sessions: { get: () => undefined }, models: new ClaudeModelCache(tmp) };
-    expect(claudeAdapterFor({ detected: false, enabled: true }, deps)).toBeUndefined();
-    expect(claudeAdapterFor({ detected: true, enabled: false }, deps)).toBeUndefined();
-    expect(claudeAdapterFor({ detected: true }, deps)).toBeUndefined();
-    expect(claudeAdapterFor({ detected: true, enabled: true }, deps)?.harness).toBe("claudeCode");
+  withFake("an open after the setting was turned off is refused", async () => {
+    const failed = await openWatched({}, { enabled: false, mayFail: true });
+    expect(failed.failure).toMatchObject({ code: "PROVIDER_UNAVAILABLE", details: { reason: "disabled" } });
+    expect(failed.spawns).toEqual([]);
   });
 });
 
@@ -341,14 +343,37 @@ interface Watched {
 }
 
 /** The adapter opened over a direct-mode sandbox whose children's signals and options are recorded (and, with `keepAlive`, never delivered). */
-async function openWatched(script: Record<string, unknown>, opts: { keepAlive?: boolean; interruptWaitMs?: number; sigintGraceMs?: number; initPending?: boolean } = {}): Promise<Watched> {
-  const binary = install(script);
+interface WatchOptions {
+  readonly keepAlive?: boolean;
+  readonly interruptWaitMs?: number;
+  readonly sigintGraceMs?: number;
+  readonly enabled?: boolean;
+  /** The role's tool allow-set (default `Read`, `Bash`). */
+  readonly tools?: readonly string[];
+  /** Detection's answer: signed in (default) or not. */
+  readonly signedIn?: boolean;
+  /** A resumed session (its provider reference set). */
+  readonly resume?: boolean;
+  /** Before the open (the account state, say). */
+  readonly before?: (serverData: string) => void;
+  /** The account the fake reports (default `ACCOUNT`). */
+  readonly account?: string;
+  /** Detection's account hash (its `auth status` named one). */
+  readonly accountHash?: string;
+}
+
+/** `openWatched` whose open may fail: then its error and what was spawned. */
+async function openWatched(script: Record<string, unknown>, opts: WatchOptions & { mayFail: true }): Promise<{ failure?: { code: string; details: Record<string, unknown> }; spawns: Watched["spawns"]; w?: Watched }>;
+async function openWatched(script: Record<string, unknown>, opts?: WatchOptions): Promise<Watched>;
+async function openWatched(script: Record<string, unknown>, opts: WatchOptions & { mayFail?: true } = {}): Promise<Watched | { failure?: { code: string; details: Record<string, unknown> }; spawns: Watched["spawns"]; w?: Watched }> {
+  const binary = install(script, undefined, opts.account);
   const serverData = join(tmp, "data");
   const projectDir = join(tmp, "P");
   mkdirSync(serverData, { recursive: true, mode: 0o700 });
   mkdirSync(projectDir, { recursive: true });
   const sandboxDeps: SessionSandboxDeps = { serverData, projectDirOf: () => projectDir, finPath: "/bin/sh", localEndpoint: join(serverData, "run", "fin.sock"), status: NOT_READY, killGraceMs: 2000, hostRoot: join(tmp, "hosts") };
   mkdirSync(join(tmp, "hosts"), { recursive: true });
+  opts.before?.(serverData);
   const s = { id: SESSION_ID, projectId: "01P0000000000000000000000A", harness: "claudeCode", mode: "draft", role: "editor", model: "default" } as unknown as Session;
   const kills: Watched["kills"] = [];
   const spawns: Watched["spawns"] = [];
@@ -382,13 +407,17 @@ async function openWatched(script: Record<string, unknown>, opts: { keepAlive?: 
     models,
     interruptWaitMs: opts.interruptWaitMs ?? 300,
     sigintGraceMs: opts.sigintGraceMs ?? 300,
-    detect: () => Effect.succeed({ path: binary, version: VERSION, floor: CLAUDE_FLOOR, signedIn: true }),
+    enabled: () => opts.enabled ?? true,
+    detect: () => Effect.succeed({ path: binary, version: VERSION, floor: CLAUDE_FLOOR, signedIn: opts.signedIn ?? true, ...(opts.accountHash === undefined ? {} : { accountHash: opts.accountHash }) }),
   });
-  const spec: SessionSpec = { sessionId: s.id, projectId: s.projectId, model: "default", role: "editor", mode: "draft", system: "You edit.", cwd: box.workspace, env: box.env, providerRef: null, tools: ["Read", "Bash"], sandbox: watched };
+  const ref = opts.resume === true ? { kind: "claudeCode", id: sessionUuid(s.id) } : null;
+  const spec: SessionSpec = { sessionId: s.id, projectId: s.projectId, model: "default", role: "editor", mode: "draft", system: "You edit.", cwd: box.workspace, env: box.env, providerRef: ref, tools: opts.tools ?? ["Read", "Bash"], sandbox: watched };
   const exit = await Effect.runPromiseExit(Scope.provide(scope)(adapter.open(spec)));
   if (Exit.isFailure(exit)) {
     await Effect.runPromise(Scope.close(scope, Exit.void));
-    throw new Error(`open failed: ${JSON.stringify(exit.cause)}`);
+    if (opts.mayFail !== true) throw new Error(`open failed: ${JSON.stringify(exit.cause)}`);
+    const m = /"code":"([A-Z_]+)".*?"details":(\{[^{}]*\})/.exec(JSON.stringify(exit.cause));
+    return { failure: { code: m?.[1] ?? "", details: m === null ? {} : (JSON.parse(m[2]!) as Record<string, unknown>) }, spawns };
   }
   const provider = exit.value;
   const events: ProviderEvent[] = [];
@@ -448,9 +477,9 @@ describe("the instance", () => {
     const w = await openWatched({ steps: [{ expect: "user", emit: [assistant([{ type: "text", text: "early" }])] }, { sleep: 800, emit: [assistant([{ type: "text", text: "late" }])] }] }, { keepAlive: true });
     await run(w.provider.startTurn({ runId: "r1", text: "go" }));
     await waitFor(w, "message");
-    // The instance closes, but its process goes on (the kill is swallowed; its sandbox stays open).
+    // The instance closes; its process plays its turn out in the close's grace (writing "late")
+    // and exits on stdin's end (the kill, were one needed, is swallowed; its sandbox stays open).
     await w.close();
-    expect(w.kills.map((k) => k.signal)).toContain("SIGKILL");
     const count = w.events.length;
     await new Promise((r) => setTimeout(r, 1500));
     expect(w.events.length).toBe(count);
@@ -482,7 +511,9 @@ describe("the instance", () => {
   withFake("models recorded from initialize; a pending probe completed by the first init", async () => {
     const w = await openWatched({ steps: [{ expect: "user", cumulativeUsage: { inputTokens: 1, outputTokens: 1 } }] });
     await until(async () => ((await w.models.models(VERSION)).length > 0 ? true : undefined));
-    expect((await w.models.models(VERSION, PENDING_ACCOUNT)).map((m) => m.id)).toEqual(["default", "opus", "fable", "sonnet", "haiku"]);
+    // Under the account's keyed hash (Task 11), the one detection reports for the same label.
+    const hash = accountCheck({ signedIn: true, label: ACCOUNT }, accountKey(w.serverData), null).hash;
+    expect((await w.models.models(VERSION, hash)).map((m) => m.id)).toEqual(["default", "opus", "fable", "sonnet", "haiku"]);
     // The fake's `initialize` reports a sign-in: the probe sent no prompt and waits for an init.
     expect((await readProbeCache(w.serverData))[0]?.result.initPending).toBe(true);
     await run(w.provider.startTurn({ runId: "r1", text: "go" }));
@@ -490,5 +521,97 @@ describe("the instance", () => {
     await until(async () => ((await readProbeCache(w.serverData))[0]?.result.initPending === undefined ? true : undefined));
     // The gate held `turnStarted` back until the init passed, then released it first.
     expect(w.events.map((e) => e.type)).toEqual(["turnStarted", "notice", "usage", "turnCompleted"]);
+  });
+});
+
+describe("review of Task 7", () => {
+  const TURN = { steps: [{ expect: "user", cumulativeUsage: { inputTokens: 1, outputTokens: 1 } }] };
+
+  withFake("a claude.ai sign-in (apiKeySource none, a signed-in account) passes the gate and completes the probe", async () => {
+    const w = await openWatched({ ...TURN, init: { apiKeySource: "none" } });
+    await run(w.provider.startTurn({ runId: "r1", text: "go" }));
+    await waitFor(w, "turnCompleted");
+    expect(w.events.some((e) => e.type === "turnFailed")).toBe(false);
+    await until(async () => ((await readProbeCache(w.serverData))[0]?.result.initPending === undefined ? true : undefined));
+  });
+
+  withFake("an ignored sign-in (signed in, initialize exactly unsigned, apiKeySource none) is refused oauth", async () => {
+    // Unsigned as the probe sees it too (its one turn is the "Not logged in" one).
+    const w = await openWatched({ steps: [{ expect: "user", notLoggedIn: true }], init: { apiKeySource: "none" }, initialize: { account: { tokenSource: "none", apiProvider: "firstParty" } } }, { accountHash: "0123abcd" });
+    await run(w.provider.startTurn({ runId: "r1", text: "go" }));
+    await waitFor(w, "exited");
+    expect(w.events.map((e) => e.type)).toEqual(["turnFailed", "exited"]);
+    expect(w.events[0]).toMatchObject({ error: { code: "PROVIDER_VERSION", details: { missing: "oauth" } } });
+  });
+
+  withFake("can_use_tool is denied by default: nothing runs the runtime did not decide", async () => {
+    const w = await openWatched({
+      steps: [
+        {
+          expect: "user",
+          ask: { tool: "Bash", input: { command: "ls" } },
+          onAllow: [toolResult("toolu_fake_1", "ran")],
+          onDeny: [toolResult("toolu_fake_1", "denied", true)],
+          cumulativeUsage: { inputTokens: 1, outputTokens: 1 },
+        },
+      ],
+    });
+    await run(w.provider.startTurn({ runId: "r1", text: "go" }));
+    await waitFor(w, "turnCompleted");
+    const answers = (observed(w.serverData, SESSION_ID).at(-1) as { controlResponses?: { raw: string }[] }).controlResponses ?? [];
+    const answer = answers.map((a) => JSON.parse(a.raw) as { response: { response?: { behavior?: string } } }).find((a) => a.response.response?.behavior !== undefined);
+    expect(answer?.response.response?.behavior).toBe("deny");
+    expect(w.events.filter((e) => e.type === "toolCompleted")).toEqual([{ type: "toolCompleted", providerId: "toolu_fake_1", ok: false, output: "denied" }]);
+    expect(w.events.some((e) => e.type === "request")).toBe(false);
+  });
+
+  withFake("a refused init lets none of the adapter's own events through", async () => {
+    // `NotATool` maps to no CLI tool: a `toolDropped` notice the gate holds.
+    const w = await openWatched({ ...TURN, init: { ...CONSOLE_KEY.init, tools: ["Read", "Task"] } }, { tools: ["Read", "Bash", "NotATool"] });
+    await run(w.provider.startTurn({ runId: "r1", text: "go" }));
+    await waitFor(w, "exited");
+    expect(w.events.map((e) => e.type)).toEqual(["turnFailed", "exited"]);
+    expect(w.events[0]).toMatchObject({ error: { code: "PROVIDER_VERSION", details: { missing: "isolation", item: "tool:Task" } } });
+  });
+
+  withFake("account: a new session is refused while a change waits; a running session's resume is not", async () => {
+    // The first session runs on ACCOUNT (recorded as the account) and leaves its transcript.
+    const first = await openWatched(TURN);
+    await run(first.provider.startTurn({ runId: "r1", text: "go" }));
+    await waitFor(first, "turnCompleted");
+    await first.close();
+    const recorded = new ClaudeAccounts(first.serverData).state().current?.hash;
+    expect(recorded).toBe(accountCheck({ signedIn: true, label: ACCOUNT }, accountKey(first.serverData), null).hash);
+    // The CLI is signed in to another account: the session's resume opens (the change is recorded) ...
+    const resumed = await openWatched(TURN, { account: "other@example.invalid", resume: true });
+    expect(resumed.spawns[0]!.argv.some((a) => a.startsWith("--resume="))).toBe(true);
+    const waiting = new ClaudeAccounts(first.serverData).pending();
+    expect(waiting).toBe(accountCheck({ signedIn: true, label: "other@example.invalid" }, accountKey(first.serverData), null).hash);
+    await resumed.close();
+    // ... a new session is refused until a person confirms.
+    const refused = await openWatched(TURN, { account: "other@example.invalid", mayFail: true });
+    expect(refused.failure).toMatchObject({ code: "PROVIDER_ACCOUNT_CHANGED", details: { accountHash: waiting } });
+  });
+
+  withFake("a closed instance gets its grace: a process that exits on stdin's end is not killed", async () => {
+    const w = await openWatched(TURN);
+    await run(w.provider.startTurn({ runId: "r1", text: "go" }));
+    await waitFor(w, "turnCompleted");
+    await w.close();
+    expect(w.kills).toEqual([]);
+  });
+
+  withFake("an interrupt after close sends nothing", async () => {
+    const w = await openWatched(TOOL_THEN_WAIT({ onInterrupt: "ignore", onSigint: "ignore" }), { keepAlive: true, interruptWaitMs: 5000 });
+    await run(w.provider.startTurn({ runId: "r1", text: "go" }));
+    await waitFor(w, "toolStarted");
+    const interrupted = run(w.provider.interrupt());
+    await new Promise((r) => setTimeout(r, 100));
+    const t0 = Date.now();
+    await w.close();
+    await interrupted;
+    // The wait ended with the close (no SIGINT); only the close's own kill after its grace.
+    expect(w.kills.map((k) => k.signal)).toEqual(["SIGKILL"]);
+    expect(Date.now() - t0).toBeLessThan(4000);
   });
 });

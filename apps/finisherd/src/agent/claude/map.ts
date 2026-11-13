@@ -16,7 +16,7 @@
 //   replaces the default), then `turnCompleted` once no steer is queued
 //   (`queued_turn_count == 0`, Decision 13), or `turnFailed` when `is_error` (keyed on
 //   `is_error`, never `subtype`: 2.1.321 writes `success` on the "Not logged in" turn).
-// - `system/api_retry` → `notice {retry}`; `system/compact_boundary` → `notice {compacted}`;
+// - `system/api_retry` → `notice {retry: {attempt, code, delayMs}}` (`code` as the built-in agent's); `system/compact_boundary` → `notice {compacted}`;
 //   `system/status`, `system/ui_invalidate`, `system/permission_denied` → nothing; `system/init`
 //   → nothing (the gate checked it); any other type or subtype → `unknown`, once per name.
 import type { FinError, ProviderEvent } from "@finisher/contracts";
@@ -82,6 +82,14 @@ export function cumulativeUsage(): UsageSource {
 /** The runtime's stop reasons for the API's. */
 const STOP_REASONS: Readonly<Record<string, string>> = { end_turn: "endTurn", max_tokens: "maxTokens", stop_sequence: "stopSequence", tool_use: "toolUse", refusal: "refusal", pause_turn: "pauseTurn" };
 
+/** A retried status as the built-in agent's retry notice names it (`builtin/transport.ts`), so one shape reaches consumers. */
+export function retryCode(status: number | null): string {
+  if (status === 401 || status === 403) return "PROVIDER_AUTH";
+  if (status === 429) return "PROVIDER_RATE_LIMITED";
+  if (status === null || status === 408 || status >= 500) return "PROVIDER_OVERLOADED";
+  return "PROVIDER_UNAVAILABLE";
+}
+
 const text200 = (s: string | undefined): string => (s ?? "").slice(0, 200);
 
 /**
@@ -146,7 +154,7 @@ export class LineMapper {
       case "result":
         return this.#result(line, interrupting);
       case "apiRetry":
-        return [{ type: "notice", name: "retry", details: { attempt: line.attempt, code: line.error_status ?? null, delayMs: line.retry_delay_ms } }];
+        return [{ type: "notice", name: "retry", details: { attempt: line.attempt, code: retryCode(line.error_status ?? null), delayMs: line.retry_delay_ms } }];
       case "compactBoundary":
         return [{ type: "notice", name: "compacted", details: { trigger: line.compact_metadata?.trigger ?? null, preTokens: line.compact_metadata?.pre_tokens ?? null } }];
       case "system":

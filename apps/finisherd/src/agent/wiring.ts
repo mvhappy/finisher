@@ -50,7 +50,7 @@ import { cataloguePricing, type Pricing, type SessionEnvironment, type ToolExecu
 import { LayeredRules } from "./rules.ts";
 import { RuleStore } from "./rule-store.ts";
 import type { AclBroker } from "../sandbox/broker.ts";
-import { claudeAdapterFor } from "./claude/adapter.ts";
+import { ClaudeCodeAdapter } from "./claude/adapter.ts";
 import { claudeProviderInfo } from "./claude/detect.ts";
 import { type ClaudeAccess, ClaudeModelCache, claudeAccess, withClaudePricing } from "./claude/models.ts";
 import { type SessionSandboxDeps, sessionSandboxes } from "./sandbox.ts";
@@ -296,10 +296,10 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
       }),
     );
     if (fakeAllowed()) adapters.set("fake", FakeAdapter(fakeScriptsOf(d.options?.fakeScripts)));
-    // Claude Code (plan 7D Task 7): registered only when detected and `agents.claudeCode.enabled`.
+    // Claude Code (plan 7D Task 7): always registered, nothing run at boot; planning decides live
+    // (detected and `agents.claudeCode.enabled`), and each open checks the setting again.
     const claude = claudeWiring(() => Effect.runPromise(claudeInfo()), serverData);
-    const claudeAdapter = claudeAdapterFor(yield* claudeInfo(), { sandbox: sandboxDeps, sessions: core.store, models: claude.cache, ids: core.ids, ...(settings.retentionDays === undefined ? {} : { retentionDays: settings.retentionDays }), log: (m, x) => log(`${m} ${JSON.stringify(x)}`) });
-    if (claudeAdapter !== undefined) adapters.set("claudeCode", claudeAdapter);
+    adapters.set("claudeCode", ClaudeCodeAdapter({ sandbox: sandboxDeps, sessions: core.store, models: claude.cache, ids: core.ids, ...(settings.retentionDays === undefined ? {} : { retentionDays: settings.retentionDays }), log: (m, x) => log(`${m} ${JSON.stringify(x)}`) }));
     const rolePrompt = (role: string) => (roles.get(role) ?? roles.get("editor"))!.prompt.text;
     const builtinEnv = builtinEnvironment({ finPath, server: d.endpoint, projectDirOf: d.registry.dirOf, rolePrompt });
     const environment: SessionEnvironment = {
@@ -320,7 +320,7 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
       hasKey: (projectId) => admin.hasKey(projectId),
       local: () => admin.local(),
       localModels: (e) => listLocalModels(e.baseUrl, d.options?.fetch),
-      // Claude Code plans only when detected and enabled (its adapter is registered then).
+      // Claude Code plans only when detected and enabled, read at each plan.
       claude: claude.planning,
       // Best effort: the cached listing stands when OpenRouter cannot be reached.
       // One fetch at a time, and none for 15 minutes after a failure (`OpenRouterPrices`).

@@ -23,10 +23,10 @@ import { claudeWiring } from "../src/agent/wiring.ts";
 import { exitCodeOf } from "../src/console/exit-codes.ts";
 import { runConsole } from "../src/console/main.ts";
 import type { Prompt } from "../src/console/prompt.ts";
-import type { SandboxStatus } from "../src/sandbox/status.ts";
+import { type SandboxStatus, setSandboxStatusSource } from "../src/sandbox/status.ts";
 import { AgentServer } from "./support/agent-server.ts";
 import { chainHarness, codeOf, errorOf } from "./support/chain-harness.ts";
-import { ok } from "./support/ndjson-client.ts";
+import { addAsset, commit, ok, tx } from "./support/ndjson-client.ts";
 import { person } from "./support/person.ts";
 import { PEOPLE } from "./support/runtime-doubles.ts";
 
@@ -312,11 +312,40 @@ describe("an account change", () => {
     expect(instanceAccount(data, { signedIn: false }, { newSession: true })).toEqual({ refused: null });
   });
 
-  // TODO(7D Task 7): once the adapter is registered, `agent.session.start {harness: claudeCode}`
-  // over RPC answers PROVIDER_ACCOUNT_CHANGED (exit 5 from `finisherd agent start`) while a
-  // session started before the change keeps taking prompts; the adapter calls `instanceAccount`
-  // after each instance's `auth status`.
-  test.todo("account_change_stops_new_sessions over agent.session.start, with a running Claude Code session continuing (Task 7)");
+  withFake("account_change_stops_new_sessions over agent.session.start, with a running Claude Code session continuing", async () => {
+    const restore = setSandboxStatusSource(NOT_READY);
+    const turn = { expect: "user", cumulativeUsage: { inputTokens: 1, outputTokens: 1 } };
+    const cli = installFake("cli", { account: LABEL_A, script: { steps: [turn, turn] } });
+    const serverData = join(tmp, "server-data");
+    mkdirSync(serverData, { recursive: true, mode: 0o700 });
+    writeFileSync(join(serverData, "settings.json"), JSON.stringify({ agents: { claudeCode: { enabled: true, path: cli.bin } } }));
+    const server = new AgentServer(serverData);
+    await server.start();
+    try {
+      const local = await server.local();
+      const projectId = ok<{ projectId: string }>(await local.call("project.create", { dir: join(tmp, "P"), name: "P", rate: "30" })).projectId;
+      ok(await commit(local, projectId, tx("01aaaaaaaaaaaaaaaaaaaaaaaP", 0, [addAsset()])));
+      const status = async (id: string) => ok<{ session: { status: string } }>(await local.call("agent.session.get", { sessionId: id })).session.status;
+      const idle = async (id: string) => {
+        for (let i = 0; i < 1000 && (await status(id)) !== "idle"; i++) await new Promise((r) => setTimeout(r, 20));
+        expect(await status(id)).toBe("idle");
+      };
+      const running = ok<{ session: { id: string } }>(await local.call("agent.session.start", { projectId, harness: "claudeCode", prompt: "first" })).session;
+      await idle(running.id);
+      // The person signs the CLI in to another account: new sessions are refused (exit 5) ...
+      setAccount(cli.dir, LABEL_B);
+      const refused = await local.call("agent.session.start", { projectId, harness: "claudeCode", prompt: "new" });
+      expect(refused.ok ? undefined : refused.error.code).toBe("PROVIDER_ACCOUNT_CHANGED");
+      expect(exitCodeOf("PROVIDER_ACCOUNT_CHANGED")).toBe(5);
+      // ... while the running session keeps taking prompts on its instance.
+      ok(await local.call("agent.session.prompt", { sessionId: running.id, text: "second" }));
+      await idle(running.id);
+      expect(server.core.store.nodes(running.id, 1, 1000).filter((n) => n.kind === "usage")).toHaveLength(2);
+    } finally {
+      await server.stop();
+      setSandboxStatusSource(restore);
+    }
+  });
 });
 
 // ---- failing closed ----

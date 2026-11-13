@@ -373,3 +373,16 @@ export function instanceAccount(serverData: string, status: AuthStatus, o: { rea
     return { refused: o.newSession ? (e as FinError) : null };
   }
 }
+
+/**
+ * `instanceAccount` for an account detection already hashed (its `auth status` named it), when
+ * the instance's `initialize.account` names none: the same record and the same refusal rule.
+ */
+export function instanceAccountHash(serverData: string, hash: string, authMethod: string | undefined, o: { readonly newSession: boolean; readonly accounts?: ClaudeAccounts }): { hash?: string; refused: FinError | null } {
+  try {
+    const seen = (o.accounts ?? new ClaudeAccounts(serverData)).record(hash, authMethod);
+    return { hash: seen.hash, refused: seen.changed && o.newSession ? accountChanged(seen.hash) : null };
+  } catch (e) {
+    return { refused: o.newSession ? (e as FinError) : null };
+  }
+}

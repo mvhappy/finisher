@@ -45,7 +45,7 @@ describe("the session fixture", () => {
     expect(events[4]).toEqual({ type: "toolStarted", providerId: "toolu_01", tool: "Read", input: { file_path: "/srv/finisher/workspace/s1/cuts.txt" } });
     expect(events[5]).toEqual({ type: "toolCompleted", providerId: "toolu_01", ok: true, output: "00:00:01.000 00:00:04.500\n" });
     expect(events[6]).toMatchObject({ type: "toolCompleted", providerId: "toolu_02", ok: false });
-    expect(events).toContainEqual({ type: "notice", name: "retry", details: { attempt: 1, code: 529, delayMs: 1200 } });
+    expect(events).toContainEqual({ type: "notice", name: "retry", details: { attempt: 1, code: "PROVIDER_OVERLOADED", delayMs: 1200 } });
     expect(events).toContainEqual({ type: "notice", name: "compacted", details: { trigger: "auto", preTokens: 158000 } });
     const done = events.findIndex((e) => e.type === "turnCompleted");
     expect(events[done - 1]).toEqual({ type: "usage", input: 24, output: 160, cacheRead: 6800, cacheWrite: 0, reasoning: 0, costMicros: 21300 });
@@ -103,7 +103,7 @@ describe("results", () => {
 
 describe("notices", () => {
   test("api_retry_is_notice", () => {
-    expect(new LineMapper().map(line({ type: "system", subtype: "api_retry", attempt: 2, retry_delay_ms: 500, error_status: 429 }))).toEqual([{ type: "notice", name: "retry", details: { attempt: 2, code: 429, delayMs: 500 } }]);
+    expect(new LineMapper().map(line({ type: "system", subtype: "api_retry", attempt: 2, retry_delay_ms: 500, error_status: 429 }))).toEqual([{ type: "notice", name: "retry", details: { attempt: 2, code: "PROVIDER_RATE_LIMITED", delayMs: 500 } }]);
   });
 
   test("unknown_line_is_notice: once per name; status lines are silent", () => {

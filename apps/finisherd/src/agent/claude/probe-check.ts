@@ -46,7 +46,12 @@ export function planUuid(plan: Pick<LaunchPlan, "argv">): string | null {
 }
 
 export interface CheckOptions {
-  /** The CLI reports a sign-in (`auth status`): `apiKeySource: "none"` then means it was ignored. */
+  /**
+   * The CLI's sign-in was ignored if `apiKeySource` is `none`: set only when `auth status` reports
+   * a sign-in **and** the instance's own `initialize.account` is exactly unsigned
+   * (`unsignedAccount`). `apiKeySource: "none"` alone is no sign of it: a claude.ai sign-in reports
+   * `none` too (published stream-JSON logs of Pro/Max runs).
+   */
   readonly signedIn?: boolean;
   /** The settings carried the probe's canary: `output_style` must show it. */
   readonly canary?: boolean;
@@ -93,6 +98,9 @@ export function checkInit(init: SystemInit, plan: Pick<LaunchPlan, "argv" | "too
   for (const t of [...plan.tools, ...plan.mcpTools]) {
     if (!present.has(t)) return versionError("tools", `the Claude Code instance lacks the tool ${t}`, { item: t, ...(v === undefined ? {} : { version: v }) });
   }
+  // TODO(7D Task 0 Step 1/Step 4): `apiKeySource` and `initialize.account` of a CLI signed in with
+  // its own flow (claude.ai, Console); modelled by fake-claude as `none` with `tokenSource:
+  // "claude.ai"` (a sign-in, passes) and a Console key's `/login managed key`.
   if (opts.signedIn === true && init.apiKeySource === "none") {
     return versionError("oauth", "the Claude Code instance ignored its sign-in", { item: "apiKeySource", ...(v === undefined ? {} : { version: v }) });
   }
@@ -117,6 +125,10 @@ export interface InitializeFacts {
    */
   readonly unsigned: boolean;
 }
+
+/** `initialize.account` is exactly the unsigned one (Task 0, 2.1.321): anything more or other is a sign-in. */
+export const unsignedAccount = (account: unknown): boolean =>
+  typeof account === "object" && account !== null && !Array.isArray(account) && isUnsigned(account as Record<string, unknown>);
 
 const isUnsigned = (account: Record<string, unknown>): boolean =>
   Object.keys(account).length === 2 && account.tokenSource === "none" && account.apiProvider === "firstParty";
@@ -191,8 +203,8 @@ const passes = (l: CliLine): boolean =>
  * `result` alone when it is an error (an unknown `--resume`), dropping what was held, and
  * refuses otherwise. Held lines include `can_use_tool` and every other CLI request. Control
  * lines the caller must answer at once (the MCP handshake, control
- * responses, cancels) always pass; a refused instance's other control requests too, so the
- * caller can deny them.
+ * responses, cancels) always pass; a refused instance's other control requests too, so a caller
+ * may deny them (Task 7's session instead kills the instance at once and drops every later line).
  */
 export function firstTurnGate(plan: Pick<LaunchPlan, "argv" | "tools" | "mcpTools">, opts: CheckOptions = {}): FirstTurnGate {
   let state: FirstTurnGate["state"] = "waiting";
