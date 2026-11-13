@@ -1,7 +1,8 @@
 // The hooks' configuration schema (7F plan Task 1, Decision 6) and the generated event names.
 import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
-import { HOOK_LIMITS, HookEvent, decodeHookSpec } from "./hooks.ts";
+import { Schema } from "effect";
+import { HOOK_LIMITS, HookEvent, HookMatch, decodeHookReply, decodeHookSpec } from "./hooks.ts";
 
 const ok = (raw: unknown) => decodeHookSpec(raw)._tag === "Success";
 
@@ -111,5 +112,46 @@ describe("HookSpec", () => {
       Notification: true,
     } satisfies Record<HookEvent, true>;
     expect(Object.keys(all)).toEqual([...HookEvent.literals]);
+  });
+
+  test("hook_match_bounds", () => {
+    const m = Schema.decodeUnknownExit(HookMatch);
+    for (const good of ["*", "**", "item.trim", "item.**", "status.waitingApproval", "budget.*", "plugin:@acme/tools/clean-up", "render_export"]) {
+      expect(m(good)._tag, good).toBe("Success");
+    }
+    for (const bad of ["", "item trim", "tool:Bash(curl *)", "item.trim()", "item;rm", "a$b", "naïve", "a".repeat(201)]) {
+      expect(m(bad)._tag, JSON.stringify(bad)).toBe("Failure");
+    }
+    expect(m("a".repeat(200))._tag).toBe("Success");
+  });
+});
+
+describe("HookReply (parity with fin_plugin_api::protocol::hook::HookReply)", () => {
+  const ok = (raw: unknown) => decodeHookReply(raw)._tag === "Success";
+
+  test("hook_reply_decodes_the_three_replies", () => {
+    for (const r of [{ reply: "allow" }, { reply: "block", reason: "no trims on Fridays" }, { reply: "context", text: "the style guide says…" }]) {
+      const d = decodeHookReply(r);
+      expect(d._tag, JSON.stringify(r)).toBe("Success");
+      if (d._tag === "Success") expect(d.value).toEqual(r);
+    }
+  });
+
+  test("hook_reply_refuses_unknown_fields_modify_and_missing_fields", () => {
+    for (const bad of [
+      { reply: "allow", reason: "unexpected" },
+      { reply: "block", reason: "x", text: "y" },
+      { reply: "context", text: "y", payload: {} },
+      { reply: "modify" },
+      { reply: "modify", payload: { a: 1 } },
+      { reply: "block" },
+      { reply: "context" },
+      { reply: "Allow" },
+      { reason: "x" },
+      "allow",
+      null,
+    ]) {
+      expect(ok(bad), JSON.stringify(bad)).toBe(false);
+    }
   });
 });

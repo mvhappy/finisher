@@ -3,11 +3,23 @@
 // (`fin_plugin_api::protocol::hook`), generated into `@finisher/core-types`; running hooks is
 // the server's (`apps/finisherd/src/hooks/`).
 import { Schema } from "effect";
-import { HookEventSchema } from "./generated/schemas.ts";
+import { HookEventSchema, HookReplySchema } from "./generated/schemas.ts";
 
 /** An event a hook subscribes to (generated from `fin_plugin_api::protocol::hook::HookEvent`). */
 export const HookEvent = HookEventSchema;
 export type HookEvent = typeof HookEvent.Type;
+
+/** A hook's reply (generated from `HookReply`): `allow`, `block {reason}` or `context {text}`. */
+export const HookReply = HookReplySchema;
+export type HookReply = typeof HookReply.Type;
+
+const decodeReply = Schema.decodeUnknownExit(HookReplySchema);
+/**
+ * Decodes a hook's reply as Rust does (`deny_unknown_fields`): an unknown key, `modify` or a
+ * missing field is refused. Every reply a command hook or plugin handler gives goes through
+ * this, never through `HookReplySchema` alone (an Effect `Struct` drops unknown keys).
+ */
+export const decodeHookReply = (raw: unknown) => decodeReply(raw, { onExcessProperty: "error" });
 
 /** The bounds of hooks, their processes and their replies (Decisions 2, 4, 6, 9, 10, 18). */
 export const HOOK_LIMITS = {
