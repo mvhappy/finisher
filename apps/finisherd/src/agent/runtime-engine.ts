@@ -16,6 +16,7 @@
 //   and has no price is charged its projection, never 0); a stop waits for the calls in flight
 //   (the safe point) for at most `stopGraceMs` (30 s), then aborts them, interrupts the session
 //   with `BUDGET_EXCEEDED` and opens a `budget` approval.
+// - **The hooks' tap** (7F Decision 18): every published item and 80 % notice, watched or not.
 import type { Approval, BudgetState, FinError, Harness, ProviderEvent, Run, Session, Usage, WatchItem } from "@finisher/contracts";
 import { Effect } from "effect";
 import { finError, toFinError } from "../errors.ts";
@@ -182,6 +183,7 @@ export abstract class RuntimeEngine {
   }
 
   protected publish(sessionId: string, item: WatchItem): void {
+    this.deps.sessionEvents?.published(sessionId, item);
     this.hub.publish(sessionId, item);
   }
 
@@ -485,6 +487,7 @@ export abstract class RuntimeEngine {
   protected async crossings(live: Live, runId: string, c: Crossings): Promise<void> {
     for (const n of c.notices) {
       await this.append({ sessionId: live.sessionId, runId, kind: "notice", payload: { budget: n.kind, used: n.used, limit: n.limit, at: 0.8 } });
+      this.deps.sessionEvents?.budget(live.sessionId, n);
     }
     if (c.stop) await this.requestStop(live, c.stop);
   }

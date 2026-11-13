@@ -362,6 +362,9 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
       planner,
       environment,
       sandboxes,
+      // Session events and context delivery (7F Task 6).
+      hooks: hookWiring.session,
+      sessionEvents: hookWiring.session,
       // A `fin` call that meets a card waits on it (7B Task 5).
       tools: {
         builtin: waitingOnApprovals(builtinTools({ finPath, projectDirOf: d.registry.dirOf, ...(settings.toolTimeoutS === undefined ? {} : { timeoutMs: settings.toolTimeoutS * 1000 }) }), () => approvals),

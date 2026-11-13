@@ -383,6 +383,29 @@ describe("built-in loop", () => {
       { role: "tool", toolCallId: "c2", content: '{"ok":false,"code":"SESSION_INTERRUPTED","synthetic":true}' },
     ]);
   });
+
+  test("history_joins_hook_context_back (7F Decision 16): a prompt's block after its text, a hook steer as a steer", () => {
+    let seq = 0;
+    const n = (kind: Node["kind"], payload: unknown): Node => ({ id: `n${++seq}`, runId: "R", sessionId: "S", seq, kind, payload, createdAt: 0 });
+    const block = (t: string) => `<hook-context>\n${t}\n</hook-context>`;
+    const h = historyFromNodes([
+      n("notice", { hookContext: { event: "SessionStart", hooks: ["a"], text: "S" } }),
+      n("notice", { hookContext: { event: "UserPrompt", hooks: ["b"], text: "U" } }),
+      n("userMessage", { text: "go", trigger: "prompt" }),
+      n("usage", { input: 1 }),
+      n("assistantMessage", { role: "assistant", blocks: [{ type: "text", text: "Looking." }] }),
+      n("userMessage", { text: block("lint failed"), trigger: "hook", hookContext: { event: "PostCommand", hooks: ["lint"] } }),
+      n("notice", { steersTaken: { count: 1 } }),
+      n("usage", { input: 1 }),
+      n("assistantMessage", { role: "assistant", blocks: [{ type: "text", text: "Fixing." }] }),
+    ], LOOP_LIMITS);
+    expect(h).toEqual([
+      { role: "user", content: [{ type: "text", text: "go\n\n<hook-context>\nS\n\nU\n</hook-context>" }] },
+      { role: "assistant", text: "Looking." },
+      { role: "user", content: [{ type: "text", text: block("lint failed") }] },
+      { role: "assistant", text: "Fixing." },
+    ]);
+  });
 });
 
 describe("built-in loop: review findings (Task 8b)", () => {

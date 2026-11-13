@@ -16,12 +16,13 @@
 //   --report <what>      observes `env`, `args`, `stdin`, `cwd` or `net` (interfaces with an address)
 //   --read <path>        observes whether <path> can be read
 //   --write <path>       observes whether <path> can be written
+//   --append <path>      appends its request (stdin, one line) to <path> (a log of its runs)
 //   --connect <port>     observes whether TCP 127.0.0.1:<port> connects
 //   --connects <p,q>     observes, per port, whether TCP 127.0.0.1:<port> connects
 //   --fin <json args>    runs `fin` (found on its `PATH`) with the JSON array's arguments and
 //                        observes its exit code and its error's code and message
 import { spawn, spawnSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import { networkInterfaces } from "node:os";
 import { join } from "node:path";
@@ -102,6 +103,9 @@ for (let i = 0; i < args.length; i++) {
       seen.write = { ...seen.write, [p]: errCode(() => writeFileSync(p, "hook\n")) };
       break;
     }
+    case "--append":
+      appendFileSync(next(), `${stdin.trim()}\n`);
+      break;
     case "--connect": {
       seen.connect = await tcp(Number(next()));
       break;
