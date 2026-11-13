@@ -10,8 +10,8 @@ use std::collections::BTreeMap;
 use common::*;
 use fin_core::params::{self, DefaultValue, EffectDomain, ParamType, Scope, ScopeOf};
 use fin_core::{
-    ApplyMode, EffectAdd, Interp, Item, ItemSplit, KeyframeSet, MemIds, Op, ParamSet, ParamValue,
-    Project, apply_tx, apply_tx_mode,
+    ApplyMode, EffectAdd, EffectRemove, InsertMode, Interp, Item, ItemMove, ItemSplit, KeyframeSet,
+    MemIds, Op, ParamSet, ParamValue, Project, apply_internal, apply_tx, apply_tx_mode,
 };
 use serde_json::json;
 
@@ -493,4 +493,130 @@ fn undo_effect_add_exact() {
         let a = golden_apply(&p, vec![add("c2", "$fx", kind, &params)]);
         assert_eq!(item(&a.project, "c2").common.effects.len(), 1, "{kind}");
     }
+}
+
+// ---- the domain rule wherever an item with effects lands on a track (task 5 review) ----
+
+/// `c1` (10 s, A/V) on video track `t1` and `c2` (10 s, from the same A/V asset) on audio
+/// track `t2`, so either clip may move to the other track as far as its asset goes.
+fn av_both() -> Project {
+    apply(
+        &project(),
+        vec![
+            av_asset("$a", secs(100)),
+            insert("$c1", "t1", secs(0), "$a", secs(0), secs(10)),
+            insert("$c2", "t2", secs(0), "$a", secs(0), secs(10)),
+        ],
+    )
+    .project
+}
+
+fn mv(item: &str, track: &str, at: i64) -> Op {
+    ItemMove {
+        item: item.into(),
+        track: track.into(),
+        at: secs(at),
+        mode: InsertMode::Ripple,
+    }
+    .into()
+}
+
+fn mismatch(e: &fin_core::CoreError, item: &str, kind: &str, track_kind: &str) {
+    assert_eq!(e.code, "TRACK_KIND_MISMATCH", "{e:?}");
+    assert_eq!(
+        (
+            &e.details["item"],
+            &e.details["kind"],
+            &e.details["trackKind"]
+        ),
+        (&json!(item), &json!(kind), &json!(track_kind)),
+        "{e:?}"
+    );
+}
+
+/// Policy, so a stored op replays as it was.
+fn replays(p: &Project, op: Op) {
+    apply_tx_mode(p, &tx(vec![op]), &mut MemIds::after(p), ApplyMode::Replay).unwrap();
+}
+
+#[test]
+fn move_audio_effect_onto_video_track_refused() {
+    let p = apply(&av_both(), vec![add("c2", "$fx", "compressor", &[])]).project;
+    let e = try_apply(&p, vec![mv("c2", "t1", 20)]).unwrap_err();
+    mismatch(&e, "c2", "compressor", "video");
+    assert_eq!(
+        e.fix.as_deref(),
+        Some("add audio effects to clips on audio tracks")
+    );
+    replays(&p, mv("c2", "t1", 20));
+    // Without the effect the move is fine, and so is a move along the audio track.
+    apply(&av_both(), vec![mv("c2", "t1", 20)]);
+    apply(&p, vec![mv("c2", "t2", 20)]);
+}
+
+#[test]
+fn move_visual_effect_onto_audio_track_refused() {
+    let p = apply(&av_both(), vec![add("c1", "$fx", "blur", &[])]).project;
+    let e = try_apply(&p, vec![mv("c1", "t2", 20)]).unwrap_err();
+    mismatch(&e, "c1", "blur", "audio");
+    replays(&p, mv("c1", "t2", 20));
+}
+
+/// The compressor is removed, the bare clip moves to video, then the removal is undone: the
+/// restore would put an audio effect on a video-track item.
+#[test]
+fn effect_restore_after_move_refused() {
+    let p = apply(&av_both(), vec![add("c2", "$fx", "compressor", &[])]).project;
+    let removed = apply(
+        &p,
+        vec![
+            EffectRemove {
+                item: "c2".into(),
+                effect: "fx1".into(),
+            }
+            .into(),
+        ],
+    );
+    let moved = apply(&removed.project, vec![mv("c2", "t1", 20)]).project;
+    let e = apply_internal(
+        &moved,
+        &tx(removed.inverse.clone()),
+        &mut MemIds::after(&moved),
+    )
+    .unwrap_err();
+    mismatch(&e, "c2", "compressor", "video");
+    apply_tx_mode(
+        &moved,
+        &tx(removed.inverse),
+        &mut MemIds::after(&moved),
+        ApplyMode::Replay,
+    )
+    .unwrap();
+}
+
+/// An `item.restore` naming a track of the other kind (a damaged or rebased inverse) cannot put
+/// an item's audio effects on a video track either.
+#[test]
+fn item_restore_onto_other_domain_refused() {
+    let p = apply(&av_both(), vec![add("c2", "$fx", "compressor", &[])]).project;
+    let deleted = apply(&p, vec![delete("c2")]);
+    let Op::ItemRestore(mut r) = deleted.inverse[0].clone() else {
+        panic!("{:?}", deleted.inverse)
+    };
+    // As stored it is fine.
+    apply_internal(
+        &deleted.project,
+        &tx(vec![Op::ItemRestore(r.clone())]),
+        &mut MemIds::after(&deleted.project),
+    )
+    .unwrap();
+    r.track = "t1".into();
+    r.item.start = secs(20);
+    let e = apply_internal(
+        &deleted.project,
+        &tx(vec![Op::ItemRestore(r)]),
+        &mut MemIds::after(&deleted.project),
+    )
+    .unwrap_err();
+    mismatch(&e, "c2", "compressor", "video");
 }

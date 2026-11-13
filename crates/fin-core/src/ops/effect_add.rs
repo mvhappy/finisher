@@ -10,7 +10,8 @@
 //! `added`, plus the item's `effects` order when `at` is given; the inverse is `effect.remove`.
 //! A registry kind's domain must match the item's track (plan 6C Decision 13): a visual effect
 //! on an item of an audio track, and an audio effect (`eq`, `compressor`, `gate`, `deEsser`)
-//! on an item of any other track, are `TRACK_KIND_MISMATCH` (policy). An unknown kind has no
+//! on an item of any other track, are `TRACK_KIND_MISMATCH` (policy, `check_effect_domains`,
+//! shared with `effect.restore`, `item.move` and `item.restore`). An unknown kind has no
 //! domain and is judged by the kind check alone.
 
 use std::collections::BTreeMap;
@@ -21,13 +22,14 @@ use serde_json::json;
 
 use crate::error::CoreError;
 use crate::ids::{IdAlloc, IdKind};
-use crate::model::{Effect, ParamValue, Project, Track, TrackKind};
+use crate::model::{Effect, ParamValue, Project};
 use crate::ops::util::param_check::{about_item, check_value};
 use crate::ops::util::{
-    OpDiff, check_unlocked, invalid_range, item_index, normalize_value, wrong_op,
+    OpDiff, check_effect_domains, check_unlocked, invalid_range, item_index, normalize_value,
+    wrong_op,
 };
 use crate::ops::{Bindings, EffectRemove, Op};
-use crate::params::{self, EffectDomain, ScopeOf};
+use crate::params::{self, ScopeOf};
 use crate::rebase::{Footprint, Touch};
 use crate::time::Rational;
 use crate::tx::{ChangeKind, Diff, EntityKind};
@@ -98,41 +100,6 @@ fn checked_params(
     Ok(out)
 }
 
-/// A registry effect's domain matches the track (Decision 13): visual effects go on items of
-/// video (and caption) tracks, audio effects on clips of audio tracks; otherwise
-/// `TRACK_KIND_MISMATCH` (policy).
-fn check_track_domain(
-    track: &Track,
-    item: &str,
-    kind: &str,
-    bindings: &Bindings,
-) -> Result<(), CoreError> {
-    if !bindings.policy() {
-        return Ok(());
-    }
-    let audio_track = track.kind == TrackKind::Audio;
-    let (what, fix) = match params::effect_domain(kind) {
-        Some(EffectDomain::Visual) if audio_track => {
-            ("a visual", "add visual effects to items on video tracks")
-        }
-        Some(EffectDomain::Audio) if !audio_track => {
-            ("an audio", "add audio effects to clips on audio tracks")
-        }
-        _ => return Ok(()),
-    };
-    let track_kind = serde_json::to_value(track.kind).unwrap_or_default();
-    let shown = track_kind.as_str().unwrap_or("other");
-    Err(CoreError::new(
-        "TRACK_KIND_MISMATCH",
-        format!(
-            "{kind} is {what} effect; item {item} is on {shown} track {}",
-            track.id
-        ),
-    )
-    .with_details(json!({ "item": item, "kind": kind, "track": track.id, "trackKind": track_kind }))
-    .with_fix(fix))
-}
-
 /// The inverse is one `effect.remove`.
 pub(crate) fn inverse_len(_op: &Op, _own: &Diff) -> usize {
     1
@@ -161,7 +128,7 @@ pub(crate) fn apply(
         None => len,
     };
     check_unlocked(ti.get(project), Some(&item), bindings)?;
-    check_track_domain(ti.get(project), &item, &a.kind, bindings)?;
+    check_effect_domains(ti.get(project), &item, [a.kind.as_str()], bindings)?;
     let params = checked_params(project, a, bindings).map_err(|e| about_item(e, &item))?;
     let fx = bindings.create(project, &a.id, IdKind::Effect, ids)?;
     let track = ti.get_mut(project);
