@@ -34,8 +34,12 @@
 //! is an exact scaling, so the offsets (and `l`) are bit-identical to a dedicated mono stretch.
 //!
 //! **Driving it from the mixer (Task 7).** All positions are frames relative to the item: output
-//! frame 0 is the item's first output sample `sample_at(from)`, source frame 0 is
-//! `sample_at(sourceFrom)`. To produce output frames `[0, k)` the mixer pushes source frames
+//! frame 0 is the item's first output sample `sample_at(from)`, and source frame 0 is the
+//! integer anchor `sample_at(sourceFrom)`; output sample `n` of the timeline plays absolute
+//! source frame `sample_at(sourceFrom) + round_half_up((n − sample_at(from)) × speed)`
+//! ([`Wsola::source_at`] of the relative index). The anchor is rounded to a whole sample before
+//! the speed term is added, and the speed-1 path rounds it the same way, so the two agree. To
+//! produce output frames `[0, k)` the mixer pushes source frames
 //! `[0, input_needed(k))`, in any chunking, reading zeros past the source's end as `PcmSource`
 //! does; `process` has then emitted at least `k` frames (it emits whole regions of `HOP`, so up
 //! to `HOP − 1` more, which the mixer keeps for its next block). `input_needed` is monotone and
@@ -59,9 +63,11 @@ pub const SEARCH: usize = 512;
 const HOP_I: i64 = HOP as i64;
 const SEARCH_I: i64 = SEARCH as i64;
 
-/// `round_half_up(a / b)` for `b > 0`, exact.
+/// `round_half_up(a / b)` for `b > 0`, exact and overflow-free: the remainder is `< b`, so
+/// doubling it cannot overflow.
 fn round_div(a: i128, b: i128) -> i128 {
-    (2 * a + b).div_euclid(2 * b)
+    let (q, r) = (a.div_euclid(b), a.rem_euclid(b));
+    if 2 * r >= b { q + 1 } else { q }
 }
 
 fn to_i64(v: i128) -> i64 {
@@ -165,25 +171,33 @@ impl Wsola {
         self.p == self.q
     }
 
-    /// The source frame output frame `k` plays: `round_half_up(k × speed)` (Decision 4, relative
-    /// to the item; equal to `sample_at(k/48000 × speed)`).
+    /// The source frame output frame `k` of the item plays, relative to the item's integer
+    /// source anchor `sample_at(sourceFrom)`: `round_half_up(k × speed)`, which equals
+    /// `sample_at(k/48000 × speed)`. The absolute source frame is
+    /// `sample_at(sourceFrom) + source_at(n − sample_at(from))` (Decision 4 as implemented: the
+    /// anchor is rounded to a whole sample first, on the speed-1 path too, so both paths agree).
+    ///
+    /// # Panics
+    /// When the source frame does not fit an `i64`.
     pub fn source_at(&self, out_frame: u64) -> i64 {
+        // u64 × (p < 2^63) < 2^127: no i128 overflow.
         to_i64(round_div(i128::from(out_frame) * self.p, self.q))
     }
 
     /// Frame `j`'s nominal centre, `c_j = round_half_up(j·HOP·speed)`.
     fn centre(&self, j: i64) -> i64 {
-        to_i64(round_div(
-            i128::from(j) * i128::from(HOP_I) * self.p,
-            self.q,
-        ))
+        let a = (i128::from(j) * i128::from(HOP_I))
+            .checked_mul(self.p)
+            .expect("a stretch position fits an i64");
+        to_i64(round_div(a, self.q))
     }
 
     /// The source frames (from 0) region `j` needs, whatever the offsets: frame `j`'s second
-    /// half reads below `c_j + FRAME`; the search for frame `j + 1` and its first half read
-    /// below `c_{j+1} + HOP`.
+    /// half reads below `pos_j + FRAME ≤ c_j − HOP + SEARCH + FRAME`; the search for frame
+    /// `j + 1` (candidates' first halves) and that frame's first half read below
+    /// `c_{j+1} − HOP + SEARCH + HOP = c_{j+1} + SEARCH`.
     fn region_needs(&self, j: i64) -> i64 {
-        (self.centre(j) + FRAME as i64).max(self.centre(j + 1) + HOP_I)
+        (self.centre(j) - HOP_I + SEARCH_I + FRAME as i64).max(self.centre(j + 1) + SEARCH_I)
     }
 
     /// How many source frames (from source frame 0) must have been pushed for `process` to have
@@ -201,8 +215,12 @@ impl Wsola {
 
     /// The output length of a source of `in_frames` frames: `round_half_up(in_frames / speed)`,
     /// i.e. `sample_at(in_frames/48000 / speed)`.
+    ///
+    /// # Panics
+    /// When the length does not fit a `u64`.
     pub fn output_len(&self, in_frames: u64) -> u64 {
-        round_div(i128::from(in_frames) * self.q, self.p) as u64
+        u64::try_from(round_div(i128::from(in_frames) * self.q, self.p))
+            .expect("a stretch output length fits a u64")
     }
 
     /// Source frames pushed so far.
@@ -221,6 +239,11 @@ impl Wsola {
     /// After `finish`.
     pub fn process(&mut self, input: &Stereo, out: &mut Stereo) {
         assert!(!self.finished, "Wsola::process after finish");
+        assert_eq!(
+            input.l.len(),
+            input.r.len(),
+            "both channels of a Wsola input have the same length"
+        );
         self.pushed += input.len() as i64;
         if self.bypass() {
             out.l.extend_from_slice(&input.l);

@@ -161,9 +161,7 @@ fn level_preserved() {
 fn no_clicks_on_sine() {
     let input = dual(sine(440.0, -6.0, 1.0, RATE));
     let out = stretch(r(3, 2), &input, 4_096);
-    // The last 1,536 output frames read past the source's hard end (zeros), like any hard cut.
-    let body = &out.l[..out.len() - 1_536];
-    let (si, so) = (max_step(&input.l), max_step(body));
+    let (si, so) = (max_step(&input.l), max_step(&out.l));
     assert!(so <= 1.2 * si, "output step {so}, input step {si}");
 }
 
@@ -264,4 +262,37 @@ fn golden_hash() {
         h.finalize().to_hex().as_str(),
         "2ee0c52837eefdcd5e84316ed3f687bfd106378258c143b8ff68324ab81c83b0"
     );
+}
+
+#[test]
+fn extreme_positions_are_exact() {
+    let m = i64::MAX;
+    // (2^64 − 1)/3, exactly.
+    assert_eq!(
+        Wsola::new(r(1, 3)).source_at(u64::MAX),
+        6_148_914_691_236_517_205
+    );
+    // (2^64 − 1)·(M − 1)/M = 2^64 − 3 − 1/M: rounds to 2^64 − 3.
+    assert_eq!(Wsola::new(r(m, m - 1)).output_len(u64::MAX), u64::MAX - 2);
+    assert_eq!(Wsola::new(r(m, 1)).output_len(u64::MAX), 2);
+}
+
+#[test]
+#[should_panic(expected = "fits an i64")]
+fn source_at_past_i64_panics() {
+    let m = i64::MAX;
+    Wsola::new(r(m, m - 1)).source_at(u64::MAX);
+}
+
+#[test]
+#[should_panic(expected = "fits a u64")]
+fn output_len_past_u64_panics() {
+    Wsola::new(r(1, 2)).output_len(u64::MAX);
+}
+
+#[test]
+#[should_panic(expected = "same length")]
+fn ragged_stereo_panics() {
+    let mut out = Stereo::default();
+    Wsola::new(r(3, 2)).process(&stereo(vec![0.0; 4], vec![0.0; 3]), &mut out);
 }
