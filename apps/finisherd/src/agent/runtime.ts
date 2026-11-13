@@ -119,7 +119,7 @@ export class Runtime extends RuntimeEngine {
       startQueued: (q) => this.background(q.sessionId, "a queued run", () => this.#limits.begin(q).catch(() => {})),
     });
     // A provider card is settled at its `expiresAt`, not only by the hourly sweep (7B Task 5).
-    deps.requests?.bind({ clock: this.clock, expire: () => this.expireApprovals() });
+    deps.requests?.bind({ clock: this.clock, expire: () => this.expireApprovals(), withdraw: (id) => this.#withdrawn(id) });
     // A session's review request is a `notice` in its active run (7B Task 11); the run goes on.
     this.core.reviewLink.onBranchReady(({ sessionId, branch, headSeq, reviewId }) => {
       const runId = reviewId === undefined ? null : this.store.activeRun(sessionId);
@@ -541,6 +541,14 @@ export class Runtime extends RuntimeEngine {
     if (runId !== null) await this.append({ sessionId: s.id, runId, kind: "approval", payload: node });
     this.publish(s.id, { type: "approvalOpened", approval: a });
     this.publishStatus(s, runId);
+  }
+
+  /** A card whose requests the provider withdrew (7D Task 8): expired now, with its session's status and journal. */
+  #withdrawn(approvalId: string): void {
+    const s = this.store.expireApproval(approvalId);
+    if (s === undefined) return;
+    this.publishStatus(s, this.store.activeRun(s.id));
+    this.#journalExpired(s);
   }
 
   /** Journals the session's expired approvals (the journal records each once). */

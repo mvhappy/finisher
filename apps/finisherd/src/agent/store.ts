@@ -323,7 +323,7 @@ export class AgentStore {
       const id = this.#ids.ulid();
       this.#s.insertApproval!.run(id, a.sessionId, a.kind, JSON.stringify(a.subject ?? null), a.argsHash, this.#clock.now(), a.expiresAt);
       const { session } = this.#applyIn(a.sessionId, { kind: "approvalOpened", id }, {});
-      return { approval: this.#approval(id)!, session };
+      return { approval: this.approval(id)!, session };
     });
   }
 
@@ -334,7 +334,7 @@ export class AgentStore {
    */
   answerApproval(id: string, decision: ApprovalDecision, by: string): { approval: Approval; session: Session } {
     const answered = this.#cs.tx(() => {
-      const a = this.#approval(id) ?? invalid("no such approval", { id });
+      const a = this.approval(id) ?? invalid("no such approval", { id });
       const now = this.#clock.now();
       if (a.status === "open" && a.expiresAt <= now) {
         this.#expireIn(a.id, a.sessionId);
@@ -344,7 +344,7 @@ export class AgentStore {
         invalid(`the approval is ${a.status}`, { id, status: a.status });
       }
       const { session } = this.#applyIn(a.sessionId, { kind: "approvalAnswered", id }, {});
-      return { approval: this.#approval(id)!, session };
+      return { approval: this.approval(id)!, session };
     });
     if (answered === null) throw approvalExpired(id);
     return answered;
@@ -367,6 +367,12 @@ export class AgentStore {
     return [...changed.values()];
   }
 
+  /** Expires open approval `id` now (its provider withdrew the request); the session when it changed. */
+  expireApproval(id: string): Session | undefined {
+    const a = this.approval(id);
+    return a?.status === "open" ? this.#cs.tx(() => this.#expireIn(id, a.sessionId)) : undefined;
+  }
+
   /** Expires one open approval in the caller's tx; the session's state when it changed. */
   #expireIn(id: string, sessionId: string): Session | undefined {
     const row = this.#s.session!.get(sessionId) as unknown as SessionRow | undefined;
@@ -382,15 +388,11 @@ export class AgentStore {
     return Number(this.#s.consumeApproval!.run(this.#clock.now(), id).changes) > 0;
   }
 
-  approval(id: string): Approval | undefined {
-    return this.#approval(id);
-  }
-
   approvals(sessionId: string): Approval[] {
     return (this.#s.approvalsOf!.all(sessionId) as unknown as ApprovalRow[]).map(toApproval);
   }
 
-  #approval(id: string): Approval | undefined {
+  approval(id: string): Approval | undefined {
     const r = this.#s.approval!.get(id) as unknown as ApprovalRow | undefined;
     return r === undefined ? undefined : toApproval(r);
   }

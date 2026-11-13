@@ -58,7 +58,7 @@ export interface ClaudeDeps {
   /** Decision 16's waits (tests shorten them). */
   readonly interruptWaitMs?: number;
   readonly sigintGraceMs?: number;
-  /** Where CLI requests go (Task 8 fills it; default: refused). */
+  /** Where CLI requests go (default: `claudePermissions()`, through the runtime; tests). */
   readonly requests?: () => RequestPort;
   readonly log?: (message: string, details: Record<string, unknown>) => void;
 }

@@ -8,10 +8,10 @@
 //   (`PROVIDER_VERSION`) and kills the process group at once; a line that does not decode does
 //   the same with `PROVIDER_PROTOCOL` (drift fails closed, Review Focus 6).
 // - **Control lines**: the `finisher` SDK MCP server's handshake is answered at once (Task 0: it
-//   starts before the `initialize` answer); every other CLI request (`can_use_tool`,
-//   `hook_callback`, a newer CLI's) goes to one place, `RequestPort` (Task 8's
-//   `claude/permissions.ts` fills it; the default here denies, failing closed); answers to the
-//   host's own requests (`initialize`, `interrupt`) are matched by id.
+//   starts before the `initialize` answer); every other CLI request (`can_use_tool`, an MCP
+//   `tools/call`, `hook_callback`, a newer CLI's) goes to one place, `RequestPort` (Task 8's
+//   `claude/permissions.ts`: a `request` the runtime decides); answers to the host's own
+//   requests (`initialize`, `interrupt`) are matched by id.
 // - **Turns** (Decision 13): `startTurn` writes the user line (the run's facts first) and the
 //   turn ends at its `result` (`map.ts`); a steer is another user line.
 // - **Interrupt** (Decision 16): the `interrupt` request, then up to `interruptWaitMs` (5 s) for
@@ -26,7 +26,8 @@ import type { BoundEvent, ProviderRef, ProviderSession, RuntimeAnswer, TurnInput
 import type { SandboxedChild } from "../sandbox.ts";
 import type { LaunchPlan } from "./launch.ts";
 import { LineMapper, type UsageSource } from "./map.ts";
-import { type CheckOptions, firstTurnGate, mcpReply } from "./probe-check.ts";
+import { claudePermissions } from "./permissions.ts";
+import { type CheckOptions, firstTurnGate, isMcpToolCall, mcpReply } from "./probe-check.ts";
 import { type CliLine, type CliRequest, decodeLine, encodeAnswer, encodeControl, encodeUser, lineFramer, type SystemInit } from "./protocol.ts";
 
 /** Decision 16: how long the turn's `result` may take after the `interrupt` request. */
@@ -35,8 +36,8 @@ export const INTERRUPT_WAIT_MS = 5_000;
 export const SIGINT_GRACE_MS = 2_000;
 
 /**
- * Where the CLI's requests other than the MCP handshake go (`can_use_tool`, `hook_callback`, a
- * newer CLI's): the seam Task 8's `claude/permissions.ts` fills.
+ * Where the CLI's requests other than the MCP handshake go (`can_use_tool`, an MCP `tools/call`,
+ * `hook_callback`, a newer CLI's): `claudePermissions()` (Task 8) unless a test passes its own.
  */
 export interface RequestPort {
   /** A CLI request: the events it becomes (a `request` for the runtime) and an answer line to write now. */
@@ -46,19 +47,6 @@ export interface RequestPort {
   /** The CLI withdrew `requestId` (`control_cancel_request`). */
   cancel(requestId: string): readonly ProviderEvent[];
 }
-
-/**
- * Task 7's requests: every one refused at once, so nothing runs that the runtime did not decide
- * (Review Focus 3). TODO(7D Task 8): `can_use_tool` becomes a `request` the runtime decides.
- */
-export const REFUSE_REQUESTS: RequestPort = {
-  request: (id, r) =>
-    r.subtype === "can_use_tool"
-      ? { answer: encodeAnswer(id, { behavior: "deny", message: "Finisher does not answer permission prompts on this server yet" }) }
-      : { answer: encodeAnswer(id, { error: "not served by this host" }) },
-  respond: (id) => finError("PROVIDER_PROTOCOL", "no Claude Code request is waiting for this answer", { id: id.slice(0, 64) }),
-  cancel: () => [],
-};
 
 export interface InstanceOptions {
   /** This instance's id (a ULID): every event carries it. */
@@ -108,7 +96,7 @@ export class ClaudeInstance {
     this.#queue = queue;
     this.#gate = firstTurnGate(o.plan, o.check ?? {});
     this.#map = new LineMapper(o.usage);
-    this.#requests = o.requests ?? REFUSE_REQUESTS;
+    this.#requests = o.requests ?? claudePermissions();
     this.#pending = [...(o.notices ?? [])];
   }
 
@@ -195,8 +183,9 @@ export class ClaudeInstance {
   #line(l: CliLine | FinError): void {
     if (this.#closed || this.#refused) return;
     if (!("kind" in l)) return this.#refuse(l);
-    // The SDK MCP handshake, at once, before and after the gate (Task 0).
-    if (l.kind === "controlRequest" && l.request.subtype === "mcp_message") {
+    // The SDK MCP handshake, at once, before and after the gate (Task 0); a `tools/call` is a
+    // request like any other (Decision 10's `approve`).
+    if (l.kind === "controlRequest" && l.request.subtype === "mcp_message" && !isMcpToolCall(l.request.message)) {
       this.#write(encodeAnswer(l.request_id, mcpReply(l.request.server_name, l.request.message, this.#o.plan.mcpTools)));
       return;
     }
@@ -205,7 +194,8 @@ export class ClaudeInstance {
       return;
     }
     if (l.kind === "controlCancel") {
-      if (this.#gate.state === "open") this.#deliver(this.#requests.cancel(l.request_id));
+      // Through the gate: a cancel of a held request drops it there (no card, no answer).
+      if (this.#gate.push(l).kind === "forward") this.#deliver(this.#requests.cancel(l.request_id));
       return;
     }
     const step = this.#gate.push(l);

@@ -1,0 +1,112 @@
+// Claude Code's permission prompts through the runtime (plan 7D Task 8; Decisions 4, 10, 18, 21;
+// Review Focus 3): the `RequestPort` every Claude Code instance dispatches its CLI requests to.
+//
+// - **`can_use_tool`** (`--permission-prompt-tool stdio`, Decision 10's default path) becomes a
+//   `request {id: request_id, kind: approval, tool: tool_name, input}` for the runtime, which
+//   decides through 7B's `permissions.ts` and `provider-requests.ts` (policy, a rule's `ask` card,
+//   owner Q3a's managed rule while the `agent` profile is not enforced). Nothing is answered here
+//   until the runtime has decided.
+// - **The MCP fallback** (Decision 10: `--permission-prompt-tool mcp__finisher__approve`): an
+//   `mcp_message` `tools/call` of the `finisher` server's `approve` tool is the same `request`;
+//   the answer is the tool's text content holding the same `{behavior, ...}` body.
+// - **Answers.** `allow` is `{behavior: "allow", updatedInput: <the request's input, the same
+//   object>}`: **Finisher never rewrites a tool's input** (spec §12.3) and never sends
+//   `updatedPermissions` (a remembered allow is a Finisher rule, 7B Decision 12; `encodeAnswer`
+//   copies the fields one by one). `deny` is `{behavior: "deny", message: <the server's reason>}`.
+//   An answer for no waiting request (answered, withdrawn, unknown) writes nothing.
+// - **Withdrawn.** A `control_cancel_request` for a waiting request is `requestCancelled {id}`:
+//   the runtime expires its card and nothing is answered.
+// - **Anything else** is answered `error` at once: a `hook_callback` (no SDK hooks are registered,
+//   Decision 18) and a request subtype this host does not know, each with a notice; an MCP
+//   `tools/call` of another tool (the brokered shell is Task 13's) a JSON-RPC error.
+import type { FinError, ProviderEvent } from "@finisher/contracts";
+import { finError } from "../../errors.ts";
+import type { RuntimeAnswer } from "../adapter.ts";
+import { MCP_SERVER } from "./launch.ts";
+import { isMcpToolCall, mcpReply } from "./probe-check.ts";
+import { type CanUseToolAnswer, type CliRequest, encodeAnswer } from "./protocol.ts";
+import type { RequestPort } from "./session.ts";
+
+/** The `finisher` server's tool that answers permission prompts on the MCP path (Decision 10). */
+const APPROVE = "approve";
+/** The deny message when the runtime gave none. */
+const DENIED = "Finisher denied this call.";
+
+interface Waiting {
+  readonly tool: string;
+  readonly input: Readonly<Record<string, unknown>>;
+  /** The JSON-RPC id of an MCP `approve` call (absent on the `stdio` path). */
+  readonly rpc?: { readonly id: unknown };
+}
+
+const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+const clip = (s: string) => s.slice(0, 64);
+
+/** One instance's port (each instance has its own waiting requests). */
+export function claudePermissions(): RequestPort {
+  const waiting = new Map<string, Waiting>();
+  const ask = (id: string, tool: string, input: Readonly<Record<string, unknown>>, rpc?: { id: unknown }) => {
+    waiting.set(id, rpc === undefined ? { tool, input } : { tool, input, rpc });
+    return { events: [{ type: "request", id, kind: "approval", tool, input } satisfies ProviderEvent] };
+  };
+  const mcpError = (id: unknown, message: string) => ({ mcp_response: { jsonrpc: "2.0", id, error: { code: -32602, message } } });
+
+  return {
+    request(id: string, r: CliRequest) {
+      // A request id the CLI reuses while its first is unanswered: refused, the first stands.
+      if (waiting.has(id)) return { answer: encodeAnswer(id, { error: "a request with this id is waiting" }) };
+      switch (r.subtype) {
+        case "can_use_tool":
+          // TODO(7D Task 0 Step 2): that with `--permission-prompt-tool stdio`, Decision 4's `ask`
+          // list and `--permission-mode manual`, EVERY call of every enabled tool sends
+          // `can_use_tool` (a `Read` in the workspace, a read-only `ls`, a preapproved WebFetch
+          // domain), with these fields; modelled by fake-claude as one `can_use_tool {tool_name,
+          // input, tool_use_id, permission_suggestions: [], blocked_path: null, decision_reason:
+          // null}` per script `ask`.
+          return ask(id, r.tool_name, r.input);
+        case "mcp_message": {
+          const m = r.message as { id?: unknown; params?: { name?: unknown; arguments?: unknown } };
+          if (r.server_name !== MCP_SERVER || !isMcpToolCall(r.message)) return { answer: encodeAnswer(id, mcpReply(r.server_name, r.message, [])) };
+          const rpcId = m.id ?? null;
+          if (m.params?.name !== APPROVE) return { answer: encodeAnswer(id, mcpError(rpcId, `tool not served here: ${clip(String(m.params?.name))}`)) };
+          // TODO(7D Task 0 Step 2): the MCP fallback's call shape (`tools/call` of `approve` with
+          // `arguments {tool_name, input, tool_use_id}`) and that the CLI reads the answer from
+          // the first text content; modelled by fake-claude's `ask` under
+          // `--permission-prompt-tool mcp__finisher__approve`.
+          const args = m.params.arguments;
+          if (!isObject(args) || typeof args.tool_name !== "string" || !isObject(args.input)) return { answer: encodeAnswer(id, mcpError(rpcId, "approve takes {tool_name, input}")) };
+          return ask(id, args.tool_name, args.input, { id: rpcId });
+        }
+        case "hook_callback":
+          // No SDK hooks are registered (`initialize {hooks: null}`): one cannot arrive.
+          return {
+            answer: encodeAnswer(id, { error: "no hooks are registered by this host" }),
+            events: [{ type: "notice", name: "hookCallback", details: { harness: "claudeCode", callbackId: clip(r.callback_id) } }],
+          };
+        case "unknown":
+          return {
+            answer: encodeAnswer(id, { error: "not served by this host" }),
+            events: [{ type: "notice", name: "unservedRequest", details: { harness: "claudeCode", subtype: clip(r.name) } }],
+          };
+      }
+    },
+
+    respond(id: string, a: RuntimeAnswer): string | FinError {
+      const w = waiting.get(id);
+      if (w === undefined) return finError("PROVIDER_PROTOCOL", "no Claude Code request is waiting for this answer", { id: clip(id) });
+      if (a.kind !== "approval") return finError("PROVIDER_PROTOCOL", "a Claude Code permission prompt takes an approval", { id: clip(id), kind: a.kind });
+      waiting.delete(id);
+      // The input as the CLI sent it, the same object: never rewritten.
+      const body: CanUseToolAnswer = a.allow ? { behavior: "allow", updatedInput: w.input } : { behavior: "deny", message: a.message ?? DENIED };
+      if (w.rpc === undefined) return encodeAnswer(id, body);
+      return encodeAnswer(id, { mcp_response: { jsonrpc: "2.0", id: w.rpc.id, result: { content: [{ type: "text", text: JSON.stringify(body) }] } } });
+    },
+
+    cancel(id: string): readonly ProviderEvent[] {
+      // TODO(7D Task 0 Step 2): when the CLI sends `control_cancel_request` (an interrupt, a
+      // timeout of its own?); modelled by fake-claude as one after the script's `cancelAfterMs`
+      // for an unanswered `ask`, which then waits for no answer.
+      return waiting.delete(id) ? [{ type: "requestCancelled", id }] : [];
+    },
+  };
+}

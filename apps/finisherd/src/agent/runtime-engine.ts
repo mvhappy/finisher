@@ -380,7 +380,10 @@ export abstract class RuntimeEngine {
           node: async (payload) => void (await node("approval", payload)),
           respond: (a) => call(live.provider.respond(e.id, a)),
           log: (m, d) => this.log(m, { sessionId, ...d }),
+          unconfined: live.sandbox !== undefined && live.sandbox.status.kind !== "enforced",
         }, e);
+      case "requestCancelled":
+        return this.deps.requests?.withdraw(sessionId, e.id);
       case "usage":
         return this.#usage(live, runId, e);
       case "turnCompleted":
