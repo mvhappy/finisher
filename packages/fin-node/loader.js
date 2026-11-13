@@ -27,6 +27,32 @@ export function nativeFileNames(platform, arch, getReport) {
   return [base, ...suffixes.map((s) => `${base}-${s}`)].map((s) => `fin-node.${s}.node`);
 }
 
+/**
+ * Loads the napi binding from `dir` (ending in a separator): the first of `nativeFileNames` that
+ * exists and loads. A binary that is present but does not load (the other libc) is skipped; when
+ * none loads the first failure is thrown, and when none exists the error names what was looked for.
+ */
+export function loadNative({ dir, platform, arch, exists, load, getReport }) {
+  const base = `${platform}-${arch}`;
+  const names = nativeFileNames(platform, arch, getReport);
+  const files = names.map((n) => dir + n).filter((p) => exists(p));
+  if (files.length === 0) {
+    throw new Error(
+      `@finisher/fin-node: no native binary for ${base} in ${dir} (looked for ${names.join(", ")}); ` +
+        "run `pnpm --filter @finisher/fin-node build`",
+    );
+  }
+  let failure;
+  for (const file of files) {
+    try {
+      return load(file);
+    } catch (e) {
+      failure ??= e;
+    }
+  }
+  throw failure;
+}
+
 /** The 7C launcher's file name on `platform` (plan 7C Task 5). */
 export function sandboxExecFileName(platform) {
   return platform === "win32" ? "fin-sandbox-exec.exe" : "fin-sandbox-exec";

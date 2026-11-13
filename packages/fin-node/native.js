@@ -3,7 +3,7 @@
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import { nativeFileNames } from "./loader.js";
+import { loadNative } from "./loader.js";
 
 const require = createRequire(import.meta.url);
 const here = fileURLToPath(new URL(".", import.meta.url));
@@ -13,29 +13,7 @@ export const binaryDir = process.env.FIN_NODE_BINARY_DIR ? `${process.env.FIN_NO
 /** Must match `ERROR_PREFIX` in crates/fin-node/src/lib.rs. */
 const ERROR_PREFIX = "FIN_CORE_ERROR:";
 
-function loadNative() {
-  const base = `${process.platform}-${process.arch}`;
-  const names = nativeFileNames(process.platform, process.arch);
-  const files = names.map((n) => binaryDir + n).filter((p) => existsSync(p));
-  if (files.length === 0) {
-    throw new Error(
-      `@finisher/fin-node: no native binary for ${base} in ${binaryDir} (looked for ${names.join(", ")}); ` +
-        "run `pnpm --filter @finisher/fin-node build`",
-    );
-  }
-  // The libc-matching binary is first; one that is present but does not load (the other libc) is skipped.
-  let failure;
-  for (const file of files) {
-    try {
-      return require(file);
-    } catch (e) {
-      failure ??= e;
-    }
-  }
-  throw failure;
-}
-
-export const native = loadNative();
+export const native = loadNative({ dir: binaryDir, platform: process.platform, arch: process.arch, exists: existsSync, load: require });
 
 /** Turns a rejected native call into an Error carrying the core `code`, `details` and `fix`. */
 export function toFinError(e) {
