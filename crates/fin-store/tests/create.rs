@@ -125,21 +125,6 @@ fn create_retry_same_key_returns_project() {
 }
 
 #[test]
-fn create_key_is_stored_in_meta() {
-    let e = env();
-    let s = Store::create(&e.data, &e.dir, "Demo", secs(30), Some("key-7")).unwrap();
-    let db = db_path(&e.data, s.project_id());
-    drop(s);
-    let conn = rusqlite::Connection::open(&db).unwrap();
-    let key: String = conn
-        .query_row("SELECT value FROM meta WHERE key = 'createKey'", [], |r| {
-            r.get(0)
-        })
-        .unwrap();
-    assert_eq!(key, "key-7");
-}
-
-#[test]
 fn empty_name_rejected() {
     let e = env();
     for name in ["", "   ", "\t\n"] {
@@ -244,6 +229,55 @@ fn create_key_survives_a_rebuild() {
     s.close().unwrap();
     let again = Store::create(&e.data, &e.dir, "Demo", secs(30), Some("k1")).unwrap();
     assert_eq!(again.project_id(), id);
+}
+
+#[test]
+fn create_key_survives_a_rebuild_from_the_folder_alone() {
+    // The database is gone (a new machine, a lost server data): the open rebuilds from the
+    // folder, and a retry of the create with the same key still returns the project.
+    let e = env();
+    let s = Store::create(&e.data, &e.dir, "Demo", secs(30), Some("k1")).unwrap();
+    let id = s.project_id().to_string();
+    s.close().unwrap();
+    std::fs::remove_dir_all(e.data.join("projects").join(&id)).unwrap();
+    Store::open(&e.data, &e.dir).unwrap().close().unwrap();
+    let again = Store::create(&e.data, &e.dir, "Demo", secs(30), Some("k1")).unwrap();
+    assert_eq!(again.project_id(), id);
+    drop(again);
+    // Another key is still another create; the same key with another name is still reuse.
+    let err = code(Store::create(&e.data, &e.dir, "Demo", secs(30), Some("k2")).unwrap_err());
+    assert_eq!(err.code, "PROJECT_EXISTS");
+    let err = code(Store::create(&e.data, &e.dir, "Other", secs(30), Some("k1")).unwrap_err());
+    assert_eq!(err.code, "IDEM_KEY_REUSED");
+    // A retry on another server data (it has no database of the project) is answered too.
+    let other = e.data.with_file_name("server-data-b");
+    let b = Store::create(&other, &e.dir, "Demo", secs(30), Some("k1")).unwrap();
+    assert_eq!(b.project_id(), id);
+}
+
+#[test]
+fn the_create_key_is_never_in_the_folder_in_plain_text() {
+    let e = env();
+    let key = "client-request-6f1d0c";
+    Store::create(&e.data, &e.dir, "Demo", secs(30), Some(key))
+        .unwrap()
+        .close()
+        .unwrap();
+    for f in files(&e.dir) {
+        let bytes = std::fs::read(e.dir.join(&f)).unwrap();
+        assert!(
+            !String::from_utf8_lossy(&bytes).contains(key),
+            "{f} holds the key"
+        );
+    }
+    let file: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(e.dir.join("finisher.project.json")).unwrap())
+            .unwrap();
+    let hashed = file["createKey"].as_str().unwrap();
+    assert!(
+        hashed.starts_with("blake3:") && hashed.len() == 7 + 64,
+        "{hashed}"
+    );
 }
 
 /// Stored rationals are read leniently: a hand-edited `"rate": "30/1"` is 30, not an

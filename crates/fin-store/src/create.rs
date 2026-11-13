@@ -5,7 +5,7 @@
 //! 1. Validate before touching disk: the name (`INVALID_NAME` when empty or whitespace), the
 //!    rate (`fin_core::new_project`) and the key.
 //! 2. The folder already holds `finisher.project.json`: a retry of this create (the same
-//!    `idem` key in that project's `meta.createKey`, and the same name and rate) opens and
+//!    `idem` key, hashed in the project file's `createKey`, and the same name and rate) opens and
 //!    returns that project; the same key with another name or rate is `IDEM_KEY_REUSED`;
 //!    anything else is `PROJECT_EXISTS`.
 //! 3. Build the database as `project.fdb.creating-<ulid>` beside where it goes (a fresh id, so
@@ -46,8 +46,17 @@ use crate::{
     storage_kind, unwritable,
 };
 
-/// `meta` key holding the key a project was created with (carried across rebuilds).
-pub(crate) const CREATE_KEY: &str = "createKey";
+/// The project file's `createKey` for `key` and project `id`: `blake3:<hex>` of the id and the
+/// key under a derived key. The folder is shared and synced, so it holds no client's key
+/// itself; keyed by the id, the same key in two projects never hashes alike. It lives in the
+/// folder, not the database, so a rebuild from the folder alone (or another server) keeps it.
+fn hash_create_key(id: &str, key: &str) -> String {
+    let mut h = blake3::Hasher::new_derive_key("finisher 2026-11 project create key");
+    h.update(id.as_bytes());
+    h.update(&[0]);
+    h.update(key.as_bytes());
+    format!("blake3:{}", h.finalize().to_hex())
+}
 
 /// How long a retry waits for the creator's lease (module docs).
 const CREATOR_LEASE_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
@@ -141,7 +150,7 @@ impl Store {
     /// `<server_data>/projects/<id>/project.fdb` with `main` at rev 0, then
     /// `<project_dir>/finisher.project.json` with the project's [`Genesis`], written once,
     /// and `.finisher/`; acquires the lease. `idem`: a key that makes a retry of this create
-    /// return the project it made (stored in `meta.createKey`).
+    /// return the project it made (stored hashed in the project file's `createKey`).
     ///
     /// Errors: `INVALID_NAME`, `PROJECT_EXISTS`, `IDEM_KEY_REUSED` (the key created this
     /// folder's project with another name or rate), `PROJECT_DIR_UNWRITABLE`, a rate error.
@@ -207,7 +216,7 @@ impl Store {
             fs::create_dir_all(&db_dir).map_err(StoreError::io(&db_dir))?;
             db_lock = Some(crate::dblock::shared(&db_dir)?);
             crate::orphans::mark(&db_dir, project_dir).map_err(StoreError::io(&db_dir))?;
-            build(&db_path, &project, project_dir, idem)
+            build(&db_path, &project, project_dir)
         })();
         if let Err(e) = built {
             drop(db_lock.take());
@@ -215,7 +224,8 @@ impl Store {
             return Err(e);
         }
         crash_point()?;
-        let file = ProjectFile::new(&id, genesis.clone(), kind.to_string());
+        let mut file = ProjectFile::new(&id, genesis.clone(), kind.to_string());
+        file.create_key = idem.map(|k| hash_create_key(&id, k));
         let mut bytes = serde_json::to_vec_pretty(&file)?;
         bytes.push(b'\n');
         match write_marker(project_dir, &bytes) {
@@ -269,7 +279,6 @@ fn build(
     db_path: &Path,
     project: &fin_core::Project,
     project_dir: &Path,
-    idem: Option<&str>,
 ) -> Result<(), StoreError> {
     let dir = db_path.parent().unwrap_or(Path::new("."));
     let tmp = dir.join(format!(
@@ -279,9 +288,6 @@ fn build(
     let mut conn = db::connect(&tmp, true)?;
     db::init(&mut conn, project, MAIN)?;
     copies::record(&conn, project_dir)?;
-    if let Some(key) = idem {
-        db::set_meta(&conn, CREATE_KEY, key)?;
-    }
     conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
     drop(conn);
     for ext in ["-wal", "-shm"] {
@@ -305,7 +311,7 @@ fn existing(
     let Ok(file) = pf::read_project_file_once(project_dir) else {
         return Err(exists_error(project_dir));
     };
-    if create_key(&db_path(server_data, &file.id)).as_deref() != Some(key) {
+    if file.create_key.as_deref() != Some(hash_create_key(&file.id, key).as_str()) {
         return Err(exists_error(project_dir));
     }
     if file.genesis.as_ref() != Some(genesis) {
@@ -335,16 +341,4 @@ fn wait_for_creator_lease(project_dir: &Path) {
     while !lease.exists() && started.elapsed() < CREATOR_LEASE_WAIT {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-}
-
-/// `meta.createKey` of the database at `path`, read without writing to it.
-fn create_key(path: &Path) -> Option<String> {
-    if !path.is_file() {
-        return None;
-    }
-    let conn = crate::migrations::open_inspect(path).ok()?;
-    conn.query_row("SELECT value FROM meta WHERE key = ?1", [CREATE_KEY], |r| {
-        r.get(0)
-    })
-    .ok()
 }
