@@ -799,7 +799,8 @@ fn upcast_v3_record_is_identity() {
 }
 
 /// The v4 → v5 snapshot step is the identity (6B-1 Task 11): `snapshot_v4.json` (corpus case
-/// 05 as schema 4 wrote it: media assets with `video`, keyed items) comes back as it was but
+/// 05 as schema 4 wrote it: media assets with `video`, keyed items, plus schema 4's own
+/// fields: a graphic's `sourceIn` and an audio clip's fade offsets) comes back as it was but
 /// for `schemaVersion: 5`, with no `display`, `rotation` or `pixelAspect` guessed.
 #[test]
 fn upcast_v4_snapshot_golden() {
@@ -819,6 +820,18 @@ fn upcast_v4_snapshot_golden() {
         videos
             .iter()
             .all(|v| v.display.is_none() && v.rotation.is_none() && v.pixel_aspect.is_none())
+    );
+    let typed = serde_json::to_value(&got).unwrap();
+    let tracks = &typed["timelines"][0]["tracks"];
+    assert_eq!(
+        tracks[1]["items"][0]["sourceIn"], "1/2",
+        "the graphic's sourceIn"
+    );
+    let audio = &tracks[2]["items"][0]["audio"];
+    assert_eq!(
+        (&audio["fadeInOffset"], &audio["fadeOutOffset"]),
+        (&json!("1"), &json!("1/2")),
+        "the fade offsets"
     );
 }
 
