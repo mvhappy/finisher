@@ -17,8 +17,12 @@
 // - **Command order** (`CommandOrder`): a session's commands run one after another in the order
 //   they came, each with its `UserPrompt` hook inside its turn, so a slow hook never lets a later
 //   command (a steer, an end) overtake it. The order is its own queue, in front of the session's
-//   queue: provider events and timers go on while a hook runs.
-import type { NodeKind, Session } from "@finisher/contracts";
+//   queue: provider events and timers go on while a hook runs. `interrupt` and approval answers
+//   are not in it (they never wait for a hook); an interrupt, an end and a delete cancel the
+//   prompts queued before them that have not passed their hook (`SESSION_INTERRUPTED`,
+//   `SESSION_ENDED`): such a prompt never runs.
+import type { FinError, NodeKind, Session } from "@finisher/contracts";
+import { finError } from "../errors.ts";
 import type { ContextPort, HookContextItem } from "../hooks/session.ts";
 import { call, type Live } from "./runtime-live.ts";
 
@@ -131,10 +135,30 @@ export class HookContexts {
 /** Each session's commands, in the order they came (see the module docs). */
 export class CommandOrder {
   readonly #tails = new Map<string, Promise<unknown>>();
+  /** Per session: how many cancels so far, and the last one's error. */
+  readonly #cancels = new Map<string, { readonly n: number; readonly error: FinError }>();
 
-  /** Runs `f` once every earlier command of the session has finished. */
-  run<A>(sessionId: string, f: () => Promise<A>): Promise<A> {
-    const done = (this.#tails.get(sessionId) ?? Promise.resolve()).then(f);
+  /** Every prompt of the session queued so far that has not passed its hook fails instead of running. */
+  cancel(sessionId: string, why: "interrupted" | "ended"): void {
+    const error = why === "interrupted" ? finError("SESSION_INTERRUPTED", "the session was interrupted before this prompt ran", { sessionId }) : finError("SESSION_ENDED", "the session ended before this prompt ran", { sessionId });
+    this.#cancels.set(sessionId, { n: (this.#cancels.get(sessionId)?.n ?? 0) + 1, error });
+  }
+
+  /** Runs `f` once every earlier command of the session has finished; with `hook`, after it, unless cancelled meanwhile. */
+  run<A, C>(sessionId: string, f: (c?: C) => Promise<A>, hook?: () => Promise<C>): Promise<A> {
+    const at = this.#cancels.get(sessionId)?.n ?? 0;
+    const live = () => {
+      const now = this.#cancels.get(sessionId);
+      if (now !== undefined && now.n !== at) throw now.error;
+    };
+    const step = async () => {
+      if (hook === undefined) return f();
+      live();
+      const c = await hook();
+      live();
+      return f(c);
+    };
+    const done = (this.#tails.get(sessionId) ?? Promise.resolve()).then(step);
     const tail = done.then(
       () => {},
       () => {},

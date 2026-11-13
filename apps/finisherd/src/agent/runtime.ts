@@ -10,7 +10,7 @@
 //   (`provider-requests.ts`).
 // - A start of a non-local model without a price is refused (`PRICING_UNKNOWN`); every start
 //   answers the persistent warnings (`SANDBOX_DISABLED` until 7C, owner decision F2).
-// - Every command runs after the session's earlier commands (`CommandOrder`), then in its queue.
+// - A command runs after the session's earlier ones (`CommandOrder`; not interrupt, approve), then in its queue.
 // - Children (7B Task 6, `subagents.ts`): `spawnChild` starts one for a parent session,
 //   `waitChildren` waits on them; after every transition the subagents see it (a brief's end,
 //   the parent's `subagent` node, the cascade; a root's end waits for a descendant's calls in
@@ -21,8 +21,7 @@
 //   a start opens through its `openSession`, the outbox's credential effects go to
 //   `core.credentials.handle`, and a resume refreshes the credential first. The journal is
 //   Task 10's (`RuntimeJournal`); the built-in tools are 8b's (`ToolExecutor`).
-// - Hooks (7F Task 6, `hooks/session.ts`): `UserPrompt` once per person's prompt (a start's before
-//   the open), `SessionStart` awaited before the first run, `SessionEnd`; context via `hook-context.ts`.
+// - Hooks (7F Task 6, `hooks/session.ts`, `hook-context.ts`): `UserPrompt`, `SessionStart`, `SessionEnd`, context.
 import type { AgentWarning, Approval, ApprovalDecision, ChildResult, FinError, Principal, Run, RunTrigger, Session, WatchItem } from "@finisher/contracts";
 import { Cause, Effect, Exit, Option, type Stream } from "effect";
 import type { CallMeta } from "../diagnostics.ts";
@@ -213,9 +212,10 @@ export class Runtime extends RuntimeEngine {
   }
 
   /** A session command after its earlier ones (`CommandOrder`): a prompt's `UserPrompt` hook, then `f` in the session's queue. */
-  #command<A>(sessionId: string, f: (context?: HookContextItem) => Promise<A>, p?: { by: Principal; text: string; origin: "prompt" | "steer" }): Promise<A> {
-    const hook = async () => (p === undefined ? undefined : this.deps.hooks?.userPrompt(this.session(sessionId), p.by, p.text, p.origin));
-    return this.#order.run(sessionId, () => hook().then((c) => this.serial(sessionId, () => f(c))));
+  #command<A>(sessionId: string, f: (context?: HookContextItem) => Promise<A>, p?: { by: Principal; text: string; origin: "prompt" | "steer" } | "ends"): Promise<A> {
+    if (p === "ends") this.#order.cancel(sessionId, "ended");
+    const hook = typeof p === "object" ? async () => this.deps.hooks?.userPrompt(this.session(sessionId), p.by, p.text, p.origin) : undefined;
+    return this.#order.run(sessionId, (c) => this.serial(sessionId, () => f(c)), hook);
   }
 
   // Commands --------------------------------------------------------------------------------
@@ -420,11 +420,12 @@ export class Runtime extends RuntimeEngine {
   interrupt(sessionId: string, _by: Principal): Effect.Effect<Session, FinError> {
     return attempt(() => {
       this.#guard();
-      return this.#command(sessionId, () => this.#interruptIn(sessionId, "userInterrupt"));
+      return this.serial(sessionId, () => this.#interruptIn(sessionId, "userInterrupt"));
     });
   }
 
   async #interruptIn(sessionId: string, reason: string): Promise<Session> {
+    this.#order.cancel(sessionId, "interrupted");
     const live = this.lives.get(sessionId);
     if (live) {
       live.runId = null;
@@ -473,7 +474,7 @@ export class Runtime extends RuntimeEngine {
         const session = await this.#endIn(sessionId, "userEnded");
         this.forgetBudget(sessionId);
         return session;
-      });
+      }, "ends");
     });
   }
 
@@ -498,7 +499,7 @@ export class Runtime extends RuntimeEngine {
         await this.store.delete(sessionId);
         this.forgetBudget(sessionId);
         await this.drain();
-      });
+      }, "ends");
     });
   }
 
@@ -513,7 +514,7 @@ export class Runtime extends RuntimeEngine {
       const found = this.store.approval(approvalId) ?? (() => {
         throw finError("APPROVAL_NOT_FOUND", "no such approval", { id: approvalId });
       })();
-      return this.#command(found.sessionId, async () => {
+      return this.serial(found.sessionId, async () => {
         const raising = found.kind === "budget" && decision === "allow";
         // The session's `Budget` puts its limits in the ledger first, outside the transaction below.
         const b = raising ? this.budget(this.session(found.sessionId)) : undefined;

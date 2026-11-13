@@ -197,19 +197,54 @@ describe("command order and live slots (Task 6 review)", () => {
     expect(h.adapter.log.steers.map((s) => s.text)).toEqual(["first GATED", "second"]);
   });
 
-  test("slow_user_prompt_holds_a_later_end: the prompt's run starts, then the session ends", async () => {
+  test("end_cancels_a_pending_prompt: the end waits for the running hook, then the prompt never runs", async () => {
     const h = hooked([ENDS], [gated()]);
     await h.runtime.boot();
     const { session } = await run(h.runtime.start({ projectId: "P1" }, PEOPLE, META));
-    const prompted = run(h.runtime.prompt(session.id, "trim GATED", PEOPLE));
+    const prompted = failure(h.runtime.prompt(session.id, "trim GATED", PEOPLE));
+    // The prompt's hook is under way (gated) when the end comes.
+    await new Promise((r) => setTimeout(r, 200));
     const ended = run(h.runtime.end(session.id, PEOPLE));
     await new Promise((r) => setTimeout(r, 300));
     expect(status(session.id)).toBe("idle");
     open();
-    const r = await prompted;
+    expect(await prompted).toMatchObject({ code: "SESSION_ENDED" });
     expect((await ended).status).toBe("ended");
-    expect(h.adapter.log.turns.map((t) => t.text)).toEqual(["trim GATED"]);
-    expect(store.run(r.id)).toBeDefined();
+    expect(h.adapter.log.turns).toEqual([]);
+    expect(store.runs(session.id)).toEqual([]);
+  });
+
+  test("interrupt_does_not_wait_for_a_prompt_hook: it completes while the hook is gated; the steer never runs", async () => {
+    const h = hooked([WORKING], [gated()]);
+    await h.runtime.boot();
+    const { session } = await run(h.runtime.start({ projectId: "P1", prompt: "go" }, PEOPLE, META));
+    await until(() => status(session.id) === "running" && h.adapter.log.turns.length === 1, "running");
+    const steered = failure(h.runtime.steer(session.id, "late GATED", PEOPLE));
+    await new Promise((r) => setTimeout(r, 200));
+    const interrupted = await Promise.race([run(h.runtime.interrupt(session.id, PEOPLE)), new Promise((r) => setTimeout(() => r("still waiting"), 3_000))]);
+    expect(interrupted).toMatchObject({ status: "interrupted" });
+    expect(status(session.id)).toBe("interrupted");
+    open();
+    expect(await steered).toMatchObject({ code: "SESSION_INTERRUPTED" });
+    await new Promise((r) => setTimeout(r, 200));
+    expect(h.adapter.log.steers).toEqual([]);
+    expect(store.nodes(session.id).filter((n) => n.kind === "userMessage").map((n) => payload(n).text)).toEqual(["go"]);
+  });
+
+  test("approval_answer_does_not_wait_for_a_prompt_hook: a budget card settles while the hook is gated", async () => {
+    const OVER: FakeScript = { name: "over", turns: [[{ emit: [usage(1200, 0)] }, { awaitAnswer: "never" }]] };
+    const h = hooked([OVER, ENDS], [gated()]);
+    await h.runtime.boot();
+    const { session } = await run(h.runtime.start({ projectId: "P1", prompt: "go", budget: { tokens: 1000 } }, PEOPLE, META));
+    await until(() => status(session.id) === "interrupted" && store.approvals(session.id).length === 1, "the budget card");
+    const card = store.approvals(session.id)[0]!;
+    const prompted = run(h.runtime.prompt(session.id, "more GATED", PEOPLE));
+    await new Promise((r) => setTimeout(r, 200));
+    const answered = await Promise.race([run(h.runtime.approve(card.id, "allow", { tokens: 5000 }, PEOPLE)), new Promise((r) => setTimeout(() => r("still waiting"), 3_000))]);
+    expect(answered).toMatchObject({ approval: { id: card.id, status: "answered" } });
+    expect(store.approval(card.id)!.status).not.toBe("open");
+    open();
+    await prompted;
   });
 
   test("steer_to_a_run_waiting_for_a_slot_keeps_its_context: delivered with the steer at admission", async () => {
