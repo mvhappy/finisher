@@ -78,7 +78,14 @@ const Request = ev("request", {
   kind: Schema.Literals(["approval", "userInput"]),
   tool: Schema.optionalKey(Schema.String),
   input: Schema.optionalKey(Schema.Unknown),
+  /** The tool call it asks about (its `toolStarted.providerId`), when the provider names it. */
+  providerId: Schema.optionalKey(Schema.String),
 });
+/**
+ * The provider withdrew request `id` before it was answered (Claude Code's
+ * `control_cancel_request`): its card is expired (`withdrawn`) and no answer is sent.
+ */
+const RequestCancelled = ev("requestCancelled", { id: Schema.String });
 const UsageEvent = ev("usage", {
   input: Count,
   output: Count,
@@ -86,6 +93,12 @@ const UsageEvent = ev("usage", {
   cacheWrite: Count,
   reasoning: Count,
   costMicros: Schema.optionalKey(Count),
+  /**
+   * How the adapter knows `costMicros` (plan 7D Decision 15): `reported` by the provider, or
+   * `subscription` (a plan sign-in: the money is shown, never charged against money budgets).
+   * Absent: the runtime's pricing decides.
+   */
+  costBasis: Schema.optionalKey(Schema.Literals(["reported", "subscription"])),
 });
 const TurnCompleted = ev("turnCompleted", { stopReason: Schema.String });
 const TurnFailed = ev("turnFailed", { error: ErrorShape });
@@ -116,6 +129,7 @@ export const ProviderEvent = Schema.Union([
   ToolOutputDelta,
   ToolCompleted,
   Request,
+  RequestCancelled,
   UsageEvent,
   TurnCompleted,
   TurnFailed,
@@ -139,6 +153,7 @@ export const PROVIDER_EVENT_TYPES = [
   "toolOutputDelta",
   "toolCompleted",
   "request",
+  "requestCancelled",
   "usage",
   "turnCompleted",
   "turnFailed",

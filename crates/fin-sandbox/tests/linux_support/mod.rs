@@ -188,6 +188,7 @@ pub fn agent(t: &Path) -> fin_sandbox::launch::LaunchRequest {
         project_dir: project,
         library_roots: vec![],
         session_dir: data.join("agents").join("s1"),
+        sign_in_home: None,
         sign_in_store: None,
         toolchains: fin_sandbox::data::toolchain_base_resolved(fin_sandbox::Os::Linux),
         server_data: data,

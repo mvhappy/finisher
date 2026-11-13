@@ -29,6 +29,8 @@ export interface Live {
   closed: boolean;
   /** The run this instance is working on, else null. */
   runId: string | null;
+  /** The last run this instance worked on: a late `usage` of its turn is charged there (7D Task 9). */
+  served: string | null;
   /** Announced calls without a result, by the provider's id. */
   readonly calls: Map<string, Call>;
   /** Calls the runtime is executing, by call id. */
@@ -54,7 +56,7 @@ export async function openLive(
   spec: SessionSpec,
   env: OpenEnvironment,
   caps: Capabilities,
-  onEvent: (b: BoundEvent) => void,
+  onEvent: (b: BoundEvent, live: Live) => void,
   onEnd: (live: Live) => void,
   sandbox?: Effect.Effect<SessionSandbox, FinError, Scope.Scope>,
 ): Promise<Live> {
@@ -84,6 +86,7 @@ export async function openLive(
     pump: null,
     closed: false,
     runId: null,
+    served: null,
     calls: new Map(),
     running: new Map(),
     pendingStop: null,
@@ -92,7 +95,7 @@ export async function openLive(
     reservations: [],
   };
   live.pump = Effect.runFork(
-    Stream.runForEach(provider.events, (b) => Effect.sync(() => onEvent(b))).pipe(
+    Stream.runForEach(provider.events, (b) => Effect.sync(() => onEvent(b, live))).pipe(
       Effect.catchCause(() => Effect.void),
       Effect.ensuring(Effect.sync(() => onEnd(live))),
     ),
@@ -100,15 +103,34 @@ export async function openLive(
   return live;
 }
 
-/** Stops the pump and closes the instance's scope (the adapter's finalizers end it). */
-export async function closeLive(live: Live): Promise<void> {
+/** How long `closeLive` waits for an instance's queued events before it cuts the pump. */
+export const DRAIN_MS = 5_000;
+
+/**
+ * Closes the instance's scope, then lets the pump forward what it already queued and waits for
+ * its end (7D Task 9: an interrupt's `result` and its usage, charged as the turn's tail).
+ * Closing the scope seals the producer: the adapter's finalizers end its event stream (the
+ * `ProviderSession.events` contract), so the pump ends once the backlog is through. A stream
+ * that does not end within `drainMs` is cut, and logged.
+ */
+export async function closeLive(live: Live, log?: (message: string, details: Record<string, unknown>) => void, drainMs = DRAIN_MS): Promise<void> {
   live.closed = true;
   if (live.stopDeadline !== null) clearTimeout(live.stopDeadline);
   live.stopDeadline = null;
   const pump = live.pump;
   live.pump = null;
-  if (pump) await Effect.runPromise(Fiber.interrupt(pump));
   await Effect.runPromise(Scope.close(live.scope, Exit.void));
+  if (pump === null) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const cut = new Promise<false>((r) => {
+    timer = setTimeout(() => r(false), drainMs);
+  });
+  const drained = await Promise.race([Effect.runPromise(Fiber.await(pump)).then(() => true as const), cut]);
+  clearTimeout(timer);
+  if (!drained) {
+    log?.("agent runtime: an instance's events did not drain; the rest are dropped", { sessionId: live.sessionId, instance: live.instance, drainMs });
+    await Effect.runPromise(Fiber.interrupt(pump));
+  }
 }
 
 /** Closes the scope once the pump has ended by itself (a detached, exited instance). */

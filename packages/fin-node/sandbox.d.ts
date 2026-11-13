@@ -29,6 +29,9 @@ export declare function sandboxToolchainBase(): string[];
 /** `null` when `fin-sandbox` builds an `agent` policy from `input`, else why not. Plan 7C Task 11. */
 export declare function sandboxAgentCheck(input: AgentInput): string | null;
 
+/** `null` when `fin-sandbox` builds a `hook` policy from `input`, else why not. 7F plan Task 3. */
+export declare function sandboxHookCheck(input: HookInput): string | null;
+
 /**
  * One ACE the broker holds (plan 7C Task 10): `sid` gets `mask` on `path` (`inherit`: the
  * subtree inherits it) for `owner` (`session:<id>`, `job:<id>`, `call:<id>`, or `static`:

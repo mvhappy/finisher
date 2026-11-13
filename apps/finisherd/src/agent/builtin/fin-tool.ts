@@ -55,6 +55,8 @@ export interface FinFlag {
   readonly long?: string;
   readonly short?: string;
   readonly values: number | null;
+  /** A list flag's separator: clap splits each value at it (`--accept a,b`). */
+  readonly delimiter?: string;
 }
 
 /** One command of `fin schema commands`. */
@@ -64,6 +66,8 @@ export interface FinCommand {
   readonly paths: ReadonlyArray<{ readonly arg: string; readonly flag?: string; readonly position?: number | null }>;
   /** Its flags, the global ones included (an older `fin` gives none: a call with path arguments is then refused). */
   readonly flags?: ReadonlyArray<FinFlag>;
+  /** Its positionals' ids, in order. */
+  readonly positionals?: ReadonlyArray<string>;
 }
 
 /** What the tool reads of an argv (`FinIndex.parse`). */
@@ -107,6 +111,16 @@ export class FinIndex {
     }
     this.#prefixes = prefixes;
     this.#globals = globals;
+  }
+
+  /** The commands, in index order (`claude/attribution.ts` reads argv with them too). */
+  get commands(): ReadonlyArray<FinCommand> {
+    return [...this.#byName.values()];
+  }
+
+  /** The flags that may come before or between the command words. */
+  get globals(): ReadonlyArray<FinFlag> {
+    return this.#globals;
   }
 
   /**

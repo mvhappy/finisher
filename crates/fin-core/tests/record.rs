@@ -612,9 +612,9 @@ fn drop_record_golden() {
         bytes,
         concat!(
             r#"{"txId":"tx-test","seq":7,"kind":"drop","from":"br2","drops":["o1","o2"],"#,
-            r#""undrops":["o3"],"schemaVersion":5,"parentHash":null,"author":"test","#,
+            r#""undrops":["o3"],"schemaVersion":6,"parentHash":null,"author":"test","#,
             r#""committedAt":1700000000000,"intent":{"txId":"tx-test","author":"test","#,
-            r#""branch":"main","baseRev":0,"schemaVersion":5,"ops":[]},"resolved":[],"#,
+            r#""branch":"main","baseRev":0,"schemaVersion":6,"ops":[]},"resolved":[],"#,
             r#""inverse":[],"bindings":{}}"#
         )
     );

@@ -3,13 +3,15 @@
 // `fin` tool (`builtin/fin-tool.ts`, our own `fin` with the session's credential, outside the OS
 // sandbox as spec §8.9 says) and the built-in environment's `fin` command map
 // (`builtin/environment.ts`: our own `fin` with no credential and only `PATH`). Each finding is
-// `AGENT_SPAWN <path>:<line>: <module>`.
+// `AGENT_SPAWN <path>:<line>: <module>`. Hooks (7F plan Task 3) start their processes through
+// `apps/finisherd/src/sandbox/launch.ts` only: no file under `apps/finisherd/src/hooks/` is exempt.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { report, rootArg, walk } from "./walk.mjs";
 
 export const ROOT = "apps/finisherd/src/agent/";
+export const ROOTS = [ROOT, "apps/finisherd/src/hooks/"];
 export const ALLOWED = new Set([`${ROOT}sandbox.ts`, `${ROOT}builtin/fin-tool.ts`, `${ROOT}builtin/environment.ts`]);
 
 /** A static or dynamic import, or a `require`, of a module that starts processes. */
@@ -26,7 +28,7 @@ export const FORBIDDEN = [
 
 /** Whether `path` (repo-relative, "/") is checked. */
 export function checked(path) {
-  return path.startsWith(ROOT) && /\.(?:[cm]?[jt]s|tsx)$/.test(path) && !ALLOWED.has(path);
+  return ROOTS.some((r) => path.startsWith(r)) && /\.(?:[cm]?[jt]s|tsx)$/.test(path) && !ALLOWED.has(path);
 }
 
 /** The findings in one file's text. */

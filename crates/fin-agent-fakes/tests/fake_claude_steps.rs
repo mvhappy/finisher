@@ -141,27 +141,53 @@ fn fake_unknown_line_has_a_type_no_cli_has() {
 }
 
 #[test]
-fn fake_steer_is_queued_and_counted() {
+fn fake_steer_runs_as_the_next_turn() {
+    // Verified on 2.1.321 (7D Task 0, s1b/s1d): the running turn ends with its own `result`
+    // (`queued_turn_count: 0`); lines queued during it run as one next turn.
     let dir = Dir::new("steer");
     let script = json!({"steps": [{"expect": "user", "sleep": 400, "cumulativeUsage": {"outputTokens": 1}, "text": "first"}]});
     let mut f = Fake::start(&dir, Some(script), &[], &[]);
     f.user("one");
     assert_eq!(f.read()["subtype"], "init");
-    f.user("steer");
+    f.user("steer 1");
+    f.user("steer 2");
     let first = f.read();
     assert_eq!(
         (
             first["result"].as_str(),
             first["queued_turn_count"].as_u64()
         ),
-        (Some("first"), Some(1))
+        (Some("first"), Some(0))
     );
+    assert_eq!(f.read()["subtype"], "init", "every turn has its init");
     let second = f.read();
     assert_eq!(
         second["type"], "result",
-        "the queued line runs as the next turn"
+        "the queued lines run as the next turn"
     );
     assert_eq!(second["queued_turn_count"], 0);
+    assert!(f.silent_for(600), "the two steers ran as one turn");
+    assert!(f.finish().success());
+}
+
+#[test]
+fn fake_turn_init_override() {
+    let dir = Dir::new("turn-init");
+    let script = json!({"steps": [
+        {"expect": "user"},
+        {"expect": "user", "init": {"tools": ["Read", "Task"]}}
+    ]});
+    let mut f = Fake::start(&dir, Some(script), &["--tools", "Read"], &[]);
+    f.user("one");
+    assert_eq!(f.read()["tools"], json!(["Read"]));
+    f.user("two");
+    let init = loop {
+        let l = f.read();
+        if l["subtype"] == "init" {
+            break l;
+        }
+    };
+    assert_eq!(init["tools"], json!(["Read", "Task"]));
     assert!(f.finish().success());
 }
 
@@ -220,7 +246,10 @@ fn fake_interrupt_knobs() {
     let dir = Dir::new("knobs");
     let mut f = Fake::start(&dir, None, &[], &[]);
     f.control("i-1", "interrupt");
-    assert_eq!(f.read()["response"]["request_id"], "i-1");
+    let answer = f.read();
+    assert_eq!(answer["response"]["request_id"], "i-1");
+    // Verified on 2.1.321 (7D Task 0, s1b).
+    assert_eq!(answer["response"]["response"], json!({"still_queued": []}));
     assert!(f.silent_for(300), "no result without a turn");
     assert!(f.finish().success());
 
@@ -249,6 +278,7 @@ fn fake_interrupt_knobs() {
     f.read();
     assert_eq!(f.read()["subtype"], "error_during_execution");
     f.user("again");
+    assert_eq!(f.read()["subtype"], "init", "every turn has its init");
     assert_eq!(f.read()["is_error"], false);
     assert!(f.finish().success());
 }
@@ -298,6 +328,7 @@ fn fake_spawn_in_on_allow_runs_only_when_allowed() {
     assert_eq!(f.read()["subtype"], "refused");
     assert_eq!(f.read()["type"], "result");
     f.user("two");
+    assert_eq!(f.read()["subtype"], "init", "every turn has its init");
     let req = f.read();
     f.answer(
         &req,
@@ -314,4 +345,191 @@ fn fake_spawn_in_on_allow_runs_only_when_allowed() {
     );
     assert_eq!(parent["spawned"][0]["code"], 0);
     assert_eq!(parent["answers"][1]["answer"]["behavior"], "allow");
+}
+
+#[test]
+fn fake_bash_announces_runs_and_reports_the_result() {
+    let dir = Dir::new("bash");
+    let marker = dir.path("ran.txt");
+    let bash =
+        |input: serde_json::Value| json!({"ask": {"tool": "Bash", "input": input, "bash": true}});
+    let script = json!({"steps": [
+        {"expect": "user", "ask": {"tool": "Bash", "bash": true, "toolUseId": "toolu_a",
+            "input": {"command": format!("echo hi; echo x > '{}'", marker.display()), "description": "d"}}},
+        bash(json!({"command": "sleep 5; echo late", "run_in_background": true})),
+        bash(json!({"command": "echo never"})),
+    ]});
+    let mut f = Fake::start(&dir, Some(script), &[], &[]);
+    f.user("go");
+    assert_eq!(f.read()["subtype"], "init");
+    // The call is announced before its prompt, with the prompt's tool_use_id.
+    let announced = f.read();
+    assert_eq!(announced["type"], "assistant");
+    assert_eq!(announced["message"]["content"][0]["id"], "toolu_a");
+    assert_eq!(announced["message"]["content"][0]["name"], "Bash");
+    let req = f.read();
+    assert_eq!(req["request"]["tool_use_id"], "toolu_a");
+    f.answer(
+        &req,
+        json!({"behavior": "allow", "updatedInput": req["request"]["input"]}),
+    );
+    let result = f.read();
+    let block = &result["message"]["content"][0];
+    assert_eq!(
+        (result["type"].as_str(), block["tool_use_id"].as_str()),
+        (Some("user"), Some("toolu_a"))
+    );
+    assert_eq!(
+        (block["content"].as_str(), block["is_error"].as_bool()),
+        (Some("hi\n"), Some(false))
+    );
+    assert!(marker.exists(), "the command ran before its result");
+    // In the background: the result comes at once, before the process ends.
+    let _ = f.read();
+    let req = f.read();
+    let started = std::time::Instant::now();
+    f.answer(
+        &req,
+        json!({"behavior": "allow", "updatedInput": req["request"]["input"]}),
+    );
+    let result = f.read();
+    assert!(started.elapsed() < std::time::Duration::from_secs(4));
+    let text = result["message"]["content"][0]["content"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(text.starts_with("Command running in background"), "{text}");
+    // Denied: an error result, nothing run.
+    let _ = f.read();
+    let req = f.read();
+    f.answer(&req, json!({"behavior": "deny", "message": "no"}));
+    let result = f.read();
+    assert_eq!(result["message"]["content"][0]["is_error"], true);
+    assert_eq!(f.read()["type"], "result");
+    assert!(f.finish().success());
+    let spawned = observed(&dir)["spawned"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(spawned.len(), 2);
+    assert_eq!(spawned[1]["background"], true);
+}
+
+#[test]
+fn fake_bash_in_background_is_rejected_while_background_tasks_are_disabled() {
+    let dir = Dir::new("bash-bg-off");
+    let marker = dir.path("bg.txt");
+    let command = format!("echo x > '{}'", marker.display());
+    let script = json!({"steps": [{"expect": "user",
+        "ask": {"tool": "Bash", "bash": true, "input": {"command": command, "run_in_background": true}}}]});
+    let mut f = Fake::start(
+        &dir,
+        Some(script),
+        &[],
+        &[("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS", "1")],
+    );
+    f.user("go");
+    assert_eq!(f.read()["subtype"], "init");
+    assert_eq!(f.read()["type"], "assistant");
+    // No prompt: the unknown parameter is refused at once (verified 2.1.321, Task 0).
+    let result = f.read();
+    let block = &result["message"]["content"][0];
+    assert_eq!(block["is_error"], true);
+    assert!(
+        block["content"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("run_in_background")
+    );
+    assert_eq!(f.read()["type"], "result");
+    assert!(f.finish().success());
+    assert!(!marker.exists(), "nothing ran");
+}
+
+#[test]
+fn fake_resume_reasks_a_dangling_call_only_under_reask() {
+    let dir = Dir::new("dangling");
+    // A process killed mid-tool: its transcript holds the call and no result.
+    let use_line = json!({"type": "assistant", "session_id": "$session_id", "parent_tool_use_id": null,
+        "message": {"id": "m1", "role": "assistant", "model": "m", "content": [
+            {"type": "tool_use", "id": "toolu_D", "name": "Bash", "input": {"command": "fin bin add"}}]}});
+    let first =
+        json!({"steps": [{"expect": "user", "emit": [use_line], "crash": {"signal": "KILL"}}]});
+    let mut f = Fake::start(&dir, Some(first), &["--session-id", UUID], &[]);
+    f.user("go");
+    f.read();
+    assert_eq!(f.read()["type"], "assistant");
+    assert!(!f.finish().success());
+
+    let resume = format!("--resume={UUID}");
+    let plain = |mode: &str| json!({"onResumeDangling": mode, "steps": [{"expect": "user", "cumulativeUsage": {"inputTokens": 1}}]});
+    // `leave`: nothing is asked.
+    let mut f = Fake::start(&dir, Some(plain("leave")), &[&resume], &[]);
+    f.user("again");
+    assert_eq!(f.read()["subtype"], "init");
+    assert_eq!(f.read()["type"], "result");
+    assert!(f.finish().success());
+    // `reask`: the same tool_use_id, run again only when allowed (here denied).
+    let mut f = Fake::start(&dir, Some(plain("reask")), &[&resume], &[]);
+    f.user("again");
+    assert_eq!(f.read()["subtype"], "init");
+    let req = f.read();
+    assert_eq!(req["request"]["subtype"], "can_use_tool");
+    assert_eq!(req["request"]["tool_use_id"], "toolu_D");
+    f.answer(&req, json!({"behavior": "deny", "message": "no"}));
+    assert_eq!(f.read()["type"], "result");
+    assert!(f.finish().success());
+    let all = observed_all(&dir);
+    assert_eq!(all[1]["resume"]["dangling"], json!(["toolu_D"]));
+    assert!(all[1]["rerunDenied"].is_null());
+    assert_eq!(all[2]["rerunDenied"], json!(["toolu_D"]));
+    assert!(all[2]["reran"].is_null());
+}
+
+/// Task 0 (verified 2.1.321, s1d/s1e): `--resume` restores the totals after a clean exit and
+/// restarts them after a kill mid-turn.
+#[test]
+fn fake_resume_totals_follow_how_the_last_process_ended() {
+    let turn = |cost: f64| json!({"steps": [{"expect": "user", "cumulativeUsage": {"inputTokens": 10, "costUsd": cost}}]});
+    let resume = format!("--resume={UUID}");
+    let total = |dir: &Dir| {
+        let mut f = Fake::start(dir, Some(turn(0.02)), &[&resume], &[]);
+        f.user("again");
+        assert_eq!(f.read()["subtype"], "init");
+        let r = f.read();
+        assert!(f.finish().success());
+        r["total_cost_usd"].as_f64().unwrap()
+    };
+    // A clean exit (stdin's end): the totals carry on.
+    let clean = Dir::new("totals-clean");
+    let mut f = Fake::start(&clean, Some(turn(0.01)), &["--session-id", UUID], &[]);
+    f.user("go");
+    f.read();
+    f.read();
+    assert!(f.finish().success());
+    assert!((total(&clean) - 0.03).abs() < 1e-9);
+    // Killed after its turn's result: they restart.
+    let killed = Dir::new("totals-killed");
+    let script = json!({"steps": [{"expect": "user", "cumulativeUsage": {"inputTokens": 10, "costUsd": 0.01}}, {"crash": {"signal": "KILL"}}]});
+    let mut f = Fake::start(&killed, Some(script), &["--session-id", UUID], &[]);
+    f.user("go");
+    f.read();
+    f.read();
+    assert!(!f.finish().success());
+    assert!((total(&killed) - 0.02).abs() < 1e-9);
+}
+
+#[test]
+fn fake_initialize_silent_and_still_queued_knobs() {
+    let dir = Dir::new("silent");
+    let script = json!({"initializeSilent": true, "interruptStillQueued": [{"uuid": "q1"}]});
+    let mut f = Fake::start(&dir, Some(script), &[], &[]);
+    f.control("req-init", "initialize");
+    assert_eq!(f.read_any()["subtype"], "ui_invalidate");
+    assert!(f.silent_for(400), "no initialize answer");
+    f.control("i-1", "interrupt");
+    assert_eq!(
+        f.read()["response"]["response"]["still_queued"],
+        json!([{"uuid": "q1"}])
+    );
+    assert!(f.finish().success());
 }

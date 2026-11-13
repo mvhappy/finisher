@@ -19,6 +19,9 @@
 //   {op: "answer", id, decision}                   → {approval}: a person's answer (7B Task 5)
 //   {op: "expireAll"}                              → {}: every open approval expired (a clock past them all)
 //   {op: "listener"}                               → {endpoint}  (starts the agent listener, 7C Task 6)
+//   {op: "interrupt", sessionId, by?}              → {statusReason}: `agent.session.interrupt` by the
+//     session `by` (its agent principal) or else a person (7B Decision 16 as amended 2026-11-13)
+//   {op: "waitNode", sessionId, kind}              → {}: once the session has a node of `kind` (≤ 10 s)
 // A failure answers {error: {code, message}}.
 import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -54,7 +57,9 @@ type Request =
   | { op: "ask"; sessionId: string; command: string }
   | { op: "answer"; id: string; decision: "allow" | "deny" }
   | { op: "expireAll" }
-  | { op: "listener" };
+  | { op: "listener" }
+  | { op: "interrupt"; sessionId: string; by?: string }
+  | { op: "waitNode"; sessionId: string; kind: string };
 
 async function handle(r: Request): Promise<unknown> {
   const c = core!;
@@ -92,6 +97,18 @@ async function handle(r: Request): Promise<unknown> {
       return {};
     case "listener":
       return { endpoint: await listener!.ensure() };
+    case "interrupt": {
+      const person = { kind: "console", id: "owner", scopes: [], projects: "*", branches: "*", human: true } as const;
+      const agent = { kind: "agent", id: r.by ?? "", scopes: ["agent.run"], projects: "*", branches: "*", human: false } as const;
+      const s = await Effect.runPromise(agents!.runtime.interrupt(r.sessionId, r.by === undefined ? person : agent));
+      return { statusReason: s.statusReason };
+    }
+    case "waitNode": {
+      for (const end = Date.now() + 10_000; Date.now() < end; await new Promise((ok) => setTimeout(ok, 20))) {
+        if (c.store.nodes(r.sessionId, 1, 1000).some((n) => n.kind === r.kind)) return {};
+      }
+      throw new Error(`no ${r.kind} node in ${r.sessionId}`);
+    }
   }
 }
 

@@ -120,8 +120,8 @@ export function agentHandlers(deps: AgentRpcDeps) {
       onSession("agent.session.steer", options, sessionId, (s, p) => runtime.steer(s.id, text, p)),
     "agent.session.interrupt": ({ sessionId }: { sessionId: string }, options: Options) =>
       onSession("agent.session.interrupt", options, sessionId, (s, p) => Effect.map(runtime.interrupt(s.id, p), (session) => ({ session }))),
-    "agent.session.resume": ({ sessionId }: { sessionId: string }, options: Options) =>
-      onSession("agent.session.resume", options, sessionId, (s, p) => Effect.map(runtime.resume(s.id, p), (r) => ({ session: r.session }))),
+    "agent.session.resume": ({ sessionId, prompt, resendReturned }: { sessionId: string; prompt?: string; resendReturned?: boolean }, options: Options) =>
+      onSession("agent.session.resume", options, sessionId, (s, p) => runtime.resume(s.id, p, prompt, resendReturned === true)),
     "agent.session.end": ({ sessionId }: { sessionId: string }, options: Options) =>
       onSession("agent.session.end", options, sessionId, (s, p) => Effect.map(runtime.end(s.id, p), (session) => ({ session }))),
     // 7B Decision 23: the guard is the session's reach (its subtree less its live children's) with the caller's credential.
@@ -221,6 +221,7 @@ export function agentHandlers(deps: AgentRpcDeps) {
     "agent.local.show": () => guard("agent.local.show", sync(() => admin.localShow())),
     "agent.local.test": () => guard("agent.local.test", promised(() => admin.localTest())),
     "agent.local.remove": (_: unknown, options: Options) => guard("agent.local.remove", sync(() => ({ removed: admin.localRemove(by(options)) }))),
+    "agent.account.confirm": (req: { harness: "claudeCode"; next?: boolean; accountHash?: string }, options: Options) => guard("agent.account.confirm", sync(() => admin.accountConfirm(by(options), req))),
     "training.closedTargets.get": () => guard("training.closedTargets.get", sync(() => ({ state: admin.closedTargets() }))),
     "training.closedTargets.set": ({ state }: { state: "pendingCounsel" | "cleared" | "excluded" }, options: Options) =>
       guard("training.closedTargets.set", sync(() => ({ state: admin.setClosedTargets(by(options), state) }))),

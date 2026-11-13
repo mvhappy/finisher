@@ -14,7 +14,11 @@
 //   when auto memory is off); `additional_directories` absent or empty;
 // - `agents` only the five built-ins (listed even with `Task`/`Agent` disallowed);
 // - `session_id` the UUID Finisher passed; `permissionMode` `default`;
-// - `apiKeySource: "none"` while the CLI says it is signed in: the sign-in was ignored (`oauth`);
+// - an ignored sign-in (`oauth`): decided from the instance's `initialize.account`
+//   (`signInIgnored`), never from `apiKeySource` (verified on 2.1.321, 7D Task 0: a claude.ai
+//   sign-in reports `apiKeySource: "none"`);
+// - every later init of the instance (the CLI sends one before every turn) repeating its first
+//   on the isolation keys (`INIT_ISOLATION_KEYS`);
 // - with the probe's settings canary, `output_style` shows it (a settings file that fails the
 //   CLI's validation is dropped whole and silently, Task 0).
 import type { FinError, ProviderEvent } from "@finisher/contracts";
@@ -46,8 +50,11 @@ export function planUuid(plan: Pick<LaunchPlan, "argv">): string | null {
 }
 
 export interface CheckOptions {
-  /** The CLI reports a sign-in (`auth status`): `apiKeySource: "none"` then means it was ignored. */
-  readonly signedIn?: boolean;
+  /**
+   * The CLI ignored the sign-in `auth status` reports: its `initialize.account` says so
+   * (`signInIgnored`). The init is then refused `oauth` whatever its `apiKeySource`.
+   */
+  readonly signInIgnored?: boolean;
   /** The settings carried the probe's canary: `output_style` must show it. */
   readonly canary?: boolean;
   /** The probe's unsigned turn (Decision 8 step 2): `apiKeySource` must be `none`, else `unsigned`. */
@@ -93,8 +100,10 @@ export function checkInit(init: SystemInit, plan: Pick<LaunchPlan, "argv" | "too
   for (const t of [...plan.tools, ...plan.mcpTools]) {
     if (!present.has(t)) return versionError("tools", `the Claude Code instance lacks the tool ${t}`, { item: t, ...(v === undefined ? {} : { version: v }) });
   }
-  if (opts.signedIn === true && init.apiKeySource === "none") {
-    return versionError("oauth", "the Claude Code instance ignored its sign-in", { item: "apiKeySource", ...(v === undefined ? {} : { version: v }) });
+  // Verified on 2.1.321 (7D Task 0): a claude.ai sign-in reports `apiKeySource: "none"`, so
+  // `apiKeySource` says nothing of an ignored sign-in; `initialize.account` does.
+  if (opts.signInIgnored === true) {
+    return versionError("oauth", "the Claude Code instance ignored its sign-in", { item: "account", ...(v === undefined ? {} : { version: v }) });
   }
   if (opts.unsigned === true && init.apiKeySource !== "none") {
     return versionError("unsigned", "the Claude Code probe instance is signed in by other means", { item: "apiKeySource", ...(v === undefined ? {} : { version: v }) });
@@ -120,6 +129,23 @@ export interface InitializeFacts {
 
 const isUnsigned = (account: Record<string, unknown>): boolean =>
   Object.keys(account).length === 2 && account.tokenSource === "none" && account.apiProvider === "firstParty";
+
+/**
+ * Whether an instance's `initialize.account` shows the CLI ignored a sign-in `auth status`
+ * reports with `authMethod` (Decision 8 as Task 0 amended it): no account object, an unsigned
+ * one (`tokenSource: "none"`), or for a plan sign-in (`claude.ai`) no `subscriptionType`.
+ * Verified on 2.1.321 (7D Task 0): signed in with claude.ai the account is `{subscriptionType,
+ * apiProvider}` (plus `email` once the CLI has the profile), with no `tokenSource` key; the
+ * `subscriptionType` text varies for one account ("Claude Max", "Claude Ultra"), so only its
+ * presence counts, never its value. TODO(7D Task 0 Step 4): a Console sign-in's account shape
+ * (not run); only an unsigned account refuses it.
+ */
+export function signInIgnored(account: unknown, authMethod: string | undefined): boolean {
+  if (typeof account !== "object" || account === null || Array.isArray(account)) return true;
+  const a = account as Record<string, unknown>;
+  if (a.tokenSource === "none") return true;
+  return authMethod === "claude.ai" && (typeof a.subscriptionType !== "string" || a.subscriptionType === "");
+}
 
 const strings = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) => typeof x === "string");
 
@@ -159,6 +185,24 @@ export function checkInitialize(body: unknown, version: string): InitializeFacts
 
 // ---- the first-turn gate ----
 
+/** The init keys a later init must repeat: what isolates the instance (Decisions 6, 8). */
+export const INIT_ISOLATION_KEYS = ["tools", "mcp_servers", "plugins", "skills", "slash_commands", "agents", "permissionMode", "output_style", "memory_paths", "additional_directories"] as const;
+
+/**
+ * A later init against the instance's first: null when every isolation key
+ * (`INIT_ISOLATION_KEYS`) is the same (2.1.321 repeats the first exactly within one process, 7D
+ * Task 0 s1a/s1b/s1d), else `isolation` naming the first key that differs. Other keys may change
+ * (`model`: a plan's automatic fallback; the session shows it as a notice).
+ */
+export function initChanged(first: SystemInit, later: SystemInit): FinError | null {
+  const a = first as unknown as Record<string, unknown>;
+  const b = later as unknown as Record<string, unknown>;
+  for (const k of INIT_ISOLATION_KEYS) {
+    if (JSON.stringify(a[k]) !== JSON.stringify(b[k])) return isolation(`init:${label(k)}`, later.claude_code_version);
+  }
+  return null;
+}
+
 /** What the caller does with a line: pass these on, nothing yet, or stop the instance. */
 export type GateStep =
   | { readonly kind: "forward"; readonly lines: readonly CliLine[] }
@@ -178,25 +222,34 @@ export interface FirstTurnGate {
   readonly state: "waiting" | "open" | "refused";
 }
 
+/** An MCP `tools/call`: a CLI request like `can_use_tool` (Task 8), never part of the handshake. */
+export const isMcpToolCall = (message: unknown): boolean => typeof message === "object" && message !== null && (message as { method?: unknown }).method === "tools/call";
+
 /** Lines the caller always handles at once: the SDK MCP handshake and answers to its own requests. */
-const passes = (l: CliLine): boolean =>
-  (l.kind === "controlRequest" && l.request.subtype === "mcp_message") || l.kind === "controlResponse" || l.kind === "controlCancel";
+const passes = (l: CliLine): boolean => (l.kind === "controlRequest" && l.request.subtype === "mcp_message" && !isMcpToolCall(l.request.message)) || l.kind === "controlResponse";
 
 /**
  * Holds every event of an instance back until its `system/init` passes `checkInit` (Decision 8,
  * Review Focus 1), so nothing reaches the runtime from an instance that is not isolated. Then it
  * releases what it held in arrival order, the init last, and forwards everything. The CLI sends
- * an init on every turn: each one is checked, in any state, and a failing one refuses (the
- * caller kills the instance and fails the turn). A `result` before any init releases that
+ * an init before every turn (verified on 2.1.321, 7D Task 0): each one is checked, in any
+ * state, and must repeat the instance's first on every isolation key (`initChanged`: a tool
+ * set, server or mode that changed mid-instance is `PROVIDER_VERSION {missing: "isolation",
+ * item: "init:<key>"}`; a model change is not, `session.ts` shows it); a
+ * failing one refuses (the caller kills the instance and fails the turn). A later init is
+ * forwarded alone: nothing is held once the gate is open. A `result` before any init releases that
  * `result` alone when it is an error (an unknown `--resume`), dropping what was held, and
- * refuses otherwise. Held lines include `can_use_tool` and every other CLI request. Control
- * lines the caller must answer at once (the MCP handshake, control
- * responses, cancels) always pass; a refused instance's other control requests too, so the
- * caller can deny them.
+ * refuses otherwise. Held lines include `can_use_tool`, an MCP `tools/call` and every other CLI
+ * request. A cancel whose request is held drops that request (it never reaches the runtime, Task
+ * 8); any other cancel is forwarded. Control lines the caller must answer at once (the MCP
+ * handshake, control responses) always pass; a refused instance's other control requests too,
+ * so a caller may deny them (Task 7's session instead kills the instance at once and drops every
+ * later line).
  */
 export function firstTurnGate(plan: Pick<LaunchPlan, "argv" | "tools" | "mcpTools">, opts: CheckOptions = {}): FirstTurnGate {
   let state: FirstTurnGate["state"] = "waiting";
   let held: CliLine[] = [];
+  let first: SystemInit | undefined;
   const refuse = (error: FinError): GateStep => {
     state = "refused";
     held = [];
@@ -209,9 +262,16 @@ export function firstTurnGate(plan: Pick<LaunchPlan, "argv" | "tools" | "mcpTool
     push(line) {
       if (passes(line)) return { kind: "forward", lines: [line] };
       if (state === "refused") return line.kind === "controlRequest" ? { kind: "forward", lines: [line] } : { kind: "drop" };
+      if (line.kind === "controlCancel") {
+        const i = held.findIndex((h) => h.kind === "controlRequest" && h.request_id === line.request_id);
+        if (i < 0) return { kind: "forward", lines: [line] };
+        held.splice(i, 1);
+        return { kind: "drop" };
+      }
       if (line.kind === "init") {
-        const e = checkInit(line, plan, opts);
+        const e = checkInit(line, plan, opts) ?? (first === undefined ? null : initChanged(first, line));
         if (e !== null) return refuse(e);
+        first ??= line;
         if (state === "open") return { kind: "forward", lines: [line] };
         state = "open";
         const lines = [...held, line];

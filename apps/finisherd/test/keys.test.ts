@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { checkPrivateDir, checkServerDataLocal, lockExclusive, makePrivateDir } from "@finisher/fin-node";
 import * as fs from "node:fs";
-import { authDir, KEY_FILES, type KeyFs, readKeyFile, rotateKeys, runDir, writeKeyFile } from "../src/auth/keys.ts";
+import { authDir, KEY_FILES, type KeyFs, readKeyFile, rotateKeys, runDir, writeKeyFile, writePrivateFile } from "../src/auth/keys.ts";
 import { ensureServerData, socketPath } from "../src/config.ts";
 import { lockPath } from "../src/lock.ts";
 import { NdjsonClient, ok, startServer } from "./support/ndjson-client.ts";
@@ -99,6 +99,20 @@ describe("key files", () => {
     rotateKeys(serverData, io);
     expect(calls.filter((c) => c === "fsync tmp")).toHaveLength(2); // the master is kept
     expect(calls.filter((c) => c === "rename")).toHaveLength(2);
+  });
+
+  test("a short write is completed; a write that makes no progress fails and leaves nothing (Task 10 second review)", () => {
+    fs.mkdirSync(authDir(serverData));
+    const path = join(authDir(serverData), "state.json");
+    const text = `${JSON.stringify({ v: 1, processes: [{ instance: "01I", pid: 12345, start: "linux:1" }], note: "é ✓" })}\n`;
+    // At most 10 bytes per call (a multi-byte character split across calls).
+    const short = (limit: number): KeyFs => ({ ...fs, writeSync: (fd, data) => fs.writeSync(fd, data, 0, Math.min(limit, data.byteLength)) });
+    writePrivateFile(path, text, process.platform, short(10));
+    expect(readFileSync(path, "utf8")).toBe(text);
+    // No progress: an error, the old file kept, no temp file left.
+    expect(() => writePrivateFile(path, "{}\n", process.platform, short(0))).toThrow(/short write/);
+    expect(readFileSync(path, "utf8")).toBe(text);
+    expect(readdirSync(authDir(serverData)).filter((f) => f.endsWith(".tmp"))).toEqual([]);
   });
 
   test("socket_lives_in_run_dir", () => {

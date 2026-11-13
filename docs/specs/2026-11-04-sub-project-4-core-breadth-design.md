@@ -1335,6 +1335,7 @@ Run 2026-11-06 on `sp4b-history` (c4ef8db plus the harness rows) and the 4A setu
 - **Generic edits:** `param.set {target, path, value?}` (no value resets to the default), `keyframe.set {item, path, at, value, interp}`, `keyframe.remove`, `effect.add {item, kind, at?}` (binds `$fx`), `effect.remove`, `effect.move`, and internal `effect.restore` (with its keyframes). Track, timeline and marker settings check through the same registry.
 - **Errors:** `PARAM_UNKNOWN` (with the closest paths), `SLOT_UNKNOWN`, `PARAM_TYPE`, `PARAM_NOT_ANIMATABLE`, `PARAM_ANIMATED` (a static set on an animated path), and `INVALID_RANGE` with `{path, min, max, unit}` and fill texts. A size's maximum is its range (policy), not its shape.
 - **Built-in video effects:** `colorAdjust` (exposure, contrast, saturation, temperature, tint), `lut` (asset ref) and `blur`; crop is an item field. Built-in effects on audio-track items are `TRACK_KIND_MISMATCH` (policy). Audio effects beyond gain, pan and fades are plugins (sub-project 8); params are a sparse map, so plugin-declared specs fit later.
+- **Built-in audio effects** (sub-project 6 §8.4, plan 6C Decision 13, model v6): `eq` (eight flat bands `band<n>Type|Freq|Gain|Q`), `compressor`, `gate` and `deEsser`, each kind with a domain (`EffectDomain`, `params::effect_domain`, shown by `fin schema param`); an audio effect on an item of a non-audio track is `TRACK_KIND_MISMATCH` (policy), as a visual one on an audio track is.
 - **`fin schema param [--scope <scope | item kind | effect kind>] [--path <prefix>]`** lists the registry, generated from the same source as the JSON Schema.
 
 ### 5.3 Structural edits
@@ -1628,6 +1629,10 @@ Test-first; the validation repro is the regression test.
 - **Steps v4 → v5** (`upgrade/snapshot_v4.rs`, `upgrade/record_v4.rs`, frozen): identities, since every v4 value is a valid v5 value; the runner stamps the version. A record labelled v4 that holds `asset.reprobe` or a `video` with `display`, `rotation` or `pixelAspect` (which no v4 writer made) is `INVALID_FORMAT`. `new_project` still equals the upcast rev-0 project from v1 to v4. Schema-2 to schema-4 client txs are committed as schema 5.
 - **DB format:** migration `m0007_video_display` (frozen, literal values) raises `meta` `formatVersion`/`minReaderVersion` to `"7"` (`DB_VERSION` 7), so a model-v4 binary (DB 6) refuses with `DB_TOO_NEW`.
 - **Fixtures:** the eval corpus is relabelled to v5 (plan hashes unchanged), with `upgrade_golden/snapshot_v4.json` (corpus case 05 at v4) as the v4 golden and `corpus_20_v3.json` upcasting to the current corpus; the store fixtures and the `fin view` golden stay at their versions and upcast on read.
+
+#### 5.12.9 Model v6 (sub-project 6, plan 6C Task 5)
+
+- **`SCHEMA_VERSION` 6**: the registry gains the audio effect kinds (§5.2); the model's shape is unchanged (an effect is still `{id, kind, enabled, params}`). Steps v5 → v6 (`upgrade/snapshot_v5.rs`, `upgrade/record_v5.rs`, frozen) are identities; the bump makes an older reader refuse a v6 record (`NEWER_FORMAT`) instead of reading its audio effects as unknown kinds. Migration `m0008_audio_effects` (frozen) raises `formatVersion`/`minReaderVersion` to `"8"` (`DB_VERSION` 8). The eval corpus is relabelled to v6 (plan hashes unchanged). Sub-project 8's plugins-and-mattes bump moves to v7.
 
 ## 6. Crate and file map
 

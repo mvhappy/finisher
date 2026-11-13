@@ -270,7 +270,7 @@ describe("a spawn needs a live run", () => {
 });
 
 describe("own children only", () => {
-  test("agent_run_only_for_own_children: prompt, steer, interrupt, end its children; another session's, a sibling's or its parent's are SESSION_NOT_FOUND; resume and delete are SCOPE_DENIED", async () => {
+  test("agent_run_only_for_own_children: prompt, steer, interrupt, end its children; another session's, a sibling's or its parent's are SESSION_NOT_FOUND; it resumes a child it interrupted; delete is SCOPE_DENIED", async () => {
     const { local, projectId } = await boot([PARENT, IDLE]);
     const p = await root(local, projectId);
     const c1 = await spawn(p.client, projectId, "fixer");
@@ -284,8 +284,9 @@ describe("own children only", () => {
     await status(s1, "running");
     expect(ok<{ queued: boolean }>(await p.client.call("agent.session.steer", { sessionId: s1, text: "faster" }))).toEqual({ queued: false });
     expect(ok<{ session: Session }>(await p.client.call("agent.session.interrupt", { sessionId: s1 })).session.status).toBe("interrupted");
-    // A resume and a delete stay people's.
-    expect(code(await p.client.call("agent.session.resume", { sessionId: s1 }))).toBe("SCOPE_DENIED");
+    // It resumes the child it interrupted itself (7B Decision 16 as amended 2026-11-13,
+    // `agent-child-resume.test.ts`); a delete stays people's.
+    expect(ok<{ session: Session }>(await p.client.call("agent.session.resume", { sessionId: s1 })).session.status).toBe("idle");
     expect(code(await p.client.call("agent.session.delete", { sessionId: s1, challenge: "x" }))).toBe("SCOPE_DENIED");
     expect(ok<{ session: Session }>(await p.client.call("agent.session.end", { sessionId: s1 })).session.status).toBe("ended");
     // Nobody else's: a sibling's, the parent's, another tree's.

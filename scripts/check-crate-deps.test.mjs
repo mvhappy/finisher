@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { check } from "./check-crate-deps.mjs";
+import { check, checkTarget } from "./check-crate-deps.mjs";
 import { fixtureRoot, runGate } from "./gate-helpers.mjs";
 
 /** A fake `cargo metadata` graph: `deps` maps a member to [name, kind?, declaration?]. */
@@ -118,5 +118,99 @@ test("fin and fin-node link neither the plugin SDK nor the harness; the SDK link
     "CRATE_DEPENDENCY: fin-node reaches fin-plugin-sdk (fin-node links neither the plugin SDK nor its harness)",
     "CRATE_DEPENDENCY: fin-node reaches wgpu (fin-node never links codecs, the compositor or wgpu)",
     "CRATE_DEPENDENCY: fin-plugin-sdk reaches wgpu (a plugin built on the SDK carries no GPU stack)",
+  ]);
+});
+
+test("fin_node_linking_fin_audio_fails: only fin-workers and fin-wasm link fin-audio (6C Task 1)", () => {
+  const members = [...MEMBERS, "fin-audio"];
+  assert.deepEqual(check(graph(members, { "fin-workers": [["fin-audio"]], "fin-audio": [["fin-media"]] })), []);
+  assert.deepEqual(check(graph(members, { "fin-node": [["fin-audio"]] })), [
+    "CRATE_DEPENDENCY: fin-node reaches fin-audio (only fin-workers and fin-wasm may link it)",
+  ]);
+});
+
+test("fin_codecs_linking_fin_audio_fails: decoded audio crosses fin-codecs at its native rate", () => {
+  const members = [...MEMBERS, "fin-audio"];
+  const out = check(graph(members, { "fin-codecs": [["fin-audio"]], "fin-workers": [["fin-codecs"]] }));
+  assert.deepEqual(out, ["CRATE_DEPENDENCY: fin-codecs reaches fin-audio (only fin-workers and fin-wasm may link it)"]);
+});
+
+test("fin-audio links no Finisher crate but fin-core and fin-media", () => {
+  const members = [...MEMBERS, "fin-audio", "fin-core"];
+  assert.deepEqual(check(graph(members, { "fin-audio": [["fin-core"], ["fin-media"], ["libm"]] })), []);
+  assert.deepEqual(check(graph(members, { "fin-audio": [["fin-container"]] })), [
+    "CRATE_DEPENDENCY: fin-audio reaches fin-container (the audio crate is pure: it links fin-core and fin-media only)",
+  ]);
+});
+
+test("the audio sys crates are linked by fin-codecs and fin-workers only", () => {
+  const members = [...MEMBERS, "fin-opus-sys", "fin-aacenc-sys"];
+  assert.deepEqual(check(graph(members, { "fin-codecs": [["fin-opus-sys"], ["fin-aacenc-sys", null, { target: 'cfg(target_os = "linux")' }]], "fin-workers": [["fin-codecs"]] })), []);
+  assert.deepEqual(check(graph(members, { "fin-media": [["fin-opus-sys"]], "fin-container": [["fin-aacenc-sys", null, { target: 'cfg(target_os = "linux")' }]] })), [
+    "CRATE_DEPENDENCY: fin-media reaches fin-opus-sys (only fin-codecs and fin-workers may link it)",
+    "CRATE_DEPENDENCY: fin-container reaches fin-aacenc-sys (only fin-codecs and fin-workers may link it)",
+  ]);
+});
+
+test("the AudioToolbox bindings and vo-aacenc are target-gated (6C Task 1)", () => {
+  const mac = { target: 'cfg(target_os = "macos")' };
+  const linux = { target: 'cfg(target_os = "linux")' };
+  const gated = { "fin-codecs": [["objc2-audio-toolbox", null, mac], ["objc2-core-audio-types", null, mac], ["fin-aacenc-sys", null, linux]], "fin-workers": [["fin-codecs"]] };
+  assert.deepEqual(check(graph([...MEMBERS, "fin-aacenc-sys"], gated)), []);
+  const bare = { ...gated, "fin-codecs": [["objc2-audio-toolbox"], ["fin-aacenc-sys", null, mac]] };
+  assert.deepEqual(check(graph([...MEMBERS, "fin-aacenc-sys"], bare)), [
+    'CRATE_DEPENDENCY: fin-codecs takes objc2-audio-toolbox for every target (only under cfg(target_os = "macos"))',
+    'CRATE_DEPENDENCY: fin-codecs takes fin-aacenc-sys under cfg(target_os = "macos") (only under cfg(target_os = "linux"))',
+  ]);
+});
+
+test("rustfft_in_graph_fails: no FFT crate in the shipped graph (spec §8.1: SIMD)", () => {
+  const out = check(graph(MEMBERS, { "fin-codecs": [["symphonia-core"]], "symphonia-core": [["rustfft"]] }));
+  assert.deepEqual(out, ["CRATE_DEPENDENCY: fin-codecs reaches rustfft (no FFT crate in the shipped graph: symphonia's opt-simd features are off)"]);
+  assert.deepEqual(check(graph(MEMBERS, { "fin-codecs": [["rustfft", "dev"]] })), []);
+});
+
+test("aac_feature_ungated_fails: symphonia's aac feature only under cfg(target_os = \"linux\") (Decision 9)", () => {
+  const linux = { target: 'cfg(target_os = "linux")', features: ["aac", "mp3"] };
+  assert.deepEqual(check(graph(MEMBERS, { "fin-codecs": [["symphonia", null, linux]], "fin-workers": [["fin-codecs"]] })), []);
+  const bare = { features: ["mp3", "aac"] };
+  assert.deepEqual(check(graph(MEMBERS, { "fin-codecs": [["symphonia", null, bare]], "fin-workers": [["fin-codecs"]] })), [
+    'CRATE_DEPENDENCY: fin-codecs takes symphonia\'s aac feature for every target (only under cfg(target_os = "linux"))',
+  ]);
+  const mac = { target: 'cfg(target_os = "macos")', features: ["aac"] };
+  assert.deepEqual(check(graph([...MEMBERS, "fin-probe"], { "fin-probe": [["symphonia", null, mac]] })), [
+    'CRATE_DEPENDENCY: fin-probe takes symphonia\'s aac feature under cfg(target_os = "macos") (only under cfg(target_os = "linux"))',
+  ]);
+});
+
+test("the aac feature cannot hide behind an umbrella feature or a direct codec dependency", () => {
+  const out = (decl, name = "symphonia") => check(graph(MEMBERS, { "fin-codecs": [[name, null, decl]] }));
+  assert.equal(out({ features: ["all-codecs"] }).length, 1);
+  assert.equal(out({ features: ["all"] }).length, 1);
+  assert.equal(out({}, "symphonia-codec-aac").length, 1);
+  assert.deepEqual(out({ target: 'cfg(target_os = "linux")' }, "symphonia-codec-aac"), []);
+});
+
+test("forwarded features: the resolved graph of a non-Linux target holds no Linux-only AAC code", () => {
+  // `fin-workers` forwards `symphonia/aac` through its own feature: only the resolve node shows it.
+  const doc = graph(MEMBERS, { "fin-workers": [["symphonia"]], symphonia: [["symphonia-codec-aac"]] });
+  assert.deepEqual(check(doc), []);
+  assert.deepEqual(checkTarget(doc, "aarch64-apple-darwin"), [
+    "CRATE_DEPENDENCY: fin-workers reaches symphonia-codec-aac on aarch64-apple-darwin (Finisher's own AAC code is Linux-only)",
+  ]);
+  const sys = graph([...MEMBERS, "fin-aacenc-sys"], { "fin-codecs": [["fin-aacenc-sys"]] });
+  assert.deepEqual(checkTarget(sys, "x86_64-pc-windows-msvc"), [
+    "CRATE_DEPENDENCY: fin-codecs reaches fin-aacenc-sys on x86_64-pc-windows-msvc (Finisher's own AAC code is Linux-only)",
+  ]);
+  assert.deepEqual(checkTarget(graph(MEMBERS, { "fin-workers": [["fin-codecs"]] }), "aarch64-apple-darwin"), []);
+});
+
+test("the audio platform crates are target-gated in every member, not only fin-codecs", () => {
+  const members = [...MEMBERS, "fin-aacenc-sys"];
+  assert.deepEqual(check(graph(members, { "fin-workers": [["fin-aacenc-sys"]], "fin-codecs": [["fin-aacenc-sys", null, { target: 'cfg(target_os = "linux")' }]] })), [
+    'CRATE_DEPENDENCY: fin-workers takes fin-aacenc-sys for every target (only under cfg(target_os = "linux"))',
+  ]);
+  assert.deepEqual(check(graph(MEMBERS, { "fin-media": [["objc2-audio-toolbox"]] })), [
+    'CRATE_DEPENDENCY: fin-media takes objc2-audio-toolbox for every target (only under cfg(target_os = "macos"))',
   ]);
 });

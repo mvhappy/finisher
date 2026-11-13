@@ -14,11 +14,12 @@ import { Effect } from "effect";
 import { finError } from "../errors.ts";
 import type { SecretStore } from "../secrets/store.ts";
 import type { ProviderAdapter } from "./adapter.ts";
+import { ClaudeAccounts, registerAccountAudit } from "./claude/account.ts";
 import { closedTargets, type LocalEndpoint, localEndpoint, parseEndpoint, setClosedTargets, setLocalEndpoint } from "./settings.ts";
 import { agentWarnings } from "./warnings.ts";
 
 /** What an `ok` `settings.write` row says (words, a project id; never a key, URL or host). */
-export type AdminAudit = (by: Principal, details: { rpc: string; value?: string; projectId?: string }) => void;
+export type AdminAudit = (by: Principal, details: { rpc: string; value?: string; projectId?: string; accountHash?: string; previousHash?: string }) => void;
 
 export interface AdminDeps {
   readonly serverData: string;
@@ -76,6 +77,8 @@ export class AgentAdmin {
 
   constructor(deps: AdminDeps) {
     this.deps = deps;
+    // An expected Claude Code account change taken by detection is audited under the person who expected it.
+    registerAccountAudit(deps.serverData, (by, d) => deps.audit({ kind: by.kind, id: by.id } as Principal, { rpc: "agent.account.confirm", value: "claudeCode.taken", ...d }));
   }
 
   /** Whether an OpenRouter key would be used for `projectId`: its own, else the server's default. */
@@ -185,6 +188,30 @@ export class AgentAdmin {
     setClosedTargets(this.deps.serverData, state);
     this.deps.audit(by, { rpc: "training.closedTargets.set", value: state });
     return this.closedTargets();
+  }
+
+  // Claude Code's account (plan 7D Decision 19, `claude/account.ts`) ---------------------------
+
+  /**
+   * `agent.account.confirm`: the account change waiting for a person becomes the account sessions
+   * run on, if it is the one the person was shown (`accountHash`; else `ACCOUNT_CONFIRM_STALE`).
+   * `next`: the next change within `EXPECT_TTL_MS` is taken without a confirmation (`provider
+   * signin --confirm`; refused while a change waits). The scope chain lets only the console's
+   * principal here; audited with words and hashes only.
+   */
+  accountConfirm(by: Principal, req: { harness: "claudeCode"; next?: boolean; accountHash?: string }): { confirmed: boolean; expecting?: boolean; accountHash?: string; previous?: string } {
+    const accounts = new ClaudeAccounts(this.deps.serverData);
+    if (req.next === true) {
+      accounts.expectNext(by);
+      this.deps.audit(by, { rpc: "agent.account.confirm", value: "claudeCode.next" });
+      return { confirmed: false, expecting: true };
+    }
+    if (req.accountHash === undefined) {
+      throw finError("INVALID_REQUEST", "agent.account.confirm names the account it confirms", { field: "accountHash" }, "send the accountHash agent.providers showed");
+    }
+    const r = accounts.confirm(req.accountHash);
+    if (r.confirmed) this.deps.audit(by, { rpc: "agent.account.confirm", value: "claudeCode", accountHash: r.accountHash!, ...(r.previous === undefined ? {} : { previousHash: r.previous }) });
+    return r;
   }
 
   // `agent.providers` ------------------------------------------------------------------------

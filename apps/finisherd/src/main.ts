@@ -37,8 +37,7 @@ import { AgentStore } from "./agent/store.ts";
 import { systemClock, systemIds } from "./agent/clock.ts";
 import { type AgentCore, AgentCoreTag } from "./agent/core.ts";
 import { journalVerdicts, OutcomeTracker } from "./agent/outcomes.ts";
-import { ReviewLink, reviewPort } from "./agent/review-link.ts";
-import { autoMergeTrigger, registryProjects } from "./agent/auto-merge.ts";
+import { ReviewLink } from "./agent/review-link.ts";
 import { AgentJournal } from "./agent/journal.ts";
 import { SessionCredentials } from "./agent/credentials.ts";
 import { BranchLineage } from "./agent/reach.ts";
@@ -48,7 +47,7 @@ import { Diagnostics, makeDiagnostics } from "./diagnostics.ts";
 import { withServerLock } from "./lock.ts";
 // Registers the `jobs` migration chain: imported before the control store opens.
 import "./jobs/store.ts";
-import { journalReviewVerdicts, registryEngine, ReviewsTag, startReviews } from "./reviews/service.ts";
+import { ReviewsTag } from "./reviews/service.ts";
 import { JobEventSinkTag } from "./jobs/events.ts";
 import { journalSink } from "./jobs/journal-sink.ts";
 import { JobEngineTag, layerJobEngine } from "./jobs/layer.ts";
@@ -83,7 +82,7 @@ import { ServerControlTag } from "./server-admin.ts";
 import { isServeCommand, runConsole } from "./console/main.ts";
 import { aclBroker, sweepAtStart } from "./sandbox/broker.ts";
 import { currentSandboxStatus, reporterFor, sandboxWarnings } from "./sandbox/status.ts";
-import { AgentRuntimeTag, buildAgentRuntime } from "./agent/wiring.ts";
+import { AgentRuntimeTag, buildAgentRuntime, startAgentReviews } from "./agent/wiring.ts";
 import { type AgentListener, agentConnections, agentEndpoint, makeAgentListener, makeAgentTcpServer, rateLimited } from "./agent/listener.ts";
 import type { ServeOptions } from "./serve-options.ts";
 export type { ServeOptions };
@@ -423,12 +422,8 @@ export const serve = ({
         },
       });
       onAgentRuntime?.(agentRuntime);
-      const started = startReviews(controlStore, { engine: registryEngine(projects), audit, verdicts: journalReviewVerdicts(diagnostics.journal) });
+      const started = startAgentReviews({ control: controlStore, projects, audit, journal: diagnostics.journal, core: agentCore, runtime: agentRuntime.runtime, ...(agentOptions?.autoMerge === undefined ? {} : { autoMerge: agentOptions.autoMerge }) });
       onOpened = started.opened;
-      agentCore.reviewLink.bind(reviewPort(started.reviews));
-      // The `auto` merge policy's trigger (7B Task 12): unavailable until sub-project 10, so nothing merges.
-      const autoMerge = { store: agentStore, reviews: started.reviews, audit, outcomes, projects: registryProjects(projects), budgetSpent: agentRuntime.runtime.budgetSpent.bind(agentRuntime.runtime), ...agentOptions?.autoMerge };
-      agentCore.reviewLink.onBranchReady(autoMergeTrigger(autoMerge));
       // One font layer for the handlers and the plugins, which feed it the packs' catalogs.
       const fontsLayer = layerFonts(serverData, fonts);
       // `server.stop` (5A Task 8): `serve` returns, and its scope's finalizers stop everything.

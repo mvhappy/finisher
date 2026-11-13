@@ -41,11 +41,9 @@
 // detection and the capability probe, under the same mode rules: a throwaway directory, no
 // project, no credential; the sign-in store for detection only. Non-spawning parts live in
 // `sandbox-input.ts`.
-import { type ChildProcess, spawn as spawnChild } from "node:child_process";
 import { mkdir, rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Readable, Writable } from "node:stream";
 import type { FinError, Harness, Session } from "@finisher/contracts";
 import type { AgentInput } from "@finisher/core-types";
 import { sandboxAgentGrants, sandboxContainerSid, sandboxProjectContainer, sandboxToolchainBase } from "@finisher/fin-node";
@@ -53,16 +51,15 @@ import { Effect, type Scope } from "effect";
 import { finError, toFinError } from "../errors.ts";
 import { grantTable, sessionOwner } from "../sandbox/broker.ts";
 import { resolveSandboxExecPath } from "../sandbox/exec.ts";
+import { killAll, startProcess } from "../sandbox/launch.ts";
 import { currentSandboxStatus, profileWarning } from "../sandbox/status.ts";
-import { assertSessionEnv, assertSpawnEnv, harnessExtra, hostEnv, hostHome, sessionEnv } from "./sandbox-env.ts";
+import { assertSessionEnv, assertSpawnEnv, harnessExtra, hostEnv, sessionEnv } from "./sandbox-env.ts";
 import {
   canonical,
-  type ChildExit,
   checkInput,
   grantsOf,
   LAUNCHER_UNAVAILABLE,
   launcherServer,
-  REAP_GRACE_MS,
   type SandboxedChild,
   type SandboxMode,
   sandboxMode,
@@ -99,6 +96,8 @@ interface Prepared {
   readonly beforeGrant?: () => void;
   /** The environment names the sign-in store (`AssertOptions.store`; default: a session's does). */
   readonly store?: boolean;
+  /** The CLI's configuration directory is the sign-in home (`AssertOptions.signInHome`: detection's). */
+  readonly signInHome?: boolean;
 }
 
 /** One sandbox: `prepare` makes its directories and input; `cleanup` runs when it is gone. */
@@ -177,7 +176,11 @@ export function openSessionSandbox(s: Session, harness: Harness, deps: SessionSa
  * input needs a project folder, and that one holds nothing). No project, no credential, no `fin`
  * endpoint. The sign-in store follows the purpose alone, never an option: `detect` has it
  * (`auth status --json` reads the CLI's own store: the store variable or link, and its grant),
- * `probe` never (Decision 8: the probe runs unsigned). The same mode rules as a session's;
+ * `probe` never (Decision 8: the probe runs unsigned). Off Windows, `detect` of a store-folder
+ * harness (Claude Code) reads the sign-in home (`signInHome`, read only; it writes only the
+ * store) and names it as the CLI's configuration directory instead of its own `provider/`
+ * (Decision 19 as 7D Task 0 amended it: `auth status` names the account from the profile there);
+ * finisherd still opens nothing under `providers/`. The same mode rules as a session's;
  * closing the scope kills every process it started, then removes the directory and workspace.
  */
 export function openHostSandbox(purpose: "detect" | "probe", harness: Harness, deps: SessionSandboxDeps): Effect.Effect<SessionSandbox, FinError, Scope.Scope> {
@@ -194,17 +197,18 @@ export function openHostSandbox(purpose: "detect" | "probe", harness: Harness, d
         host: true,
         prepare: async () => {
           const { dirs } = await ensureHostDirs(agents, { platform, id });
-          const store = purpose === "detect" ? await linkSignInStore(harness, deps.serverData, dirs, { platform, ...(deps.symlink === undefined ? {} : { symlink: deps.symlink }) }) : undefined;
+          // Decision 19: detection's CLI reads the account from the sign-in home (`home`, off Windows).
+          const store = purpose === "detect" ? await linkSignInStore(harness, deps.serverData, dirs, { platform, home: true, ...(deps.symlink === undefined ? {} : { symlink: deps.symlink }) }) : undefined;
           const project = await ensureHostProject(deps.hostRoot ?? tmpdir(), deps.serverData, { platform });
           workspace = join(project, "workspace", id);
           await mkdir(join(project, "workspace"), { mode: 0o700 }).catch((e: NodeJS.ErrnoException) => {
             if (e.code !== "EEXIST") throw e;
           });
           await mkdir(workspace, { mode: 0o700 });
-          await mkdir(hostHome(dirs, platform), { mode: 0o700 });
           const env = hostEnv({ harness, dirs, store, platform, ...(deps.parent === undefined ? {} : { parent: deps.parent }) });
           const withStore = store?.env !== undefined;
-          assertSessionEnv(env, { id, harness }, { host: true, store: withStore, expect: env, platform });
+          const signInHome = store?.configDir !== undefined;
+          assertSessionEnv(env, { id, harness }, { host: true, store: withStore, signInHome, expect: env, platform });
           const input: AgentInput = {
             sessionId: id,
             mode: "plan",
@@ -214,11 +218,12 @@ export function openHostSandbox(purpose: "detect" | "probe", harness: Harness, d
             libraryRoots: [],
             sessionDir: dirs.dir,
             ...(store === undefined ? {} : { signInStore: store.grant }),
+            ...(store?.configDir === undefined ? {} : { signInHome: store.configDir }),
             toolchains: sandboxToolchainBase(),
             serverData: deps.serverData,
             home: await canonical(homedir()),
           };
-          return { env, workspace, roots: [workspace], input, store: withStore };
+          return { env, workspace, roots: [workspace], input, store: withStore, signInHome };
         },
         cleanup: async () => {
           if (workspace !== undefined) await rm(workspace, { recursive: true, force: true, maxRetries: 3 }).catch(() => 0);
@@ -298,7 +303,7 @@ function openBox(b: BoxSpec, deps: SessionSandboxDeps): Effect.Effect<SessionSan
                 const s = { id: b.id, harness: b.harness };
                 assertSpawnEnv(opts.env, s, platform);
                 childEnv = { ...env, ...opts.env };
-                assertSessionEnv(childEnv, s, { expect: env, extra: harnessExtra(b.harness), host: b.host, store: p.store ?? !b.host, platform });
+                assertSessionEnv(childEnv, s, { expect: env, extra: harnessExtra(b.harness), host: b.host, store: p.store ?? !b.host, signInHome: p.signInHome === true, platform });
               }
               let input = base;
               if (opts.extraRead !== undefined && opts.extraRead.length > 0) {
@@ -311,7 +316,7 @@ function openBox(b: BoxSpec, deps: SessionSandboxDeps): Effect.Effect<SessionSan
                 }
               }
               if (closed.v) throw finError("SESSION_INTERRUPTED", "the session's sandbox is closed", { sessionId: b.id });
-              const child = await start(mode === "launcher" ? { launcher, request: { profile: "agent", input } } : undefined, argv, cwd, childEnv, platform, (exit, launcherFailed) => {
+              const child = await startProcess(mode === "launcher" ? { launcher, request: { profile: "agent", input } } : undefined, argv, cwd, childEnv, platform, (exit, launcherFailed) => {
                 if (launcherFailed && exit.code === LAUNCHER_UNAVAILABLE) deps.onViolation?.({ sessionId: b.id, op: "apply", profile: "agent", rootKind: "none" });
               });
               children.add(child);
@@ -336,108 +341,6 @@ function openBox(b: BoxSpec, deps: SessionSandboxDeps): Effect.Effect<SessionSan
       await gone();
     }),
   );
-}
-
-/** Starts one process (through the launcher when `via` is given) in a process group of its own. */
-function start(
-  via: { launcher: string; request: unknown } | undefined,
-  argv: readonly string[],
-  cwd: string,
-  env: Readonly<Record<string, string>>,
-  platform: NodeJS.Platform,
-  onExit: (e: ChildExit, launcherFailed: boolean) => void,
-): Promise<SandboxedChild> {
-  // The Linux and macOS launchers stay the parent and reap the session (see the header).
-  const reaps = via !== undefined && (platform === "linux" || platform === "darwin");
-  const [program, args] = via === undefined ? [argv[0]!, argv.slice(1)] : [via.launcher, ["--policy-fd", "3", "--", ...argv]];
-  const child: ChildProcess = spawnChild(program, args, {
-    cwd,
-    env,
-    stdio: via === undefined ? ["pipe", "pipe", "pipe"] : ["pipe", "pipe", "pipe", "pipe"],
-    detached: platform !== "win32",
-    windowsHide: true,
-  });
-  // The launcher's own failure line, written back on descriptor 3 (end of file alone: the exec happened).
-  let report = "";
-  const reported = new Promise<void>((resolve) => {
-    const r = via === undefined ? undefined : (child.stdio[3] as (Writable & Readable) | null);
-    if (r === undefined || r === null || typeof r.on !== "function") return resolve();
-    r.on("data", (c: Buffer) => {
-      if (report.length < 4096) report += c.toString("utf8");
-    });
-    r.on("error", () => resolve());
-    r.on("close", () => resolve());
-    r.on("end", () => resolve());
-  });
-  let gone = false;
-  const exited = new Promise<ChildExit>((resolve) => {
-    child.once("exit", (code, signal) => {
-      gone = true;
-      const e = { code, signal };
-      // What the leader left running in its group goes with it, while the group's id cannot
-      // yet name another process's (under the Linux launcher the group is the launcher alone,
-      // which has reaped the session).
-      if (platform !== "win32" && child.pid !== undefined) {
-        try {
-          process.kill(-child.pid, "SIGKILL");
-        } catch {
-          // The group is gone.
-        }
-      }
-      void reported.then(() => {
-        onExit(e, /"code":"SANDBOX_UNAVAILABLE"/.test(report));
-        resolve(e);
-      });
-    });
-  });
-  return new Promise((resolve, reject) => {
-    child.once("error", (e) =>
-      reject(finError("SANDBOX_UNAVAILABLE", `cannot start ${via === undefined ? program : "the sandbox launcher"}: ${e.message}`, { profile: "agent", program: via === undefined ? program : "fin-sandbox-exec" })),
-    );
-    child.once("spawn", () => {
-      if (via !== undefined) {
-        // The launcher reads descriptor 3 to its end: our end is closed once written.
-        const req = child.stdio[3] as Writable;
-        req.on("error", () => {});
-        req.end(JSON.stringify(via.request));
-      }
-      const pid = child.pid!;
-      resolve({
-        pid,
-        stdin: child.stdin!,
-        stdout: child.stdout!,
-        stderr: child.stderr!,
-        exited,
-        kill: (signal = "SIGTERM") => {
-          // After the exit the group's id may name another process's group.
-          if (gone) return;
-          try {
-            if (platform === "win32") child.kill(signal);
-            else if (reaps && signal === "SIGKILL") {
-              // The reaper's session end; its group alone if it does not end in time.
-              process.kill(-pid, "SIGHUP");
-              setTimeout(() => {
-                if (gone) return;
-                try {
-                  process.kill(-pid, "SIGKILL");
-                } catch {
-                  // Gone meanwhile.
-                }
-              }, REAP_GRACE_MS).unref();
-            } else process.kill(-pid, signal);
-          } catch {
-            // Already gone.
-          }
-        },
-      });
-    });
-  });
-}
-
-async function killAll(children: Set<SandboxedChild>, graceMs: number): Promise<void> {
-  const all = [...children];
-  for (const c of all) c.kill("SIGKILL");
-  await Promise.race([Promise.all(all.map((c) => c.exited)), new Promise((r) => setTimeout(r, graceMs).unref())]);
 }
 
 /** The runtime's view of session sandboxes (one per server; `wiring.ts` builds it). */

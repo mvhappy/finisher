@@ -210,16 +210,14 @@ describe("the chain", () => {
   test("agent_sessions_are_driven_by_people_in_7A (7A Task 2), and by parent sessions in 7B (Task 6)", async () => {
     open = new Set([A]);
     const drive = { projectId: A };
-    // An agent credential never resumes or deletes a session, even one minted with `agent.run`;
-    // 7B lets it start and drive (the hooks keep it to a session's own children, `agent-subagents.test.ts`).
+    // An agent credential never deletes a session, even one minted with `agent.run`; 7B lets it
+    // start and drive (the hooks keep it to a session's own children, `agent-subagents.test.ts`).
+    // Resume passes the kind gate since the 7B Decision 16 amendment (2026-11-13): only a child
+    // its own interrupt stopped (`agent-child-resume.test.ts` holds the rule).
     const parent = harness(agent({ scopes: [...MINT, "agent.run", "agent.read", "agent.admin"] }));
-    for (const [tag, payload] of [
-      ["agent.session.resume", { sessionId: "s" }],
-      ["agent.session.delete", { sessionId: "s" }],
-    ] as const) {
-      expect(error(await parent.call(tag, payload)), tag).toMatchObject({ code: "SCOPE_DENIED", details: { reason: "principalKind" } });
-    }
+    expect(error(await parent.call("agent.session.delete", { sessionId: "s" }))).toMatchObject({ code: "SCOPE_DENIED", details: { reason: "principalKind" } });
     expect(parent.seen).toEqual([]);
+    expect(error(await parent.call("agent.session.resume", { sessionId: "s" }))?.details).not.toMatchObject({ reason: "principalKind" });
     expect(error(await harness(mcp()).call("agent.session.start", drive))).toMatchObject({ code: "SCOPE_DENIED", details: { reason: "principalKind" } });
     // `fin` (local) and the console do; a mode other than plan also needs project.write.
     expect(code(await harness(LOCAL).call("agent.session.start", drive))).toBeUndefined();

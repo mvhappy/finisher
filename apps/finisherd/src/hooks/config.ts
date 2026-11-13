@@ -29,10 +29,16 @@
 //   absolute path outside the project and a bare program name are not project content.
 // - **Paths** (Decision 6): `run[0]` with a separator, and `file`, are relative to the folder
 //   of the file that declares them unless absolute; absent `file` is `run[0]` when that is such
-//   a declaring-folder path. A bare program name is kept as written (Task 3 resolves it).
+//   a declaring-folder path. The program is resolved at load into `program` (`programOf`):
+//   `node` is finisherd's own Node (`process.execPath`), a path is resolved as above (for a
+//   project hook exactly the path its `hooksHash` binds), another bare name is looked up in the
+//   toolchain base when the hook runs (`hooks/process.ts`; the parsed file is kept by its key,
+//   so a lookup at load would outlive an install), never in the user's `PATH`. On Windows
+//   anything but `node` must be an `.exe`: a `.cmd`, `.bat` or other file a shell would run
+//   makes the file unreadable (nothing runs through a shell, Decision 9).
 import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { isAbsolute, join, posix, relative, resolve, sep, win32 } from "node:path";
 import { type AgentHooksListSuccess, type AgentWarning, HOOK_CLASSES, HOOK_LIMITS, type HookEvent, type HookLayer, HookSpec, type ListedHook } from "@finisher/contracts";
 import { Effect, Schema } from "effect";
 import { settingsPath } from "../config.ts";
@@ -52,6 +58,25 @@ export interface PluginHookRow {
   readonly handler: string;
 }
 
+/**
+ * A hook's program (Decision 6): a path (`node`: finisherd's own Node, its install directory
+ * then readable too), or a bare name looked up in the toolchain base at each run.
+ */
+export type HookProgram = { readonly path: string; readonly node?: true } | { readonly bare: string };
+
+/**
+ * `run[0]` resolved against `dir`, the folder of the file that declares it. On Windows anything
+ * but `node` must be an `.exe` (throws otherwise): nothing runs through a shell.
+ */
+export function programOf(program: string, dir: string, platform: NodeJS.Platform = process.platform): HookProgram {
+  if (program === "node") return { path: process.execPath, node: true };
+  if (platform === "win32" && !/\.exe$/i.test(program)) throw new Error(`on Windows a hook's program is node or an .exe (nothing runs through a shell): ${program}`);
+  const path = platform === "win32" ? win32 : posix;
+  if (path.isAbsolute(program)) return { path: program };
+  if (program.includes("/") || (platform === "win32" && program.includes("\\"))) return { path: path.resolve(dir, program) };
+  return { bare: program };
+}
+
 /** One configured hook, paths resolved. */
 export interface ConfiguredHook {
   readonly layer: HookLayer;
@@ -63,8 +88,16 @@ export interface ConfiguredHook {
   readonly spec?: HookSpec;
   /** The program (resolved when it is a declaring-folder path) and its arguments. */
   readonly run?: readonly string[];
+  /** `run[0]` resolved (`programOf`). */
+  readonly program?: HookProgram;
   /** The hook's own file (read-only to it), resolved. */
   readonly file?: string;
+  /**
+   * A trusted project hook's project files (its program, its own file) by resolved path, each
+   * with the hash its `hooksHash` binds: the bytes that may run (`hooks/process.ts` runs a
+   * verified copy).
+   */
+  readonly bound?: Readonly<Record<string, string>>;
   /** The folder of the file that declares it. */
   readonly dir?: string;
   /** The synthetic hook of an unreadable layer: it blocks. */
@@ -128,11 +161,17 @@ function decodeHooks(list: unknown, layer: HookLayer, source: string, dir: strin
     }
     if (seen.has(spec.id)) throw new Error(`hook ${name}: a second hook with this id`);
     seen.add(spec.id);
-    const [program, ...args] = spec.run as [string, ...string[]];
-    const local = !isAbsolute(program) && hasSeparator(program);
-    const run = [local ? resolve(dir, program) : program, ...args];
-    const file = spec.file !== undefined ? resolve(dir, spec.file) : local ? run[0] : undefined;
-    return { layer, source, id: spec.id, event: spec.event, spec, run, ...(file === undefined ? {} : { file }), dir };
+    let program: HookProgram;
+    try {
+      program = programOf(spec.run[0]!, dir);
+    } catch (e) {
+      throw new Error(`hook ${name}: ${firstLine(e)}`);
+    }
+    const [first, ...args] = spec.run as [string, ...string[]];
+    const local = "path" in program && program.node !== true && !isAbsolute(first) ? program.path : undefined;
+    const run = [local ?? first, ...args];
+    const file = spec.file !== undefined ? resolve(dir, spec.file) : local;
+    return { layer, source, id: spec.id, event: spec.event, spec, run, program, ...(file === undefined ? {} : { file }), dir };
   });
 }
 
@@ -174,10 +213,44 @@ interface Problem {
   readonly invalid: string;
 }
 
+/** `p` resolved, through links where it exists. */
+function real(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return resolve(p);
+  }
+}
+
+/**
+ * Why a project hook's arguments or program cannot be bound, if they cannot (review of Task 3):
+ * a project script comes in only through `run[0]` or `file`, so an argument may not name the
+ * project (an absolute path inside it, or any `..` segment); and a program in the project is
+ * the hook's own file (Linux executes nothing else from the hook's temp, where it runs a copy).
+ */
+function unbound(dir: string, h: ConfiguredHook): string | undefined {
+  const spec = h.spec;
+  if (spec === undefined) return undefined;
+  const realDir = real(dir);
+  for (const a of spec.run.slice(1)) {
+    if (a.split(/[\\/]/).includes("..")) return `hook "${h.id}": the argument ${a} has a .. segment (a project script is named by file)`;
+    if (isAbsolute(a) && (inside(relative(dir, resolve(a))) || resolve(a) === resolve(dir) || inside(relative(realDir, real(a))))) {
+      return `hook "${h.id}": the argument ${a} names the project folder (a project script is named by file)`;
+    }
+  }
+  const program = h.program !== undefined && "path" in h.program && h.program.node !== true ? h.program.path : undefined;
+  if (program !== undefined && inside(relative(dir, program)) && h.file !== undefined && h.file !== program) {
+    return `hook "${h.id}": its program ${spec.run[0]} is in the project, so it is the hook's own file (drop file, or run it with node)`;
+  }
+  return undefined;
+}
+
 /** The project files `hooks` name (relative, `/`-separated, sorted), or the first path that leaves the project. */
 function referenced(dir: string, hooks: readonly ConfiguredHook[]): { files: string[] } | Problem {
   const files = new Set<string>();
   for (const h of hooks) {
+    const why = unbound(dir, h);
+    if (why !== undefined) return { reason: "invalidHooks", invalid: why };
     const program = h.spec?.run[0];
     const named = [...(program !== undefined && hasSeparator(program) ? [program] : []), ...(h.spec?.file === undefined ? [] : [h.spec.file])];
     for (const path of named) {
@@ -210,7 +283,7 @@ function hashFiles(dir: string, files: readonly string[]): Array<[string, string
 type ProjectRead =
   | { readonly absent: true }
   | { readonly error: string }
-  | { readonly hooks?: ConfiguredHook[]; readonly hash?: string; readonly files: string[]; readonly problem?: Problem; readonly invalid?: string };
+  | { readonly hooks?: ConfiguredHook[]; readonly hash?: string; readonly files: string[]; readonly pairs?: ReadonlyArray<readonly [string, string]>; readonly problem?: Problem; readonly invalid?: string };
 
 /** The project's hooks file and the files it names: the hash to trust, or why there is none. */
 function readProjectAll(dir: string): ProjectRead {
@@ -222,7 +295,17 @@ function readProjectAll(dir: string): ProjectRead {
   if ("reason" in refs) return { hooks: read.value, files: [], problem: refs };
   const pairs = hashFiles(dir, refs.files);
   if ("reason" in pairs) return { hooks: read.value, files: refs.files, problem: pairs };
-  return { hooks: read.value, hash: hooksHashOf(read.hash, pairs), files: refs.files };
+  return { hooks: read.value, hash: hooksHashOf(read.hash, pairs), files: refs.files, pairs };
+}
+
+/** Each hook with the hashes of the project files it names (`ConfiguredHook.bound`). */
+function withBound(dir: string, hooks: readonly ConfiguredHook[], pairs: ReadonlyArray<readonly [string, string]>): ConfiguredHook[] {
+  const byPath = new Map(pairs.map(([rel, hash]) => [join(dir, ...rel.split("/")), hash]));
+  return hooks.map((h) => {
+    const program = h.program !== undefined && "path" in h.program ? h.program.path : undefined;
+    const bound = Object.fromEntries([program, h.file].flatMap((p) => (p !== undefined && byPath.has(p) ? [[p, byPath.get(p)!]] : [])));
+    return Object.keys(bound).length === 0 ? h : { ...h, bound };
+  });
 }
 
 /** A project's hooks file and whether it applies, against its trust record. */
@@ -239,7 +322,7 @@ export function projectHooks(dir: string | undefined, trust: ProjectTrust | unde
   const status: ProjectHooksStatus = trusted === undefined ? "untrusted" : read.hash !== undefined && trusted === read.hash ? "trusted" : "changed";
   const why = read.problem ?? (read.hooks === undefined ? { reason: "invalidHooks" as const, invalid: read.invalid ?? "" } : undefined);
   const base = { files: read.files, ...(read.hash === undefined ? {} : { hooksHash: read.hash }), ...(why === undefined ? {} : { reason: why.reason, invalid: why.invalid }) };
-  if (status === "trusted") return { status, hooks: read.hooks ?? [], ignored: [], ...base };
+  if (status === "trusted") return { status, hooks: withBound(dir, read.hooks ?? [], read.pairs ?? []), ignored: [], ...base };
   return { status, hooks: [], ignored: read.hooks ?? [], ...base };
 }
 
@@ -266,6 +349,9 @@ export function checkTrustedHooks(dir: string, projectId: string, expected: stri
   }
   return hash;
 }
+
+/** What makes a configured hook the same hook: where it is declared, as it is configured, as resolved. */
+const hookKey = (h: ConfiguredHook) => JSON.stringify([h.layer, h.source, h.dir, h.id, h.event, h.spec, h.program, h.file, h.bound, h.plugin, h.unreadable]);
 
 const inert = (event: HookEvent) => (event === "PreRender" || event === "PostRender" ? { inert: "noRenderKind" as const } : {});
 
@@ -318,6 +404,26 @@ export class HookConfig {
     return rows.map((r) => ({ layer: "plugin", source: r.plugin, id: r.handler, event: r.event, plugin: r.plugin }));
   }
 
+  /** The folder of a project (open, else indexed). */
+  dirOf(projectId: string): string | undefined {
+    return this.#d.dirOf(projectId);
+  }
+
+  /**
+   * What `hooks(projectId)` depends on, without touching a file (Decision 5's cost contract):
+   * the configuration files that apply (managed, user; local for a project; its hooks file only
+   * while trusted with a hash other than `none`), the trusted hash and the project's folder.
+   */
+  sources(projectId: string | undefined): { readonly paths: readonly string[]; readonly trusted?: string; readonly dir?: string } {
+    const data = this.#d.serverData;
+    const server = [join(data, MANAGED_SETTINGS), settingsPath(data)];
+    if (projectId === undefined) return { paths: server };
+    const trusted = this.#d.trustOf(projectId)?.hooksHash;
+    const dir = trusted === undefined || trusted === NO_FILE ? undefined : this.#d.dirOf(projectId);
+    const local = SAFE_ID.test(projectId) ? [join(data, "projects", projectId, LOCAL_HOOKS)] : [];
+    return { paths: [...server, ...(dir === undefined ? [] : [join(dir, HOOKS_FILE)]), ...local], ...(trusted === undefined ? {} : { trusted }), ...(dir === undefined ? {} : { dir }) };
+  }
+
   /** A project's hooks file and whether it applies. */
   project(projectId: string): ProjectHooks {
     return projectHooks(this.#d.dirOf(projectId), this.#d.trustOf(projectId));
@@ -328,10 +434,29 @@ export class HookConfig {
    * managed, user, project, local, plugin. The project file is read only while trusted.
    */
   hooks(projectId: string | undefined): readonly ConfiguredHook[] {
-    if (projectId === undefined) return [...this.#server(), ...this.#plugins()];
+    return this.resolve(projectId).hooks;
+  }
+
+  /**
+   * `hooks(projectId)`, and whether a trusted project file is `changed` (deleted, edited, or a
+   * script it binds edited): the engine keeps no index while it is (Decision 5).
+   */
+  resolve(projectId: string | undefined): { readonly hooks: readonly ConfiguredHook[]; readonly projectChanged: boolean } {
+    if (projectId === undefined) return { hooks: [...this.#server(), ...this.#plugins()], projectChanged: false };
     const trusted = this.#d.trustOf(projectId)?.hooksHash;
-    const project = trusted === undefined || trusted === NO_FILE ? [] : this.project(projectId).hooks;
-    return [...this.#server(), ...project, ...this.#local(projectId), ...this.#plugins()];
+    const project = trusted === undefined || trusted === NO_FILE ? undefined : this.project(projectId);
+    return { hooks: [...this.#server(), ...(project?.hooks ?? []), ...this.#local(projectId), ...this.#plugins()], projectChanged: project?.status === "changed" };
+  }
+
+  /**
+   * Whether `h` (from `hooks(projectId)`) still applies, every layer re-read as a dispatch does:
+   * the check right before a hook's process starts (a project hook's file or script changed
+   * while it waited for a slot no longer runs).
+   */
+  applies(projectId: string | undefined, h: ConfiguredHook): boolean {
+    // By what it is, not by object: a file changed within `RACY_MS` is parsed again at each read.
+    const key = hookKey(h);
+    return this.hooks(projectId).some((x) => x === h || hookKey(x) === key);
   }
 
   /** `agent.hooks.list`'s answer: every layer's hooks, a project file's with whether it applies. */

@@ -52,3 +52,14 @@ pub fn sandbox_agent_check(input: String) -> Option<String> {
         Ok(i) => fin_sandbox::profile::agent(&i).err().map(|e| e.to_string()),
     }
 }
+
+/// Checks a `hook` profile input (`HookInput` JSON) the way the launcher will: `null` when
+/// `fin_sandbox::profile::hook` builds a policy from it, else the reason it does not (7F plan
+/// Task 3). So a hook whose input is wrong fails before its process starts.
+#[napi]
+pub fn sandbox_hook_check(input: String) -> Option<String> {
+    match serde_json::from_str::<fin_sandbox::HookInput>(&input) {
+        Err(e) => Some(format!("the hook input does not parse: {e}")),
+        Ok(i) => fin_sandbox::profile::hook(&i).err().map(|e| e.to_string()),
+    }
+}

@@ -216,7 +216,8 @@ fn is_bezier(kfs: &[fin_core::Keyframe]) -> bool {
 /// The corpus covers what plan 4C Task 17 lists: bézier keyframes on every animatable number,
 /// `vec2` and colour path (items, effects and graphic slots), transitions with both curves,
 /// the three speeds, nesting two deep, an adjustment layer, masks, captions with a measurer
-/// and audio ranges.
+/// and audio ranges. Audio effects' numbers count too: they reach the audio plan as segments
+/// (plan 6C Task 6).
 #[test]
 fn corpus_covers_the_plan() {
     let cases = cases();
@@ -312,6 +313,40 @@ fn corpus_covers_the_plan() {
         "{} cases (the plan asks for about 20)",
         cases.len()
     );
+}
+
+/// Plan 6C Task 6: the audio-effects case is pinned (its rows are in `expected.json`, one per
+/// range, compared by [`corpus_plans_match_expected`]) and its plans carry what it is for:
+/// effects of all four kinds, keyframed numbers cut into several segments, and effects of an
+/// item inside a nested timeline.
+#[test]
+fn corpus_21_hash() {
+    const CASE: &str = "21-audio-effects";
+    let (_, case, project) = cases()
+        .into_iter()
+        .find(|(id, ..)| id == CASE)
+        .expect("the audio-effects corpus case");
+    let expected: Vec<Entry> = serde_json::from_str(
+        &std::fs::read_to_string(Path::new(DIR).join("expected.json")).unwrap(),
+    )
+    .unwrap();
+    let rows = expected.iter().filter(|e| e.case == CASE).count();
+    assert!(!case.audio.is_empty());
+    assert_eq!(rows, case.frames.len() + case.audio.len());
+    let (mut kinds, mut cut, mut nested) = (BTreeSet::new(), false, false);
+    for &[from, to] in &case.audio {
+        let plan = eval_audio(&project, &case.timeline, from, to).unwrap();
+        for item in &plan.items {
+            for e in &item.effects {
+                kinds.insert(e.kind.clone());
+                cut |= e.numbers.values().any(|s| s.len() > 1);
+                nested |= !item.via.is_empty();
+            }
+        }
+    }
+    let want = ["compressor", "deEsser", "eq", "gate"].map(String::from);
+    assert_eq!(kinds, BTreeSet::from(want));
+    assert!(cut && nested, "cut segments {cut}, nested effects {nested}");
 }
 
 /// Every layer of a frame plan, children (adjustment and nested groups) included.
