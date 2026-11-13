@@ -6101,6 +6101,17 @@ export interface HelperGrant {
   kind: HelperKind;
 }
 /**
+ * `history.log`: the branch's head rev and a window of its records, oldest first (review
+ * batch L; `fin log` summarises them).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "HistoryLog".
+ */
+export interface HistoryLog {
+  head: number;
+  records: CommittedTx[];
+}
+/**
  * The answer of a history operation ([`Store::undo`](crate::Store::undo),
  * [`Store::redo`](crate::Store::redo)): the records it committed, in order (or planned and
  * rolled back, `dry_run`; a retry of a committed operation answers with its records,

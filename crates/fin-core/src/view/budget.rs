@@ -15,8 +15,13 @@
 //!
 //! `elided` lists each step that changed something: `{step, items}` (how many lines it
 //! changed or folded), and per timeline the tail cut `{step: "tail", timeline, from, to,
-//! items}` (the dropped lines' first start and last end). The same project and budget give
+//! items, offset}` (the dropped lines' first start and last end, and the least time-order
+//! index among them, [`super::Entry::index`]: where the rest starts). The same project and budget give
 //! the same lines.
+//!
+//! [`fit_page`] is `fin view`'s default with no `--budget` (review batch L): the `tail` step
+//! alone, so a page keeps its first lines at full detail and its tail entries say where the
+//! rest starts.
 
 use crate::Rational;
 use serde_json::{Value, json};
@@ -142,6 +147,7 @@ fn merge(s: &mut Section) -> usize {
                 Some(n) => {
                     folded += 1;
                     merged[n].folded += 1;
+                    merged[n].index = merged[n].index.min(e.index);
                 }
                 None => merged.push(e.clone()),
             }
@@ -171,8 +177,28 @@ fn json_chars(l: &str) -> u64 {
 /// envelope (rev, timeline, token fields, `resolved`), JSON escaping and the `elided` entries
 /// themselves, not only the lines (review #43).
 pub fn fit(
+    sections: Vec<Section>,
+    budget: Option<u64>,
+    response: &dyn Fn(&[String], &[Value]) -> u64,
+) -> (Vec<String>, Vec<Value>) {
+    fit_with(sections, budget, false, response)
+}
+
+/// [`fit`] as a page: no `detail`, `text` or `merge` step, only the `tail`, so the
+/// lines kept are the first ones at full detail and each tail entry says where the rest
+/// starts (`fin view`'s default cap, review batch L).
+pub fn fit_page(
+    sections: Vec<Section>,
+    budget: u64,
+    response: &dyn Fn(&[String], &[Value]) -> u64,
+) -> (Vec<String>, Vec<Value>) {
+    fit_with(sections, Some(budget), true, response)
+}
+
+fn fit_with(
     mut sections: Vec<Section>,
     budget: Option<u64>,
+    page: bool,
     response: &dyn Fn(&[String], &[Value]) -> u64,
 ) -> (Vec<String>, Vec<Value>) {
     let mut level = Level::default();
@@ -183,6 +209,12 @@ pub fn fit(
     let all = || sections.iter().flat_map(|s| s.entries.iter());
     let over =
         |s: &[Section], l: Level, e: &[Value]| response(&render(s, l), e).div_ceil(4) > budget;
+    if page {
+        if !over(&sections, level, &elided) {
+            return (render(&sections, level), elided);
+        }
+        return tail(sections, level, &elided, budget, response);
+    }
     if over(&sections, level, &elided) {
         let n = all().filter(|e| !e.detail.is_empty()).count();
         level.no_detail = true;
@@ -210,11 +242,24 @@ pub fn fit(
         let shown = shown_steps(&sections, &steps, level);
         return (render(&sections, level), shown);
     }
+    tail(sections, level, &elided, budget, response)
+}
+
+/// The `tail` step: cuts lines from the end until the response fits `budget`. `elided`: the
+/// earlier steps that ran.
+fn tail(
+    mut sections: Vec<Section>,
+    level: Level,
+    elided: &[Value],
+    budget: u64,
+    response: &dyn Fn(&[String], &[Value]) -> u64,
+) -> (Vec<String>, Vec<Value>) {
+    let steps = elided.iter().map(|e| e["step"].clone()).collect::<Vec<_>>();
     // The tail: first cut by an estimate (the response without lines, plus each line's JSON),
     // last timeline first; then one more line at a time while the exact response (with its
     // tail entries) is still over. Only once no item line is left do headers go, last
     // timeline first (`header: true` on its tail entry).
-    let mut total = response(&[], &elided)
+    let mut total = response(&[], elided)
         + render(&sections, level)
             .iter()
             .map(|l| json_chars(l))
@@ -275,15 +320,16 @@ fn shown_steps(sections: &[Section], steps: &[Value], level: Level) -> Vec<Value
         .collect()
 }
 
-/// The `tail` entries: per timeline cut, `{step, timeline, from, to, items}` (the dropped item
+/// The `tail` entries: per timeline cut, `{step, timeline, from, to, items, offset}` (the dropped item
 /// lines' first start and last end), plus `header: true` when its header went too (`from`
 /// and `to` only when item lines went).
 fn tails(sections: &[Section], cuts: &[Cut], headless: &[bool]) -> Vec<Value> {
     let mut out = Vec::new();
     for ((s, cut), &header) in sections.iter().zip(cuts).zip(headless) {
         let mut e = match cut {
-            Some((from, to, n)) => {
-                json!({ "step": "tail", "timeline": s.timeline, "from": from, "to": to, "items": n })
+            Some((from, to, n, offset)) => {
+                json!({ "step": "tail", "timeline": s.timeline, "from": from, "to": to, "items": n,
+                        "offset": offset })
             }
             None if header => json!({ "step": "tail", "timeline": s.timeline, "items": 0 }),
             None => continue,
@@ -296,16 +342,17 @@ fn tails(sections: &[Section], cuts: &[Cut], headless: &[bool]) -> Vec<Value> {
     out
 }
 
-/// A timeline's tail cut so far: the dropped lines' first start, last end and count.
-type Cut = Option<(Rational, Rational, usize)>;
+/// A timeline's tail cut so far: the dropped lines' first start, last end, count, and the
+/// least [`Entry::index`] among them (where the rest starts, `offset`).
+type Cut = Option<(Rational, Rational, usize, usize)>;
 
 /// Drops the last line of section `i` into its cut; returns what it added to the response.
 fn pop(sections: &mut [Section], cuts: &mut [Cut], i: usize, level: Level) -> Option<u64> {
     let e = sections[i].entries.pop()?;
     let end = e.end.unwrap_or(e.start);
     cuts[i] = Some(match cuts[i] {
-        None => (e.start, end, 1),
-        Some((from, to, n)) => (from.min(e.start), to.max(end), n + 1),
+        None => (e.start, end, 1, e.index),
+        Some((from, to, n, at)) => (from.min(e.start), to.max(end), n + 1, at.min(e.index)),
     });
     Some(json_chars(&line(&e, level)))
 }

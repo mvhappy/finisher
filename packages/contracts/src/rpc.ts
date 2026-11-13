@@ -121,22 +121,10 @@ import {
 } from "./job-rpcs.ts";
 import { JobViewSchema } from "./jobs.ts";
 import {
-  BranchCreatePayload,
-  BranchCreateSuccess,
-  BranchListPayload,
-  BranchListSuccess,
-  BranchSetPayload,
-  HistoryCheckpointPayload,
-  HistoryCherryPickPayload,
-  HistoryMergePayload,
-  HistoryRedoPayload,
-  HistoryResultSuccess,
-  HistoryRevertPayload,
-  HistoryUndoPayload,
-  MergeReportSuccess,
-  ProjectRecoverPayload,
-  RecordSuccess,
-  RecoverReportSuccess,
+  BranchCreatePayload, BranchCreateSuccess, BranchListPayload, BranchListSuccess, BranchSetPayload,
+  HistoryCheckpointPayload, HistoryCherryPickPayload, HistoryLogPayload, HistoryLogSuccess,
+  HistoryMergePayload, HistoryRedoPayload, HistoryResultSuccess, HistoryRevertPayload, HistoryUndoPayload,
+  MergeReportSuccess, ProjectRecoverPayload, RecordSuccess, RecoverReportSuccess,
 } from "./history.ts";
 import {
   PluginInfoPayload,
@@ -486,6 +474,7 @@ export const FinRpcs = RpcGroup.make(
   Rpc.make("history.merge", { payload: HistoryMergePayload, success: MergeReportSuccess, error: FinError }),
   Rpc.make("history.cherryPick", { payload: HistoryCherryPickPayload, success: HistoryResultSuccess, error: FinError }),
   Rpc.make("history.revert", { payload: HistoryRevertPayload, success: HistoryResultSuccess, error: FinError }),
+  Rpc.make("history.log", { payload: HistoryLogPayload, success: HistoryLogSuccess, error: FinError }),
   Rpc.make("project.acknowledgeRewind", {
     payload: ProjectAcknowledgeRewindPayload,
     success: AcknowledgeSuccess,

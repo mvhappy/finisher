@@ -2,7 +2,7 @@
 // per-project event hubs fed by each engine's `onEvent`.
 import { resolve } from "node:path";
 import type { AudioPlan, BranchView, CommittedTx, FontsPlan, FramePlan } from "@finisher/core-types";
-import type { FinError, Generation, ProjectEvent, TxGetResult } from "@finisher/contracts";
+import type { FinError, Generation, HistoryLogResult, ProjectEvent, TxGetResult } from "@finisher/contracts";
 import { Engine } from "@finisher/fin-node";
 import { Context, Effect, Layer, type Scope, Semaphore, type Stream } from "effect";
 import { attempt, attemptJson, finError, isEngineDead } from "./errors.ts";
@@ -15,6 +15,7 @@ import { projectIdIn } from "./chain/resolve.ts";
 import { holdLibraries, movedFrom, type OpenProject } from "./open-project.ts";
 import { projectEvents, type StatusAt } from "./project-events.ts";
 import { ProjectIndex } from "./project-index.ts";
+import { branchReads } from "./branch-reads.ts";
 
 /** What `prepareMediaJob` resolves to: the rev written, the plan's BLAKE3 at each time and the files the worker opens. */
 export interface MediaJobPrepared {
@@ -87,6 +88,8 @@ export interface ProjectRegistryShape {
   readonly rebuild: (projectId: string) => Effect.Effect<unknown, FinError>;
   readonly compact: (projectId: string) => Effect.Effect<unknown, FinError>;
   readonly txGet: (projectId: string, txId: string) => Effect.Effect<TxGetResult, FinError>;
+  /** `history.log`: the head and the last `limit` records of `branch` below `before`, oldest first. */
+  readonly historyLog: (projectId: string, branch: string, before: number | undefined, limit: number) => Effect.Effect<HistoryLogResult, FinError>;
   /** `meta`'s guard names the caller's credential: refused once it is revoked (review of 5A Tasks 8–9, L1). */
   readonly acknowledgeRewind: (projectId: string, branch: string, generation: number, meta?: CallMeta) => Effect.Effect<boolean, FinError>;
   readonly acknowledgeSalvage: (projectId: string, copy: string, meta?: CallMeta) => Effect.Effect<boolean, FinError>;
@@ -567,23 +570,7 @@ export function makeProjectRegistry(
       openDirs: () => [...byId.values()].map((p) => p.dir).concat([...closedHere.values()]),
       indexedDirOf: (projectId) => (closed ? undefined : index.dirOf(projectId)),
       resolveBranch,
-      evalFrame: (projectId, requested, timeline, at, rev) =>
-        Effect.flatMap(resolveBranch(projectId, requested), (branch) =>
-          on<FramePlan>(projectId, (e) => e.evalFrame(branch, timeline, at, rev)),
-        ),
-      evalAudio: (projectId, requested, timeline, from, to, rev) =>
-        Effect.flatMap(resolveBranch(projectId, requested), (branch) =>
-          on<AudioPlan>(projectId, (e) => e.evalAudio(branch, timeline, from, to, rev)),
-        ),
-      fontsPlan: (projectId, requested, ops) =>
-        Effect.flatMap(resolveBranch(projectId, requested), (branch) =>
-          on<FontsPlan>(projectId, (e) => e.fontsPlan(branch, JSON.stringify(ops))),
-        ),
-
-      prepareMediaJob: (projectId, requested, timeline, at, inputDir, fontCache, paramsJson) =>
-        Effect.flatMap(resolveBranch(projectId, requested), (branch) =>
-          on<MediaJobPrepared>(projectId, (e) => e.prepareMediaJob(branch, timeline, [...at], inputDir, { fontCache: fontCache ?? null, paramsJson: paramsJson ?? null })),
-        ),
+      ...branchReads(resolveBranch, on),
 
       hubCount: () => hubs.size,
       engineOf: (projectId) => byId.get(projectId)?.engine,

@@ -16,6 +16,7 @@ pub fn row_of(name: &str) -> Option<&'static Row> {
     crate::registry_rpcs::ROWS
         .iter()
         .chain(EDIT_ROWS)
+        .chain(crate::registry_inspect::INSPECT_ROWS)
         .find(|r| r.name == name)
 }
 
@@ -85,11 +86,16 @@ mod tests {
             let rows = crate::registry_rpcs::ROWS
                 .iter()
                 .chain(EDIT_ROWS)
+                .chain(crate::registry_inspect::INSPECT_ROWS)
                 .filter(|r| r.name == *n)
                 .count();
             assert_eq!(rows, 1, "{n} needs exactly one row in registry_rpcs*.rs");
         }
-        for r in crate::registry_rpcs::ROWS.iter().chain(EDIT_ROWS) {
+        for r in crate::registry_rpcs::ROWS
+            .iter()
+            .chain(EDIT_ROWS)
+            .chain(crate::registry_inspect::INSPECT_ROWS)
+        {
             assert!(names.contains(&r.name), "row {} names no command", r.name);
         }
     }

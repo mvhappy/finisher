@@ -88,6 +88,11 @@ export declare class Engine {
    */
   txGet(txId: string): Promise<string | null>;
   /**
+   * The `HistoryLog` JSON of `branch`: its head and its last `limit` records below rev `before`
+   * (absent: through the head), oldest first (`history.log`, review batch L).
+   */
+  log(branch: string, before: number | undefined | null, limit: number): Promise<string>;
+  /**
    * Stops status reporting the rewind of `branch` that started `generation`; `false` if none.
    * `metaJson`'s guard names the caller's credential, refused once ended (`CREDENTIAL_REVOKED`).
    */

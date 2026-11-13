@@ -5925,6 +5925,28 @@
       ],
       "type": "object"
     },
+    "HistoryLog": {
+      "additionalProperties": false,
+      "description": "`history.log`: the branch's head rev and a window of its records, oldest first (review\nbatch L; `fin log` summarises them).",
+      "properties": {
+        "head": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "records": {
+          "items": {
+            "$ref": "#/$defs/CommittedTx"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "head",
+        "records"
+      ],
+      "type": "object"
+    },
     "HistoryResult": {
       "additionalProperties": false,
       "description": "The answer of a history operation ([`Store::undo`](crate::Store::undo),\n[`Store::redo`](crate::Store::redo)): the records it committed, in order (or planned and\nrolled back, `dry_run`; a retry of a committed operation answers with its records,\n`dry_run` false), and what they act on: the units an undo undoes, the undo a redo\nreverses, or the merge group a revert reverts. `no_op`: why a cherry-pick or revert\ncommitted nothing (`ALREADY_PRESENT`: the target holds the record's origin root;\n`ALREADY_REVERTED`: the merge group's effect is gone there); absent otherwise.\n`origins`: the txIds the operation acted on, each with the records its `origin` chain\nleads to (a copy of a copy), first seen first: an undo's units, a cherry-pick's origin, a\nreverted group's records; empty (and omitted) for a redo and for nothing done (7A\nDecision 27).",

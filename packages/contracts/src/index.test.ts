@@ -173,6 +173,7 @@ test("the group exposes exactly the protocol 2 RPC tags", () => {
       "training.closedTargets.set",
       "tx.commit",
       "tx.get",
+      "history.log",
     ].sort(),
   );
 });

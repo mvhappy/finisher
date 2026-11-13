@@ -109,8 +109,8 @@ pub use status::{
 pub use tick::{DueWork, TickOptions, TickReport};
 pub use verify::{Check, VerifyReport};
 pub use wire::{
-    BranchCreated, BranchView, DropReq, EngineEvent, HistoryResult, MergeReport, RecoverGroup,
-    RecoverReport, ReviewHead, ReviewPlan, SetAside, SkippedFile, TxSetAside,
+    BranchCreated, BranchView, DropReq, EngineEvent, HistoryLog, HistoryResult, MergeReport,
+    RecoverGroup, RecoverReport, ReviewHead, ReviewPlan, SetAside, SkippedFile, TxSetAside,
 };
 pub use write::WriteOutcome;
 
@@ -351,6 +351,26 @@ impl Store {
             return Err(branch_not_found(branch).into());
         }
         branch::lineage::records_since(&self.conn, &id, after)
+    }
+
+    /// `history.log` (review batch L): the branch head and its last `limit` committed txs below
+    /// rev `before` (default: through the head), oldest first; below the fork they are its
+    /// ancestors' (each `tx.branch` names the branch that holds it).
+    pub fn log(
+        &self,
+        branch: &str,
+        before: Option<u64>,
+        limit: u64,
+    ) -> Result<HistoryLog, StoreError> {
+        let id = self.resolve_branch(branch)?;
+        if db::latest_rev(&self.conn, &id)?.is_none() {
+            return Err(branch_not_found(branch).into());
+        }
+        let head = self.head_of(&id);
+        let through = before.map_or(head, |b| b.saturating_sub(1).min(head));
+        let after = through.saturating_sub(limit);
+        let records = branch::lineage::records_between(&self.conn, &id, after, through)?;
+        Ok(HistoryLog { head, records })
     }
 
     /// Committed txs on `branch` with `rev > after`, with the branch's generation, read
