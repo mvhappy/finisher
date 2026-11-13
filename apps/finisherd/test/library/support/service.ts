@@ -18,7 +18,7 @@ import type { WatchEvent } from "../../../src/library/watch.ts";
 export const ACTOR = { kind: "local", id: "test" } as const;
 
 export function identity(key: string, extra: Partial<VolumeIdentity> = {}): VolumeIdentity {
-  return { key, kind: "smbfs", devId: "1", mountRoot: false, caseSensitive: true, enumeration: "fake", remote: true, rootFileId: null, sample: [], ...extra };
+  return { key, kind: "smbfs", devId: "1", mountRoot: false, caseSensitive: true, enumeration: "fake", remote: true, sample: [], ...extra };
 }
 
 export interface FakeJob {

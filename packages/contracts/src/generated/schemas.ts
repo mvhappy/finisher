@@ -146,7 +146,7 @@ export const contentLightMatches: Same<typeof ContentLightSchema.Type, T.Content
 export const CoreErrorSchema = Schema.Struct({
   code: Schema.String,
   details: Schema.Unknown,
-  fix: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  fix: Schema.optionalKey(Schema.String),
   message: Schema.String,
 });
 export const coreErrorMatches: Same<typeof CoreErrorSchema.Type, T.CoreError> = true;

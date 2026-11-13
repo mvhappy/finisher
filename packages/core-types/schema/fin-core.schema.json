@@ -226,14 +226,7 @@
       "description": "A CLI agent session (spec §8.1, §8.5, §8.6; plan 7C Decision 6).",
       "properties": {
         "fin": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/FinEndpoint"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/$defs/FinEndpoint"
         },
         "harness": {
           "allOf": [
@@ -273,17 +266,11 @@
         },
         "sharedDir": {
           "description": "`<projectDir>/workspace/shared`; written only outside `plan` mode.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "signInStore": {
           "description": "The harness's sign-in store file, inside `<serverData>/providers/<harness>/home/`\n(spec §8.6): read and written in place, never its directory.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "toolchains": {
           "default": [],
@@ -1272,32 +1259,23 @@
           "description": "From the redeem to the owner's answer (`approved`, `rejected`).",
           "format": "uint64",
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "outcome": {
           "$ref": "#/$defs/PairOutcome"
         },
         "platform": {
-          "anyOf": [
+          "allOf": [
             {
               "$ref": "#/$defs/PairPlatform"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "The device's platform, once a device redeemed the offer."
         },
         "route": {
-          "anyOf": [
+          "allOf": [
             {
               "$ref": "#/$defs/PairRoute"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "How the device reached the server, once it redeemed."
@@ -2020,10 +1998,7 @@
         },
         "title": {
           "description": "A message key in the `en` catalogue for the style's display name.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         }
       },
       "required": [
@@ -2148,12 +2123,9 @@
           "type": "integer"
         },
         "variable": {
-          "anyOf": [
+          "allOf": [
             {
               "$ref": "#/$defs/Variable"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "A variable font's `wght` axis. Only a variable file may serve several styles (one per\nweight in the range; the request's weight drives the axis)."
@@ -2172,28 +2144,15 @@
       "description": "Where a file can be fetched. A plain source serves the file itself; an archive source\nserves an archive (its own `sha256` and `size`) holding the file as `archive.member`.",
       "properties": {
         "archive": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ArchiveMember"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/$defs/ArchiveMember"
         },
         "sha256": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "size": {
           "format": "uint64",
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "url": {
           "type": "string"
@@ -2573,10 +2532,7 @@
           "format": "uint16",
           "maximum": 65535,
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "title": {
           "description": "A message key in the `en` catalogue.",
@@ -2683,10 +2639,7 @@
         },
         "snapshot": {
           "description": "The host's handle on the snapshot it read for this run at submit (opaque to plugins):\nevery page the run reads comes from that snapshot, of this run only, so a rewind or\nrebuild that reaches `rev` again in a newer history is never served from an older one.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         }
       },
       "required": [
@@ -2739,12 +2692,9 @@
           "$ref": "#/$defs/Diff"
         },
         "link": {
-          "anyOf": [
+          "allOf": [
             {
               "$ref": "#/$defs/Link"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "The record's kind and links; omitted for an `edit`. Boxed: most txs are edits, and a\nlink would double the size of every `CommittedTx`."
@@ -3115,10 +3065,7 @@
         },
         "details": true,
         "fix": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "message": {
           "type": "string"
@@ -3389,10 +3336,7 @@
       "description": "Closes one listing of `dir` (Decision 25): every entry of that listing precedes it in the\njob's batches. `complete: false` (an error, a timeout, a placeholder or automount\ndirectory, a nested mount unmounted or replaced) marks nothing missing; `code` says why.\n`entries` counts the listing's entries. `volume`: the volume measured at `dir` when it is a\nnested mount root (Decision 17, per directory), which the indexer keeps as\n[`KnownDir::volume`].",
       "properties": {
         "code": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "complete": {
           "type": "boolean"
@@ -3406,20 +3350,10 @@
           "type": "integer"
         },
         "mtimeNs": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "volume": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/VolumeIdentity"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/$defs/VolumeIdentity"
         }
       },
       "required": [
@@ -4870,10 +4804,7 @@
           "items": {
             "type": "string"
           },
-          "type": [
-            "array",
-            "null"
-          ]
+          "type": "array"
         }
       },
       "required": [
@@ -4905,16 +4836,10 @@
       "properties": {
         "dev": {
           "description": "The catalogued entry's device (`ScanEntry.dev`). Nested mounts are catalogued, so the\nopener crosses them and checks the opened handle against this device; without one,\nthe handle must be on the root's mount.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "fileId": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "mtimeNs": {
           "type": "string"
@@ -5677,10 +5602,7 @@
             },
             "details": true,
             "fix": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             },
             "message": {
               "type": "string"
@@ -6346,12 +6268,9 @@
       "description": "A hook command (spec §8.10; plan 7C Decision 7).",
       "properties": {
         "fin": {
-          "anyOf": [
+          "allOf": [
             {
               "$ref": "#/$defs/HookFin"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Present only when the hook declares `fin`: its credential file and the endpoint. Without\nit the hook has no network and no credential."
@@ -6374,10 +6293,7 @@
           "description": "The hook's time limit (`Limits.wall_ms`): the launcher ends the whole tree when it passes\n(on Windows also the backstop for a Node process stuck on piped stdio, Decision 25).",
           "format": "uint64",
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "tmp": {
           "description": "A private temporary directory, the only write root.",
@@ -6549,10 +6465,7 @@
       "properties": {
         "bodyB64": {
           "description": "At most 756 KiB (`PAGE_BYTES`) before base64.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "headers": {
           "items": {
@@ -6657,10 +6570,7 @@
         },
         "from": {
           "description": "The installed version an update or downgrade replaces.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "licence": {
           "$ref": "#/$defs/PlanLicence"
@@ -6688,10 +6598,7 @@
           "format": "uint16",
           "maximum": 65535,
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "risk": {
           "$ref": "#/$defs/Risk"
@@ -6701,10 +6608,7 @@
         },
         "targetSha256": {
           "description": "The signed target's SHA-256, for registry plans.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "treeHash": {
           "description": "`package::tree_hash` of the staged tree; re-checked at commit.",
@@ -6757,19 +6661,13 @@
           "type": "array"
         },
         "registryId": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "source": {
           "$ref": "#/$defs/SourceKind"
         },
         "targetSha256": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "treeHash": {
           "type": "string"
@@ -8288,12 +8186,9 @@
       "description": "A plugin job's rights: invoker ∩ grants (Decision 8), with the authority they run under\n(class + `rights_hash` + `generation`, spec §3.3 and Decision 28).",
       "properties": {
         "branch": {
-          "anyOf": [
+          "allOf": [
             {
               "$ref": "#/$defs/RightsBranch"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Set for an agent session: its branch subtree."
@@ -8692,23 +8587,13 @@
       "description": "`keyframe.remove`: the key `key` (or, in the client time form, the key at `at`) of `path`\nof `item`.",
       "properties": {
         "at": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Rational"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/$defs/Rational"
         },
         "item": {
           "type": "string"
         },
         "key": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "path": {
           "type": "string"
@@ -8756,14 +8641,7 @@
       "description": "`keyframe.set`: the key `key` (or, in the client time form, the key at `at`) of `path` of\n`item`, at `at` (default: where it is) with `value` and `interp`.",
       "properties": {
         "at": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Rational"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/$defs/Rational"
         },
         "interp": {
           "$ref": "#/$defs/Interp"
@@ -8773,10 +8651,7 @@
         },
         "key": {
           "description": "A key id (`kf<n>`), or a `$name` placeholder for a new key.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "path": {
           "type": "string"
@@ -8832,30 +8707,17 @@
         "listedGen": {
           "format": "uint64",
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "mountRoot": {
           "default": false,
           "type": "boolean"
         },
         "mtimeNs": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "volume": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/VolumeIdentity"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/$defs/VolumeIdentity"
         }
       },
       "required": [
@@ -9205,10 +9067,7 @@
         "readBps": {
           "format": "uint64",
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "root": {
           "type": "string"
@@ -9262,10 +9121,7 @@
           "items": {
             "type": "string"
           },
-          "type": [
-            "array",
-            "null"
-          ]
+          "type": "array"
         },
         "files": {
           "default": "in/files.ndjson",
@@ -9289,10 +9145,7 @@
           "description": "The library's bandwidth budget for this job's slot, in bytes per second (Decision 36).",
           "format": "uint64",
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "root": {
           "type": "string"
@@ -9470,10 +9323,7 @@
           "items": {
             "$ref": "#/$defs/RawRel"
           },
-          "type": [
-            "array",
-            "null"
-          ]
+          "type": "array"
         },
         "excludes": {
           "$ref": "#/$defs/ExcludeSpec"
@@ -9498,29 +9348,20 @@
           "description": "Read threads; absent means 64 (local roots), the service passes 32 for network and\nsync roots (Decision 9).",
           "format": "uint32",
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "timing": {
-          "anyOf": [
+          "allOf": [
             {
               "$ref": "#/$defs/Timing"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Scaled deadlines. Test builds only: a release worker refuses the field."
         },
         "volume": {
-          "anyOf": [
+          "allOf": [
             {
               "$ref": "#/$defs/VolumeIdentity"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "The library's stored volume identity, which the first stat is judged against\n(Decision 17); absent for the first scan of a new library."
@@ -9810,16 +9651,10 @@
               "type": "string"
             },
             "originHash": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             },
             "recovers": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             }
           },
           "required": [
@@ -9857,10 +9692,7 @@
               "type": "string"
             },
             "recovers": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             }
           },
           "required": [
@@ -9881,10 +9713,7 @@
               "type": "integer"
             },
             "forkHash": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             },
             "forkSeq": {
               "format": "uint64",
@@ -9899,10 +9728,7 @@
               "type": "string"
             },
             "recovers": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             }
           },
           "required": [
@@ -9918,10 +9744,7 @@
           "description": "Renames, archives or restores branch `branch_id`. `recovers`: the quarantined\n`branchSet` record a recovered one stands for.",
           "properties": {
             "archived": {
-              "type": [
-                "boolean",
-                "null"
-              ]
+              "type": "boolean"
             },
             "branchId": {
               "type": "string"
@@ -9931,16 +9754,10 @@
               "type": "string"
             },
             "name": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             },
             "recovers": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             }
           },
           "required": [
@@ -9966,10 +9783,7 @@
               "type": "string"
             },
             "recovers": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             },
             "undrops": {
               "items": {
@@ -10177,17 +9991,11 @@
         },
         "branch": {
           "description": "The branch of the snapshot (an id, a name or `<name>#<id>`).",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "outDir": {
           "description": "Where the kind's `onSucceeded` moves the frames: absolute, or relative to the project\nfolder; `workspace/shared/look/` when absent. Never inside `.finisher/` or `assets/`\n(`EXPORT_DESTINATION`). The worker ignores it.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "outName": {
           "description": "The stem of the files written: `out/<outName>-<i>.png`. `[A-Za-z0-9_-]`, 1 to\n[`OUT_NAME_MAX`] characters.",
@@ -10203,19 +10011,13 @@
         },
         "projectId": {
           "description": "The project the look is of. Only the host reads it (the kind's `dedupe` and `prepare`);\nthe worker works from the job directory.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "rev": {
           "description": "The branch's rev the submitter saw: part of the job's identity (`dedupe`). `prepare`\nsnapshots the head it finds, and `in/snapshot.json` says which rev that was.",
           "format": "uint64",
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "size": {
           "allOf": [
@@ -10421,10 +10223,7 @@
         },
         "messages": {
           "description": "The package directory holding `<locale>.json` ICU catalogues.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "models": {
           "items": {
@@ -10449,12 +10248,9 @@
           "$ref": "#/$defs/Publisher"
         },
         "runtime": {
-          "anyOf": [
+          "allOf": [
             {
               "$ref": "#/$defs/Runtime"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Code plugins only."
@@ -10916,10 +10712,7 @@
       "description": "A model a code plugin needs (spec §8.2); never inside the package.",
       "properties": {
         "attribution": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "bytes": {
           "format": "uint64",
@@ -10933,10 +10726,7 @@
           "type": "string"
         },
         "provenance": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "purpose": {
           "description": "A message key in the `en` catalogue.",
@@ -10998,10 +10788,7 @@
       "description": "`net.fetch`: brokered HTTPS egress (Decision 10). `grant` names a secret grant; in 8B\nevery such request answers `SECRET_MISSING {name}` (injection is 8G's).",
       "properties": {
         "grant": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "request": {
           "$ref": "#/$defs/HttpRequest"
@@ -11032,10 +10819,7 @@
         },
         "redirectNotFollowed": {
           "description": "A cross-origin redirect, returned unfollowed (its `location` is in `headers`).",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "status": {
           "format": "uint16",
@@ -13017,10 +12801,7 @@
       "additionalProperties": false,
       "properties": {
         "attribution": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "bytes": {
           "format": "uint64",
@@ -13095,10 +12876,7 @@
           "$ref": "#/$defs/SourceKind"
         },
         "registryId": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         }
       },
       "required": [
@@ -13423,17 +13201,11 @@
         },
         "branch": {
           "description": "A branch name, id or `name#id`; `main` when absent.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "dryRun": {
           "description": "Validate the returned transaction against the snapshot the plugin saw; commit nothing.",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "name": {
           "description": "`plugin:<id>/<command>`.",
@@ -13457,20 +13229,14 @@
         },
         "dryRun": {
           "description": "A dry run: nothing was committed.",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         },
         "ops": {
           "description": "The proposed ops (dry run, conflict).",
           "items": {
             "$ref": "#/$defs/Op"
           },
-          "type": [
-            "array",
-            "null"
-          ]
+          "type": "array"
         },
         "outcome": {
           "$ref": "#/$defs/CommandOutcome"
@@ -13479,17 +13245,11 @@
           "description": "The committed revision; for a dry run or a conflict, the revision the plugin saw.",
           "format": "uint64",
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "txId": {
           "description": "The committed transaction's id (accepted, rebased).",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         }
       },
       "required": [
@@ -13556,10 +13316,7 @@
       "properties": {
         "data": {
           "description": "The caller's `pluginData` directory, only when `fs pluginData` is granted (spec §5.1):\n`plugins/data/@pub/name/<projectId|_>/` for uniform `person`/`system` rights, else\n`plugins/authdata/@pub/name/<projectId|_>/<authorityKey>/`.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "plugin": {
           "description": "The installed package (read-only).",
@@ -13683,10 +13440,7 @@
           "type": "object"
         },
         "fix": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "message": {
           "type": "string"
@@ -13807,10 +13561,7 @@
           "description": "The manifest's declared memory need (default 2 GiB, at most 16 GiB; sp8 §3.3).",
           "format": "uint64",
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "models": {
           "default": [],
@@ -13822,18 +13573,12 @@
         },
         "onnxRuntime": {
           "description": "ONNX Runtime's library.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "pluginData": {
-          "anyOf": [
+          "allOf": [
             {
               "$ref": "#/$defs/PluginData"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "The per-project plugin data directory, when the manifest is granted `fs pluginData`."
@@ -14200,70 +13945,44 @@
       "description": "`settings.json` `privacy` (Decision 8). Absent keys fall through to the defaults; unknown\nkeys are ignored.",
       "properties": {
         "diagnostics": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Switch"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/$defs/Switch"
         },
         "maxMiB": {
           "description": "The size cap in MiB over the files and blobs, 16–4096 (default 128).",
           "format": "uint32",
           "maximum": 4096,
           "minimum": 16,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "retentionDays": {
           "description": "The age cap in days, 1–365 (default 30).",
           "format": "uint32",
           "maximum": 365,
           "minimum": 1,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "tracesMaxMiB": {
           "description": "The agent-trace store's size cap in MiB, 64–65536 (default 2048).",
           "format": "uint32",
           "maximum": 65536,
           "minimum": 64,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "tracesRetentionDays": {
           "description": "The agent-trace store's age cap in days, 1–365 (default 90; sp7 §12.1).",
           "format": "uint32",
           "maximum": 365,
           "minimum": 1,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "training": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Switch"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/$defs/Switch"
         }
       },
       "type": "object"
     },
     "Probe": {
-      "description": "What the server needs to register an asset: its kind and that kind's fields (the\n`asset.add` fields, plan 4C Task 7). Its serde form is what `asset.probe` answers\n(`@finisher/core-types` exports it as `Probe`); absent fields are omitted, never `null`, so\neach optional field's schema is its type's (`#[schemars(with)]`: optional, not nullable).",
+      "description": "What the server needs to register an asset: its kind and that kind's fields (the\n`asset.add` fields, plan 4C Task 7). Its serde form is what `asset.probe` answers\n(`@finisher/core-types` exports it as `Probe`); absent fields are omitted, never `null`\n(the contract schema types each one optional, not nullable: `fin_core::json_schema_with`).",
       "properties": {
         "audio": {
           "$ref": "#/$defs/AudioInfo"
@@ -14570,10 +14289,7 @@
         "page": {
           "format": "uint32",
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         }
       },
       "type": "object"
@@ -14908,17 +14624,11 @@
           "description": "`fin view --budget`.",
           "format": "uint32",
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "range": {
           "description": "`fin view --range` (`2s..5s`, `2s..`, `..5s`).",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         }
       },
       "type": "object"
@@ -14968,10 +14678,7 @@
           "type": "string"
         },
         "url": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         }
       },
       "required": [
@@ -15495,10 +15202,7 @@
           "format": "uint16",
           "maximum": 65535,
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "targetsVersion": {
           "format": "uint64",
@@ -15826,10 +15530,7 @@
           "type": "string"
         },
         "blame": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "branch": {
           "type": "string"
@@ -15850,10 +15551,7 @@
           "type": "string"
         },
         "reason": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "seq": {
           "format": "uint64",
@@ -16111,10 +15809,7 @@
               "type": "boolean"
             },
             "rootFileId": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             },
             "sample": {
               "items": {
@@ -16312,10 +16007,7 @@
       "description": "One top-level entry of a root, kept to confirm a volume change (Decision 17). No name:\nentries are matched by file id, size and mtime.",
       "properties": {
         "fileId": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "mtimeNs": {
           "type": "string"
@@ -16570,10 +16262,7 @@
           "type": "boolean"
         },
         "dev": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "dir": {
           "$ref": "#/$defs/RawRel"
@@ -16582,16 +16271,10 @@
           "$ref": "#/$defs/EntryType"
         },
         "excluded": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "fileId": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "mountRoot": {
           "type": "boolean"
@@ -16609,14 +16292,7 @@
           "type": "string"
         },
         "placeholder": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Placeholder"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/$defs/Placeholder"
         },
         "relKey": {
           "type": "string"
@@ -16624,10 +16300,7 @@
         "reparseTag": {
           "format": "uint32",
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "size": {
           "format": "uint64",
@@ -17083,10 +16756,7 @@
           "type": "string"
         },
         "url": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "versions": {
           "description": "A semver range of affected versions.",
@@ -18824,10 +18494,7 @@
       "properties": {
         "argsHash": {
           "description": "What produced the tx, for a client that sends an idempotency key as `txId`:\n`blake3:<64 hex>` of the command input (op kinds and canonical args, before they were\nresolved against a snapshot). A retry rebuilds `ops` against a newer head (positions\nmove; the stored tx is rebased), so `ops` cannot tell a retry from another command;\nthis can. The store refuses a `txId` it holds with another `argsHash`\n(`IDEM_KEY_REUSED`). Stored with the record, so every server that imported it checks.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "author": {
           "type": "string"
@@ -19018,14 +18685,7 @@
           "type": "array"
         },
         "manifest": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Manifest"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/$defs/Manifest"
         },
         "ok": {
           "type": "boolean"
@@ -19395,10 +19055,7 @@
           "type": "boolean"
         },
         "rootFileId": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "sample": {
           "items": {

@@ -45,41 +45,33 @@ const WHOLE_FILE_LIMIT: u64 = 3 * SAMPLE;
 
 /// What the server needs to register an asset: its kind and that kind's fields (the
 /// `asset.add` fields, plan 4C Task 7). Its serde form is what `asset.probe` answers
-/// (`@finisher/core-types` exports it as `Probe`); absent fields are omitted, never `null`, so
-/// each optional field's schema is its type's (`#[schemars(with)]`: optional, not nullable).
+/// (`@finisher/core-types` exports it as `Probe`); absent fields are omitted, never `null`
+/// (the contract schema types each one optional, not nullable: `fin_core::json_schema_with`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Probe {
     pub kind: AssetKind,
     /// Seconds: `media` and `lottieTemplate` only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "Rational")]
     pub duration: Option<Rational>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "VideoInfo")]
     pub video: Option<VideoInfo>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "AudioInfo")]
     pub audio: Option<AudioInfo>,
     /// `image` and `svg`: the pixel size.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "ImageInfo")]
     pub image: Option<ImageInfo>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "LottieInfo")]
     pub lottie: Option<LottieInfo>,
     /// A font's whole-file SHA-256, format and faces (Decision 37).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "FontFile")]
     pub font: Option<FontFile>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "LutInfo")]
     pub lut: Option<LutInfo>,
     /// MP4/MOV: what the file is (sub-project 6 spec §6.3): display size and rotation, colour,
     /// HDR, VFR, edit lists. In the `asset.probe` answer only: an `asset.add` never carries it
     /// (spec §4.4).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "MediaInfo")]
     pub media: Option<MediaInfo>,
     pub fingerprint: String,
     pub size: u64,

@@ -219,7 +219,7 @@ test("project.events items keep every field of each event kind", async () => {
     branches: [{ branch: "main", name: "main", parent: null, forkSeq: 0, state: "active", head: 3, exportedThrough: 3, generation: 0 }],
     lastExportMs: null,
     exportError: null,
-    importError: { code: "IO_ERROR", message: "m", details: { path: "x" }, fix: null },
+    importError: { code: "IO_ERROR", message: "m", details: { path: "x" } },
     quarantine: { count: 1, origins: ["folder"], reasons: { STALE_EPOCH: 1 } },
     foreign: [],
     waiting: [],
