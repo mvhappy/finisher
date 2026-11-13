@@ -397,7 +397,10 @@ describe("the host sandbox (detection and the probe)", () => {
     expect(hostDirs(d)).toEqual([]);
     expect(existsSync(box.workspace)).toBe(false);
     // A closed host sandbox starts nothing more.
-    expect(Exit.isFailure(await Effect.runPromiseExit(box.spawn(["/bin/true"], { cwd: tmp, stdio: "pipe" })))).toBe(true);
+    // (`/bin/sh`, which every Unix has, in the workspace, so only the closed guard can refuse it.)
+    const closed = await Effect.runPromiseExit(box.spawn(["/bin/sh", "-c", "true"], { cwd: box.workspace, stdio: "pipe" }));
+    expect(Exit.isFailure(closed)).toBe(true);
+    expect(JSON.stringify(Exit.isFailure(closed) ? closed.cause : null)).toContain('"code":"SESSION_INTERRUPTED"');
     // Two at once never share a directory.
     await within(openHostSandbox("detect", "claudeCode", d), (a) =>
       within(openHostSandbox("probe", "claudeCode", d), async (b) => {
@@ -460,7 +463,8 @@ describe("the host sandbox (detection and the probe)", () => {
     });
     // A link-store harness: the link in the host directory's provider folder, the store granted.
     await within(openHostSandbox("detect", "fake", d), async (box) => {
-      expect((await run(box, ["/bin/true"])).code).toBe(0);
+      // `/bin/sh`, not `/bin/true`: macOS has only `/usr/bin/true`.
+      expect((await run(box, ["/bin/sh", "-c", "true"])).code).toBe(0);
       const req = JSON.parse(readFileSync(request, "utf8")) as { input: Record<string, unknown> };
       const link = join(String(req.input.sessionDir), "provider", "sign-in.json");
       expect(lstatSync(link).isSymbolicLink()).toBe(true);
