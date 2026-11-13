@@ -7,6 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use fin_fonts::{FileState, FontCatalog};
+use fin_store::{FontFailed, FontFetching, FontMissing, FontsSummary, Warning};
 use serde_json::{Value, json};
 
 use super::Manager;
@@ -16,13 +17,18 @@ use super::scan::Need;
 /// is published at once, progress alone at most every [`super::PROGRESS_EVERY`].
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Summary {
-    pub(crate) fonts: Value,
-    pub(crate) warnings: Vec<Value>,
+    pub(crate) fonts: FontsSummary,
+    pub(crate) warnings: Vec<Warning>,
     pub(crate) shape: Value,
 }
 
-fn warning(code: &str, message: String, details: Value, fix: String) -> Value {
-    json!({ "code": code, "message": message, "details": details, "fix": fix })
+fn warning(code: &str, message: String, details: Value, fix: String) -> Warning {
+    Warning {
+        code: code.to_string(),
+        message,
+        details: Some(details),
+        fix: Some(fix),
+    }
 }
 
 fn entry_of(catalog: &FontCatalog, sha: &str) -> (String, String) {
@@ -52,7 +58,7 @@ fn missing_fix(key: &str, reason: &str, asset: bool) -> String {
 }
 
 /// `FONT_UNPINNED` for `key` (a face key or `script:<code>`) and the captions needing it.
-fn unpinned_warning(key: &str, items: &BTreeSet<String>) -> Value {
+fn unpinned_warning(key: &str, items: &BTreeSet<String>) -> Warning {
     let fix = match key.strip_prefix("script:") {
         Some(script) => format!(
             "pin a font that covers {script} in the fallback order: fin fonts pin <family> --fallback <n> (fin fonts ls --catalog lists them)"
@@ -114,13 +120,21 @@ impl Manager {
                     FileState::Cached => None,
                     FileState::Missing => Some(self.missing_reason(sha).to_string()),
                     FileState::Queued => {
-                        fetching.push(json!({ "key": key, "sha256": sha, "bytes": 0, "total": self.size_of(sha) }));
+                        fetching.push(FontFetching {
+                            key: key.to_string(),
+                            sha256: sha.to_string(),
+                            bytes: 0,
+                            total: self.size_of(sha),
+                        });
                         None
                     }
                     FileState::Fetching { bytes, total } => {
-                        fetching.push(
-                            json!({ "key": key, "sha256": sha, "bytes": bytes, "total": total }),
-                        );
+                        fetching.push(FontFetching {
+                            key: key.to_string(),
+                            sha256: sha.to_string(),
+                            bytes,
+                            total,
+                        });
                         None
                     }
                     FileState::Failed { reason, .. } if reason == "hashMismatch" => Some(reason),
@@ -129,7 +143,12 @@ impl Manager {
                         retry_at_ms,
                     } => {
                         let (entry, style) = entry_of(&self.catalog(), sha);
-                        failed.push(json!({ "key": key, "sha256": sha, "reason": reason, "retryAt": retry_at_ms }));
+                        failed.push(FontFailed {
+                            key: key.to_string(),
+                            sha256: sha.to_string(),
+                            reason: reason.clone(),
+                            retry_at: retry_at_ms,
+                        });
                         warnings.push(warning(
                             "FONT_FETCH_FAILED",
                             format!("font {key} could not be fetched ({reason}); captions using it are unmeasured"),
@@ -142,7 +161,11 @@ impl Manager {
                 },
             };
             if let Some(reason) = lacking {
-                missing.push(json!({ "key": key, "sha256": sha, "reason": reason }));
+                missing.push(FontMissing {
+                    key: key.to_string(),
+                    sha256: sha.to_string(),
+                    reason: reason.clone(),
+                });
                 warnings.push(warning(
                     "FONT_MISSING",
                     format!("font {key} is not available on this server ({reason}); captions using it are unmeasured"),
@@ -152,15 +175,18 @@ impl Manager {
             }
         }
         warnings.extend(unpinned.iter().map(|(k, items)| unpinned_warning(k, items)));
-        let strip = |v: &Vec<Value>| -> Vec<Value> {
-            v.iter()
-                .map(|f| json!({ "key": f["key"], "sha256": f["sha256"] }))
-                .collect()
-        };
-        let shape = json!({ "missing": missing, "fetching": strip(&fetching), "failed": failed,
+        let fetching_files: Vec<Value> = fetching
+            .iter()
+            .map(|f| json!({ "key": f.key, "sha256": f.sha256 }))
+            .collect();
+        let shape = json!({ "missing": missing, "fetching": fetching_files, "failed": failed,
                             "damaged": self.damaged.is_some(), "autoFetch": self.auto_fetch() });
         Summary {
-            fonts: json!({ "missing": missing, "fetching": fetching, "failed": failed }),
+            fonts: FontsSummary {
+                missing,
+                fetching,
+                failed,
+            },
             warnings,
             shape,
         }
@@ -195,13 +221,18 @@ impl Manager {
 
 /// `status` (a fin-store `ProjectStatus` JSON) with the summary merged in: `fonts`, and its
 /// warnings after the store's.
+/// The keys are `fin_store::ProjectStatusView`'s.
 pub(crate) fn merge(mut status: Value, s: &Summary) -> Value {
+    fn json<T: serde::Serialize>(v: &T) -> Value {
+        serde_json::to_value(v).unwrap_or(Value::Null)
+    }
     if let Some(obj) = status.as_object_mut() {
-        obj.insert("fonts".to_string(), s.fonts.clone());
+        obj.insert("fonts".to_string(), json(&s.fonts));
+        let warnings = s.warnings.iter().map(json);
         match obj.get_mut("warnings").and_then(Value::as_array_mut) {
-            Some(w) => w.extend(s.warnings.iter().cloned()),
+            Some(w) => w.extend(warnings),
             None => {
-                obj.insert("warnings".to_string(), Value::Array(s.warnings.clone()));
+                obj.insert("warnings".to_string(), Value::Array(warnings.collect()));
             }
         }
     }

@@ -96,7 +96,7 @@ pub struct ForeignFile {
 /// Precedence, highest first: `ChainFork`, `ConflictCopy`, `NewerFormat`, `ImportError`
 /// (the folder's content: a person or an update must act, whoever holds the lease), then
 /// `LeaseLost`, `LeaseHeld`, `CatchingUp` (the lease: resolved by waiting or a takeover).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ReadOnlyReason {
     LeaseHeld,

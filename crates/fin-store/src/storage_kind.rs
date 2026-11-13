@@ -143,6 +143,48 @@ impl Serialize for StorageKind {
     }
 }
 
+/// Every provider (a new [`Provider`] variant fails this `match` until it is listed here).
+const PROVIDERS: [Provider; 6] = [
+    Provider::Dropbox,
+    Provider::Syncthing,
+    Provider::ICloud,
+    Provider::OneDrive,
+    Provider::GoogleDrive,
+    Provider::Unknown,
+];
+
+const _: () = match Provider::Unknown {
+    Provider::Dropbox
+    | Provider::Syncthing
+    | Provider::ICloud
+    | Provider::OneDrive
+    | Provider::GoogleDrive
+    | Provider::Unknown => {}
+};
+
+/// Every serialised form: `local`, `network`, `sync:<provider>`.
+pub fn all_storage_kinds() -> Vec<StorageKind> {
+    let mut v = vec![StorageKind::Local, StorageKind::Network];
+    v.extend(PROVIDERS.map(StorageKind::Sync));
+    v
+}
+
+/// Its serde form is a string: one of [`all_storage_kinds`]'s.
+impl schemars::JsonSchema for StorageKind {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "StorageKind".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        let names: Vec<String> = all_storage_kinds().iter().map(|k| k.to_string()).collect();
+        schemars::json_schema!({
+            "description": "The project folder's storage kind: `local`, `network` or `sync:<provider>`.",
+            "type": "string",
+            "enum": names,
+        })
+    }
+}
+
 impl<'de> Deserialize<'de> for StorageKind {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let s = String::deserialize(d)?;

@@ -18,6 +18,8 @@ impl Store {
             warnings.push(Warning {
                 code: code.to_string(),
                 message,
+                details: None,
+                fix: None,
             });
         };
         if let Some(w) = &self.storage_warning {

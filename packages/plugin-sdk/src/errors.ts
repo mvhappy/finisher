@@ -87,7 +87,8 @@ export function toPluginError(e: unknown): PluginError {
 
 /** A reply's `JobError` as a thrown `PluginError`. */
 export function fromJobError(e: JobError): PluginError {
-  const details = { ...(e.details ?? {}) };
+  // `details` is any JSON value on the wire; only an object's fields carry over.
+  const details: Record<string, unknown> = isObject(e.details) ? { ...e.details } : {};
   const fix = typeof details["fix"] === "string" ? details["fix"] : undefined;
   if (fix !== undefined) delete details["fix"];
   return new PluginError(e.code, e.message, details, fix);

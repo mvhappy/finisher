@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import { Schema } from "effect";
 import { expect, test } from "vitest";
 import { BranchViewSchema, ConflictSchema } from "./history.ts";
+import * as Generated from "./generated/schemas.ts";
 import { GenerationSchema, ProbeSchema, ProjectEventSchema, TxSetAsideSchema } from "./rpc.ts";
 
 type Json = { [k: string]: unknown };
@@ -92,7 +93,30 @@ test("ProjectEventSchema is fin-store's EngineEvent less what finisherd keeps to
   // reaches project.events.
   const kept = (t: string) => t !== "applied" && t !== "lagged" && t !== "collect";
   expect(Object.keys(ours).sort()).toEqual(Object.keys(engine).filter(kept).sort());
-  for (const [type, member] of Object.entries(ours)) expect(member, type).toEqual(engine[type]);
+  // The status is the generated `ProjectStatusView` (a `$ref` on the Rust side).
+  const status = ours.status as { props: Json };
+  expect(status.props.status).toEqual(effect(Generated.ProjectStatusViewSchema));
+  expect(engine.status).toEqual({ ...status, props: { ...status.props, status: "unknown" } });
+  for (const [type, member] of Object.entries(ours)) if (type !== "status") expect(member, type).toEqual(engine[type]);
+});
+
+/** The generated schemas' definitions (`<Name>Schema`), by name. */
+const generated = Object.entries(Generated).flatMap(([k, v]) => (k.endsWith("Schema") ? [[k.slice(0, -"Schema".length), v as Schema.Top] as const] : []));
+
+test("every generated schema lists its definition's fields, required as Rust has them", () => {
+  expect(generated.length).toBeGreaterThan(50);
+  let objects = 0;
+  for (const [name, schema] of generated) {
+    const def = defs[name] as { properties?: Json; required?: string[] } | undefined;
+    expect(def, name).toBeDefined();
+    // `CommittedTx` is passed through (`Schema.Unknown`); every other object is a `Struct`.
+    if (def!.properties === undefined || name === "CommittedTx") continue;
+    objects++;
+    const ours = Schema.toJsonSchemaDocument(schema).schema as { properties: Json; required?: string[] };
+    expect(Object.keys(ours.properties).sort(), name).toEqual(Object.keys(def!.properties).sort());
+    expect([...(ours.required ?? [])].sort(), name).toEqual([...(def!.required ?? [])].sort());
+  }
+  expect(objects).toBeGreaterThan(40);
 });
 
 test("BranchViewSchema is fin-store's BranchView, with its states", () => {

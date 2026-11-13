@@ -1413,7 +1413,7 @@ export type EngineEvent =
       type: "applied";
     }
   | {
-      status: unknown;
+      status: ProjectStatusView;
       type: "status";
     }
   | {
@@ -1442,6 +1442,71 @@ export type EngineEvent =
       collect: CollectPolicy;
       type: "collect";
     };
+/**
+ * The lease as one server sees it.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "LeaseState".
+ */
+export type LeaseState =
+  | {
+      epoch: number;
+      state: "held";
+    }
+  | {
+      ageServerMs?: number | null;
+      epoch: number;
+      holder: string;
+      state: "heldElsewhere";
+    }
+  | {
+      epoch: number;
+      holder: string;
+      state: "stale";
+    }
+  | {
+      reason: string;
+      state: "lost";
+    };
+/**
+ * Why the project is read-only (spec §3.7). Import sets `ChainFork`, `ConflictCopy`,
+ * `NewerFormat` and `ImportError`; the lease sets `LeaseHeld`, `LeaseLost` and
+ * `CatchingUp` (`Store::read_only` combines them).
+ *
+ * Not in the spec's table (Task 20 adds them):
+ * - `ImportError`: a record on the resolved chain cannot be applied
+ *   ([`ImportReport::error`]). Writing past it would build a line that servers able to
+ *   replay it see as a fork, so commits and export wait until a later pass no longer
+ *   reports it.
+ * - `CatchingUp`: the lease was just acquired, and no import pass at the new epoch has yet
+ *   resolved every branch with nothing waiting (after waiting out the directory-cache
+ *   window when another server wrote before). Until then a commit or an export could extend
+ *   a line the folder has already moved past (plan Task 11, ordering rule).
+ *
+ * Precedence, highest first: `ChainFork`, `ConflictCopy`, `NewerFormat`, `ImportError`
+ * (the folder's content: a person or an update must act, whoever holds the lease), then
+ * `LeaseLost`, `LeaseHeld`, `CatchingUp` (the lease: resolved by waiting or a takeover).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ReadOnlyReason".
+ */
+export type ReadOnlyReason =
+  "LEASE_HELD" | "LEASE_LOST" | "CHAIN_FORK" | "CONFLICT_COPY" | "NEWER_FORMAT" | "IMPORT_ERROR" | "CATCHING_UP";
+/**
+ * The project folder's storage kind: `local`, `network` or `sync:<provider>`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "StorageKind".
+ */
+export type StorageKind =
+  | "local"
+  | "network"
+  | "sync:dropbox"
+  | "sync:syncthing"
+  | "sync:icloud"
+  | "sync:onedrive"
+  | "sync:googledrive"
+  | "sync:unknown";
 /**
  * What a merge does with a source record (the review's `status`).
  *
@@ -4881,6 +4946,51 @@ export interface Via {
   plugin: string;
 }
 /**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "BranchStatus".
+ */
+export interface BranchStatus {
+  /**
+   * The branch id.
+   */
+  branch: string;
+  /**
+   * The highest seq in the folder (0: none).
+   */
+  exportedThrough: number;
+  /**
+   * The parent's seq it forks at (0 for `main`).
+   */
+  forkSeq: number;
+  /**
+   * Bumped whenever an import takes records out of this branch's history (a rewind).
+   */
+  generation: number;
+  head: number;
+  /**
+   * Its display name (`main` for `main`; a branch without an index row: its id).
+   */
+  name: string;
+  /**
+   * The parent's id (`None` for `main`).
+   */
+  parent?: string | null;
+  state: BranchState;
+}
+/**
+ * The long call a status was answered during (`status()`'s `busy`).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Busy".
+ */
+export interface Busy {
+  operation: string;
+  /**
+   * Unix ms the call started.
+   */
+  sinceMs: number;
+}
+/**
  * The limits of this job's calls and results.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -5150,6 +5260,17 @@ export interface Cause {
   txId: string;
 }
 /**
+ * One check's outcome.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Check".
+ */
+export interface Check {
+  details: unknown;
+  name: string;
+  ok: boolean;
+}
+/**
  * What this machine can decode and encode: the shape of `fin-codecs`' `Capabilities`.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -5261,6 +5382,79 @@ export interface CommandRun {
   snapshot?: string | null;
 }
 /**
+ * What one compaction run did (serialised camelCase; `waiting` and `abandoned` as
+ * `[name, why]` pairs).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "CompactReport".
+ */
+export interface CompactReport {
+  /**
+   * `(manifest, why)`: abandoned this run.
+   */
+  abandoned: [string, string][];
+  deleted: number;
+  /**
+   * Manifests finished (phase 2) and the segment files deleted.
+   */
+  finished: string[];
+  /**
+   * Manifests written (phase 1).
+   */
+  manifests: string[];
+  packsWritten: number;
+  /**
+   * Segments the new manifests replace.
+   */
+  replaced: number;
+  /**
+   * Why nothing ran (not holding the lease, read-only).
+   */
+  skipped?: string | null;
+  /**
+   * `(manifest or branch, why)`: steps that wait and are retried.
+   */
+  waiting: [string, string][];
+}
+/**
+ * Compaction in `fin project status`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "CompactionStatus".
+ */
+export interface CompactionStatus {
+  lastError?: string | null;
+  /**
+   * Unix ms of the last run that wrote or deleted something.
+   */
+  lastRunMs?: number | null;
+  /**
+   * Manifests seen while holding the lease.
+   */
+  pending: PendingCompaction[];
+}
+/**
+ * One manifest as status shows it.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PendingCompaction".
+ */
+export interface PendingCompaction {
+  branch?: string | null;
+  /**
+   * Unix ms (this machine's clock, informational) when the grace period ends, once it runs.
+   */
+  graceEndsMs?: number | null;
+  manifest: string;
+  reason?: string | null;
+  /**
+   * `arriving` (its packs or snapshot are not all here yet), `grace`, `waiting`,
+   * `abandoned` or `unreadable`.
+   */
+  state: string;
+  writerId?: string | null;
+}
+/**
  * One op that cannot be carried to the head: which op of which tx, why (a reason code), the
  * record to blame when there is one (else null), and what to do. A re-run failure keeps its
  * error's `details` (an `INVALID_RANGE`'s `min` and `max`, say); other conflicts have none.
@@ -5273,9 +5467,7 @@ export interface Conflict {
   /**
    * Boxed: rarely present, and it keeps `Result<_, Conflict>` small.
    */
-  details?: {
-    [k: string]: unknown;
-  };
+  details?: unknown;
   fix: string;
   opIndex: number;
   reason: string;
@@ -5577,6 +5769,163 @@ export interface EncoderCaps {
    * Concurrent sessions that opened, up to 4; absent when not counted.
    */
   sessionLimit?: number;
+}
+/**
+ * A project's status as fin-node serves it (`status()`, `takeover()` and the `status` event:
+ * `project.status`, `project.takeover`, `project.events`): the store's [`ProjectStatus`] with
+ * the server's font summary merged in (`fonts`, and its warnings after the store's; 4C
+ * Decision 34) and, from `status()` only, `busy`. fin-node merges the parts as JSON; this type
+ * names the result for the schema.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProjectStatusView".
+ */
+export interface ProjectStatusView {
+  branches: BranchStatus[];
+  /**
+   * `status()` only (absent elsewhere): the long call running now, `null` when none is. The
+   * rest is then the status cached after the last tick or long call.
+   */
+  busy?: Busy | null;
+  /**
+   * Pending compaction manifests, the last run, its last problem.
+   */
+  compaction: CompactionStatus;
+  exportError?: CoreError | null;
+  /**
+   * What the project's font pins lack on this server; absent until the server has read the
+   * project's pins.
+   */
+  fonts?: FontsSummary;
+  /**
+   * Foreign files, relative to the project folder.
+   */
+  foreign: string[];
+  /**
+   * The last import pass's error (a record that cannot be applied, an unlistable folder).
+   */
+  importError?: CoreError | null;
+  /**
+   * The database's incarnation: with a branch's `generation`, what a caller passes to
+   * commit against what it read (`Generation`). New whenever the database is rebuilt.
+   */
+  incarnation: string;
+  /**
+   * Unix ms of the last export that wrote a segment (this process).
+   */
+  lastExportMs?: number | null;
+  lease: LeaseState;
+  /**
+   * The last fencing check failed only because `.finisher/` could not be listed.
+   */
+  leaseCheck?: string | null;
+  /**
+   * Segments neither imported nor set aside yet (beyond a fork, behind a gap).
+   */
+  pending: string[];
+  projectId: string;
+  quarantine: QuarantineSummary;
+  readOnly?: ReadOnly | null;
+  storage: StorageKind;
+  storageWarning?: string | null;
+  /**
+   * Folder branch directories waiting for their `branch` record (never read-only).
+   */
+  unknownBranches: string[];
+  /**
+   * Missing predecessor segments (gaps): imported once they arrive.
+   */
+  waiting: string[];
+  warnings: StatusWarning[];
+}
+/**
+ * A project's font summary (fin-node, 4C Decision 34): the pinned files missing on this
+ * server, being fetched, and whose fetch failed.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "FontsSummary".
+ */
+export interface FontsSummary {
+  failed: FontFailed[];
+  fetching: FontFetching[];
+  missing: FontMissing[];
+}
+/**
+ * A pinned font file whose fetch failed, retried after `retry_at` (unix ms).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "FontFailed".
+ */
+export interface FontFailed {
+  key: string;
+  reason: string;
+  retryAt: number;
+  sha256: string;
+}
+/**
+ * A pinned font file being fetched (queued: `bytes` 0): `bytes` of `total` so far.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "FontFetching".
+ */
+export interface FontFetching {
+  bytes: number;
+  key: string;
+  sha256: string;
+  total: number;
+}
+/**
+ * A pinned font file not available: `key` (the face key), its `sha256` and why (`offline`,
+ * `notInCatalog`, `notFetched`, `damaged`, `hashMismatch`, or an asset file's problem).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "FontMissing".
+ */
+export interface FontMissing {
+  key: string;
+  reason: string;
+  sha256: string;
+}
+/**
+ * Records set aside now (`current` quarantine rows).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "QuarantineSummary".
+ */
+export interface QuarantineSummary {
+  count: number;
+  /**
+   * `folder`, `local`, `foreign`.
+   */
+  origins: string[];
+  /**
+   * Count per reason (`STALE_EPOCH`, `MALFORMED`, `DIVERGED_TAIL`, `SUPERSEDED`,
+   * `CONFLICT_COPY`, `ID_COLLISION`, `IMPORTED`, `SALVAGED`, `MISSING_FROM_FOLDER`).
+   */
+  reasons: {
+    [k: string]: number;
+  };
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ReadOnly".
+ */
+export interface ReadOnly {
+  fix: string;
+  reason: ReadOnlyReason;
+}
+/**
+ * One status warning (`StatusWarning` in the schema). The store's carry a code and a message; the server's font warnings
+ * (fin-node, 4C Decision 34) also `details` and a `fix`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "StatusWarning".
+ */
+export interface StatusWarning {
+  code: string;
+  details?: unknown;
+  fix?: string;
+  message: string;
 }
 /**
  * One journal entry (Decision 2), as read from disk: `payload` is a `Value` (whose schema
@@ -6250,15 +6599,11 @@ export interface StartJob {
   /**
    * The last checkpoint (resumable kinds).
    */
-  checkpoint?: {
-    [k: string]: unknown;
-  };
+  checkpoint?: unknown;
   /**
    * What the kind's `prepare` hook returned (Decision 40).
    */
-  extra?: {
-    [k: string]: unknown;
-  };
+  extra?: unknown;
   id: string;
   kind: string;
   kindVersion: number;
@@ -6293,9 +6638,7 @@ export interface Limits {
  */
 export interface JobError {
   code: string;
-  details?: {
-    [k: string]: unknown;
-  };
+  details?: unknown;
   message: string;
   retry?: Retry;
 }
@@ -7682,9 +8025,7 @@ export interface PluginCommandList {
  * via the `definition` "PluginCommandRunRequest".
  */
 export interface PluginCommandRunRequest {
-  args?: {
-    [k: string]: unknown;
-  };
+  args?: unknown;
   /**
    * A branch name, id or `name#id`; `main` when absent.
    */
@@ -7707,9 +8048,7 @@ export interface PluginCommandRunResult {
   /**
    * A data command's value as the plugin returned it.
    */
-  data?: {
-    [k: string]: unknown;
-  };
+  data?: unknown;
   /**
    * A dry run: nothing was committed.
    */
@@ -7974,6 +8313,60 @@ export interface ProjectSnapshotPage {
   rev: number;
 }
 /**
+ * `fin project status` (serialised camelCase).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProjectStatus".
+ */
+export interface ProjectStatus {
+  branches: BranchStatus[];
+  /**
+   * Pending compaction manifests, the last run, its last problem.
+   */
+  compaction: CompactionStatus;
+  exportError?: CoreError | null;
+  /**
+   * Foreign files, relative to the project folder.
+   */
+  foreign: string[];
+  /**
+   * The last import pass's error (a record that cannot be applied, an unlistable folder).
+   */
+  importError?: CoreError | null;
+  /**
+   * The database's incarnation: with a branch's `generation`, what a caller passes to
+   * commit against what it read (`Generation`). New whenever the database is rebuilt.
+   */
+  incarnation: string;
+  /**
+   * Unix ms of the last export that wrote a segment (this process).
+   */
+  lastExportMs?: number | null;
+  lease: LeaseState;
+  /**
+   * The last fencing check failed only because `.finisher/` could not be listed.
+   */
+  leaseCheck?: string | null;
+  /**
+   * Segments neither imported nor set aside yet (beyond a fork, behind a gap).
+   */
+  pending: string[];
+  projectId: string;
+  quarantine: QuarantineSummary;
+  readOnly?: ReadOnly | null;
+  storage: StorageKind;
+  storageWarning?: string | null;
+  /**
+   * Folder branch directories waiting for their `branch` record (never read-only).
+   */
+  unknownBranches: string[];
+  /**
+   * Missing predecessor segments (gaps): imported once they arrive.
+   */
+  waiting: string[];
+  warnings: StatusWarning[];
+}
+/**
  * `project.view`: the `fin view` text of the call's branch, capped at 756 KiB (`PAGE_BYTES`).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -8012,6 +8405,88 @@ export interface PurgeReport {
    * Entries.
    */
   removed: number;
+}
+/**
+ * What a rebuild did.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "RebuildReport".
+ */
+export interface RebuildReport {
+  /**
+   * Where the old database was kept (`project.fdb.corrupt-<ts>`, or
+   * `project.fdb.replaced-<ts>` after a manual rebuild).
+   */
+  corruptCopy?: string | null;
+  /**
+   * The project file's genesis does not describe the old database's rev 0 (that rev 0
+   * was used).
+   */
+  genesisMismatch: boolean;
+  /**
+   * Why the import stopped early (it stopped where any open would).
+   */
+  importError?: CoreError | null;
+  /**
+   * Kept copies whose salvage could not read everything and that are not acknowledged:
+   * never pruned (`Store::acknowledge_salvage`).
+   */
+  keptForRecovery: string[];
+  /**
+   * Of those, exported records the folder no longer yields (`MISSING_FROM_FOLDER`).
+   */
+  missingFromFolder: number;
+  /**
+   * What made the old database count as damaged (`corrupt`).
+   */
+  problem?: string | null;
+  /**
+   * `missing`, `corrupt` or `manual`.
+   */
+  reason: string;
+  /**
+   * The head of `main` in the new database.
+   */
+  rebuiltThrough: number;
+  /**
+   * Records in the new database.
+   */
+  records: number;
+  /**
+   * Everything in the old databases could be read.
+   */
+  salvageComplete: boolean;
+  /**
+   * What could not be read.
+   */
+  salvageErrors: string[];
+  /**
+   * Rows salvaged into quarantine: records the new database lacks (`SALVAGED`,
+   * `MISSING_FROM_FOLDER`) and the old databases' own quarantine rows.
+   */
+  salvaged: number;
+  /**
+   * Earlier kept copies salvaged too.
+   */
+  salvagedCopies: string[];
+  /**
+   * The seq of the folder snapshot the rebuild was seeded from.
+   */
+  seededFromSnapshot?: number | null;
+  /**
+   * The checks of the new database that need no replay.
+   */
+  verify: VerifyReport;
+}
+/**
+ * [`Store::verify`]: `ok` when every check is.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "VerifyReport".
+ */
+export interface VerifyReport {
+  checks: Check[];
+  ok: boolean;
 }
 /**
  * One group of quarantined records ([`Store::recover_groups`](crate::Store::recover_groups)).
@@ -8378,9 +8853,7 @@ export interface SchemaError {
  * via the `definition` "SelfSandbox".
  */
 export interface SelfSandbox {
-  args?: {
-    [k: string]: unknown;
-  };
+  args?: unknown;
   profile: string;
 }
 /**
@@ -8470,9 +8943,7 @@ export interface TestBadHelloParams {}
  */
 export interface TestCallParams {
   method: string;
-  params?: {
-    [k: string]: unknown;
-  };
+  params?: unknown;
 }
 /**
  * `test.checkpoint` (resumable): a checkpoint per step; crashes on attempt 1 at
