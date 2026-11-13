@@ -62,23 +62,27 @@
 mod policy;
 mod prepare;
 mod rows;
+mod step;
 
 use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use fin_core::CoreError;
 use serde_json::json;
 
-use crate::reserved::{is_linked, no_links};
+use crate::reserved::no_links;
 use crate::segment;
-use crate::{Store, StoreError, fsio};
+use crate::tick::StoreAccess;
+use crate::{Store, StoreError};
 
-pub(crate) use policy::{ExportPolicy, StoreLease};
+pub(crate) use policy::{ExportPolicy, Fence, StoreLease};
 use policy::{SWEEP_EVERY, TempSweep};
-use prepare::{adoptable, prepare};
-use rows::{Row, mark_exported, pending_branches, pending_rows, prev_segment};
+use prepare::Prep;
+use rows::{
+    Row, last_pending, mark_exported, pending_branches, pending_rows, prev_segment, still_pending,
+};
+use step::{Outcome, StepIo};
 
 /// A read-back that finds nothing is retried this many times, [`READBACK_DELAY`] apart.
 pub(crate) const READBACK_RETRIES: u32 = 4;
@@ -182,52 +186,79 @@ pub(crate) fn close(store: &mut Store, now: Instant) -> Result<ExportReport, Sto
     Ok(report)
 }
 
-/// One export pass (module docs). `Err` only for DB failures, a broken DB invariant, or an
-/// injected `FailPoint`.
+/// One export pass (module docs) on a store the caller has. `Err` only for DB failures, a
+/// broken DB invariant, or an injected `FailPoint`.
 pub(crate) fn export_pending(
     store: &mut Store,
     now: Instant,
     force: bool,
 ) -> Result<ExportReport, StoreError> {
+    let mut direct = crate::tick::Direct(store);
+    Ok(export_with(&mut direct, now, force)?.unwrap_or_default())
+}
+
+/// One export pass through `access`: the store lock is taken only around reading the rows
+/// and marking a written segment, never across folder I/O (the sweep, the fence, the write and
+/// its read-back). `None` when the store went away during the pass.
+pub(crate) fn export_with<A: StoreAccess>(
+    access: &mut A,
+    now: Instant,
+    force: bool,
+) -> Result<Option<ExportReport>, StoreError> {
     let mut report = ExportReport::default();
     // Read-only (a fork, a newer format, a conflict copy, not caught up after acquiring the
     // lease, not holding it): records stay unexported. The fence itself comes below.
-    if store.read_only().is_some() || store.export.lease.check().is_err() {
-        return Ok(report);
+    let Some(begin) = access.with(|s| begin(s, now)) else {
+        return Ok(None);
+    };
+    let Some((fence, sweep, dirs_of)) = begin else {
+        return Ok(Some(report));
+    };
+    if fence.check().is_err() {
+        if let Some(t) = sweep {
+            access.with(|s| s.export.temps = t);
+        }
+        return Ok(Some(report));
     }
-    if store
-        .export
-        .last_sweep
-        .is_none_or(|t| now.saturating_duration_since(t) >= SWEEP_EVERY)
-    {
-        store.export.last_sweep = Some(now);
-        let dirs = temp_dirs(&store.project_dir);
-        let ExportState { temps, lease, .. } = &mut store.export;
-        temps.sweep(&dirs, now, &|| lease.quick_check().is_ok());
-    }
-    let branches = pending_branches(&store.conn)?;
-    if branches.is_empty() {
-        store.export.pending_since = None;
-        store.export.error = None;
-        return Ok(report);
-    }
-    let since = *store.export.pending_since.get_or_insert(now);
-    if !force
-        && now.saturating_duration_since(since)
-            < store.export.policy.delay(now, store.storage_kind())
-    {
-        return Ok(report);
-    }
-    'branches: for branch in branches {
+    let swept = sweep.map(|mut t| {
+        t.sweep(&temp_dirs(&dirs_of), now, &|| fence.quick_check().is_ok());
+        t
+    });
+    let Some(branches) = access.with(|s| after_sweep(s, now, force, swept)) else {
+        return Ok(None);
+    };
+    // Nothing pending, or not yet (the delay): the pass ends here.
+    let Some(branches) = branches? else {
+        return Ok(Some(report));
+    };
+    'branches: for (branch, last) in branches {
+        let mut stale = false;
         loop {
-            match export_one(store, &branch)? {
-                Step::Done | Step::Stopped => break,
+            let Some(planned) = access.with(|s| plan_step(s, &branch, last)) else {
+                return Ok(None);
+            };
+            let io = match planned? {
+                Planned::Done => break,
+                Planned::Failed(e) => {
+                    report.error = Some(e);
+                    break 'branches;
+                }
+                Planned::Io(io) => io,
+            };
+            let ran = io.run();
+            let Some(step) = access.with(|s| apply_step(s, &branch, ran, now)) else {
+                return Ok(None);
+            };
+            match step? {
+                Step::Stopped => break,
                 Step::Wrote(n) => {
                     report.segments_written += 1;
                     report.records += n;
-                    store.export.policy.wrote(now);
                 }
                 Step::Adopted(n) => report.records += n,
+                // Rows changed while the segment was written: plan again, once.
+                Step::Stale if !stale => stale = true,
+                Step::Stale => break,
                 Step::Failed(e) => {
                     report.error = Some(e);
                     break 'branches;
@@ -235,43 +266,93 @@ pub(crate) fn export_pending(
             }
         }
     }
-    store.export.error = report.error.clone();
-    store.export.pending_since = report.error.as_ref().map(|_| now);
-    Ok(report)
+    let error = report.error.clone();
+    let Some(()) = access.with(|s| {
+        s.export.pending_since = error.as_ref().map(|_| now);
+        s.export.error = error;
+    }) else {
+        return Ok(None);
+    };
+    Ok(Some(report))
+}
+
+/// Under the lock: whether this server may export now (in memory), and the temp sweep if due.
+fn begin(store: &mut Store, now: Instant) -> Option<(Fence, Option<TempSweep>, PathBuf)> {
+    if store.read_only().is_some() || store.export.lease.quick_check().is_err() {
+        return None;
+    }
+    let due = store
+        .export
+        .last_sweep
+        .is_none_or(|t| now.saturating_duration_since(t) >= SWEEP_EVERY);
+    let sweep = due.then(|| std::mem::take(&mut store.export.temps));
+    Some((store.export.lease.fence(), sweep, store.project_dir.clone()))
+}
+
+/// Under the lock, after the sweep: the branches to export now, each with its last pending
+/// seq (records committed during the pass wait for the next one, and its delay); `None` when
+/// nothing is pending or the delay has not passed.
+fn after_sweep(
+    store: &mut Store,
+    now: Instant,
+    force: bool,
+    swept: Option<TempSweep>,
+) -> Result<Option<Vec<(String, u64)>>, StoreError> {
+    if let Some(t) = swept {
+        store.export.temps = t;
+        store.export.last_sweep = Some(now);
+    }
+    let branches = pending_branches(&store.conn)?;
+    if branches.is_empty() {
+        store.export.pending_since = None;
+        store.export.error = None;
+        return Ok(None);
+    }
+    let since = *store.export.pending_since.get_or_insert(now);
+    if !force
+        && now.saturating_duration_since(since)
+            < store.export.policy.delay(now, store.storage_kind())
+    {
+        return Ok(None);
+    }
+    let mut out = Vec::with_capacity(branches.len());
+    for b in branches {
+        if let Some(last) = last_pending(&store.conn, &b)? {
+            out.push((b, last));
+        }
+    }
+    Ok(Some(out))
+}
+
+enum Planned {
+    /// Nothing left on this branch.
+    Done,
+    Failed(CoreError),
+    Io(Box<StepIo>),
 }
 
 enum Step {
-    /// Nothing left on this branch.
-    Done,
     /// The lease does not allow writing.
     Stopped,
     Wrote(u32),
     Adopted(u32),
+    /// The rows changed while the segment was written: nothing marked.
+    Stale,
     Failed(CoreError),
 }
 
-/// Writes (or adopts) the next segment of `branch`.
-fn export_one(store: &mut Store, branch: &str) -> Result<Step, StoreError> {
-    let rows = pending_rows(&store.conn, branch)?;
+/// Under the lock: the next segment of `branch` to write (or adopt), from its unexported rows
+/// up to seq `last`.
+fn plan_step(store: &mut Store, branch: &str, last: u64) -> Result<Planned, StoreError> {
+    let mut rows = pending_rows(&store.conn, branch)?;
+    rows.retain(|r| r.seq <= last);
     let Some(first) = rows.first().map(|r| r.seq) else {
-        return Ok(Step::Done);
-    };
-    let Ok(lease_epoch) = store.export.lease.check() else {
-        return Ok(Step::Stopped);
+        return Ok(Planned::Done);
     };
     if let Some(e) = too_large(branch, &rows[0]) {
-        return Ok(Step::Failed(e));
+        return Ok(Planned::Failed(e));
     }
     let prev = prev_segment(&store.conn, branch, first)?;
-    let dir = segments_root(&store.project_dir).join(branch);
-    // Never through a link (`crate::reserved`): checked before `create_dir_all`, which would
-    // follow one, and after it.
-    let made = no_links(&dir)
-        .and_then(|()| fs::create_dir_all(&dir))
-        .and_then(|()| no_links(&dir));
-    if let Err(e) = made {
-        return Ok(Step::Failed(folder_error(&dir, branch, &e)));
-    }
     let retry = store.export.attempt.take().filter(|a| {
         a.branch == branch
             && a.first_seq == first
@@ -279,17 +360,70 @@ fn export_one(store: &mut Store, branch: &str) -> Result<Step, StoreError> {
             && a.tx_hashes.len() <= rows.len()
             && a.tx_hashes.iter().zip(&rows).all(|(h, r)| *h == r.tx_hash)
     });
-    let attempt = match retry {
-        Some(a) => a,
-        None => {
-            if let Some(found) = adoptable(store, branch, &dir, &rows, prev.as_deref()) {
-                let n = mark_exported(&mut store.conn, branch, &found)?;
-                return Ok(Step::Adopted(n));
-            }
-            prepare(store, branch, &rows, lease_epoch, prev)?
+    Ok(Planned::Io(Box::new(StepIo {
+        branch: branch.to_string(),
+        prep: Prep::of(store, branch, first)?,
+        rows,
+        prev,
+        dir: segments_root(&store.project_dir).join(branch),
+        retry,
+        fence: store.export.lease.fence(),
+        #[cfg(any(test, feature = "test-hooks"))]
+        fail_at: store.export.fail_at,
+        #[cfg(any(test, feature = "test-hooks"))]
+        hooks: store.phase.hooks.clone(),
+    })))
+}
+
+/// Under the lock: what a step's folder I/O did, applied. A written (or adopted) segment is
+/// marked only if its rows are still the next unexported ones ([`still_pending`]).
+fn apply_step(
+    store: &mut Store,
+    branch: &str,
+    (outcome, wrote): (Outcome, bool),
+    now: Instant,
+) -> Result<Step, StoreError> {
+    #[cfg(any(test, feature = "test-hooks"))]
+    if wrote {
+        store.export.fail_at = None;
+    }
+    let _ = wrote;
+    match outcome {
+        Outcome::Stopped { keep } => {
+            store.export.attempt = keep;
+            Ok(Step::Stopped)
         }
-    };
-    write(store, &dir, attempt)
+        Outcome::Failed { error, keep } => {
+            store.export.attempt = keep;
+            Ok(Step::Failed(error))
+        }
+        Outcome::Collision {
+            target,
+            attempt,
+            why,
+        } => Ok(collision(store, &target, attempt, why)),
+        Outcome::Broken(e) => Err(e),
+        #[cfg(any(test, feature = "test-hooks"))]
+        Outcome::Fault { keep } => {
+            store.export.attempt = Some(keep);
+            Err(fault())
+        }
+        Outcome::Wrote(a) | Outcome::Adopted(a) if !still_pending(&store.conn, branch, &a)? => {
+            Ok(Step::Stale)
+        }
+        Outcome::Adopted(a) => {
+            let n = mark_exported(&mut store.conn, branch, &a)?;
+            store.phase.io_gen += 1;
+            Ok(Step::Adopted(n))
+        }
+        Outcome::Wrote(a) => {
+            let n = mark_exported(&mut store.conn, branch, &a)?;
+            store.phase.io_gen += 1;
+            store.export.salt = None;
+            store.export.policy.wrote(now);
+            Ok(Step::Wrote(n))
+        }
+    }
 }
 
 /// A record that cannot fit a segment every reader accepts. Commit refuses them
@@ -315,89 +449,6 @@ fn too_large(branch: &str, row: &Row) -> Option<CoreError> {
     })
 }
 
-/// Writes `a`, verifies it by read-back and marks it.
-fn write(store: &mut Store, dir: &Path, a: Attempt) -> Result<Step, StoreError> {
-    #[cfg(any(test, feature = "test-hooks"))]
-    let fail_at = store.export.fail_at.take();
-    #[cfg(any(test, feature = "test-hooks"))]
-    if fail_at == Some(FailPoint::AfterTempWrite) {
-        let _ = fs::write(dir.join(crate::names::temp_name()), &a.bytes);
-        store.export.attempt = Some(a);
-        return Err(fault());
-    }
-    // The fence, right before the write.
-    if !store.export.lease.check().is_ok_and(|e| a.epoch <= e) {
-        store.export.attempt = Some(a);
-        return Ok(Step::Stopped);
-    }
-    if let Err(e) = no_links(dir) {
-        let branch = a.branch.clone();
-        store.export.attempt = Some(a);
-        return Ok(Step::Failed(folder_error(dir, &branch, &e)));
-    }
-    let written = fsio::write_once(dir, &a.name, &a.bytes);
-    #[cfg(any(test, feature = "test-hooks"))]
-    if fail_at == Some(FailPoint::AfterRename) {
-        store.export.attempt = Some(a);
-        return Err(fault());
-    }
-    let target = dir.join(&a.name);
-    // Absent after a write that did not plainly fail: SMB may not show a fresh rename yet.
-    let plain_failure = written.as_ref().is_err_and(|e| {
-        !matches!(
-            e.kind(),
-            io::ErrorKind::AlreadyExists | io::ErrorKind::NotFound
-        )
-    });
-    // Only a write that put a file in place (or found one there) makes an unverifiable
-    // read-back evidence of a foreign file; otherwise it is the folder failing.
-    let file_in_place = written
-        .as_ref()
-        .map_or_else(|e| e.kind() == io::ErrorKind::AlreadyExists, |()| true);
-    let retries = if plain_failure { 0 } else { READBACK_RETRIES };
-    let mut a = a;
-    match read_back(&target, &a.hash, retries) {
-        ReadBack::Ours => {}
-        ReadBack::Other(why) => return Ok(collision(store, &target, a, why)),
-        ReadBack::Missing(read_err) if read_err.kind() == io::ErrorKind::NotFound => {
-            let branch = a.branch.clone();
-            store.export.attempt = Some(a);
-            let e = written.err().unwrap_or(read_err);
-            return Ok(Step::Failed(folder_error(&target, &branch, &e)));
-        }
-        ReadBack::Missing(read_err) if !file_in_place => {
-            let branch = a.branch.clone();
-            store.export.attempt = Some(a);
-            let e = written.err().unwrap_or(read_err);
-            return Ok(Step::Failed(folder_error(&target, &branch, &e)));
-        }
-        ReadBack::Missing(read_err) => {
-            a.failed_reads += 1;
-            if a.failed_reads >= MAX_FAILED_READS {
-                let why = format!("{} read-backs failed: {read_err}", a.failed_reads);
-                return Ok(collision(store, &target, a, why));
-            }
-            let branch = a.branch.clone();
-            store.export.attempt = Some(a);
-            return Ok(Step::Failed(folder_error(&target, &branch, &read_err)));
-        }
-    }
-    // A link swapped in during the write: what was read back may lie outside the project.
-    if let Err(e) = no_links(dir) {
-        let branch = a.branch.clone();
-        store.export.attempt = Some(a);
-        return Ok(Step::Failed(folder_error(dir, &branch, &e)));
-    }
-    #[cfg(any(test, feature = "test-hooks"))]
-    if fail_at == Some(FailPoint::BeforeMarkExported) {
-        store.export.attempt = Some(a);
-        return Err(fault());
-    }
-    let n = mark_exported(&mut store.conn, &a.branch, &a)?;
-    store.export.salt = None;
-    Ok(Step::Wrote(n))
-}
-
 /// Our name holds something else: leave it, and use another name next time.
 fn collision(store: &mut Store, target: &Path, a: Attempt, why: String) -> Step {
     let salt = match &store.export.salt {
@@ -417,53 +468,6 @@ fn collision(store: &mut Store, target: &Path, a: Attempt, why: String) -> Step 
     )
 }
 
-enum ReadBack {
-    Ours,
-    /// A complete file with other content (or damaged) under our name.
-    Other(String),
-    /// Absent, unreadable or still incomplete.
-    Missing(io::Error),
-}
-
-/// Reads `path` back uncached; `NotFound` is retried `retries` times.
-fn read_back(path: &Path, hash: &str, retries: u32) -> ReadBack {
-    let mut left = retries;
-    let bytes = loop {
-        match fsio::read_uncached(path) {
-            Ok(b) => break b,
-            Err(e) if e.kind() == io::ErrorKind::NotFound && left > 0 => {
-                left -= 1;
-                std::thread::sleep(READBACK_DELAY);
-            }
-            Err(e) => return ReadBack::Missing(e),
-        }
-    };
-    match segment::decode(&bytes) {
-        Ok(seg) if seg.hash == hash => ReadBack::Ours,
-        Ok(seg) => ReadBack::Other(format!("hash {} is not ours", seg.hash)),
-        Err(segment::SegError::Incomplete) => ReadBack::Missing(io::Error::new(
-            io::ErrorKind::UnexpectedEof,
-            "the written segment reads back incomplete",
-        )),
-        Err(e) => ReadBack::Other(e.to_string()),
-    }
-}
-
-/// A folder failure as reported in status: the records stay unexported.
-fn folder_error(path: &Path, branch: &str, e: &io::Error) -> CoreError {
-    let path = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
-    CoreError::new(
-        "PROJECT_DIR_UNWRITABLE",
-        format!("cannot export to {}: {e}", path.display()),
-    )
-    .with_details(json!({ "path": path.to_string_lossy(), "branch": branch, "reason": e.to_string() }))
-    .with_fix(if is_linked(e) {
-        "replace the link with the real directory (links in .finisher are never followed); export retries automatically and nothing is lost"
-    } else {
-        "make the project folder writable or free space; export retries automatically and nothing is lost"
-    })
-}
-
 #[cfg(any(test, feature = "test-hooks"))]
 fn fault() -> StoreError {
     CoreError::new("TEST_FAULT", "injected export failure").into()
@@ -481,7 +485,7 @@ impl Store {
         };
         let lease_epoch = self.export.lease.check()?;
         let prev = prev_segment(&self.conn, branch, first)?;
-        let a = prepare(self, branch, &rows, lease_epoch, prev)?;
+        let a = Prep::of(self, branch, first)?.encode(branch, &rows, lease_epoch, prev)?;
         let name = a.name.clone();
         self.export.attempt = Some(a);
         Ok(Some(name))

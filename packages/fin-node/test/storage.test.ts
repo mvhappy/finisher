@@ -129,6 +129,38 @@ describe("storage", () => {
     expect(events.some((e) => e.type === "status")).toBe(true);
   }, 20_000);
 
+  test("short calls answer while a follower's tick is in its folder I/O", async () => {
+    const a = keep(await Engine.create(serverData, projectDir, "Demo", "30"));
+    const b = keep(await Engine.open(join(tmp, "server-data-2"), projectDir));
+    const events = listen(b);
+    b.hangNextTickForTest("import");
+    await until(() => (b.tickHungForTest() ? true : undefined), 5_000, "the tick to stop in its import");
+    // The store mutex is free: reads answer at once, with the state before the pass.
+    const started = Date.now();
+    expect(JSON.parse(await b.status()).readOnly.reason).toBe("LEASE_HELD");
+    expect(await b.head("main")).toBe(0);
+    expect(Date.now() - started).toBeLessThan(1_000);
+    await a.commit(tx("tx-1", 0, [addAsset]));
+    b.releaseTickForTest();
+    await until(() => events.find((e) => e.type === "applied"), 15_000, "an applied event");
+    expect(await b.head("main")).toBe(1);
+  }, 25_000);
+
+  test("a commit answers while the holder's tick writes a segment", async () => {
+    const a = keep(await Engine.create(serverData, projectDir, "Demo", "30"));
+    a.hangNextTickForTest("export");
+    await a.commit(tx("tx-1", 0, [addAsset]));
+    await until(() => (a.tickHungForTest() ? true : undefined), 10_000, "the tick to stop before its write");
+    const started = Date.now();
+    const c = JSON.parse(await a.commit(tx("tx-2", 1, [addAsset]))) as { rev: number };
+    expect(c.rev).toBe(2);
+    expect(Date.now() - started).toBeLessThan(1_000);
+    a.releaseTickForTest();
+    // Both reach a follower: the first segment now, the second after its own export delay.
+    const b = keep(await Engine.open(join(tmp, "server-data-2"), projectDir));
+    await until(async () => ((await b.head("main")) === 2 ? true : undefined), 15_000, "both records at b");
+  }, 30_000);
+
   test("txGet returns committed tx or null", async () => {
     const engine = keep(await Engine.create(serverData, projectDir, "Demo", "30"));
     const committed = await engine.commit(tx("tx-1", 0, [addAsset]));

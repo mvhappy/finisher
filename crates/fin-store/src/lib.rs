@@ -110,7 +110,9 @@ pub use server_id::{ServerIdentity, server_id, server_identity};
 pub use status::{
     BranchStatus, INCOMPLETE_POLLS, ProjectStatus, QuarantineSummary, ReadOnly, StoreEvent, Warning,
 };
-pub use tick::{DueWork, TickOptions, TickReport};
+#[cfg(any(test, feature = "test-hooks"))]
+pub use tick::hooks::{TickHooks, TickPoint};
+pub use tick::{DueWork, StoreAccess, TickOptions, TickReport};
 pub use verify::{Check, VerifyReport};
 pub use wire::{
     BranchCreated, BranchView, DropReq, EngineEvent, HistoryResult, MergeReport, RecoverGroup,
@@ -266,6 +268,8 @@ pub struct Store {
     /// What history writes do with an item whose neighbours are both gone
     /// ([`Store::with_when_lost`]).
     when_lost: fin_core::rebase::placement::WhenLost,
+    /// The phased tick's state: one tick at a time, and what its unlocked I/O revalidates.
+    phase: tick::Phase,
     #[cfg(any(test, feature = "test-hooks"))]
     fail_after_apply: bool,
 }

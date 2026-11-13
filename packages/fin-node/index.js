@@ -214,6 +214,25 @@ export class Engine {
     return this.#hook("maintenanceRunningForTest")();
   }
 
+  /** @internal Test builds only: the next tick stops in its folder I/O (`import` or `export`). */
+  hangNextTickForTest(point) {
+    try {
+      this.#hook("hangNextTickForTest")(point);
+    } catch (e) {
+      throw toFinError(e);
+    }
+  }
+
+  /** @internal Test builds only: whether a tick is stopped at the armed point. */
+  tickHungForTest() {
+    return this.#hook("tickHungForTest")();
+  }
+
+  /** @internal Test builds only: lets the stopped tick go on. */
+  releaseTickForTest() {
+    this.#hook("releaseTickForTest")();
+  }
+
   /** @internal Test builds only: forces two font status refreshes to interleave around a commit of `txJson`. */
   fontPublishRaceForTest(txJson) {
     try {

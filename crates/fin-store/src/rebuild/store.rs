@@ -135,6 +135,7 @@ impl Store {
 
     /// After the database file was replaced: forget what was cached about the old one.
     fn adopt_rebuilt(&mut self, report: Option<RebuildReport>) -> Result<(), StoreError> {
+        self.phase.io_gen += 1;
         history::note_server_id(&self.conn, &self.server_id)?;
         history::ensure_incarnation(&self.conn)?;
         let kind = self.import.kind;

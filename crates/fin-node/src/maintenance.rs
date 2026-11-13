@@ -1,22 +1,27 @@
 //! The per-engine maintenance thread and the events it forwards to JS.
 //!
-//! Every [`TICK_EVERY`] the thread calls `Store::tick_with` under the store mutex; the store's
-//! own cadence decides when a tick polls the folder (local 2 s, network 1 s, sync 10 s), and
-//! only then imports and re-checks or re-acquires the lease. Between polls a tick only flushes
-//! a due export and reports a status change. Without these ticks a follower never follows, a
-//! lost lease is never re-acquired and nothing is exported before `close`.
+//! Every [`TICK_EVERY`] the thread runs `Store::tick_phased`; the store's own cadence decides
+//! when a tick polls the folder (local 2 s, network 1 s, sync 10 s), and only then imports and
+//! re-checks or re-acquires the lease. Between polls a tick only flushes a due export and
+//! reports a status change. Without these ticks a follower never follows, a lost lease is
+//! never re-acquired and nothing is exported before `close`.
+//!
+//! The store mutex is taken step by step, around the tick's database work, never across its
+//! folder I/O: an import's scan and verification, an export's writes and read-backs and the
+//! lease re-check run without it, so short calls answer meanwhile (`fin_store::tick` module
+//! docs, "Locking"). A long call may take the store between two steps: the tick then ends
+//! there, and the next starts afresh. Acquiring the lease still runs under the mutex.
 //!
 //! The ticks leave the heavy steps out (`TickOptions` off): after each tick, the daily backup
 //! or compaction it found due runs as automatic work (`crate::auto`): only once the engine is
-//! quiet, the backup off the store on a thread of its own, compaction one step at a time. The
-//! import itself still runs under the mutex (a long follower import delays short calls; the
-//! lock-only-around-DB-transactions rework is left for later).
+//! quiet, the backup off the store on a thread of its own, compaction one step at a time
+//! (under the mutex).
 //!
 //! Every `status` event also refreshes the engine's cached status (what `status()` answers
 //! during a long call).
 //!
-//! A tick is skipped while a long call has the store (`Busy`). A panic inside a tick drops the
-//! store (`Panicked`, like any call) and ends the thread after a fatal `error` event. A tick
+//! A tick is skipped while a long call has the store (`Busy`). A panic inside a tick step drops
+//! the store (`Panicked`, like any call) and ends the thread after a fatal `error` event. A tick
 //! that fails with a database error emits a non-fatal `error` event and the thread goes on.
 //!
 //! # Events (JSON strings)
@@ -54,7 +59,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use fin_core::CoreError;
-use fin_store::{EngineEvent, StoreEvent, TickOptions};
+use fin_store::{EngineEvent, Store, StoreAccess, StoreEvent, TickOptions};
 use napi::bindgen_prelude::*;
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use serde_json::json;
@@ -229,78 +234,120 @@ fn run(inner: &Shared, stop: &Stop) {
 
 /// One tick; `false` once the engine is closed or dead.
 fn tick(inner: &Shared) -> bool {
-    let mut guard = lock(&inner.state);
-    let store = match &mut *guard {
-        State::Open(store) => store,
+    match &*lock(&inner.state) {
+        State::Open(_) => {}
         State::Busy { .. } => return true,
         State::Closed | State::Panicked => return false,
+    }
+    let mut access = Access {
+        inner,
+        first: true,
+        dead: false,
     };
-    let result = catch_unwind(AssertUnwindSafe(|| {
-        #[cfg(feature = "test-hooks")]
-        if inner.hooks.take_tick_panic() {
-            panic!("fin-node test panic in tick");
+    // `None`: a long call took the store between two steps; the next tick starts afresh.
+    let result = fin_store::Store::tick_phased(&mut access, Instant::now(), LIGHT);
+    if access.dead {
+        return false;
+    }
+    if let Err(e) = result {
+        let e: CoreError = e.into();
+        inner.events.emit(error_json(&json!(e), false));
+    }
+    true
+}
+
+/// The store as a tick's steps reach it (module docs): under the state mutex, only while it
+/// is `Open`. The events a step queued are forwarded before the mutex is released.
+struct Access<'a> {
+    inner: &'a Shared,
+    /// The first step (where the test panic hook fires).
+    first: bool,
+    /// A step panicked: the store is dropped and the engine dead.
+    dead: bool,
+}
+
+impl StoreAccess for Access<'_> {
+    fn with<R>(&mut self, f: impl FnOnce(&mut Store) -> R) -> Option<R> {
+        if self.dead {
+            return None;
         }
-        let events = store.tick_with(Instant::now(), LIGHT)?.events;
-        let incarnation = events
-            .iter()
-            .any(|e| matches!(e, StoreEvent::Rewound { .. }))
-            .then(|| store.incarnation());
-        Ok::<_, fin_store::StoreError>((events, incarnation))
-    }));
-    match result {
-        Ok(Ok((events, incarnation))) => {
-            // Queued before the store is released: a commit that runs right after this tick
-            // answers after these events reach JS (a rewind is seen before the new history's
-            // first commit).
-            let mut rescan_all = false;
-            for e in &events {
-                match e {
-                    StoreEvent::Applied(c) => inner.fonts.committed(store, c),
-                    StoreEvent::Rewound { .. } | StoreEvent::Rebuilt { .. } => rescan_all = true,
-                    // The journal learns the flag before JS sees the event.
-                    StoreEvent::Collect(p) => {
-                        if let Some(g) = lock(&inner.journal).as_ref() {
-                            g.update(*p);
-                        }
-                    }
-                    _ => {}
+        let inner = self.inner;
+        let first = std::mem::replace(&mut self.first, false);
+        let mut guard = lock(&inner.state);
+        let State::Open(store) = &mut *guard else {
+            return None;
+        };
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            #[cfg(feature = "test-hooks")]
+            if first && inner.hooks.take_tick_panic() {
+                panic!("fin-node test panic in tick");
+            }
+            let _ = first;
+            let r = f(store);
+            (r, store.take_events())
+        }));
+        match result {
+            Ok((r, events)) => {
+                // Forwarded before the store is released: a commit that runs right after this
+                // step answers after these events reach JS (a rewind is seen before the new
+                // history's first commit).
+                forward(inner, store, &events);
+                drop(guard);
+                Some(r)
+            }
+            Err(payload) => {
+                let store = std::mem::replace(&mut *guard, State::Panicked);
+                drop(guard);
+                let _ = catch_unwind(AssertUnwindSafe(move || drop(store)));
+                let e = panic_error(payload.as_ref());
+                inner.events.emit(error_json(&json!(e), true));
+                self.dead = true;
+                None
+            }
+        }
+    }
+}
+
+/// Hands a tick step's events to the fonts, the journal and JS (under the state mutex).
+fn forward(inner: &Shared, store: &Store, events: &[StoreEvent]) {
+    if events.is_empty() {
+        return;
+    }
+    let incarnation = events
+        .iter()
+        .any(|e| matches!(e, StoreEvent::Rewound { .. }))
+        .then(|| store.incarnation());
+    let mut rescan_all = false;
+    for e in events {
+        match e {
+            StoreEvent::Applied(c) => inner.fonts.committed(store, c),
+            StoreEvent::Rewound { .. } | StoreEvent::Rebuilt { .. } => rescan_all = true,
+            // The journal learns the flag before JS sees the event.
+            StoreEvent::Collect(p) => {
+                if let Some(g) = lock(&inner.journal).as_ref() {
+                    g.update(*p);
                 }
             }
-            if rescan_all {
-                inner.fonts.rescan_all(store);
-            }
-            for e in &events {
-                if let StoreEvent::Status(st) = e {
-                    let now = st.read_only.as_ref().map(|r| r.reason.code());
-                    crate::engine::observe_read_only(inner, now);
-                }
-                if let StoreEvent::Status(st) = e
-                    && let Ok(v) = serde_json::to_value(st)
-                {
-                    *lock(&inner.status) = Some(v.clone());
-                    // The store's status with the font summary merged (Decision 34).
-                    inner.fonts.emit_status(v, &inner.events);
-                    continue;
-                }
-                inner.events.emit(event_json(e, incarnation.as_deref()));
-            }
-            drop(guard);
-            true
+            _ => {}
         }
-        Ok(Err(e)) => {
-            drop(guard);
-            let e: CoreError = e.into();
-            inner.events.emit(error_json(&json!(e), false));
-            true
+    }
+    if rescan_all {
+        inner.fonts.rescan_all(store);
+    }
+    for e in events {
+        if let StoreEvent::Status(st) = e {
+            let now = st.read_only.as_ref().map(|r| r.reason.code());
+            crate::engine::observe_read_only(inner, now);
         }
-        Err(payload) => {
-            let store = std::mem::replace(&mut *guard, State::Panicked);
-            drop(guard);
-            let _ = catch_unwind(AssertUnwindSafe(move || drop(store)));
-            let e = panic_error(payload.as_ref());
-            inner.events.emit(error_json(&json!(e), true));
-            false
+        if let StoreEvent::Status(st) = e
+            && let Ok(v) = serde_json::to_value(st)
+        {
+            *lock(&inner.status) = Some(v.clone());
+            // The store's status with the font summary merged (Decision 34).
+            inner.fonts.emit_status(v, &inner.events);
+            continue;
         }
+        inner.events.emit(event_json(e, incarnation.as_deref()));
     }
 }
 

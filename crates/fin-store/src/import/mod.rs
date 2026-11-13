@@ -77,6 +77,7 @@ mod hydrate;
 mod known;
 mod pass;
 pub(crate) mod quarantine;
+mod read;
 mod records;
 mod report;
 mod rewind;
@@ -90,11 +91,12 @@ use serde_json::json;
 
 use crate::chain::{ForkInfo, SegRef};
 use crate::counters::Counters;
-use crate::scan::{Entry, ForeignContent, NotArrivedWhy, Scanner};
+use crate::scan::Scanner;
 use crate::storage_kind::StorageKind;
 use crate::{Store, StoreError, db, refresh};
 pub(crate) use known::{fork_point, known_now};
 use pass::PassOut;
+pub(crate) use read::{ImportPlan, ImportRead};
 
 pub(crate) use report::Seed;
 pub use report::{ForeignFile, ImportReport, ReadOnlyReason, Rewind};
@@ -216,120 +218,75 @@ impl Store {
     /// One import pass (module docs). `Err` only for a DB failure or a broken DB invariant;
     /// folder problems are in the report.
     pub fn import(&mut self) -> Result<ImportReport, StoreError> {
-        let mut report = ImportReport::default();
-        let dot = self.project_dir.join(".finisher");
-        let kind = self.import.kind;
-        let listed = if dot.is_dir() {
-            self.import.scanner.scan_for(&self.project_dir, kind)
-        } else {
-            // The folder vanished (unmounted, renamed): never read that as "empty".
-            Err(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("{} is missing", dot.display()),
-            ))
-        };
-        let entries = match listed {
-            Ok(e) => e,
+        let read = self.import_plan()?.read();
+        // Nothing can change the store between the two halves here.
+        self.import_apply(read)?.ok_or_else(|| {
+            CoreError::new("INTERNAL", "the import pass was overtaken by another").into()
+        })
+    }
+
+    /// Step 4 on (the database transaction) for what [`ImportPlan::read`] found, under the
+    /// store lock. `None` when something changed what the pass read against since it was
+    /// planned (another pass applied, an export marked rows, a rebuild, an acquisition,
+    /// [`crate::tick::Phase::io_gen`]): nothing is applied, and the next poll reads afresh.
+    pub(crate) fn import_apply(
+        &mut self,
+        read: ImportRead,
+    ) -> Result<Option<ImportReport>, StoreError> {
+        let ImportRead {
+            scanner,
+            hydrate_from,
+            genesis,
+            fence,
+            io_gen,
+            folder,
+            ..
+        } = read;
+        // Its cache holds verified write-once files: still valid whatever happened meanwhile.
+        self.import.scanner = scanner;
+        self.import.hydrate_from = hydrate_from;
+        if io_gen != self.phase.io_gen {
+            return Ok(None);
+        }
+        let folder = match folder {
+            Ok(f) => f,
             Err(e) => {
-                report.error = Some(
-                    CoreError::new(
-                        "IO_ERROR",
-                        format!("cannot list {}: {e}", self.project_dir.display()),
-                    )
-                    .with_details(json!({ "path": self.project_dir.to_string_lossy() })),
-                );
-                return Ok(report);
+                return Ok(Some(ImportReport {
+                    error: Some(e),
+                    ..ImportReport::default()
+                }));
             }
         };
-        report.hydrated = hydrate::run(&self.project_dir, &entries, &mut self.import.hydrate_from);
-
-        // Classify. A segment written under another genesis (`genesisHash`) is another
-        // project's history under this id (a hand-made copy, an edited project): it is not
-        // imported, and the pass reports `GENESIS_MISMATCH` (read-only `IMPORT_ERROR`) until it
-        // is moved out. It is not quarantined: its records belong to no history of ours.
-        let genesis = crate::project_file::db_genesis_hash(&self.conn)?;
-        let mut foreign_genesis: Vec<String> = vec![];
-        let mut by_branch: HashMap<String, Vec<SegRef>> = HashMap::new();
-        let mut present = HashMap::new();
-        let mut foreign = vec![];
-        let mut newer = false;
-        for entry in &entries {
-            match entry {
-                Entry::Segment { branch, seg, name } if seg.header.genesis_hash != genesis => {
-                    let path = dot.join("segments").join(branch).join(name.to_string());
-                    foreign_genesis.push(path.to_string_lossy().into_owned());
-                }
-                Entry::Segment { branch, seg, .. } => {
-                    let r = self
-                        .import
-                        .segrefs
-                        .remove(&seg.hash)
-                        .unwrap_or_else(|| SegRef::new(seg.clone()));
-                    by_branch.entry(branch.clone()).or_default().push(r.clone());
-                    present.insert(seg.hash.clone(), r);
-                }
-                Entry::Newer { .. } | Entry::UnsupportedHash { .. } => newer = true,
-                Entry::NotArrived { path, why } => report.not_arrived.push((path.clone(), *why)),
-                Entry::Foreign {
-                    path,
-                    conflict_copy,
-                    content,
-                } => {
-                    if matches!(
-                        content,
-                        Some(ForeignContent::Newer { .. } | ForeignContent::UnsupportedHash)
-                    ) {
-                        newer = true;
-                    }
-                    let seg = match content {
-                        Some(ForeignContent::Segment(s)) => Some(s.clone()),
-                        _ => None,
-                    };
-                    foreign.push((path.clone(), *conflict_copy, seg));
-                }
-                _ => {}
-            }
-        }
+        let kind = self.import.kind;
+        let dot = self.project_dir.join(".finisher");
+        let read::Folder {
+            mut report,
+            mut by_branch,
+            present,
+            foreign,
+            mut newer,
+            foreign_genesis,
+            damaged,
+            seen_at,
+            held,
+            mut lease_seen,
+            mut lease_top,
+        } = folder;
         self.import.segrefs = present;
-        // Damaged, incomplete and locked files, for the "unchanged for 60 s" rules (verify).
-        let damaged: Vec<_> = entries
-            .iter()
-            .filter_map(|e| match e {
-                Entry::Damaged {
-                    path,
-                    len,
-                    modified,
-                    ..
-                } => Some((path.clone(), *len, *modified)),
-                Entry::NotArrived {
-                    path,
-                    why: NotArrivedWhy::Incomplete | NotArrivedWhy::Locked,
-                } => {
-                    let m = std::fs::metadata(path).ok();
-                    Some((
-                        path.clone(),
-                        m.as_ref().map_or(0, |m| m.len()),
-                        m.and_then(|m| m.modified().ok()),
-                    ))
-                }
-                _ => None,
-            })
-            .collect();
-        let now_mono = self.ctl.now();
-        self.damage.get_mut().observe(&damaged, now_mono);
-        for segs in by_branch.values_mut() {
-            segs.sort_by(|a, b| a.hash().cmp(b.hash()));
+        self.damage.get_mut().observe(&damaged, seen_at);
+        // Held as the full check after the scan found, if the lease it checked is still the
+        // one in force and has not been lost since (in memory; no folder I/O here).
+        let held = held.filter(|e| {
+            fence.is_current(&self.export.lease) && self.export.lease.quick_check() == Ok(*e)
+        });
+        if held != lease_seen.1 {
+            // Lost since the read: the lease files once more (small, rare).
+            lease_seen.1 = held;
+            lease_top = rewind::lease_top(&dot);
         }
-
-        let held = self.export.lease.check().ok();
         let holds = held.is_some();
-        // Lease files for the rewind rule, before the database lock (module docs).
-        let seen = (self.import.segrefs.keys().cloned().collect(), held);
-        if self.import.forked || self.import.lease_seen.as_ref() != Some(&seen) {
-            self.import.lease_top = rewind::lease_top(&dot);
-            self.import.lease_seen = Some(seen);
-        }
-        let lease_top = self.import.lease_top;
+        self.import.lease_top = lease_top;
+        self.import.lease_seen = Some(lease_seen);
         let Store {
             conn,
             heads,
@@ -408,6 +365,7 @@ impl Store {
         let seeded = ctx.seeded;
         drop(ctx);
         txn.commit()?;
+        self.phase.io_gen += 1;
         import.seeded = import.seeded.max(seeded);
 
         // Committed: adopt the new state.
@@ -472,7 +430,7 @@ impl Store {
         } else {
             None
         };
-        Ok(report)
+        Ok(Some(report))
     }
 
     /// Test hook: replaces the detected storage kind the epoch rule uses.

@@ -122,12 +122,52 @@ impl Engine {
         outcome
     }
 
+    /// The next tick stops in its folder I/O, outside the store mutex: `import` (after the
+    /// scan, before the apply) or `export` (a segment encoded, before its write), until
+    /// `releaseTickForTest`.
+    #[napi(catch_unwind)]
+    pub fn hang_next_tick_for_test(&self, point: String) -> Result<()> {
+        let point = match point.as_str() {
+            "import" => fin_store::TickPoint::ImportRead,
+            "export" => fin_store::TickPoint::ExportWrite,
+            other => {
+                let e = CoreError::new("INVALID_OP", format!("no tick point {other:?}"));
+                return Err(reject(e));
+            }
+        };
+        self.tick_hooks()?.hang(point);
+        Ok(())
+    }
+
+    /// Whether a tick is stopped at the point `hangNextTickForTest` armed.
+    #[napi(catch_unwind)]
+    pub fn tick_hung_for_test(&self) -> Result<bool> {
+        Ok(self.tick_hooks()?.is_hung())
+    }
+
+    /// Lets the stopped tick go on.
+    #[napi(catch_unwind)]
+    pub fn release_tick_for_test(&self) -> Result<()> {
+        self.tick_hooks()?.release();
+        Ok(())
+    }
+
     /// Whether the maintenance thread runs.
     #[napi(catch_unwind)]
     pub fn maintenance_running_for_test(&self) -> bool {
         lock(&self.inner.maintenance)
             .as_ref()
             .is_some_and(|m| m.running())
+    }
+}
+
+impl Engine {
+    /// The store's tick hooks (the store is never held across a tick's folder I/O).
+    fn tick_hooks(&self) -> Result<fin_store::TickHooks> {
+        match &*lock(&self.inner.state) {
+            crate::engine::State::Open(s) => Ok(s.tick_hooks()),
+            other => Err(reject(other.unavailable())),
+        }
     }
 }
 
