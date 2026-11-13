@@ -8,8 +8,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::{Globals, branch, fonts, inspect, target_branch};
-use crate::addr;
 use crate::backend::Backend;
+use crate::output::usage;
+use crate::{addr, follow};
 use fin_core::view::{self, Filter, budget};
 
 /// Summarise the project: branch and head (`rev`: the snapshot read, as `fin view` reports
@@ -48,6 +49,11 @@ pub struct ViewArgs {
     #[arg(long, conflicts_with = "budget")]
     #[serde(default)]
     pub full: bool,
+    /// Skip the first n lines of the one timeline shown (needs --timeline or --track): a tail
+    /// entry's `next` names it.
+    #[arg(long, value_name = "n")]
+    #[serde(default)]
+    pub offset: Option<usize>,
 }
 
 /// The tokens (chars / 4) a `fin view` without `--budget` or `--full` prints at most: past them
@@ -83,11 +89,11 @@ fn timelines(p: &Project) -> Result<Vec<Value>, CoreError> {
                 "end": view::timeline_end(tl)?, "markers": tl.markers.len(), "tracks": tracks,
             });
             let next = format!(
-                "fin track ls --timeline {} --offset {}",
+                "track ls --timeline {} --offset {}",
                 tl.id,
                 inspect::SUMMARY_CAP
             );
-            inspect::cut(&mut doc, "tracks", &next);
+            inspect::cut(&mut doc, "tracks", Some(&next));
             Ok(doc)
         })
         .collect()
@@ -155,13 +161,20 @@ pub fn status(backend: &dyn Backend, g: &Globals) -> Result<Value, CoreError> {
 }
 
 /// `fin status` is a summary (review batch L): its project-sized lists keep
-/// [`inspect::SUMMARY_CAP`] entries, with `<key>Total` and `<key>Next` (the listing command)
-/// when cut. Timelines are not cut; their tracks are ([`timelines`]).
+/// [`inspect::SUMMARY_CAP`] entries, with `<key>Total` when cut, and `<key>Next` where a command
+/// lists the rest: `timelines` (total only), each timeline's `tracks` ([`timelines`]),
+/// `assets`, `unmergedBranches`, `warnings` (total only), `fonts.missing|fetching|failed`
+/// (`fin fonts ls --pinned`) and `fonts.unmeasured` (total only).
 fn summarise(doc: &mut Value) {
-    let assets = format!("fin asset ls --offset {}", inspect::SUMMARY_CAP);
-    inspect::cut(doc, "assets", &assets);
-    inspect::cut(doc, "unmergedBranches", "fin branch ls");
-    inspect::cut(&mut doc["fonts"], "unmeasured", "fin view");
+    let assets = format!("asset ls --offset {}", inspect::SUMMARY_CAP);
+    inspect::cut(doc, "timelines", None);
+    inspect::cut(doc, "assets", Some(&assets));
+    inspect::cut(doc, "unmergedBranches", Some("branch ls"));
+    inspect::cut(doc, "warnings", None);
+    for key in ["missing", "fetching", "failed"] {
+        inspect::cut(&mut doc["fonts"], key, Some("fonts ls --pinned"));
+    }
+    inspect::cut(&mut doc["fonts"], "unmeasured", None);
 }
 
 /// The timelines `fin view` shows: `--timeline`'s, the one holding `--track`, else all.
@@ -241,7 +254,17 @@ pub fn view(backend: &dyn Backend, g: &Globals, a: &ViewArgs) -> Result<Value, C
         to,
         detail: a.detail,
     };
-    let sections = view::sections(&tls, filter, &marks)?;
+    let mut sections = view::sections(&tls, filter, &marks)?;
+    if let Some(n) = a.offset {
+        if tls.len() != 1 {
+            return Err(usage(
+                "--offset counts the lines of one timeline",
+                json!({ "field": "offset", "timelines": tls.len() }),
+                "name the timeline with --timeline (or a track with --track)",
+            ));
+        }
+        sections[0].entries.retain(|e| e.index >= n);
+    }
     let mut resolved = json!({});
     if let Some(t) = &a.track {
         resolved["track"] = json!(t);
@@ -258,8 +281,15 @@ pub fn view(backend: &dyn Backend, g: &Globals, a: &ViewArgs) -> Result<Value, C
     if a.full {
         resolved["full"] = json!(true);
     }
+    if let Some(n) = a.offset {
+        resolved["offset"] = json!(n);
+    }
     let base = json!({ "rev": snap.rev, "timeline": g.timeline });
-    let page = Page { args: a, to };
+    let page = Page {
+        args: a,
+        range: (from, to),
+        single: tls.len() == 1,
+    };
     let doc = |lines: &[String], elided: &[Value]| {
         respond(&base, &resolved, lines, &page.decorate(elided))
     };
@@ -275,43 +305,78 @@ pub fn view(backend: &dyn Backend, g: &Globals, a: &ViewArgs) -> Result<Value, C
 /// What a `tail` entry's `next` repeats: the command's own flags.
 struct Page<'a> {
     args: &'a ViewArgs,
-    /// The resolved end of `--range`, kept by the next page.
-    to: Option<Rational>,
+    /// The resolved `--range`, kept as it is by the next page.
+    range: (Option<Rational>, Option<Rational>),
+    /// One timeline is shown (`--timeline`, `--track`, or a project with one).
+    single: bool,
 }
 
 impl Page<'_> {
-    /// `elided` with `next` on each tail entry that cut item lines: the exact `fin view` that
-    /// shows them, from the first one cut on (`--timeline`, the same `--track`, `--budget`
-    /// and `--detail`, and `--range <from>..` up to the range's end). Exact rationals, so the
-    /// page boundary does not round; an item spanning it shows on both pages.
+    /// `elided` with a follow-up on each tail entry (review batch L), one that always
+    /// progresses: `next`, the exact `fin view` showing the cut lines (the same project, branch,
+    /// `--track`, `--range`, `--budget`, `--detail`, narrowed to the entry's `--timeline`, from
+    /// `--offset <offset>`); or, when no command would show more than this one did (nothing of
+    /// a shown timeline fits), `next: null` with `blocked`: why, and what to run instead.
     fn decorate(&self, elided: &[Value]) -> Vec<Value> {
         elided
             .iter()
             .map(|e| {
                 let mut e = e.clone();
                 if e["step"] == "tail"
-                    && let (Some(tl), Some(from)) = (e["timeline"].as_str(), e["from"].as_str())
+                    && let Some(tl) = e["timeline"].as_str().map(str::to_string)
                 {
-                    e["next"] = json!(self.next(tl, from));
+                    self.follow_up(&mut e, &tl);
                 }
                 e
             })
             .collect()
     }
 
-    fn next(&self, timeline: &str, from: &str) -> String {
-        let mut cmd = format!("fin view --timeline {timeline}");
-        if let Some(t) = &self.args.track {
-            cmd.push_str(&format!(" --track {t}"));
+    fn follow_up(&self, e: &mut Value, tl: &str) {
+        let offset = e["offset"].as_u64();
+        let at = self.args.offset.unwrap_or(0) as u64;
+        // Narrowing to one timeline progresses; within one, only a later offset does.
+        if !self.single || offset.is_some_and(|o| o > at) {
+            e["next"] = json!(self.next(tl, offset));
+            return;
         }
-        let to = self.to.map(|t| t.to_string()).unwrap_or_default();
-        cmd.push_str(&format!(" --range {from}..{to}"));
+        e["next"] = Value::Null;
+        e["blocked"] = if e["header"] == true {
+            json!(format!(
+                "the header alone is over the budget: {} lists the tracks, then view one with --track",
+                follow::cmd(&format!("track ls --timeline {tl}"))
+            ))
+        } else {
+            json!(format!(
+                "the next line alone is over the budget: raise --budget, or {}",
+                follow::cmd(&format!("view --timeline {tl} --offset {at} --full"))
+            ))
+        };
+    }
+
+    fn next(&self, timeline: &str, offset: Option<u64>) -> String {
+        let mut cmd = format!("view --timeline {timeline}");
+        if let Some(t) = &self.args.track {
+            cmd.push_str(&format!(" --track {}", follow::quote(t)));
+        }
+        if let (None, None) = self.range {
+        } else {
+            let end = |r: Option<Rational>| r.map(|t| t.to_string()).unwrap_or_default();
+            cmd.push_str(&format!(
+                " --range {}..{}",
+                end(self.range.0),
+                end(self.range.1)
+            ));
+        }
+        if let Some(o) = offset.filter(|&o| o > 0) {
+            cmd.push_str(&format!(" --offset {o}"));
+        }
         if let Some(b) = self.args.budget {
             cmd.push_str(&format!(" --budget {b}"));
         }
         if self.args.detail {
             cmd.push_str(" --detail");
         }
-        cmd
+        follow::cmd(&cmd)
     }
 }

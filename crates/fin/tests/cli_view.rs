@@ -208,7 +208,7 @@ fn view_budget_degrades_in_order_and_says_so() {
     assert_eq!(
         v["elided"][1],
         json!({ "step": "tail", "timeline": "tl2", "from": "0", "to": "2001/1000", "items": 2, "header": true,
-                "next": "fin view --timeline tl2 --range 0.. --budget 0" })
+                "offset": 0, "next": "fin view --timeline tl2 --budget 0" })
     );
     let v = at(200);
     // Merging folds runs of a kind on a track; the tail cut names its range per timeline.

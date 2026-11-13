@@ -169,9 +169,68 @@ fn refused_merge_lists_conflicts_a_page_at_a_time() {
     let mut ids: Vec<&str> = all.iter().map(|c| c["txId"].as_str().unwrap()).collect();
     ids.dedup();
     assert_eq!(ids.len(), 45, "each conflict once");
+    // Follow-ups carry the global --branch (review fix 3).
+    let r = raw(
+        &s,
+        &dir,
+        &["--branch", "main", "--dry-run", "merge", "work"],
+    );
+    assert_eq!(
+        r.json["error"]["details"]["conflictsNext"],
+        "fin --branch main merge work --into main --dry-run --conflicts-from 20"
+    );
+    let work = run(&s, &dir, &["--branch", "work", "log", "--limit", "5"]);
+    let lowest = work["records"][4]["rev"].as_u64().unwrap();
+    assert_eq!(
+        work["next"],
+        format!("fin --branch work log --before {lowest} --limit 5")
+    );
     // Nothing was merged by paging.
     let log = run(&s, &dir, &["log", "--limit", "1"]);
     assert_eq!(log["records"][0]["kind"], "edit");
+}
+
+/// Review fix 7: one record's bindings are cut to 20 with the total.
+#[test]
+fn log_record_caps_bindings() {
+    let Some((s, dir)) = project("log_record_caps_bindings") else {
+        return;
+    };
+    support::media(&dir.join("clip.mp4"), 4);
+    run(&s, &dir, &["asset", "add", "clip.mp4"]);
+    let lines: Vec<String> = (0..25)
+        .map(|_| {
+            r#"{"cmd":"clip.insert","args":{"asset":"a1","track":"t1","at":"end","dur":"1s"}}"#
+                .to_string()
+        })
+        .collect();
+    let mut cmd = support::fin_cmd(&s.sd, &dir, &["--idem-key", "many", "batch"]);
+    let out = {
+        use std::io::Write;
+        let mut child = cmd
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(lines.join("\n").as_bytes())
+            .unwrap();
+        child.wait_with_output().unwrap()
+    };
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let one = run(&s, &dir, &["log", "many"]);
+    let tx = &one["tx"];
+    assert_eq!(tx["bindings"].as_object().unwrap().len(), 20, "{tx}");
+    assert!(tx["bindingsTotal"].as_u64().unwrap() > 20, "{tx}");
+    assert_eq!(tx["ops"].as_array().unwrap().len(), 20);
+    assert_eq!(tx["opsTotal"], 25);
 }
 
 #[test]

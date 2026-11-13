@@ -47,7 +47,8 @@ pub fn page(mut e: CoreError, call: &MergeCall<'_>) -> CoreError {
 }
 
 fn next(call: &MergeCall<'_>, from: usize) -> String {
-    let mut cmd = format!("fin merge {} --into {} --dry-run", call.from, call.into);
+    let q = crate::follow::quote;
+    let mut cmd = format!("merge {} --into {} --dry-run", q(call.from), q(call.into));
     if let Some(include) = call.include {
         cmd.push_str(&format!(" --include {}", include.join(",")));
     }
@@ -55,7 +56,7 @@ fn next(call: &MergeCall<'_>, from: usize) -> String {
         cmd.push_str(&format!(" --up-to {n}"));
     }
     cmd.push_str(&format!(" --conflicts-from {from}"));
-    cmd
+    crate::follow::cmd(&cmd)
 }
 
 #[cfg(test)]

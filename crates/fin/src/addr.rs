@@ -12,12 +12,12 @@ pub const ALTERNATIVES_CAP: usize = 10;
 /// counts every id, and the fix names the command that lists them all.
 pub fn not_found(kind: &str, id: &str, alternatives: Vec<String>) -> CoreError {
     let total = alternatives.len();
-    let lister = match kind {
-        "track" => "fin track ls",
-        "timeline" => "fin status",
-        "bin" => "fin bin ls",
-        _ => "fin view",
-    };
+    let lister = crate::follow::cmd(match kind {
+        "track" => "track ls",
+        "timeline" => "status",
+        "bin" => "bin ls",
+        _ => "view",
+    });
     let mut details = json!({ "id": id, "kind": kind });
     if total > ALTERNATIVES_CAP {
         details["alternatives"] = json!(closest(id, alternatives));

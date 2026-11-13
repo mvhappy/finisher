@@ -113,7 +113,7 @@ fn view_defaults_to_a_page_with_next_commands() {
         first["next"]
             .as_str()
             .unwrap()
-            .starts_with("fin view --timeline tl1 --range "),
+            .starts_with("fin view --timeline tl1 --offset "),
         "{first}"
     );
 
@@ -181,7 +181,7 @@ fn view_budget_tail_names_the_next_page() {
         .unwrap_or_else(|| panic!("{v}"));
     let next = tail["next"].as_str().unwrap();
     assert!(
-        next.starts_with("fin view --timeline tl1 --track t1 --range "),
+        next.starts_with("fin view --timeline tl1 --track t1 --offset "),
         "{next}"
     );
     assert!(next.ends_with(" --budget 300 --detail"), "{next}");
@@ -361,4 +361,179 @@ fn effect_asset_and_bin_ls() {
         ])
     );
     assert_eq!(bins["topLevelAssets"], 3);
+}
+
+/// The views of `p`, page by page from `args` through each first `next`, until none; panics when
+/// a page repeats a command (no progress). Returns every line shown (headers left out).
+fn walk(p: &Value, args: &[&str]) -> Vec<String> {
+    let mut seen = Vec::new();
+    let mut cmds = std::collections::BTreeSet::new();
+    let mut v = run(p, args);
+    for _ in 0..500 {
+        seen.extend(lines(&v).into_iter().filter(|l| !l.starts_with("== ")));
+        let Some(next) = v["elided"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find_map(|e| e["next"].as_str().map(str::to_string))
+        else {
+            return seen;
+        };
+        assert!(cmds.insert(next.clone()), "paging repeats {next}");
+        v = run_next(p, &json!(next));
+    }
+    panic!("paging did not end");
+}
+
+/// Review fix 1: lines that start together (400 tracks, each with a clip at 0) page through
+/// by offset, never repeating a page, and every line shows.
+#[test]
+fn paging_progresses_through_lines_at_one_time() {
+    let mut p = with_tracks(400);
+    let tracks = p["project"]["timelines"][0]["tracks"]
+        .as_array_mut()
+        .unwrap();
+    for (i, t) in tracks.iter_mut().skip(4).enumerate() {
+        t["items"] = json!([{ "id": format!("z{i}"), "kind": "clip", "asset": "a1",
+                              "start": "0", "duration": "5", "sourceIn": "0" }]);
+    }
+    let full = run(&p, &["view", "--track", "w1", "--full"]);
+    assert_eq!(lines(&full).len(), 2, "{full}");
+    let all = lines(&run(&p, &["view", "--timeline", "tl1", "--full"]));
+    let first = run(&p, &["view", "--timeline", "tl1", "--budget", "2000"]);
+    let tail = &first["elided"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["step"] == "tail")
+        .cloned()
+        .unwrap_or_else(|| panic!("{first}"));
+    assert!(tail["offset"].as_u64().unwrap() > 0, "{tail}");
+    // The default page fits the whole header, so walk with a budget that pages.
+    let seen = walk(&p, &["view", "--timeline", "tl1", "--track", "t1"]);
+    assert_eq!(seen.len(), 4, "c1, c2, tr1, c3: {seen:?}");
+    // Under a budget (merging first) paging ends too.
+    walk(&p, &["view", "--timeline", "tl1", "--budget", "2000"]);
+    // The default page: every line shows, at full detail.
+    let seen = walk(&p, &["view", "--timeline", "tl1"]);
+    assert!(run(&p, &["view", "--timeline", "tl1"])["elided"][0]["next"].is_string());
+    for l in all.iter().skip(1) {
+        assert!(seen.contains(l), "never shown: {l}");
+    }
+}
+
+/// Review fix 2: `next` keeps the requested range as it was, never widening it.
+#[test]
+fn next_keeps_the_requested_range() {
+    let p = with_clips(400);
+    let args = ["view", "--timeline", "tl1", "--range", "1/3..400"];
+    let v = run(&p, &args);
+    let next = v["elided"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|e| e["next"].as_str())
+        .unwrap_or_else(|| panic!("{v}"))
+        .to_string();
+    assert!(next.contains(" --range 1/3..400 "), "{next}");
+    walk(&p, &args);
+}
+
+/// Review fix 1: a header alone over the budget cannot page; it says so and names the track
+/// listing instead of a `next` that would repeat. A multi-timeline view narrows instead.
+#[test]
+fn an_oversized_header_is_blocked_with_a_pointer() {
+    let p = with_tracks(2_500);
+    let v = run(&p, &["view", "--timeline", "tl1"]);
+    let tail = v["elided"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["timeline"] == "tl1")
+        .cloned()
+        .unwrap_or_else(|| panic!("{v}"));
+    assert_eq!(tail["header"], true, "{tail}");
+    assert!(tail["next"].is_null(), "{tail}");
+    assert!(
+        tail["blocked"]
+            .as_str()
+            .unwrap()
+            .contains("fin track ls --timeline tl1"),
+        "{tail}"
+    );
+    let all = run(&with_clips(2_000), &["view", "--budget", "100"]);
+    let tl2 = all["elided"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["timeline"] == "tl2")
+        .cloned()
+        .unwrap();
+    assert_eq!(tl2["next"], "fin view --timeline tl2 --budget 100", "{tl2}");
+}
+
+/// Review fix 3: every follow-up carries the global `--project` and `--branch`.
+#[test]
+fn follow_ups_carry_project_and_branch() {
+    let p = with_clips(2_000);
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path().to_str().unwrap();
+    let pre = format!("fin --project {d} --branch work");
+    let v = run(&p, &["--project", d, "--branch", "work", "view"]);
+    let next = v["elided"][0]["next"].as_str().unwrap();
+    assert!(
+        next.starts_with(&format!("{pre} view --timeline tl1 --offset ")),
+        "{next}"
+    );
+    let s = run(
+        &with_tracks(30),
+        &["--project", d, "--branch", "work", "status"],
+    );
+    assert_eq!(
+        s["timelines"][0]["tracksNext"],
+        format!("{pre} track ls --timeline tl1 --offset 20")
+    );
+    let t = run(&with_tracks(60), &["--branch", "work", "track", "ls"]);
+    assert_eq!(t["next"], "fin --branch work track ls --offset 50");
+    let r = offline(
+        &p,
+        &["--branch", "work", "item", "move", "nope", "--to", "0"],
+    );
+    assert!(
+        r.json["error"]["fix"]
+            .as_str()
+            .unwrap()
+            .contains("`fin --branch work view`"),
+        "{}",
+        r.stdout
+    );
+}
+
+/// Review fixes 5, 6: status caps its timelines too (a total, no listing to name).
+#[test]
+fn status_caps_timelines() {
+    let mut p = golden();
+    let tls = p["project"]["timelines"].as_array_mut().unwrap();
+    let mut extra = tls[1].clone();
+    extra["tracks"] = json!([]);
+    for i in 0..30 {
+        let mut t = extra.clone();
+        t["id"] = json!(format!("tlx{i}"));
+        tls.push(t);
+    }
+    let s = run(&p, &["status"]);
+    assert_eq!(s["timelines"].as_array().unwrap().len(), 20);
+    assert_eq!(s["timelinesTotal"], 32);
+    assert!(s.get("timelinesNext").is_none());
+}
+
+/// Review fix 10: `fin effect ls` honours the global `--timeline`.
+#[test]
+fn effect_ls_honours_the_timeline() {
+    let tl2 = run(&golden(), &["effect", "ls", "--timeline", "tl2"]);
+    assert_eq!(tl2["total"], 1);
+    assert_eq!(tl2["effects"][0]["item"], "adj1");
+    let tl1 = run(&golden(), &["effect", "ls", "--timeline", "tl1"]);
+    assert_eq!(tl1["total"], 1);
+    assert_eq!(tl1["effects"][0]["item"], "c2");
 }

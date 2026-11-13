@@ -15,7 +15,8 @@
 //!
 //! `elided` lists each step that changed something: `{step, items}` (how many lines it
 //! changed or folded), and per timeline the tail cut `{step: "tail", timeline, from, to,
-//! items}` (the dropped lines' first start and last end). The same project and budget give
+//! items, offset}` (the dropped lines' first start and last end, and the least time-order
+//! index among them, [`super::Entry::index`]: where the rest starts). The same project and budget give
 //! the same lines.
 //!
 //! [`fit_page`] is `fin view`'s default with no `--budget` (review batch L): the `tail` step
@@ -146,6 +147,7 @@ fn merge(s: &mut Section) -> usize {
                 Some(n) => {
                     folded += 1;
                     merged[n].folded += 1;
+                    merged[n].index = merged[n].index.min(e.index);
                 }
                 None => merged.push(e.clone()),
             }
@@ -318,15 +320,16 @@ fn shown_steps(sections: &[Section], steps: &[Value], level: Level) -> Vec<Value
         .collect()
 }
 
-/// The `tail` entries: per timeline cut, `{step, timeline, from, to, items}` (the dropped item
+/// The `tail` entries: per timeline cut, `{step, timeline, from, to, items, offset}` (the dropped item
 /// lines' first start and last end), plus `header: true` when its header went too (`from`
 /// and `to` only when item lines went).
 fn tails(sections: &[Section], cuts: &[Cut], headless: &[bool]) -> Vec<Value> {
     let mut out = Vec::new();
     for ((s, cut), &header) in sections.iter().zip(cuts).zip(headless) {
         let mut e = match cut {
-            Some((from, to, n)) => {
-                json!({ "step": "tail", "timeline": s.timeline, "from": from, "to": to, "items": n })
+            Some((from, to, n, offset)) => {
+                json!({ "step": "tail", "timeline": s.timeline, "from": from, "to": to, "items": n,
+                        "offset": offset })
             }
             None if header => json!({ "step": "tail", "timeline": s.timeline, "items": 0 }),
             None => continue,
@@ -339,16 +342,17 @@ fn tails(sections: &[Section], cuts: &[Cut], headless: &[bool]) -> Vec<Value> {
     out
 }
 
-/// A timeline's tail cut so far: the dropped lines' first start, last end and count.
-type Cut = Option<(Rational, Rational, usize)>;
+/// A timeline's tail cut so far: the dropped lines' first start, last end, count, and the
+/// least [`Entry::index`] among them (where the rest starts, `offset`).
+type Cut = Option<(Rational, Rational, usize, usize)>;
 
 /// Drops the last line of section `i` into its cut; returns what it added to the response.
 fn pop(sections: &mut [Section], cuts: &mut [Cut], i: usize, level: Level) -> Option<u64> {
     let e = sections[i].entries.pop()?;
     let end = e.end.unwrap_or(e.start);
     cuts[i] = Some(match cuts[i] {
-        None => (e.start, end, 1),
-        Some((from, to, n)) => (from.min(e.start), to.max(end), n + 1),
+        None => (e.start, end, 1, e.index),
+        Some((from, to, n, at)) => (from.min(e.start), to.max(end), n + 1, at.min(e.index)),
     });
     Some(json_chars(&line(&e, level)))
 }

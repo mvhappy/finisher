@@ -18,8 +18,8 @@ use crate::output::usage;
 pub const DEFAULT_LIMIT: u64 = 20;
 /// The largest `--limit` (`history.log`'s `HISTORY_LOG_MAX`).
 pub const MAX_LIMIT: u64 = 100;
-/// Longer lists in a record (undone units, dropped ids, ops, changes, shifts) are cut to this,
-/// with `<key>Total`: the same 20 as `undo` and `merge` (spec §3.10).
+/// Longer lists in a record (undone units, dropped ids, ops, changes, shifts, bindings) are cut
+/// to this, with `<key>Total`: the same 20 as `undo` and `merge` (spec §3.10).
 pub const LIST_CAP: usize = 20;
 
 /// The branch's records, newest first; with a txId, that record's ops and changes.
@@ -106,15 +106,11 @@ pub fn run(backend: &dyn Backend, g: &Globals, a: &LogArgs) -> Result<Value, Cor
     let list: Vec<Value> = records.iter().rev().map(summary).collect();
     // The next page: everything below this page's oldest record, while there is any.
     let next = first.filter(|&r| r > 1).map(|r| {
-        let mut cmd = String::from("fin log");
-        if let Some(b) = &g.branch {
-            cmd.push_str(&format!(" --branch {b}"));
-        }
-        cmd.push_str(&format!(" --before {r}"));
+        let mut cmd = format!("log --before {r}");
         if a.limit.is_some() {
             cmd.push_str(&format!(" --limit {limit}"));
         }
-        cmd
+        crate::follow::cmd(&cmd)
     });
     Ok(json!({ "branch": branch, "head": answer["head"], "records": list, "next": next }))
 }
@@ -124,8 +120,12 @@ pub fn run(backend: &dyn Backend, g: &Globals, a: &LogArgs) -> Result<Value, Cor
 fn show(backend: &dyn Backend, tx_id: &str) -> Result<Value, CoreError> {
     let answer = backend.project_call("tx.get", json!({ "txId": tx_id }))?;
     if answer.is_null() {
-        return Err(addr::not_found("transaction", tx_id, Vec::new())
-            .with_fix("fin log lists the branch's txIds (a merge's are <mergeId>-1, -2, ...)"));
+        return Err(
+            addr::not_found("transaction", tx_id, Vec::new()).with_fix(format!(
+                "`{}` lists the branch's txIds (a merge's are <mergeId>-1, -2, ...)",
+                crate::follow::cmd("log")
+            )),
+        );
     }
     if let Some(aside) = answer.get("setAside") {
         return Ok(json!({ "txId": tx_id, "setAside": aside }));
@@ -136,9 +136,19 @@ fn show(backend: &dyn Backend, tx_id: &str) -> Result<Value, CoreError> {
     tx["ops"] = json!(c.tx.ops);
     tx["changes"] = json!(c.diff.changes);
     tx["shifts"] = json!(c.diff.shifts);
-    tx["bindings"] = json!(c.bindings);
     for key in ["ops", "changes", "shifts"] {
         cap(&mut tx, key);
+    }
+    // Bindings (placeholder → id) in order, the first [`LIST_CAP`] of them, with the total.
+    let bindings: serde_json::Map<String, Value> = c
+        .bindings
+        .iter()
+        .take(LIST_CAP)
+        .map(|(k, v)| (k.clone(), json!(v)))
+        .collect();
+    tx["bindings"] = Value::Object(bindings);
+    if c.bindings.len() > LIST_CAP {
+        tx["bindingsTotal"] = json!(c.bindings.len());
     }
     Ok(json!({ "tx": tx }))
 }

@@ -11,9 +11,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::{Globals, target_branch};
-use crate::addr;
 use crate::backend::Backend;
 use crate::output::usage;
+use crate::{addr, follow};
 
 /// Rows a page holds without `--limit`.
 pub const DEFAULT_LIMIT: usize = 50;
@@ -83,15 +83,17 @@ pub struct EffectLsArgs {
 pub const SUMMARY_CAP: usize = 20;
 
 /// Cuts `doc[key]` to [`SUMMARY_CAP`] entries; when it was longer, `<key>Total` counts them all
-/// and `<key>Next` is `next`, the exact command that lists the rest.
-pub fn cut(doc: &mut Value, key: &str, next: &str) {
+/// and, when a command lists the rest, `<key>Next` names it exactly ([`follow::cmd`]).
+pub fn cut(doc: &mut Value, key: &str, next: Option<&str>) {
     if let Some(list) = doc.get_mut(key).and_then(Value::as_array_mut)
         && list.len() > SUMMARY_CAP
     {
         let total = list.len();
         list.truncate(SUMMARY_CAP);
         doc[format!("{key}Total")] = json!(total);
-        doc[format!("{key}Next")] = json!(next);
+        if let Some(rest) = next {
+            doc[format!("{key}Next")] = json!(follow::cmd(rest));
+        }
     }
 }
 
@@ -106,13 +108,7 @@ pub fn not_a_write(name: &str) -> CoreError {
 
 /// One page of `rows` under `key`, with `total`, `offset` and the exact `next` command (`cmd`
 /// with `--offset`/`--limit` appended).
-fn page(
-    key: &str,
-    rows: Vec<Value>,
-    p: &Paging,
-    g: &Globals,
-    cmd: &str,
-) -> Result<Value, CoreError> {
+fn page(key: &str, rows: Vec<Value>, p: &Paging, cmd: &str) -> Result<Value, CoreError> {
     let limit = p.limit.unwrap_or(DEFAULT_LIMIT);
     if limit == 0 || limit > MAX_LIMIT {
         return Err(usage(
@@ -126,15 +122,11 @@ fn page(
     let end = offset.saturating_add(limit).min(total);
     let shown: Vec<Value> = rows.into_iter().skip(offset).take(limit).collect();
     let next = (end < total).then(|| {
-        let mut c = cmd.to_string();
-        if let Some(b) = &g.branch {
-            c.push_str(&format!(" --branch {b}"));
-        }
-        c.push_str(&format!(" --offset {end}"));
+        let mut c = format!("{cmd} --offset {end}");
         if p.limit.is_some() {
             c.push_str(&format!(" --limit {limit}"));
         }
-        c
+        follow::cmd(&c)
     });
     Ok(json!({ key: shown, "total": total, "offset": offset, "next": next }))
 }
@@ -177,10 +169,10 @@ pub fn tracks(backend: &dyn Backend, g: &Globals, a: &TrackLsArgs) -> Result<Val
         }
     }
     let cmd = match &g.timeline {
-        Some(tl) => format!("fin track ls --timeline {tl}"),
-        None => "fin track ls".to_string(),
+        Some(tl) => format!("track ls --timeline {tl}"),
+        None => "track ls".to_string(),
     };
-    Ok(with_rev(page("tracks", rows, &a.page, g, &cmd)?, rev))
+    Ok(with_rev(page("tracks", rows, &a.page, &cmd)?, rev))
 }
 
 /// `fin asset ls`: assets by id, with the path, bin and length each holds.
@@ -190,7 +182,8 @@ pub fn assets(backend: &dyn Backend, g: &Globals, a: &AssetLsArgs) -> Result<Val
         && !p.bins.contains_key(b)
     {
         let all: Vec<String> = p.bins.keys().cloned().collect();
-        return Err(addr::not_found("bin", b, all).with_fix("fin bin ls lists the bins"));
+        return Err(addr::not_found("bin", b, all)
+            .with_fix(format!("`{}` lists the bins", follow::cmd("bin ls"))));
     }
     let rows: Vec<Value> = p
         .assets
@@ -203,10 +196,10 @@ pub fn assets(backend: &dyn Backend, g: &Globals, a: &AssetLsArgs) -> Result<Val
         })
         .collect();
     let cmd = match &a.bin {
-        Some(b) => format!("fin asset ls --bin {b}"),
-        None => "fin asset ls".to_string(),
+        Some(b) => format!("asset ls --bin {b}"),
+        None => "asset ls".to_string(),
     };
-    Ok(with_rev(page("assets", rows, &a.page, g, &cmd)?, rev))
+    Ok(with_rev(page("assets", rows, &a.page, &cmd)?, rev))
 }
 
 /// The ids of `p`'s bins in tree order: each top-level bin (by id), then its children.
@@ -246,17 +239,18 @@ pub fn bins(backend: &dyn Backend, g: &Globals, a: &BinLsArgs) -> Result<Value, 
         })
         .collect();
     let top = p.assets.values().filter(|x| x.bin.is_none()).count();
-    let mut doc = page("bins", rows, &a.page, g, "fin bin ls")?;
+    let mut doc = page("bins", rows, &a.page, "bin ls")?;
     doc["topLevelAssets"] = json!(top);
     Ok(with_rev(doc, rev))
 }
 
-/// `fin effect ls [<i>]`: stored effects in timeline, track and item order, then list order.
+/// `fin effect ls [<i>]`: stored effects of `--timeline`'s items (default every timeline's), in
+/// timeline, track and item order, then list order.
 pub fn effects(backend: &dyn Backend, g: &Globals, a: &EffectLsArgs) -> Result<Value, CoreError> {
     let (rev, p) = snapshot(backend, g)?;
     let only = a.item.as_deref().map(|i| addr::item(&p, i)).transpose()?;
     let mut rows = Vec::new();
-    for tl in &p.timelines {
+    for tl in timelines(&p, g)? {
         for t in &tl.tracks {
             for it in &t.items {
                 if only.is_some_and(|(_, _, o)| o.id != it.id) {
@@ -278,9 +272,12 @@ pub fn effects(backend: &dyn Backend, g: &Globals, a: &EffectLsArgs) -> Result<V
             }
         }
     }
-    let cmd = match &a.item {
-        Some(i) => format!("fin effect ls {i}"),
-        None => "fin effect ls".to_string(),
+    let mut cmd = match &a.item {
+        Some(i) => format!("effect ls {}", follow::quote(i)),
+        None => "effect ls".to_string(),
     };
-    Ok(with_rev(page("effects", rows, &a.page, g, &cmd)?, rev))
+    if let Some(tl) = &g.timeline {
+        cmd.push_str(&format!(" --timeline {}", follow::quote(tl)));
+    }
+    Ok(with_rev(page("effects", rows, &a.page, &cmd)?, rev))
 }

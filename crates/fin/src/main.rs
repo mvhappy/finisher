@@ -15,6 +15,7 @@ mod conn;
 mod deadline;
 mod diag;
 mod endpoint;
+mod follow;
 mod map;
 mod output;
 mod paths;
@@ -274,6 +275,7 @@ fn run(args: Vec<OsString>) -> Result<Value, CoreError> {
     }
     let (mut cli, name) = parse_named(args)?;
     agent_env::apply(&mut cli.globals, name.as_deref())?;
+    follow::set(&cli.globals);
     let g = &cli.globals;
     let backend = || backend::select(g.project.as_deref());
     match cli.command {
