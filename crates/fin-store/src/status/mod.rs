@@ -191,23 +191,35 @@ pub(crate) struct Follow {
     pub(crate) queued: Vec<StoreEvent>,
 }
 
+/// Conflict copies of the project file in `project_dir` (none when it cannot be listed).
+pub(crate) fn project_file_copies(project_dir: &Path) -> Vec<String> {
+    std::fs::read_dir(project_dir)
+        .map(|rd| {
+            let mut v: Vec<String> = rd
+                .filter_map(|e| e.ok()?.file_name().into_string().ok())
+                .filter(|n| crate::conflict_names::classify_project_file(n).is_some())
+                .collect();
+            v.sort();
+            v
+        })
+        .unwrap_or_default()
+}
+
 impl Follow {
     pub(crate) fn arriving(&self) -> bool {
         !self.arriving_files.is_empty()
     }
 
-    pub(crate) fn observe(&mut self, r: &ImportReport, kind: StorageKind, project_dir: &Path) {
+    /// What an import pass `r` found; `copies`: [`project_file_copies`], read with it.
+    pub(crate) fn observe(
+        &mut self,
+        r: &ImportReport,
+        kind: StorageKind,
+        project_dir: &Path,
+        copies: Vec<String>,
+    ) {
         self.import_error = r.error.clone();
-        self.project_file_copies = std::fs::read_dir(project_dir)
-            .map(|rd| {
-                let mut v: Vec<String> = rd
-                    .filter_map(|e| e.ok()?.file_name().into_string().ok())
-                    .filter(|n| crate::conflict_names::classify_project_file(n).is_some())
-                    .collect();
-                v.sort();
-                v
-            })
-            .unwrap_or_default();
+        self.project_file_copies = copies;
         if r.error.as_ref().is_some_and(|e| e.code == "IO_ERROR") {
             return; // the folder could not be listed: what it held before still stands
         }

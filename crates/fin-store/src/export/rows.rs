@@ -43,6 +43,16 @@ pub(super) fn pending_branches(conn: &Connection) -> Result<Vec<String>, StoreEr
     Ok(out)
 }
 
+/// The highest unexported seq of `branch` (what a pass that starts now exports at most).
+pub(super) fn last_pending(conn: &Connection, branch: &str) -> Result<Option<u64>, StoreError> {
+    let last: Option<i64> = conn.query_row(
+        "SELECT MAX(seq) FROM txs WHERE branch = ?1 AND exported = 0",
+        params![branch],
+        |r| r.get(0),
+    )?;
+    last.map(to_u64).transpose()
+}
+
 /// The next (at most [`segment::max_records`]) unexported rows of `branch`, in seq order,
 /// after checking that the exported rows are a seq prefix and the rows are consecutive.
 pub(super) fn pending_rows(conn: &Connection, branch: &str) -> Result<Vec<Row>, StoreError> {
@@ -179,4 +189,30 @@ pub(super) fn mark_exported(
     )?;
     txn.commit()?;
     Ok(u32::try_from(expected).unwrap_or(u32::MAX))
+}
+
+/// Whether `a` still describes the next unexported records of `branch`: its seqs unexported
+/// and holding the same records, after the same predecessor. Rechecked under the store lock
+/// before marking, since the segment was written without it (another pass may have exported,
+/// rewound or rebuilt meanwhile).
+pub(super) fn still_pending(
+    conn: &Connection,
+    branch: &str,
+    a: &Attempt,
+) -> Result<bool, StoreError> {
+    let mut stmt = conn.prepare(
+        "SELECT tx_hash FROM txs WHERE branch = ?1 AND seq BETWEEN ?2 AND ?3 AND exported = 0
+         ORDER BY seq",
+    )?;
+    let hashes = stmt
+        .query_map(
+            params![branch, to_i64(a.first_seq)?, to_i64(a.last_seq)?],
+            |r| r.get::<_, String>(0),
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    if hashes != a.tx_hashes {
+        return Ok(false);
+    }
+    // A broken chain is reported by the next pass's plan; here it only means "changed".
+    Ok(prev_segment(conn, branch, a.first_seq).ok().as_ref() == Some(&a.prev))
 }

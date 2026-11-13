@@ -234,6 +234,8 @@ pub(crate) fn run_bounded(
     force: bool,
     mut units: usize,
 ) -> Result<CompactReport, StoreError> {
+    // It may rewrite the folder and the `segments` rows: an import read before is stale.
+    store.phase.io_gen += 1;
     let mut report = CompactReport::default();
     if let Some(why) = cannot_run(store) {
         report.skipped = Some(why);

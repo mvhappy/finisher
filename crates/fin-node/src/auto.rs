@@ -9,8 +9,10 @@
 //!   long call (`verify`, `rebuild`, …, `close`) cancels it first and waits for it to stop; a
 //!   cancelled backup is due again (and still waits for a quiet engine).
 //! - **Compaction:** under the store mutex on the maintenance thread, one step per tick (a
-//!   manifest's phase 2 or a branch's phase 1): calls wait for the step, as for a tick's
-//!   import, instead of failing.
+//!   manifest's phase 2 or a branch's phase 1): calls wait for the step instead of failing.
+//!   Unlike a tick's import and export, the step's folder I/O (fresh reads, pack writes,
+//!   deletes) still runs under the mutex: every step re-checks its folder reads against the
+//!   database before it deletes anything.
 //!
 //! A compaction failure is a non-fatal `error` event; a panic, a fatal one (the engine is
 //! dead and the maintenance thread ends). A failed backup is retried after the store's retry

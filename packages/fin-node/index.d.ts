@@ -221,6 +221,16 @@ export declare class Engine {
   /** @internal Test builds only: whether the maintenance thread runs. */
   maintenanceRunningForTest(): boolean;
   /**
+   * @internal Test builds only: the next tick stops in its folder I/O, outside the store mutex
+   * (`import`: after the scan, before the apply; `export`: before a segment's write), until
+   * `releaseTickForTest`.
+   */
+  hangNextTickForTest(point: "import" | "export"): void;
+  /** @internal Test builds only: whether a tick is stopped at the armed point. */
+  tickHungForTest(): boolean;
+  /** @internal Test builds only: lets the stopped tick go on. */
+  releaseTickForTest(): void;
+  /**
    * @internal Test builds only: a status refresh computes the summary of the pins now and
    * pauses before publishing it while `txJson` is committed (rescanning the pins); the newer
    * summary must be the last one published.

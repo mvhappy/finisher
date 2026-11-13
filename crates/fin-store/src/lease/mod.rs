@@ -58,6 +58,7 @@ mod acquire;
 pub mod claim;
 pub mod clock;
 mod fence;
+mod handle;
 mod heartbeat;
 #[cfg(any(test, feature = "test-hooks"))]
 mod hooks;
@@ -83,6 +84,7 @@ pub use clock::FakeClock;
 use clock::lock;
 pub use clock::{MonoClock, ServerClock, SystemClock};
 use fence::Fence;
+pub(crate) use handle::LeaseFence;
 #[cfg(any(test, feature = "test-hooks"))]
 pub use hooks::{
     HangPoint, LeaseHooks, ReadFault, crash_before_publishing_record_for_test,
