@@ -17,6 +17,7 @@ import { MEDIA_WAVEFORM, mediaWaveformKind, waveDedupe } from "../src/jobs/kinds
 import { BATCH_MEMORY } from "../src/media/memory.ts";
 import { makePcmService } from "../src/media/pcm.ts";
 import { makeWaveService } from "../src/media/wave.ts";
+import { closeCaches, openCache } from "./support/media-caches.ts";
 import { closeTestEngines, testEngine } from "./support/jobs.ts";
 
 const OWNER = { kind: "local", id: "local" } as const;
@@ -61,6 +62,7 @@ beforeAll(() => {
 afterEach(async () => {
   await closeTestEngines();
   for (const e of engines.splice(0)) await e.close();
+  await closeCaches();
 });
 
 afterAll(() => rmSync(work, { recursive: true, force: true }));
@@ -145,7 +147,7 @@ async function project(serverData: string, fp: string, onTrack: boolean): Promis
 async function setup(onTrack = false, fp = "fp-a1") {
   const serverData = realpathSync(mkdtempSync(join(work, "sd-")));
   const engine = await project(serverData, fp, onTrack);
-  const cache = await MediaCache.open(serverData);
+  const cache = await openCache(serverData);
   const projects = {
     onBranch: <A>(projectId: string, branch: string, f: (e: Engine, b: string) => Promise<string>) =>
       projectId !== engine.projectId ? Effect.fail(toFinError(new Error("unknown project"))) : Effect.tryPromise({ try: async () => JSON.parse(await f(engine, branch)) as A, catch: toFinError }),

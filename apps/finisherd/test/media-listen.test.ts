@@ -19,6 +19,7 @@ import { BATCH_MEMORY } from "../src/media/memory.ts";
 import { makePcmService } from "../src/media/pcm.ts";
 import type { MediaCacheService } from "../src/media/cache.ts";
 import { mediaWiring } from "../src/media/wiring.ts";
+import { closeCaches, openCache } from "./support/media-caches.ts";
 import { closeTestEngines, testEngine } from "./support/jobs.ts";
 
 const OWNER = { kind: "local", id: "local" } as const;
@@ -61,6 +62,7 @@ beforeAll(() => {
 afterEach(async () => {
   await closeTestEngines();
   for (const e of engines.splice(0)) await e.close();
+  await closeCaches();
 });
 
 afterAll(() => rmSync(work, { recursive: true, force: true }));
@@ -105,7 +107,7 @@ async function setup(fp = "fp-tone") {
   const snap = JSON.parse(await engine.snapshot("main")) as { rev: number; project: { assets: object } };
   const asset = Object.keys(snap.project.assets)[0]!;
   await engine.commit(tx("t2", snap.rev, [{ op: "item.insert", id: "$i1", track: "t2", at: "0", duration: "3", mode: "overwrite", kind: "clip", asset, sourceIn: "0" }]));
-  const cache = await MediaCache.open(serverData);
+  const cache = await openCache(serverData);
   const projects = {
     onBranch: <A>(projectId: string, branch: string, f: (e: Engine, b: string) => Promise<string>) =>
       projectId !== engine.projectId ? Effect.fail(toFinError(new Error("unknown project"))) : Effect.tryPromise({ try: async () => JSON.parse(await f(engine, branch)) as A, catch: toFinError }),

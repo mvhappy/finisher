@@ -24,6 +24,8 @@ import { PCM16M_STAGE, audioAssetsOf, makePcmService, pcm16mStage } from "../src
 import { MEDIA_SYSTEM_OWNER } from "../src/media/proxy.ts";
 import { mediaWiring } from "../src/media/wiring.ts";
 import { makeProjectRegistry } from "../src/projects.ts";
+import { libraryExpect } from "./support/library-expect.ts";
+import { closeCaches, openCache } from "./support/media-caches.ts";
 import { closeTestEngines, testEngine, until } from "./support/jobs.ts";
 
 const OWNER = { kind: "local", id: "local" } as const;
@@ -72,6 +74,7 @@ beforeAll(() => {
 afterEach(async () => {
   await closeTestEngines();
   for (const e of engines.splice(0)) await e.close();
+  await closeCaches();
 });
 
 afterAll(() => rmSync(work, { recursive: true, force: true }));
@@ -163,7 +166,7 @@ async function project(serverData: string, fp: string, path = stereo, duration =
 /** A real engine with the media kinds, the cache and the PCM service over one project. */
 async function setup(fp = "fp-a1", serverData = realpathSync(mkdtempSync(join(work, "sd-"))), cache?: MediaCache, duration = "50") {
   const engine = await project(serverData, fp, stereo, duration);
-  const c = cache ?? (await MediaCache.open(serverData));
+  const c = cache ?? (await openCache(serverData));
   const t = await engineOver(serverData, engine, c);
   const registry = {
     ensure: () => Effect.void,
@@ -232,7 +235,7 @@ describe("the job and the RPC", () => {
     const wantMeta = (await clean.cache.lookup(want.key)) as EntryMeta;
 
     const sd = realpathSync(mkdtempSync(join(work, "sd-")));
-    const cache = await MediaCache.open(sd);
+    const cache = await openCache(sd);
     const first = await setup(fp, sd, cache);
     const p = params({ fingerprint: fp, asset: first.asset, projectId: first.pid, branch: "main" });
     expect(p.key).toBe(want.key);
@@ -319,17 +322,16 @@ describe("sources past the limit", () => {
 
 /** A WAV as a library catalogue would hand it to the stage. */
 function stageFile(path: string, probe: unknown): StageFile {
-  const s = statSync(path, { bigint: true });
   return {
     library: "l1",
     fileId: 1,
     root: dirname(path),
     rel: { components: [Buffer.from(basename(path)).toString("base64")] },
     display: basename(path),
-    expect: { size: Number(s.size), mtimeNs: s.mtimeNs.toString(), fileId: Buffer.from(new BigUint64Array([s.ino]).buffer).reverse().toString("base64") },
+    expect: libraryExpect(path),
     hydrate: false,
     fp: "fp-lib",
-    size: Number(s.size),
+    size: statSync(path).size,
     kind: "media",
     probe,
     storage: "local",
