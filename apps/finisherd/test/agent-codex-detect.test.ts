@@ -97,7 +97,7 @@ async function failure(e: Effect.Effect<unknown, FinError>): Promise<FinError> {
 }
 
 const received = (observed: string): { method: string; params?: Record<string, unknown> }[] =>
-  (JSON.parse(readFileSync(observed, "utf8")) as { received: { method: string; params?: Record<string, unknown> }[] }[]).flatMap((p) => p.received);
+  (JSON.parse(readFileSync(observed, "utf8")) as { received: { method: string; params?: Record<string, unknown> }[] }[]).flatMap((p) => p.received ?? []);
 
 describe("detection", () => {
   test("not_bundled_is_unavailable", async () => {
@@ -263,7 +263,14 @@ describe("detection", () => {
     const d = deps(bin, { timeoutMs: 4_000 });
     signIn(d.sandbox, { type: "chatgpt", email: "a@example.invalid", planType: "plus" });
     const running = Effect.runPromise(detectCodex(d));
-    const reading = () => existsSync(observed) && received(observed).some((r) => r.method === "account/read");
+    // The fake may be mid-write (a process record before its `received`, or a partial file).
+    const reading = () => {
+      try {
+        return existsSync(observed) && received(observed).some((r) => r.method === "account/read");
+      } catch {
+        return false;
+      }
+    };
     for (let i = 0; i < 400 && !reading(); i++) await new Promise((r) => setTimeout(r, 20));
     expect(reading()).toBe(true);
     // The app-server's CODEX_HOME is the host sandbox's `provider/`, holding the `auth.json` link.
