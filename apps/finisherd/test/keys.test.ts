@@ -147,7 +147,8 @@ describe("start order", () => {
     const server = await startServer(serverData);
     try {
       if (!WIN) expect(readdirSync(runDir(serverData))).toEqual(["fin.sock"]);
-      else expect(readdirSync(runDir(serverData))).toEqual([]);
+      // Windows: a named pipe, and the ACL broker's lock and log (plan 7C Task 10) beside it.
+      else expect(readdirSync(runDir(serverData)).sort()).toEqual(["acl-broker.lock", "acl-broker.wal"]);
       expect(server.info.socket).toBe(socketPath(serverData));
       expect(server.info.envId).toMatch(/^[0-9a-z]{26}$/);
       // The keys on disk are the ones this server holds: both rotated before it listened.

@@ -411,7 +411,7 @@ describe("the host sandbox (detection and the probe)", () => {
     expect(hostDirs(d)).toHaveLength(2);
     await Effect.runPromise(Scope.close(scope, Exit.void));
     // Its processes are killed as a session's are, then both folders go.
-    expect(await child.exited).toEqual({ code: null, signal: WIN ? "SIGTERM" : "SIGKILL" });
+    expect(await child.exited).toEqual({ code: null, signal: "SIGKILL" });
     expect(hostDirs(d)).toEqual([]);
     expect(existsSync(box.workspace)).toBe(false);
     // A closed host sandbox starts nothing more.

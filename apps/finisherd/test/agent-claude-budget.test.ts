@@ -7,7 +7,6 @@
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { Node, ProviderEvent, Session } from "@finisher/contracts";
 import { sandboxStatus } from "@finisher/fin-node";
 import { Effect, Exit, Scope, Stream } from "effect";
@@ -26,9 +25,10 @@ import { type SandboxStatus, setSandboxStatusSource } from "../src/sandbox/statu
 import { AgentServer } from "./support/agent-server.ts";
 import { addAsset, commit, type NdjsonClient, ok, tx } from "./support/ndjson-client.ts";
 import { signInClaude } from "./support/claude-sign-in.ts";
+import { debugBin } from "./support/debug-bin.ts";
 
 const WIN = process.platform === "win32";
-const FAKE = fileURLToPath(new URL(`../../../target/debug/fake-claude${WIN ? ".exe" : ""}`, import.meta.url));
+const FAKE = debugBin("fake-claude");
 const REQUIRE = process.env.FIN_REQUIRE_SERVER === "1";
 const withFake = test.skipIf(WIN || (!existsSync(FAKE) && !REQUIRE));
 const VERSION = "2.1.321";

@@ -33,9 +33,10 @@ import { checkConfig, checkInstance, checkLists, checkRequirements, checkThread,
 import { ALLOWED_METHODS, type CodexRpc, codexRpc, type ServerNotification } from "../src/agent/codex/rpc.ts";
 import { openHostSandbox, type SandboxedChild, type SessionSandbox, type SessionSandboxDeps } from "../src/agent/sandbox.ts";
 import type { SandboxStatus } from "../src/sandbox/status.ts";
+import { debugBin } from "./support/debug-bin.ts";
 
 const WIN = process.platform === "win32";
-const FAKE = fileURLToPath(new URL(`../../../target/debug/fake-codex${WIN ? ".exe" : ""}`, import.meta.url));
+const FAKE = debugBin("fake-codex");
 const REQUIRE_FAKE = process.env.FIN_REQUIRE_SERVER === "1";
 const withFake = test.skipIf(!existsSync(FAKE) && !REQUIRE_FAKE);
 const PIN = "0.167.0";

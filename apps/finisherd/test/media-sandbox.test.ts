@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { FinError, JobView } from "@finisher/contracts";
 import type { JobSpawnRequest, LookParams, ProxyParams, ThumbsParams } from "@finisher/core-types";
-import { Engine, MediaCache, mediaProxyPlan, mediaThumbsPlan } from "@finisher/fin-node";
+import { Engine, mediaProxyPlan, mediaThumbsPlan } from "@finisher/fin-node";
 import { Effect } from "effect";
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
 import { toFinError } from "../src/errors.ts";
@@ -31,6 +31,8 @@ import { currentSandboxStatus, sandboxWarnings } from "../src/sandbox/status.ts"
 import { recordingHost } from "./support/fake-host.ts";
 import { closeTestEngines, testEngine } from "./support/jobs.ts";
 import { lookProject, makeAv1Fixture } from "./support/media.ts";
+import { libraryExpect } from "./support/library-expect.ts";
+import { closeCaches, openCache } from "./support/media-caches.ts";
 
 const LINUX = process.platform === "linux";
 const GPU_REQUIRED = process.env.FIN_REQUIRE_GPU === "1";
@@ -52,6 +54,7 @@ beforeAll(() => {
 afterEach(async () => {
   await closeTestEngines();
   for (const e of engines.splice(0)) await e.close();
+  await closeCaches();
   for (const k of HOOKS) {
     if (saved[k] === undefined) delete process.env[k];
     else process.env[k] = saved[k];
@@ -87,7 +90,7 @@ async function setup(opts: { status?: "disabled"; proxyReads?: (extra: unknown) 
   const p = await lookProject(serverData, dir, clip);
   engines.push(p.engine);
   const pid = p.engine.projectId;
-  const cache = await MediaCache.open(serverData);
+  const cache = await openCache(serverData);
   let caps: ReturnType<typeof mediaCapabilities> | undefined;
   const run = <A>(f: () => Promise<string>) => Effect.tryPromise({ try: async () => JSON.parse(await f()) as A, catch: toFinError });
   const unknown = () => Effect.fail(toFinError(new Error("unknown project")));
@@ -154,7 +157,7 @@ function libraryFile(s: Awaited<ReturnType<typeof setup>>): { params: ProxyParam
     root,
     rel: { components: ["shots", "clip.mp4"].map((c) => Buffer.from(c).toString("base64")) },
     display: "shots/clip.mp4",
-    expect: { size: Number(st.size), mtimeNs: st.mtimeNs.toString(), fileId: Buffer.from(new BigUint64Array([st.ino]).buffer).reverse().toString("base64") },
+    expect: libraryExpect(file),
     hydrate: false,
     fp: "fp-lib",
     size: Number(st.size),

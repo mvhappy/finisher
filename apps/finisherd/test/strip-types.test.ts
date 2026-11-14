@@ -29,7 +29,9 @@ test("finisherd_sources_load_under_node_type_stripping", () => {
   const files = sources(SRC).filter((f) => !ENTRY_POINTS.has(relative(SRC, f).split("\\").join("/")));
   expect(files.length).toBeGreaterThan(20);
   const script = `${files.map((f) => `await import(${JSON.stringify(pathToFileURL(f).href)});`).join("\n")}\nconsole.log("loaded");`;
-  const r = spawnSync(process.execPath, ["--input-type=module", "--eval", script], { encoding: "utf8", timeout: 60_000 });
+  // On stdin, not `--eval`: one import per file is longer than a Windows command line (32 767).
+  const r = spawnSync(process.execPath, ["--input-type=module"], { input: script, encoding: "utf8", timeout: 60_000 });
+  expect(r.error).toBeUndefined();
   expect(r.stderr).not.toMatch(/ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX/);
   expect(r.status, r.stderr).toBe(0);
   expect(r.stdout.trim()).toBe("loaded");

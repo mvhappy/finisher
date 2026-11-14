@@ -262,17 +262,29 @@ mod tests {
         let home = root.join("home");
         let mut i = input(&root);
         i.harness = Harness::ClaudeCode;
+        // The host's own family: another family's device paths are not absolute here.
+        let os = if cfg!(windows) {
+            Os::Windows
+        } else {
+            Os::Linux
+        };
+        // Over a denied path of the host's family (`sensitive_home`).
+        let over_denied = if cfg!(windows) {
+            [home.join("AppData"), home.join("AppData").join("Roaming")]
+        } else {
+            [home.join(".config"), home.join(".local").join("share")]
+        };
         for bad in [
             top,
             root.clone(),
             home.clone(),
-            home.join(".config"),
-            home.join(".local").join("share"),
+            over_denied[0].clone(),
+            over_denied[1].clone(),
             root.join("p"),
             root.join("data").join(".."),
         ] {
             i.toolchains = vec![bad.clone()];
-            let e = agent_on(Os::Linux, &i).unwrap_err().to_string();
+            let e = agent_on(os, &i).unwrap_err().to_string();
             assert!(e.contains("toolchains"), "{bad:?}: {e}");
         }
         for ok in [
@@ -284,7 +296,7 @@ mod tests {
             root.join("opt").join("claude"),
         ] {
             i.toolchains = vec![ok.clone()];
-            assert!(agent_on(Os::Linux, &i).is_ok(), "{ok:?}");
+            assert!(agent_on(os, &i).is_ok(), "{ok:?}");
         }
     }
 
@@ -317,6 +329,9 @@ mod tests {
         let root = PathBuf::from(if cfg!(windows) { "C:\\r" } else { "/r" });
         let mut claude = input(&root);
         claude.harness = Harness::ClaudeCode;
+        if cfg!(windows) {
+            return; // macOS's and Linux's device paths are not absolute on Windows
+        }
         for mode in [AgentMode::Draft, AgentMode::Plan] {
             claude.mode = mode;
             let p = agent_on(Os::Macos, &claude).unwrap();
@@ -324,9 +339,6 @@ mod tests {
                 !p.read_roots().iter().any(|r| r.starts_with("/proc")),
                 "macOS lists nothing yet"
             );
-        }
-        if cfg!(windows) {
-            return; // a Linux list's paths are not absolute on Windows
         }
         let own: Vec<PathBuf> = crate::data::toolchain_harness(Os::Linux, Harness::ClaudeCode)
             .into_iter()

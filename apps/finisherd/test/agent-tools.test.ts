@@ -4,7 +4,6 @@
 import { existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, closeSync, realpathSync, rmSync, symlinkSync, writeFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { FinError } from "@finisher/contracts";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { FinIndex, pathValues, runFinTool, type SessionEnv, STDOUT_MAX } from "../src/agent/builtin/fin-tool.ts";
@@ -12,6 +11,7 @@ import { builtinEnvironment } from "../src/agent/builtin/environment.ts";
 import { builtinTools, isWrite, systemHash } from "../src/agent/builtin/tools.ts";
 import { confine, workspaceTool } from "../src/agent/builtin/workspace-tools.ts";
 import { childEnv } from "../src/env.ts";
+import { debugBin } from "./support/debug-bin.ts";
 
 let tmp: string;
 let ws: string;
@@ -109,8 +109,8 @@ describe.skipIf(!posix)("fin tool", () => {
     }
   });
 
-  test.skipIf(!existsSync(fileURLToPath(new URL("../../../target/debug/fin", import.meta.url))))("argv_reaches_the_real_fin_verbatim", async () => {
-    const real = fileURLToPath(new URL("../../../target/debug/fin", import.meta.url));
+  test.skipIf(!existsSync(debugBin("fin")))("argv_reaches_the_real_fin_verbatim", async () => {
+    const real = debugBin("fin");
     const r = await runFinTool({ callId: CALL, argv: ["view", "; rm -rf x"] }, env(real));
     expect(r.ok).toBe(false);
     expect(r.output).toMatchObject({ exit: 2, stdout: { error: { code: "USAGE" } } });
@@ -423,13 +423,20 @@ describe("workspace tools", () => {
   test("write_is_temp_then_rename", async () => {
     expect(await workspaceTool("workspace_write", { path: "notes/a.md", content: "one" }, ws)).toEqual({ ok: true, output: { path: "notes/a.md", size: 3, mode: "create" } });
     expect(await code(workspaceTool("workspace_write", { path: "notes/a.md", content: "two" }, ws))).toBe("ALREADY_EXISTS");
-    // A reader holding the old file still reads the old bytes: the new file replaced it whole.
-    const fd = openSync(join(ws, "notes", "a.md"), "r");
-    await workspaceTool("workspace_write", { path: "notes/a.md", content: "replaced", mode: "overwrite" }, ws);
-    const buf = Buffer.alloc(16);
-    const n = readSync(fd, buf, 0, 16, 0);
-    closeSync(fd);
-    expect(buf.subarray(0, n).toString()).toBe("one");
+    if (process.platform === "win32") {
+      // Windows cannot rename over a file another handle holds open (MoveFileEx), so the
+      // reader's view below is POSIX only; the replace itself is the same.
+      await workspaceTool("workspace_write", { path: "notes/a.md", content: "replaced", mode: "overwrite" }, ws);
+    } else {
+      // A reader holding the old file still reads the old bytes: the new file replaced it whole.
+      const fd = openSync(join(ws, "notes", "a.md"), "r");
+      await workspaceTool("workspace_write", { path: "notes/a.md", content: "replaced", mode: "overwrite" }, ws);
+      const buf = Buffer.alloc(16);
+      const n = readSync(fd, buf, 0, 16, 0);
+      closeSync(fd);
+      expect(buf.subarray(0, n).toString()).toBe("one");
+    }
+    expect(readFileSync(join(ws, "notes", "a.md"), "utf8")).toBe("replaced");
     await workspaceTool("workspace_write", { path: "notes/a.md", content: "+more", mode: "append" }, ws);
     expect(readFileSync(join(ws, "notes", "a.md"), "utf8")).toBe("replaced+more");
     // No temp file is left behind.

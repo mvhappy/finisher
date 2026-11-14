@@ -314,7 +314,8 @@ describe("remember into finisher.rules.json", () => {
     writeFileSync(file(), JSON.stringify({ rules: [] }));
     chmodSync(file(), 0o600);
     remember(deps(), card("A", "checkpoint"), "deny", "project", PERSON);
-    expect(statSync(file()).mode & 0o777).toBe(0o600);
+    // Windows has no mode bits to keep (Node reports 0o666 for any writable file).
+    if (process.platform !== "win32") expect(statSync(file()).mode & 0o777).toBe(0o600);
   });
 });
 

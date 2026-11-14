@@ -11,18 +11,24 @@ fn repo() -> &'static Path {
     Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
 }
 
-/// The bytes with CRLF line ends read as LF: the hash is of the text as the submodule has it,
-/// and a Windows checkout (`core.autocrlf=true`, which a parent `.gitattributes` does not reach
-/// inside a submodule) has the same text with CRLF ends (`scripts/check-native-deps.mjs` does the
-/// same).
+/// CR LF folded to LF, as `scripts/check-native-deps.mjs` hashes: Git for Windows checks a
+/// submodule's text out with CRLF (`core.autocrlf=true`), which the repository's
+/// `.gitattributes` does not reach. A lone CR is kept.
 fn lf(bytes: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(bytes.len());
     for (i, &b) in bytes.iter().enumerate() {
-        if !(b == b'\r' && bytes.get(i + 1) == Some(&b'\n')) {
-            out.push(b);
+        if b == b'\r' && bytes.get(i + 1) == Some(&b'\n') {
+            continue;
         }
+        out.push(b);
     }
     out
+}
+
+#[test]
+fn a_crlf_checkout_hashes_as_its_lf_text() {
+    assert_eq!(lf(b"one\r\ntwo\r\n"), b"one\ntwo\n");
+    assert_eq!(lf(b"a\rb\n"), b"a\rb\n");
 }
 
 #[test]

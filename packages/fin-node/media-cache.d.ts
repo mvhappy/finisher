@@ -40,6 +40,13 @@ export declare class MediaCache {
    */
   static open(serverData: string, capBytes?: number): Promise<MediaCache>;
   openReport(): MediaCacheOpenReport;
+  /**
+   * Closes the cache once every call before it is done: the index is let go (Windows cannot
+   * delete an open SQLite file) and every call after it rejects with `CACHE_IO {reason: io}`
+   * (but `openReport` and `entryDir`, which read no index).
+   * Closing again does nothing.
+   */
+  close(): Promise<void>;
   /** Where the entry `key` lives (whether or not it exists); `null` for a malformed key. */
   entryDir(key: string): string | null;
   /**

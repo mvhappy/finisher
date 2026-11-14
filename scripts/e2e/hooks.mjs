@@ -57,8 +57,11 @@ export async function run() {
     // SANDBOX_SOCKETS_EXPOSED only says the sockets are not hidden: Landlock still confines the files.
     const unenforced = warnings.filter((w) => w.code !== "SANDBOX_SOCKETS_EXPOSED");
     // Only a host limit excuses the launcher checks; any other disabled state (`profileNotReady`
-    // with the profile made ready by FIN_TEST_SANDBOX_READY) is a regression.
-    const hostLimit = (w) => w.code === "SANDBOX_UNAVAILABLE" || w.details?.reason === "landlockDisabled";
+    // with the profile made ready by FIN_TEST_SANDBOX_READY) is a regression. Off Linux the
+    // profile is not made ready, so `profileNotReady` is what it says there. That holds while
+    // fin-sandbox's `READY` (status.rs) names no hook row off Linux: when it does, set
+    // FIN_TEST_SANDBOX_READY there too and drop this exception.
+    const hostLimit = (w) => w.code === "SANDBOX_UNAVAILABLE" || w.details?.reason === "landlockDisabled" || (!linux && w.details?.reason === "profileNotReady");
     const regressions = unenforced.filter((w) => !hostLimit(w));
     need(regressions.length === 0, `the hook profile is not enforced for a reason other than the host: ${JSON.stringify(regressions)}`);
     const enforced = linux && unenforced.length === 0;

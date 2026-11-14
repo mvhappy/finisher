@@ -12,7 +12,6 @@
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { Node, ProviderEvent, Session } from "@finisher/contracts";
 import { sandboxStatus } from "@finisher/fin-node";
 import { Effect } from "effect";
@@ -35,10 +34,11 @@ import { type SandboxStatus, setSandboxStatusSource } from "../src/sandbox/statu
 import { AgentServer } from "./support/agent-server.ts";
 import { signInClaude } from "./support/claude-sign-in.ts";
 import { addAsset, commit, confirmed, type NdjsonClient, ok, tx } from "./support/ndjson-client.ts";
+import { debugBin } from "./support/debug-bin.ts";
 
 const WIN = process.platform === "win32";
 const EXE = WIN ? ".exe" : "";
-const FAKE = fileURLToPath(new URL(`../../../target/debug/fake-claude${EXE}`, import.meta.url));
+const FAKE = debugBin("fake-claude");
 const FIN = resolveFinPath({ models: [] } as unknown as Parameters<typeof resolveFinPath>[0]);
 const REQUIRE = process.env.FIN_REQUIRE_SERVER === "1";
 const VERSION = "2.1.321";

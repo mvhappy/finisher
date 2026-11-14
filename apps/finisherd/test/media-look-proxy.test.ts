@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { FinError, JobView, Principal } from "@finisher/contracts";
 import type { LookParams, LookResult } from "@finisher/core-types";
-import { Engine, MediaCache } from "@finisher/fin-node";
+import { Engine } from "@finisher/fin-node";
 import { Effect } from "effect";
 import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import { toFinError } from "../src/errors.ts";
@@ -23,6 +23,7 @@ import { mediaWiring } from "../src/media/wiring.ts";
 import type { ProjectRegistryShape } from "../src/projects.ts";
 import { closeTestEngines, testEngine } from "./support/jobs.ts";
 import { lookProject, makeAv1Fixture } from "./support/media.ts";
+import { closeCaches, openCache } from "./support/media-caches.ts";
 
 const GPU_REQUIRED = process.env.FIN_REQUIRE_GPU === "1";
 const OWNER = { kind: "local", id: "local" } as const;
@@ -41,6 +42,7 @@ beforeAll(() => {
 afterEach(async () => {
   await closeTestEngines();
   for (const e of engines.splice(0)) await e.close();
+  await closeCaches();
 });
 
 afterAll(() => rmSync(work, { recursive: true, force: true }));
@@ -58,7 +60,7 @@ async function setup() {
   const q = await lookProject(serverData, join(realpathSync(mkdtempSync(join(work, "proj-"))), "q"), media);
   engines.push(q.engine);
   const byId = (projectId: string) => [p, q].find((x) => x.engine.projectId === projectId);
-  const cache = await MediaCache.open(serverData);
+  const cache = await openCache(serverData);
   let caps: ReturnType<typeof mediaCapabilities> | undefined;
   const unknown = () => Effect.fail(toFinError(new Error("unknown project")));
   const onBranch = <A>(projectId: string, branch: string, f: (e: Engine, b: string) => Promise<string>) => {

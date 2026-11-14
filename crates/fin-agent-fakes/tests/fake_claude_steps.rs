@@ -3,6 +3,7 @@
 
 mod common;
 
+#[cfg(unix)]
 use std::process::Command;
 
 use common::*;
@@ -348,6 +349,10 @@ fn fake_spawn_in_on_allow_runs_only_when_allowed() {
 }
 
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "the fake's Bash runs `$SHELL` or `/bin/sh`, which Windows has not"
+)]
 fn fake_bash_announces_runs_and_reports_the_result() {
     let dir = Dir::new("bash");
     let marker = dir.path("ran.txt");

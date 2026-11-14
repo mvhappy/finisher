@@ -516,7 +516,8 @@ describe("a CLI session's processes (the fake harness's spawn step)", () => {
     await until(() => (alive(pid) ? undefined : true));
   });
 
-  test("disabled_host_runs_with_notice", async () => {
+  // `landlockDisabled` is Linux's (the launcher runs the program unconfined); Windows has no such reason.
+  test.skipIf(WIN)("disabled_host_runs_with_notice", async () => {
     const r = await run(() => [echo("ran")], withAgent({ kind: "disabled", reason: "landlockDisabled" }));
     expect(line(r.children[0]!.stdout)).toBe("ran");
     expect(r.warnings).toEqual([expect.objectContaining({ code: "SANDBOX_DISABLED", details: expect.objectContaining({ profile: "agent", reason: "landlockDisabled" }) })]);

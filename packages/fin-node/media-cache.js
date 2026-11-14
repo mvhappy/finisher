@@ -33,6 +33,10 @@ export class MediaCache {
     return JSON.parse(this.#native.openReport());
   }
 
+  close() {
+    return call(this.#native.close());
+  }
+
   entryDir(key) {
     return this.#native.entryDir(key) ?? null;
   }

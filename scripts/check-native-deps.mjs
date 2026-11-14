@@ -137,19 +137,15 @@ function gitlinkAt(root) {
   };
 }
 
-/** The BLAKE3 of a listed file's text with CRLF line ends read as LF: a Windows checkout
- *  (`core.autocrlf=true`, the Git for Windows default, which a parent `.gitattributes` does not
- *  reach inside a submodule) has the same licence text with CRLF ends. */
-export function lfHash(bytes) {
-  const out = [];
-  for (let i = 0; i < bytes.length; i++) if (!(bytes[i] === 0x0d && bytes[i + 1] === 0x0a)) out.push(bytes[i]);
-  return blake3(Buffer.from(out));
-}
-
-function hashAt(root) {
+/** A file's BLAKE3 with CR LF folded to LF: Git for Windows checks text out with CRLF
+ * (`core.autocrlf=true` by default), and the repository's `.gitattributes` does not reach a
+ * submodule's files, so the hash must not depend on the checkout. A lone CR is kept. */
+export function hashAt(root) {
   return (path) => {
     const full = join(root, path);
-    return existsSync(full) ? lfHash(readFileSync(full)) : null;
+    if (!existsSync(full)) return null;
+    const text = readFileSync(full).toString("latin1").replaceAll("\r\n", "\n");
+    return blake3(Buffer.from(text, "latin1"));
   };
 }
 

@@ -173,7 +173,7 @@ describe("the agent listener on a server", () => {
     const r = await start();
     expect(r.listener.current()).toBeUndefined();
     const status = async () => ok<{ listeners: Array<{ transport: string; endpoint: string }> }>(await (await console_()).call("server.status", {}));
-    expect((await status()).listeners.map((l) => l.transport)).toEqual(["socket", "ws"]);
+    expect((await status()).listeners.map((l) => l.transport)).toEqual([process.platform === "win32" ? "pipe" : "socket", "ws"]);
     const endpoint = await r.listener.ensure();
     expect(endpoint).toMatch(/^tcp:127\.0\.0\.1:\d+$/);
     expect(await r.listener.ensure()).toBe(endpoint);

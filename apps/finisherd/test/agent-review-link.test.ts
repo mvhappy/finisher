@@ -11,7 +11,6 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
-import { fileURLToPath } from "node:url";
 import { FinRpcs, type FinRpcTag, type Principal, type ReviewItem, type ReviewView, type Session } from "@finisher/contracts";
 import type { BranchView } from "@finisher/core-types";
 import { kindVersion } from "@finisher/fin-node";
@@ -30,8 +29,9 @@ import { toFinError } from "../src/errors.ts";
 import { entries } from "./support/agent-journal.ts";
 import { AgentServer, code, rpcBranchOps } from "./support/agent-server.ts";
 import { addAsset, commit, confirmed, type Exit, insert, type NdjsonClient, ok, tx } from "./support/ndjson-client.ts";
+import { debugBin } from "./support/debug-bin.ts";
 
-const FIN = fileURLToPath(new URL("../../../target/debug/fin", import.meta.url));
+const FIN = debugBin("fin");
 /** CI (`FIN_REQUIRE_SERVER=1`, as `fin`'s own server tests): a missing `fin` fails instead of skipping. */
 const REQUIRE_FIN = process.env.FIN_REQUIRE_SERVER === "1";
 

@@ -7,7 +7,6 @@ import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { Approval, FinError, Node, Principal, Rule } from "@finisher/contracts";
 import { Effect, Exit } from "effect";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -28,6 +27,7 @@ import { FileSecretStore } from "../src/secrets/store.ts";
 import { agentEntries } from "./support/agent-journal.ts";
 import { AgentServer, code, open } from "./support/agent-server.ts";
 import { addAsset, commit, confirmed, type Exit as WireExit, type NdjsonClient, ok, tx } from "./support/ndjson-client.ts";
+import { debugBin } from "./support/debug-bin.ts";
 
 const MIN = 60_000;
 let dir: string;
@@ -343,7 +343,7 @@ describe("the chain's ask", () => {
 
 // --- On a server --------------------------------------------------------------------------
 
-const FIN = fileURLToPath(new URL("../../../target/debug/fin", import.meta.url));
+const FIN = debugBin("fin");
 /** CI (`FIN_REQUIRE_SERVER=1`, as `fin`'s own server tests): a missing `fin` fails instead of skipping. */
 const REQUIRE_FIN = process.env.FIN_REQUIRE_SERVER === "1";
 

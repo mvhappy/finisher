@@ -47,7 +47,10 @@ fn a_real_grant_then_revoke_leaves_the_dacl_as_before() {
     );
     std::fs::remove_file(t.tmp().join("f")).unwrap();
     assert_eq!(b.revoke("session:s1", None).unwrap(), 1);
-    assert_eq!(acl::sddl(&t.tmp()).unwrap(), before);
+    // The same ACEs. Applying a DACL that propagates sets its auto-inherited control flag
+    // (`SE_DACL_AUTO_INHERITED`, `D:AI`), which a folder made without it lacked before.
+    let flagless = |s: String| s.replace("D:AI(", "D:(");
+    assert_eq!(flagless(acl::sddl(&t.tmp()).unwrap()), flagless(before));
 }
 
 #[test]

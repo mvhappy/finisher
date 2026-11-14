@@ -77,6 +77,14 @@ export function writeCredentialFile(path, file) {
   return path;
 }
 
+/** Windows: this process's user SID (`whoami /user`). */
+export function currentUserSid() {
+  const r = spawnSync("whoami", ["/user", "/fo", "csv", "/nh"], { encoding: "utf8" });
+  const sid = /"(S-1-[0-9-]+)"/.exec(r.stdout ?? "")?.[1];
+  if (r.status !== 0 || sid === undefined) throw new Error(`whoami /user failed: ${r.error?.message ?? ""}${r.stdout ?? ""}${r.stderr ?? ""}`);
+  return sid;
+}
+
 /**
  * Windows: a folder only this user can use, for the run's TEMP and TMP (the pipe and the key
  * files must not sit in a folder others can write). Elsewhere `dir` as it is.
@@ -84,8 +92,8 @@ export function writeCredentialFile(path, file) {
 export function privateTemp(dir) {
   mkdirSync(dir, { recursive: true });
   if (!WIN) return dir;
-  const user = `${process.env.USERDOMAIN ?? "."}\\${process.env.USERNAME}`;
-  const r = spawnSync("icacls", [dir, "/inheritance:r", "/grant:r", `${user}:(OI)(CI)F`], { encoding: "utf8" });
+  // By SID: `%USERDOMAIN%\%USERNAME%` need not name the account (over SSH it is `WORKGROUP\<user>`).
+  const r = spawnSync("icacls", [dir, "/inheritance:r", "/grant:r", `*${currentUserSid()}:(OI)(CI)F`], { encoding: "utf8" });
   if (r.status !== 0) throw new Error(`icacls ${dir} failed: ${r.stdout}${r.stderr}`);
   return dir;
 }

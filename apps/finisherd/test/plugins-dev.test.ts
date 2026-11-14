@@ -7,7 +7,7 @@
 import { spawn } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { FinError, Principal } from "@finisher/contracts";
 import { defaultScopes } from "@finisher/contracts";
@@ -331,9 +331,10 @@ describe("developer mode", () => {
   });
 
   test("the flag: parsed for serve, and a start without a terminal is refused before server data exists", async () => {
-    expect(parseArgs(["--plugin-dir", "x", "--server-data", "/sd"])).toEqual({ serverData: "/sd", pluginDir: join(process.cwd(), "x") });
-    expect(parseArgs(["--plugin-dir=/p", "--server-data=/sd"])).toEqual({ serverData: "/sd", pluginDir: "/p" });
-    expect(parseArgs(["--server-data", "/sd"])).toEqual({ serverData: "/sd" });
+    // Resolved: on Windows `/sd` is `C:\\sd`.
+    expect(parseArgs(["--plugin-dir", "x", "--server-data", "/sd"])).toEqual({ serverData: resolve("/sd"), pluginDir: join(process.cwd(), "x") });
+    expect(parseArgs(["--plugin-dir=/p", "--server-data=/sd"])).toEqual({ serverData: resolve("/sd"), pluginDir: resolve("/p") });
+    expect(parseArgs(["--server-data", "/sd"])).toEqual({ serverData: resolve("/sd") });
     expect(() => parseArgs(["--plugin-dir"])).toThrow("--plugin-dir needs a directory");
 
     const folder = devFolder();

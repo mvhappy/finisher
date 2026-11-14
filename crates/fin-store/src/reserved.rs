@@ -120,11 +120,11 @@ pub fn fail_link_checks_for_test(dir: &Path, fail: bool) {
     }
 }
 
-#[cfg(test)]
+// Its one test makes symlinks (Unix).
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
-    #[cfg(unix)]
     #[test]
     fn checks_from_dot_down() {
         let d = tempfile::tempdir().unwrap();

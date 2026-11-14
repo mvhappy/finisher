@@ -6,7 +6,6 @@
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir, userInfo } from "node:os";
 import { delimiter, join, sep } from "node:path";
-import { fileURLToPath } from "node:url";
 import { AgentProvidersSuccess, type FinError, type ProviderInfo } from "@finisher/contracts";
 import { sandboxStatus } from "@finisher/fin-node";
 import { Effect, Exit, Schema } from "effect";
@@ -29,6 +28,7 @@ import type { SessionSandboxDeps } from "../src/agent/sandbox.ts";
 import { readAgentSettings } from "../src/agent/settings.ts";
 import { runConsole } from "../src/console/main.ts";
 import type { SandboxStatus } from "../src/sandbox/status.ts";
+import { debugBin } from "./support/debug-bin.ts";
 
 // Every path finisherd's own code hands `node:fs` (first two arguments), for the store spy.
 const spy = vi.hoisted(() => {
@@ -58,7 +58,7 @@ vi.mock("node:fs/promises", async (orig) => {
 
 const CRED = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_REFRESH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"];
 const WIN = process.platform === "win32";
-const FAKE = fileURLToPath(new URL(`../../../target/debug/fake-claude${WIN ? ".exe" : ""}`, import.meta.url));
+const FAKE = debugBin("fake-claude");
 /** CI (`FIN_REQUIRE_SERVER=1`, as the other Rust-binary tests): a missing fake fails instead of skipping. */
 const REQUIRE_FAKE = process.env.FIN_REQUIRE_SERVER === "1";
 const NO_FAKE = !existsSync(FAKE) && !REQUIRE_FAKE;
@@ -424,6 +424,8 @@ describe("where the CLI is", () => {
       expect(thrown(() => resolveClaudePath({ setting, platform: "win32", isFile: () => true })).fix, setting).toBe("install the native build");
     }
     expect(resolveClaudePath({ setting: "C:\\native\\claude.exe", platform: "win32", isFile })).toBe("C:\\native\\claude.exe");
+    // A setting naming no file is missing, whatever its name: never a (detected) shim.
+    expect(thrown(() => resolveClaudePath({ setting: "C:\\nope\\claude", platform: "win32", isFile }))).toMatchObject({ details: { reason: "pathMissing" } });
   });
 });
 

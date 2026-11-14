@@ -1,9 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { blake3 } from "./blake3.mjs";
-import { check, shipped } from "./check-native-deps.mjs";
+import { check, hashAt, shipped } from "./check-native-deps.mjs";
 import { spdxAllowed } from "./cargo-graph.mjs";
 import { fixtureRoot, runGate } from "./gate-helpers.mjs";
 
@@ -170,4 +171,17 @@ test("an optional dependency only a weak feature names is not shipped (cargo#108
   const names = (d) => [...shipped([d]).values()].map((p) => p.name).sort();
   assert.deepEqual(names(doc(["alloc"])), ["app"]);
   assert.deepEqual(names(doc(["alloc", "fmt"])), ["app", "weak-sys"]);
+});
+
+test("a licence file checked out with CRLF (Git for Windows' autocrlf, which a submodule's own files get) hashes as its LF text", () => {
+  const root = mkdtempSync(join(tmpdir(), "native-crlf-"));
+  writeFileSync(join(root, "lf"), "line one\nline two\n");
+  writeFileSync(join(root, "crlf"), "line one\r\nline two\r\n");
+  writeFileSync(join(root, "lone-cr"), "a\rb\n");
+  const hash = hashAt(root);
+  assert.equal(hash("crlf"), blake3(Buffer.from("line one\nline two\n")));
+  assert.equal(hash("crlf"), hash("lf"));
+  // Only CR LF pairs fold: a lone CR is the file's own byte.
+  assert.equal(hash("lone-cr"), blake3(Buffer.from("a\rb\n")));
+  assert.equal(hash("missing"), null);
 });

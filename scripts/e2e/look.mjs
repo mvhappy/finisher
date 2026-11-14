@@ -319,9 +319,13 @@ const T0_NOTE =
 async function killedLook(sd, project, tmp, jobs) {
   const out = join(tmp, "killed-look");
   const at = Array.from({ length: 64 }, (_, i) => `f${i}`);
+  // The warm worker the earlier steps left is the one that takes the job: listed before it starts,
+  // since listing processes takes about a second on Windows (a CIM query), and a fast GPU renders
+  // all 64 frames in that time.
+  const warm = mediaWorkers();
   const pending = finAsync(sd, project, ["look", "--at", at.join(","), "--size", "540x960", "--out", out, "--originals"]);
   await waitFor("the first PNG of the job", () => pngsBelow(jobs).length > 0, 60_000, () => `: ${pngsBelow(jobs).length} found`, 5);
-  const workers = mediaWorkers();
+  const workers = warm.length > 0 ? warm : mediaWorkers();
   if (workers.length === 0) throw new Error("no fin-workers media process to kill");
   for (const pid of workers) process.kill(pid, "SIGKILL");
   log(`killed media worker(s) ${workers.join(", ")}`);

@@ -70,6 +70,10 @@ fn answered_then_resumed(tag: &str, answer: Value) -> (Value, Dir) {
 }
 
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "the fake's Bash runs `$SHELL` or `/bin/sh`, which Windows has not"
+)]
 fn fake_bash_allowed_call_is_not_asked_again_on_resume() {
     let (resumed, dir) = answered_then_resumed(
         "bash-allowed-resume",
@@ -99,6 +103,10 @@ fn fake_bash_denied_call_is_not_asked_again_on_resume() {
 /// A dangling `Bash` call asked again and allowed runs again (a duplicate side effect: what the
 /// runtime must refuse) and gets its result, so a later resume finds nothing open.
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "the fake's Bash runs `$SHELL` or `/bin/sh`, which Windows has not"
+)]
 fn fake_bash_dangling_call_allowed_on_resume_runs_again() {
     let dir = Dir::new("bash-rerun");
     let file = dir.path("side-effect.txt");
