@@ -444,7 +444,7 @@ const SNAP = {
 };
 
 /** A proxy service over fakes: the submits, the snapshots and probes it made, and the jobs' views. */
-function fakeService(over: { submit?: (n: number) => JobView; capabilities?: ProxyServiceDeps["capabilities"] } = {}) {
+function fakeService(over: { submit?: (n: number) => JobView; capabilities?: ProxyServiceDeps["capabilities"]; cache?: MediaCache; onWait?: (id: string) => void } = {}) {
   const submitted: Array<{ owner: unknown; req: { params: ProxyParams; priority?: string } }> = [];
   const views = new Map<string, JobView>();
   const counts = { snapshots: 0, probes: 0 };
@@ -463,11 +463,11 @@ function fakeService(over: { submit?: (n: number) => JobView; capabilities?: Pro
           views.set(v.id, v);
           return v;
         }),
-      wait: (ids) => Effect.succeed(ids.map((id) => views.get(id)!)),
+      wait: (ids) => Effect.sync(() => ids.map((id) => (over.onWait?.(id), views.get(id)!))),
       get: (id) => Effect.sync(() => views.get(id)!),
     },
     capabilities: over.capabilities ?? (() => Effect.succeed(V1)),
-    cache: () => undefined,
+    cache: () => over.cache,
     probe: async () => (counts.probes++, JSON.stringify({ media: { video: { codec: "av1" } } })),
   });
   return { proxies, submitted, views, counts };
@@ -634,5 +634,23 @@ describe("the proxy540 stage's isDone", () => {
   test("a file without a video track throws without its name", () => {
     const s = proxy540Stage({ report: () => V1, cache: () => undefined });
     expect(() => s.params([stageFile({ media: { audio: { codec: "aac" } } })], { library: "l1", pools: {} as never })).toThrow(/^(?!.*clip\.mp4).*$/);
+  });
+});
+
+describe("a request while the first use makes the proxy", () => {
+  test("media.proxy and ensure join the background job: no job of the caller's", async () => {
+    const key = keyOf("fp-a1", "1080");
+    const held = new Set<string>();
+    const cache = { lookup: async (k: string) => (held.has(k) ? ({ key: k } as unknown) : null), serve: async () => undefined } as unknown as MediaCache;
+    // The background job commits its proxy and succeeds while a request waits for it.
+    const done = (id: string) => (held.add(key), views.set(id, { id, state: "succeeded", result: { items: { "fp-a1": { key } } } } as unknown as JobView));
+    const { proxies, submitted, views } = fakeService({ cache, onWait: done });
+    await proxies.used("p1", ["a1"]);
+    expect(submitted.map((s) => s.owner)).toEqual([MEDIA_SYSTEM_OWNER]);
+    // A consumer is told the first-use job is making it.
+    expect(await fail(proxies.ensure(OWNER, { projectId: "p1", asset: "a1" }))).toMatchObject({ code: "PROXY_UNAVAILABLE", details: { job: "j1" } });
+    expect(await run(proxies.request(OWNER, { projectId: "p1", asset: "a1", tier: "1080", wait: false }))).toEqual({ asset: "a1", tier: "1080", codec: "av1", key, state: "making" });
+    expect(await run(proxies.request(OWNER, { projectId: "p1", asset: "a1", tier: "1080" }))).toEqual({ asset: "a1", tier: "1080", codec: "av1", key, state: "ready", result: { key } });
+    expect(submitted).toHaveLength(1);
   });
 });

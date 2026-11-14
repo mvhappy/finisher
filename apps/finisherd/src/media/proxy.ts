@@ -12,7 +12,8 @@
 // - **A cache hit** answers at once (`serve` records that the entry serves the project and pins
 //   it while the project is open); otherwise a job is submitted (dedupe: the key) and, unless
 //   `wait: false`, waited for. An explicit request, and a consumer's `ensure`, run at `normal`
-//   priority; first-use proxies at the kind's `background`.
+//   priority; first-use proxies at the kind's `background`. A request or `ensure` for a key a
+//   first-use job is making joins that job (`join.ts`).
 // - **A failed proxy** (review of Task 14): a job that already ended (the poisoned job dedupe
 //   answers) is answered with its error, never `PROXY_UNAVAILABLE`. A content failure
 //   (`CONTENT_FAILURES`) is remembered per key this run: `ensure` and first use answer it without
@@ -31,6 +32,7 @@ import type { JobEngine } from "../jobs/api.ts";
 import { MEDIA_PROXY, decodersOf, proxyCodec } from "../jobs/kinds/media.proxy.ts";
 import type { ProjectRegistryShape } from "../projects.ts";
 import type { CapabilitiesCache } from "./caps.ts";
+import { isMaking, systemJobs } from "./join.ts";
 import type { PcmService } from "./pcm.ts";
 import type { ThumbsService } from "./thumbs.ts";
 import type { WaveService } from "./wave.ts";
@@ -211,6 +213,9 @@ export function makeProxyService(deps: ProxyServiceDeps): ProxyService {
   const asking = new Set<string>();
   /** The content failure of each key this run (`CONTENT_FAILURES`). */
   const failed = new Map<string, FinError>();
+  /** The first-use jobs, which a request or `ensure` joins. */
+  const system = systemJobs(deps.engine);
+  const inCache = (key: string, projectId: string): Effect.Effect<boolean, FinError> => Effect.map(hit(key, projectId), (m) => m !== undefined);
 
   const sourceCodec = (path: string, fingerprint: string, asset: string): Effect.Effect<{ readonly codec: string; readonly audio?: SourceAudio; readonly duration?: string }, FinError> => {
     const id = `${path}\0${fingerprint}`;
@@ -345,6 +350,12 @@ export function makeProxyService(deps: ProxyServiceDeps): ProxyService {
       const planned = yield* plan(report, src, tier, req.codec);
       const base = { asset: req.asset, tier, codec: planned.codec, key: planned.key };
       if ((yield* hit(planned.key, req.projectId)) !== undefined) return { ...base, state: "ready", cached: true };
+      const joined = yield* system.join(planned.key, { wait: req.wait !== false, timeoutMs: PROXY_WAIT_MS, fix: "the proxy is still being made: fin media status <asset>", inCache: inCache(planned.key, req.projectId) });
+      if (isMaking(joined)) return { ...base, state: "making" };
+      if (joined !== undefined) {
+        const result = resultOf(joined, src.fingerprint);
+        return { ...base, state: "ready", ...(result === undefined ? {} : { result }) };
+      }
       const job = yield* submit(owner, planned, "normal");
       if (req.wait === false) return { ...base, state: "making", job: job.id };
       const [done] = yield* deps.engine.wait([job.id], { timeoutMs: PROXY_WAIT_MS }).pipe(
@@ -399,7 +410,14 @@ export function makeProxyService(deps: ProxyServiceDeps): ProxyService {
       if (meta !== undefined) return meta;
       const known = yield* rememberedFailure(planned.key);
       if (known !== undefined) return yield* Effect.fail(known);
-      // The job making it (dedupe answers the running one; an ended one fails with its error).
+      // The job making it: a first-use one (its id: `ensure` serves consumers in the server), else
+      // the caller's (dedupe answers the running one; an ended one fails with its error).
+      const joined = yield* system.join(planned.key, { wait: false, timeoutMs: 0, fix: "", inCache: inCache(planned.key, req.projectId) });
+      if (isMaking(joined)) return yield* Effect.fail(proxyUnavailable(req.asset, tier, joined.making));
+      if (joined !== undefined) {
+        const meta = yield* hit(planned.key, req.projectId);
+        if (meta !== undefined) return meta;
+      }
       const job = yield* submit(owner, planned, "normal");
       return yield* Effect.fail(proxyUnavailable(req.asset, tier, job.id));
     });
@@ -413,7 +431,7 @@ export function makeProxyService(deps: ProxyServiceDeps): ProxyService {
       if ((yield* hit(planned.key, projectId)) !== undefined) return;
       const known = yield* rememberedFailure(planned.key);
       if (known !== undefined) return yield* Effect.fail(known);
-      yield* submit(MEDIA_SYSTEM_OWNER, planned);
+      system.note(planned.key, (yield* submit(MEDIA_SYSTEM_OWNER, planned)).id);
     });
 
   const usedHere = (projectId: string, only?: ReadonlyArray<string>): Promise<void> =>

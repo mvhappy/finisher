@@ -9,7 +9,7 @@
 // - **A cache hit** answers at once (`serve` records that the entry serves the project and pins it
 //   while the project is open); otherwise a job is submitted (dedupe: the key) and, unless
 //   `wait: false`, waited for. An explicit request runs at `normal` priority, first use at the
-//   kind's `background`.
+//   kind's `background`. A request for a key the first use is making joins that job (`join.ts`).
 // - **First use** scans `main` only: the assets of the items on audio tracks when a project opens
 //   here (or was open before the service started), the items a commit adds or moves otherwise. An
 //   asset counts as asked for once its feed was submitted or found, or it failed for good; a
@@ -29,6 +29,7 @@ import type { JobEngine } from "../jobs/api.ts";
 import { MEDIA_PCM } from "../jobs/kinds/media.pcm.ts";
 import type { StageFile, StageSpec } from "../library/api.ts";
 import type { ProjectRegistryShape } from "../projects.ts";
+import { isMaking, systemJobs } from "./join.ts";
 import { CONTENT_FAILURES, MEDIA_SYSTEM_OWNER, scrubPath } from "./proxy.ts";
 
 /** How long `media.pcm` waits for its job. */
@@ -59,7 +60,7 @@ export interface PcmAnswer {
 
 export interface PcmServiceDeps {
   readonly registry: Pick<ProjectRegistryShape, "ensure" | "snapshot" | "resolveBranch" | "dirOf">;
-  readonly engine: Pick<JobEngine, "submit" | "wait">;
+  readonly engine: Pick<JobEngine, "submit" | "wait" | "get">;
   readonly cache: () => MediaCache | undefined;
   /** fin-node's `probe` (JSON); tests replace it. */
   readonly probe?: (path: string) => Promise<string>;
@@ -152,6 +153,8 @@ export function makePcmService(deps: PcmServiceDeps): PcmService {
   /** `<project>\0<fingerprint>` asked for at first use this run, or being asked for now. */
   const used = new Set<string>();
   const asking = new Set<string>();
+  /** The first-use jobs, which a request joins. */
+  const system = systemJobs(deps.engine);
 
   const assetsOf = (projectId: string, branch: string): Effect.Effect<ProjectJson, FinError> =>
     Effect.map(deps.registry.snapshot(projectId, branch), (snap) => ((snap.project as ProjectJson | null) ?? {}) as ProjectJson);
@@ -211,6 +214,17 @@ export function makePcmService(deps: PcmServiceDeps): PcmService {
       const p = yield* plan(req.projectId, branch, req.asset, Object.hasOwn(assets, req.asset) ? assets[req.asset] : undefined, recipe);
       const base = { asset: req.asset, recipe, key: p.key };
       if ((yield* hit(p.key, req.projectId)) !== undefined) return { ...base, state: "ready", cached: true };
+      const joined = yield* system.join(p.key, {
+        wait: req.wait !== false,
+        timeoutMs: PCM_WAIT_MS,
+        fix: "the feed is still being made: ask for it again",
+        inCache: Effect.map(hit(p.key, req.projectId), (m) => m !== undefined),
+      });
+      if (isMaking(joined)) return { ...base, state: "making" };
+      if (joined !== undefined) {
+        const result = resultOf(joined, p.fingerprint);
+        return { ...base, state: "ready", ...(result === undefined ? {} : { result }) };
+      }
       const job = yield* submit(owner, p, "normal");
       if (req.wait === false) return { ...base, state: "making", job: job.id };
       const [done] = yield* deps.engine.wait([job.id], { timeoutMs: PCM_WAIT_MS }).pipe(
@@ -238,6 +252,7 @@ export function makePcmService(deps: PcmServiceDeps): PcmService {
               const p = yield* plan(projectId, "main", id, a, "pcm48");
               if ((yield* hit(p.key, projectId)) !== undefined) return deps.afterPcm48?.(p);
               const job = yield* submit(MEDIA_SYSTEM_OWNER, p);
+              system.note(p.key, job.id);
               deps.afterPcm48?.(p, job.id);
             }),
           );

@@ -4,7 +4,8 @@
 //   decoder class (the waveform is of the same decode), `mediaWavePlan`.
 // - **A cache hit** answers at once; otherwise a job is submitted (dedupe: the key) and, unless
 //   `wait: false`, waited for. When the cache holds the asset's `pcm48` entry the job reads it
-//   (`pcmKey`) instead of decoding the original; the bytes are the same.
+//   (`pcmKey`) instead of decoding the original; the bytes are the same. A request for a key the
+//   background waveform is making joins that job (`join.ts`).
 // - **After the commit** of a first-use `pcm48` (`PcmServiceDeps.afterPcm48`), the waveform is
 //   submitted in the background, from that entry, once the entry is in the cache.
 import type { FinError, JobOwner, JobView } from "@finisher/contracts";
@@ -15,6 +16,7 @@ import { attempt, finError } from "../errors.ts";
 import type { JobEngine } from "../jobs/api.ts";
 import { MEDIA_WAVEFORM } from "../jobs/kinds/media.waveform.ts";
 import type { ProjectRegistryShape } from "../projects.ts";
+import { isMaking, systemJobs } from "./join.ts";
 import { PCM_WAIT_MS, type PcmService, endedWithout, errorOf } from "./pcm.ts";
 import { MEDIA_SYSTEM_OWNER } from "./proxy.ts";
 
@@ -44,7 +46,7 @@ export interface WaveAnswer {
 export interface WaveServiceDeps {
   readonly registry: Pick<ProjectRegistryShape, "ensure" | "resolveBranch">;
   readonly pcm: Pick<PcmService, "planFeed">;
-  readonly engine: Pick<JobEngine, "submit" | "wait">;
+  readonly engine: Pick<JobEngine, "submit" | "wait" | "get">;
   readonly cache: () => MediaCache | undefined;
   readonly log?: (message: string) => void;
   /** How long one wait for the `pcm48` job lasts before it is waited for again (default `WAVE_WAIT_MS`). */
@@ -67,6 +69,8 @@ function resultOf(job: JobView, fingerprint: string): WaveResult | undefined {
 
 export function makeWaveService(deps: WaveServiceDeps): WaveService {
   const log = deps.log ?? (() => {});
+  /** The background waveform jobs, which a request joins. */
+  const system = systemJobs(deps.engine);
 
   /** `media.waveform` params for the asset whose `pcm48` plan is `pcm`, reading its entry when the cache holds it. */
   const paramsOf = (pcm: { fingerprint: string; decoderClass: WaveParams["decoderClass"]; key: string }, asset: string, projectId: string, branch: string): Effect.Effect<{ readonly p: WaveParams; readonly levels: number[] }, FinError> =>
@@ -102,6 +106,12 @@ export function makeWaveService(deps: WaveServiceDeps): WaveService {
       const { p, levels } = yield* paramsOf(pcm, req.asset, req.projectId, branch);
       const base = { asset: req.asset, key: p.key, levels };
       if (yield* hit(p.key, req.projectId)) return { ...base, state: "ready", cached: true };
+      const joined = yield* system.join(p.key, { wait: req.wait !== false, timeoutMs: WAVE_WAIT_MS, fix: "the waveform is still being made: ask for it again", inCache: hit(p.key, req.projectId) });
+      if (isMaking(joined)) return { ...base, state: "making" };
+      if (joined !== undefined) {
+        const result = resultOf(joined, p.fingerprint);
+        return { ...base, state: "ready", ...(result === undefined ? {} : { result }) };
+      }
       const job = yield* submit(owner, p, "normal");
       if (req.wait === false) return { ...base, state: "making", job: job.id };
       const [done] = yield* deps.engine.wait([job.id], { timeoutMs: WAVE_WAIT_MS }).pipe(
@@ -133,7 +143,7 @@ export function makeWaveService(deps: WaveServiceDeps): WaveService {
         const { p } = yield* paramsOf(pcm, asset, projectId, pcm.branch ?? "main");
         // Only from an entry that is there (the commit follows the job's success); never twice.
         if (p.pcmKey === undefined || (yield* hit(p.key, projectId))) return;
-        yield* submit(MEDIA_SYSTEM_OWNER, p);
+        system.note(p.key, (yield* submit(MEDIA_SYSTEM_OWNER, p)).id);
       }),
     ).catch((e: unknown) => log(`finisherd: media waveform: none for ${asset} in ${projectId} (${(e as { code?: string }).code ?? "error"})`));
   };

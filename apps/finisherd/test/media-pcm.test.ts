@@ -429,3 +429,86 @@ describe("first use", () => {
     }
   }, 60_000);
 });
+
+describe("a client request while the first use makes the feed", () => {
+  /** Puts asset `asset` on a new audio track of `main`. */
+  async function onAudioTrack(engine: Engine, asset: string): Promise<void> {
+    const snap = JSON.parse(await engine.snapshot("main")) as { rev: number; project: { timelines: Array<{ id: string }> } };
+    await engine.commit(
+      tx("t2", snap.rev, [
+        { op: "track.add", id: "$tr", timeline: snap.project.timelines[0]!.id, kind: "audio" },
+        { op: "item.insert", id: "$i1", track: "$tr", at: "0", duration: "1", mode: "overwrite", kind: "clip", asset, sourceIn: "0" },
+      ]),
+    );
+  }
+
+  test("joins the background job: one job, one decode", async () => {
+    // Test builds of the worker wait 300 ms after each chunk for a fingerprint `test-slow-…`.
+    const { t, cache, engine, pcm, pid, asset } = await setup("test-slow-join");
+    await onAudioTrack(engine, asset);
+    await pcm.used(pid);
+    const jobs = () => t.engine.list({}).jobs.filter((j) => j.kind === MEDIA_PCM);
+    expect(jobs().map((j) => j.owner)).toEqual([MEDIA_SYSTEM_OWNER]);
+    const key = plan("test-slow-join").key;
+    // Still being made by the server's own job: no job of the caller's is submitted.
+    expect(await run(pcm.request(OWNER, { projectId: pid, asset, wait: false }))).toEqual({ asset, recipe: "pcm48", key, state: "making" });
+    const a = await run(pcm.request(OWNER, { projectId: pid, asset }));
+    expect(a).toMatchObject({ asset, key, state: "ready", result: { key, frames: 2_400_000 } });
+    expect(jobs()).toHaveLength(1);
+    expect(jobs()[0]!.state).toBe("succeeded");
+    expect(await cache.projectsOf(key)).toEqual([pid]);
+  }, 180_000);
+
+  /** A PCM service over fakes: asset `a1` on an audio track; the server's job's state is `state()` when looked up. */
+  function faked(onGet: (id: string) => JobView["state"]) {
+    const p = plan("fp-f");
+    const held = new Set<string>();
+    const states = new Map<string, JobView["state"]>();
+    const submitted: Array<{ owner: unknown; id: string }> = [];
+    const view = (id: string): JobView => ({ id, state: states.get(id), result: { items: { "fp-f": { key: p.key, frames: 48_000 } } } }) as unknown as JobView;
+    const engine = {
+      submit: (owner: unknown) =>
+        Effect.sync(() => {
+          const id = `j${submitted.length + 1}`;
+          submitted.push({ owner, id });
+          states.set(id, "queued");
+          return view(id);
+        }),
+      get: (id: string) =>
+        Effect.sync(() => {
+          const s = onGet(id);
+          states.set(id, s);
+          if (s === "succeeded") held.add(p.key);
+          return view(id);
+        }),
+      // The caller's own job succeeds once waited for.
+      wait: (ids: string[]) =>
+        Effect.sync(() => {
+          if (states.get(ids[0]!) === "queued") (states.set(ids[0]!, "succeeded"), held.add(p.key));
+          return [view(ids[0]!)];
+        }),
+    };
+    const cache = { lookup: async (k: string) => (held.has(k) ? ({ key: k } as unknown) : null), serve: async () => undefined } as unknown as MediaCache;
+    const project = {
+      assets: { a1: { kind: "media", path: "/a.wav", fingerprint: "fp-f", duration: "1", audio: { channels: 2 } } },
+      timelines: [{ tracks: [{ kind: "audio", items: [{ id: "i1", asset: "a1" }] }] }],
+    };
+    const registry = { ensure: () => Effect.void, resolveBranch: (_: string, b: string) => Effect.succeed(b), snapshot: () => Effect.succeed({ rev: 1, project }), dirOf: () => undefined };
+    const pcm = makePcmService({ registry: registry as never, engine: engine as never, cache: () => cache, probe: async () => "{}" });
+    return { pcm, submitted, key: p.key };
+  }
+
+  test("the background job ending between the cache lookup and the join: succeeded is the entry", async () => {
+    const f = faked(() => "succeeded");
+    await f.pcm.used("p1");
+    expect(await run(f.pcm.request(OWNER, { projectId: "p1", asset: "a1" }))).toMatchObject({ key: f.key, state: "ready", result: { frames: 48_000 } });
+    expect(f.submitted.map((s) => s.owner)).toEqual([MEDIA_SYSTEM_OWNER]);
+  });
+
+  test("a background job that failed: the caller's own job makes the feed", async () => {
+    const f = faked((id) => (id === "j1" ? "failed" : "running"));
+    await f.pcm.used("p1");
+    expect(await run(f.pcm.request(OWNER, { projectId: "p1", asset: "a1" }))).toMatchObject({ key: f.key, state: "ready", job: "j2" });
+    expect(f.submitted.map((s) => s.owner)).toEqual([MEDIA_SYSTEM_OWNER, OWNER]);
+  });
+});

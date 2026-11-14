@@ -290,3 +290,29 @@ describe("after the pcm48 commit", () => {
     expect(t.engine.list({}).jobs.filter((j) => j.kind === MEDIA_WAVEFORM)).toHaveLength(1);
   }, 240_000);
 });
+
+describe("a request while the background waveform is being made", () => {
+  test("joins that job: no job of the caller's", async () => {
+    const pcmPlanned = { ...pcmPlan("fp-j"), fingerprint: "fp-j", asset: "a1", projectId: "p1", branch: "main" } as unknown as Parameters<ReturnType<typeof makeWaveService>["afterPcm48"]>[0];
+    const w = wavePlan("fp-j");
+    const held = new Set([pcmPlanned.key]);
+    const states = new Map<string, string>();
+    const submitted: Array<{ owner: unknown; params: WaveParams }> = [];
+    const view = (id: string) => ({ id, state: states.get(id), result: { items: { "fp-j": { key: w.key, levels: 5 } } } }) as unknown as JobView;
+    const engine = {
+      submit: (owner: unknown, req: { params: WaveParams }) => Effect.sync(() => (submitted.push({ owner, params: req.params }), states.set(`w${submitted.length}`, "queued"), view(`w${submitted.length}`))),
+      get: (id: string) => Effect.sync(() => view(id)),
+      // The background job commits its entry and succeeds while the request waits.
+      wait: (ids: string[]) => Effect.sync(() => (states.set(ids[0]!, "succeeded"), held.add(w.key), [view(ids[0]!)])),
+    };
+    const cache = { lookup: async (k: string) => (held.has(k) ? ({ key: k } as unknown) : null), serve: async () => undefined } as unknown as MediaCache;
+    const registry = { ensure: () => Effect.void, resolveBranch: (_: string, b: string) => Effect.succeed(b) };
+    const wave = makeWaveService({ registry: registry as never, pcm: { planFeed: () => Effect.succeed(pcmPlanned as never) }, engine: engine as never, cache: () => cache });
+    wave.afterPcm48(pcmPlanned);
+    await vi.waitFor(() => expect(submitted).toHaveLength(1), { timeout: 10_000 });
+    expect(submitted[0]!.owner).toEqual({ kind: "system", id: "media" });
+    expect(await run(wave.request(OWNER, { projectId: "p1", asset: "a1", wait: false }))).toEqual({ asset: "a1", key: w.key, levels: w.levels, state: "making" });
+    expect(await run(wave.request(OWNER, { projectId: "p1", asset: "a1" }))).toMatchObject({ key: w.key, state: "ready", result: { levels: 5 } });
+    expect(submitted).toHaveLength(1);
+  });
+});
