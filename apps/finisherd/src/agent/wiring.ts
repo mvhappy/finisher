@@ -49,7 +49,8 @@ import { BUNDLED_ROLES, type Role } from "./roles.ts";
 import { Runtime } from "./runtime.ts";
 import { cataloguePricing, type Pricing, type SessionEnvironment, type ToolExecutor } from "./runtime-deps.ts";
 import { HookConfig } from "../hooks/config.ts";
-import { buildHooks, type HookServeOptions, type HooksWiring } from "../hooks/wiring.ts";
+import { buildHooks, type HookServeOptions, type HooksWiring, PluginLayer } from "../hooks/wiring.ts";
+import { pluginHooksOf } from "../jobs/kinds/plugin.hook.ts";
 import { jobDoneHooks } from "../hooks/jobs.ts";
 import { reviewHooks } from "../hooks/review.ts";
 import type { JobEngine } from "../jobs/api.ts";
@@ -352,11 +353,13 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
     const ruleStore = new RuleStore(d.db);
     const dirOf = (projectId: string) => d.registry.dirOf(projectId) ?? d.registry.indexedDirOf?.(projectId);
     const rules = new LayeredRules({ serverData, store: ruleStore, roles, dirOf });
-    const hooks = new HookConfig({ serverData, trustOf: (id) => ruleStore.trustOf(id), dirOf });
+    // The plugin layer (7F Task 10): empty until `startAgentReviews` binds the plugin host's handlers.
+    const plugins = new PluginLayer();
+    const hooks = new HookConfig({ serverData, trustOf: (id) => ruleStore.trustOf(id), dirOf, plugins: () => plugins.rows() });
     // `fin` hooks (7F Task 5): their own credentials through 5A's, `fin` and its endpoint as the session sandbox's.
     const finServer = (launcher: boolean) => (launcher ? launcherServer(sandboxDeps, process.platform) : Promise.resolve({ env: d.endpoint }));
     const hookProcess = { finPath, finServer, ...(d.acl === undefined ? {} : { acl: d.acl }), ...(d.allowPipe === undefined ? {} : { allowPipe: d.allowPipe }) };
-    const hookWiring = buildHooks({ config: hooks, serverData: realData, audit: d.audit, log, credentials: core.credentials.base, sessions: core.store, process: hookProcess, ...(d.options?.hooks === undefined ? {} : { options: d.options.hooks }) });
+    const hookWiring = buildHooks({ config: hooks, plugins, serverData: realData, audit: d.audit, log, credentials: core.credentials.base, sessions: core.store, process: hookProcess, ...(d.options?.hooks === undefined ? {} : { options: d.options.hooks }) });
     yield* Effect.addFinalizer(() => Effect.promise(() => hookWiring.close()));
     const key = approvalKey(serverData);
     const permissions = providerPermissions({ rules, dirOf });
@@ -421,8 +424,8 @@ export interface AgentReviewsDeps {
   readonly runtime: Runtime;
   /** The hook engine (7F Task 8: `BranchReady`, `PreMerge`/`PostMerge` on the `auto` path, `JobDone`). */
   readonly hooks: HooksWiring;
-  /** The job engine's bus, for `JobDone`. */
-  readonly jobs: Pick<JobEngine, "onDone">;
+  /** The job engine's bus, for `JobDone`; its kinds, for the plugin host's hook handlers (`plugin.hook`). */
+  readonly jobs: Pick<JobEngine, "onDone" | "kinds">;
   /** Tests (7B Task 12): the trigger's availability, verdicts and observer. */
   readonly autoMerge?: AutoMergeTriggerOptions;
 }
@@ -432,7 +435,8 @@ export interface AgentReviewsDeps {
  * trigger (7B Task 12) on its `branchReady`: unavailable until sub-project 10, so nothing merges.
  * 7F Task 8: the `BranchReady` hooks on every `branchReady`, the trigger's `preMerge` point (a
  * test's own still overrides it) and `PostMerge` after an auto merge (`hooks/review.ts`);
- * `JobDone` on the job engine's `onDone` (`hooks/jobs.ts`).
+ * `JobDone` on the job engine's `onDone` (`hooks/jobs.ts`). 7F Task 10: the plugin layer bound to
+ * the handlers of the plugin host that registered `plugin.hook` with the job engine.
  */
 export function startAgentReviews(d: AgentReviewsDeps): ReturnType<typeof startReviews> {
   const started = startReviews(d.control, { engine: registryEngine(d.projects), audit: d.audit, verdicts: journalReviewVerdicts(d.journal) });
@@ -444,6 +448,8 @@ export function startAgentReviews(d: AgentReviewsDeps): ReturnType<typeof startR
   const autoMerge = { store: d.core.store, reviews: started.reviews, audit: d.audit, outcomes: d.core.outcomes, projects: registryProjects(d.projects), budgetSpent: d.runtime.budgetSpent.bind(d.runtime), preMerge: hooks.preMerge, ...d.autoMerge };
   d.core.reviewLink.onBranchReady(hooks.afterMerge(autoMergeTrigger(autoMerge)));
   const creds = d.core.credentials.base.credentials;
+  const pluginHooks = pluginHooksOf(d.jobs.kinds);
+  if (pluginHooks !== undefined) d.hooks.bindPlugins(pluginHooks);
   d.jobs.onDone(jobDoneHooks({ engine: d.hooks.engine, invoker: liveInvokers({ credential: (ref) => creds.lookup(ref)?.principal }) }));
   return started;
 }

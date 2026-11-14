@@ -83,9 +83,13 @@ export interface HookFailure {
   readonly started?: true;
 }
 
-/** A hook that did not run because it no longer applies (its configuration or a bound file changed). */
+/**
+ * A hook that did not run: it no longer applies (`changed`: its configuration or a bound file
+ * changed), or a plugin handler does not receive this event (`notReceived`: no grant, out of its
+ * rights' reach, disabled meanwhile; Task 10).
+ */
 export interface HookNotRun {
-  readonly notRun: "changed";
+  readonly notRun: "changed" | "notReceived";
   readonly detail: string;
 }
 
@@ -482,6 +486,15 @@ export function parseReply(bytes: Uint8Array): HookReply | HookFailure {
   } catch {
     return fail("invalid", "stdout is not one JSON value");
   }
+  return checkReply(json);
+}
+
+/**
+ * One decoded reply value (Decision 2): `decodeHookReply` (strict: no `modify`, no unknown
+ * field), `reason` ≤ 1 KiB and `text` ≤ 16 KiB after control characters are stripped; a command
+ * hook's line and a plugin handler's `HookOut` alike.
+ */
+export function checkReply(json: unknown): HookReply | HookFailure {
   const decoded = decodeHookReply(json);
   if (Exit.isFailure(decoded)) return fail("invalid", "not a reply: allow, block {reason} or context {text}");
   const r = decoded.value;

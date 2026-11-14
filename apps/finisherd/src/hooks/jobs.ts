@@ -16,10 +16,11 @@
 //   source fires them until a render job kind exists (6E).
 import type { HookEvent, JobOwner, JobView } from "@finisher/contracts";
 import { type Invoker, type LiveInvoker, systemInvoker } from "../plugins/host/rights.ts";
+import { HOOK_KIND } from "../jobs/kinds/plugin.hook.ts";
 import type { HookEngine } from "./engine.ts";
 
 /** The job kind of a plugin's hook handler (Task 10): its end fires no `JobDone`. */
-export const PLUGIN_HOOK_KIND = "plugin.hook";
+export const PLUGIN_HOOK_KIND = HOOK_KIND;
 
 /** Accepted in configuration, fired by nothing until a render job kind exists (Decision 17). */
 export const INERT_EVENTS: readonly HookEvent[] = ["PreRender", "PostRender"];

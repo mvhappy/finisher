@@ -18,14 +18,23 @@ static PARAMS: &[&[KindParams]] = &[
     PLUGIN,
 ];
 
-/// Sub-project 8B's plugin kinds: a command run (`fin_plugin_api::protocol::CommandRun`; the
-/// kind itself is registered by finisherd's plugin host, Task 9).
-static PLUGIN: &[KindParams] = &[KindParams {
-    kind: "plugin.command",
-    version: 1,
-    validate: validate_as::<fin_plugin_api::protocol::CommandRun>,
-    schema: schema_as::<fin_plugin_api::protocol::CommandRun>,
-}];
+/// Sub-project 8B's plugin kinds: a command run (`fin_plugin_api::protocol::CommandRun`) and a
+/// hook handler's run (`HookRun`, 7F Task 10); the kinds themselves are registered by
+/// finisherd's plugin host.
+static PLUGIN: &[KindParams] = &[
+    KindParams {
+        kind: fin_plugin_api::protocol::COMMAND_KIND,
+        version: fin_plugin_api::protocol::COMMAND_KIND_VERSION,
+        validate: validate_as::<fin_plugin_api::protocol::CommandRun>,
+        schema: schema_as::<fin_plugin_api::protocol::CommandRun>,
+    },
+    KindParams {
+        kind: fin_plugin_api::protocol::HOOK_KIND,
+        version: fin_plugin_api::protocol::HOOK_KIND_VERSION,
+        validate: validate_as::<fin_plugin_api::protocol::HookRun>,
+        schema: schema_as::<fin_plugin_api::protocol::HookRun>,
+    },
+];
 
 /// Sub-project 6's media kinds (`fin_media::jobs`; the worker side is `fin-workers media`).
 static MEDIA: &[KindParams] = &[
