@@ -17,8 +17,8 @@ import { copyFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node
 import { join } from "node:path";
 import { getSession, nodesOf, startWatch, waitSession } from "./agent-lib.mjs";
 import { TEST_NATIVE_DIR, writeFixture } from "./fixture.mjs";
-import { auditOf, childrenOf, contextsOf, hookStats, projectHooks, script, STEPS, trustProject, userHooks } from "./hooks-lib.mjs";
-import { FIN, ROOT, assertEqual, consoleRpc, fin, finRaw, live, log, removeTmp, scenarioTmp, startServer, stopServer } from "./lib.mjs";
+import { auditOf, branchState, childrenOf, contextsOf, hookStats, projectHooks, script, STEPS, trustProject, userHooks } from "./hooks-lib.mjs";
+import { FIN, ROOT, assertEqual, connectWs, consoleRpc, fin, finRaw, live, log, removeTmp, scenarioTmp, startServer, stopServer } from "./lib.mjs";
 
 export { STEPS };
 
@@ -39,6 +39,7 @@ export async function run() {
   const hooksFile = join(project, "finisher.hooks.json");
   let server;
   let watch;
+  let ws;
   try {
     mkdirSync(sd, { recursive: true, mode: 0o700 });
     copyFileSync(HOOK, join(sd, "hook.mjs"));
@@ -55,6 +56,11 @@ export async function run() {
     const warnings = ((await consoleRpc(server, "server.status", {}, { confirm: false })).warnings ?? []).filter((w) => w.details?.profile === "hook");
     // SANDBOX_SOCKETS_EXPOSED only says the sockets are not hidden: Landlock still confines the files.
     const unenforced = warnings.filter((w) => w.code !== "SANDBOX_SOCKETS_EXPOSED");
+    // Only a host limit excuses the launcher checks; any other disabled state (`profileNotReady`
+    // with the profile made ready by FIN_TEST_SANDBOX_READY) is a regression.
+    const hostLimit = (w) => w.code === "SANDBOX_UNAVAILABLE" || w.details?.reason === "landlockDisabled";
+    const regressions = unenforced.filter((w) => !hostLimit(w));
+    need(regressions.length === 0, `the hook profile is not enforced for a reason other than the host: ${JSON.stringify(regressions)}`);
     const enforced = linux && unenforced.length === 0;
     if (linux && !enforced) {
       need(process.env.FIN_REQUIRE_LANDLOCK !== "1", `FIN_REQUIRE_LANDLOCK=1 but the hook profile is not enforced: ${JSON.stringify(unenforced)}`);
@@ -71,6 +77,9 @@ export async function run() {
     writeHooks();
 
     step(1);
+    ws = await connectWs(server);
+    // The session's branch forks from main: the first trim must move it away from main's state.
+    const beforeFirst = await branchState(ws, projectId, "main");
     const start = await consoleRpc(server, "agent.session.start", { projectId, harness: "fake", prompt: "one" });
     const id = start.session.id;
     need((start.warnings ?? []).some((w) => w.code === "PROJECT_HOOKS_UNTRUSTED"), `agent.session.start did not warn PROJECT_HOOKS_UNTRUSTED: ${JSON.stringify(start.warnings)}`);
@@ -82,6 +91,9 @@ export async function run() {
     const ranBefore = (await hookStats(server)).events;
     assertEqual([ranBefore.PreCommand.runs, ranBefore.UserPrompt.runs], [0, linux ? 1 : 0], "no project hook ran (only the user layer's probe)");
     const branch = (await getSession(server, id)).rootBranch;
+    const state = () => branchState(ws, projectId, branch);
+    const afterFirst = await state();
+    need(afterFirst !== beforeFirst, "the first trim changed neither the revision nor the clip");
     const mainBefore = JSON.stringify(fin(sd, project, ["view"]));
 
     step(2);
@@ -97,6 +109,10 @@ export async function run() {
     await waitTurn(server, sd, id, 2);
     const second = childrenOf(nodesOf(sd, id))[1];
     assertEqual([second.code, second.error], [7, "HOOK_BLOCKED"], `the trim after trust: ${second.stdout} ${JSON.stringify(nodesOf(sd, id).filter((n) => n.kind === "notice" && n.payload?.hook !== undefined).map((n) => n.payload))}`);
+    assertEqual(await state(), afterFirst, "the blocked trim left the session branch unchanged");
+    need(second.reason?.includes("trims are frozen"), `the block's reason: ${second.reason}`);
+    // The blocking project hook itself tries to write the project folder: denied under the launcher.
+    if (enforced) need(/\[write=(EACCES|EPERM)\]/.test(second.reason), `the project hook's write into the project folder: ${second.reason}`);
     const blocks = (await auditOf(server, "hook.block")).filter((r) => r.details.event === "PreCommand");
     assertEqual(blocks.length, 1, "one PreCommand hook.block row");
     assertEqual([blocks[0].details.hookId, blocks[0].details.layer, blocks[0].details.session, blocks[0].details.projectId], ["no-trim", "project", id, projectId], "the row's details");
@@ -128,12 +144,15 @@ export async function run() {
     await waitTurn(server, sd, id, 3);
     const third = childrenOf(nodesOf(sd, id))[2];
     assertEqual(third.code, 0, `the trim after the edit lands (${third.stdout})`);
+    const afterThird = await state();
+    need(afterThird !== afterFirst, "the trim after the edit changed neither the revision nor the clip");
     assertEqual(own(nodesOf(sd, id)).length, 1, "no new context while untrusted");
     await trustProject(server, projectId);
     await consoleRpc(server, "agent.session.prompt", { sessionId: id, text: "four" });
     await waitTurn(server, sd, id, 4);
     const fourth = childrenOf(nodesOf(sd, id))[3];
     assertEqual([fourth.code, fourth.error], [7, "HOOK_BLOCKED"], `the trim after trusting again: ${fourth.stdout}`);
+    assertEqual(await state(), afterThird, "the blocked trim left the session branch unchanged");
 
     step(7);
     const stats = (await hookStats(server)).events;
@@ -150,6 +169,7 @@ export async function run() {
   } finally {
     try {
       watch?.kill();
+      ws?.close?.();
       if (server) await stopServer(server);
     } finally {
       removeTmp(tmp);

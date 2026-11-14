@@ -3,8 +3,6 @@
 import { join } from "node:path";
 import { FIN, consoleRpc } from "./lib.mjs";
 
-const q = (s) => `'${s.replaceAll("'", "'\\''")}'`;
-
 /** The scenario's steps, in order (each is announced as `step <n>: …`). */
 export const STEPS = [
   "untrusted: the trim lands, no hook context, PROJECT_HOOKS_UNTRUSTED",
@@ -20,7 +18,7 @@ export const STEPS = [
 export function projectHooks({ context }) {
   return {
     hooks: [
-      { id: "no-trim", event: "PreCommand", match: "item.trim", run: ["node", "hook.mjs", "--reply", "block:trims are frozen"], file: "hook.mjs" },
+      { id: "no-trim", event: "PreCommand", match: "item.trim", run: ["node", "hook.mjs", "--write-project", "--reply", "block:trims are frozen"], file: "hook.mjs" },
       { id: "style", event: "UserPrompt", run: ["node", "hook.mjs", "--reply", `context:${context}`], file: "hook.mjs" },
     ],
   };
@@ -35,8 +33,7 @@ export function userHooks({ project, probe }) {
 
 /** One `fin item trim` per turn, then the end of the turn. */
 export function script(turns) {
-  const trim = `${q(FIN)} item trim c1 --end -0.5s`;
-  return [{ name: "hooks", turns: Array.from({ length: turns }, () => [{ spawn: ["/bin/sh", "-c", trim] }, { emit: [{ type: "turnCompleted", stopReason: "endTurn" }] }]) }];
+  return [{ name: "hooks", turns: Array.from({ length: turns }, () => [{ spawn: [FIN, "item", "trim", "c1", "--end", "-0.5s"] }, { emit: [{ type: "turnCompleted", stopReason: "endTurn" }] }]) }];
 }
 
 /** The `child` results of a session's nodes, oldest first, with `fin`'s error code (if any) parsed out. */
@@ -46,12 +43,15 @@ export function childrenOf(nodes) {
     .map((n) => {
       const c = n.payload.child;
       let error;
+      let reason;
       try {
-        error = JSON.parse(c.stdout).error?.code;
+        const e = JSON.parse(c.stdout).error;
+        error = e?.code;
+        reason = e?.details?.reason;
       } catch {
         // Not JSON.
       }
-      return { code: c.code, error, stdout: c.stdout, stderr: c.stderr };
+      return { code: c.code, error, reason, stdout: c.stdout, stderr: c.stderr };
     });
 }
 
@@ -80,4 +80,11 @@ export async function auditOf(server, kind) {
 /** `server.status.hooks.events`. */
 export async function hookStats(server) {
   return (await consoleRpc(server, "server.status", {}, { confirm: false })).hooks;
+}
+
+/** The session branch's state: the revision and clip c1 as `snapshot.get` shows them. */
+export async function branchState(ws, projectId, branch) {
+  const snap = await ws.call("snapshot.get", { projectId, branch });
+  const items = snap.project.timelines.flatMap((t) => t.tracks.flatMap((tr) => tr.items));
+  return JSON.stringify({ rev: snap.rev ?? snap.project.rev, clip: items.find((i) => i.id === "c1") });
 }

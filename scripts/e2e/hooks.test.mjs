@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { join } from "node:path";
 import { childrenOf, contextsOf, projectHooks, script, STEPS, userHooks } from "./hooks-lib.mjs";
 
 test("the scenario has the plan's seven steps, in order", () => {
@@ -19,13 +20,13 @@ test("the project hooks match item.trim and name a project-local script", () => 
 test("the user layer has PreMerge, and the probe only on request", () => {
   assert.deepEqual(userHooks({ project: "/p", probe: false }).map((h) => h.event), ["PreMerge"]);
   const [, probe] = userHooks({ project: "/p", probe: true });
-  assert.deepEqual(probe.run.slice(-2), ["--write", "/p/planted.txt"]);
+  assert.deepEqual(probe.run.slice(-2), ["--write", join("/p", "planted.txt")]);
 });
 
 test("the session script runs one trim per turn", () => {
   const [s] = script(3);
   assert.equal(s.turns.length, 3);
-  assert.match(s.turns[0][0].spawn[2], /item trim c1/);
+  assert.deepEqual(s.turns[0][0].spawn.slice(1), ["item", "trim", "c1", "--end", "-0.5s"]);
   assert.deepEqual(s.turns[2].at(-1), { emit: [{ type: "turnCompleted", stopReason: "endTurn" }] });
 });
 
