@@ -1,0 +1,251 @@
+[
+  {
+    "type": "usage",
+    "input": 2,
+    "output": 5,
+    "cacheRead": 0,
+    "cacheWrite": 7013,
+    "reasoning": 0,
+    "costMicros": 0,
+    "costBasis": "reported"
+  },
+  {
+    "type": "reasoning",
+    "text": "",
+    "encrypted": {
+      "signature": "c2lnbmF0dXJl"
+    }
+  },
+  {
+    "type": "toolStarted",
+    "providerId": "toolu_0001",
+    "tool": "Read",
+    "input": {
+      "file_path": "/srv/finisher/workspace/s1/notes.txt"
+    }
+  },
+  {
+    "type": "request",
+    "id": "00000000-0000-4000-8000-000000000036#1",
+    "kind": "approval",
+    "tool": "Read",
+    "input": {
+      "file_path": "/srv/finisher/workspace/s1/notes.txt"
+    },
+    "providerId": "toolu_0001"
+  },
+  {
+    "type": "usage",
+    "input": 0,
+    "output": 153,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "reasoning": 0,
+    "costMicros": 0,
+    "costBasis": "reported"
+  },
+  {
+    "type": "toolCompleted",
+    "providerId": "toolu_0001",
+    "ok": true,
+    "output": "1\talpha\n2\t"
+  },
+  {
+    "type": "usage",
+    "input": 2,
+    "output": 16,
+    "cacheRead": 7013,
+    "cacheWrite": 195,
+    "reasoning": 0,
+    "costMicros": 0,
+    "costBasis": "reported"
+  },
+  {
+    "type": "toolStarted",
+    "providerId": "toolu_0002",
+    "tool": "Edit",
+    "input": {
+      "replace_all": false,
+      "file_path": "/srv/finisher/workspace/s1/notes.txt",
+      "old_string": "alpha",
+      "new_string": "beta"
+    }
+  },
+  {
+    "type": "usage",
+    "input": 0,
+    "output": 143,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "reasoning": 0,
+    "costMicros": 0,
+    "costBasis": "reported"
+  },
+  {
+    "type": "request",
+    "id": "00000000-0000-4000-8000-000000000075#2",
+    "kind": "approval",
+    "tool": "Edit",
+    "input": {
+      "file_path": "/srv/finisher/workspace/s1/notes.txt",
+      "old_string": "alpha",
+      "new_string": "beta",
+      "replace_all": false
+    },
+    "providerId": "toolu_0002"
+  },
+  {
+    "type": "toolCompleted",
+    "providerId": "toolu_0002",
+    "ok": true,
+    "output": "The file /srv/finisher/workspace/s1/notes.txt has been updated successfully. (file state is current in your context — no need to Read it back)"
+  },
+  {
+    "type": "usage",
+    "input": 2,
+    "output": 3,
+    "cacheRead": 7208,
+    "cacheWrite": 301,
+    "reasoning": 0,
+    "costMicros": 0,
+    "costBasis": "reported"
+  },
+  {
+    "type": "messageDelta",
+    "text": "done"
+  },
+  {
+    "type": "message",
+    "role": "assistant",
+    "blocks": [
+      {
+        "type": "text",
+        "text": "done"
+      }
+    ]
+  },
+  {
+    "type": "usage",
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "reasoning": 0,
+    "costMicros": 1805,
+    "costBasis": "reported"
+  },
+  {
+    "type": "notice",
+    "name": "modelUsage",
+    "details": {
+      "claude-haiku-5-5": {
+        "input": 6,
+        "output": 320,
+        "cacheRead": 14221,
+        "cacheWrite": 7509,
+        "costMicros": 1805
+      }
+    }
+  },
+  {
+    "type": "turnCompleted",
+    "stopReason": "endTurn"
+  },
+  {
+    "type": "usage",
+    "input": 2,
+    "output": 16,
+    "cacheRead": 7509,
+    "cacheWrite": 57,
+    "reasoning": 0,
+    "costMicros": 0,
+    "costBasis": "reported"
+  },
+  {
+    "type": "toolStarted",
+    "providerId": "toolu_0003",
+    "tool": "Write",
+    "input": {
+      "file_path": "/srv/finisher/workspace/s1/done.txt",
+      "content": "ok"
+    }
+  },
+  {
+    "type": "usage",
+    "input": 0,
+    "output": 114,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "reasoning": 0,
+    "costMicros": 0,
+    "costBasis": "reported"
+  },
+  {
+    "type": "request",
+    "id": "00000000-0000-4000-8000-000000000115#3",
+    "kind": "approval",
+    "tool": "Write",
+    "input": {
+      "file_path": "/srv/finisher/workspace/s1/done.txt",
+      "content": "ok"
+    },
+    "providerId": "toolu_0003"
+  },
+  {
+    "type": "toolCompleted",
+    "providerId": "toolu_0003",
+    "ok": true,
+    "output": "File created successfully at: /srv/finisher/workspace/s1/done.txt (file state is current in your context — no need to Read it back)"
+  },
+  {
+    "type": "usage",
+    "input": 2,
+    "output": 3,
+    "cacheRead": 7566,
+    "cacheWrite": 244,
+    "reasoning": 0,
+    "costMicros": 0,
+    "costBasis": "reported"
+  },
+  {
+    "type": "messageDelta",
+    "text": "done"
+  },
+  {
+    "type": "message",
+    "role": "assistant",
+    "blocks": [
+      {
+        "type": "text",
+        "text": "done"
+      }
+    ]
+  },
+  {
+    "type": "usage",
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "reasoning": 0,
+    "costMicros": 278,
+    "costBasis": "reported"
+  },
+  {
+    "type": "notice",
+    "name": "modelUsage",
+    "details": {
+      "claude-haiku-5-5": {
+        "input": 4,
+        "output": 133,
+        "cacheRead": 15075,
+        "cacheWrite": 301,
+        "costMicros": 278
+      }
+    }
+  },
+  {
+    "type": "turnCompleted",
+    "stopReason": "endTurn"
+  }
+]

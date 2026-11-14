@@ -1,5 +1,5 @@
 //! The escape suites as one runner (plan 7C Task 13, spec §8.11): each case file of `cases/`
-//! (`server_data.json`, `sessions.json`, `links_mounts.json`) runs per profile on this OS
+//! (`server_data.json`, `sessions.json`, `links_mounts.json`, `agent-claude.json`) runs per profile on this OS
 //! through `fin-sandbox-probe`, the way each profile is applied in the product:
 //! - `agent` and `hook`: the real launcher, `fin-sandbox-exec --policy-fd 3 -- probe --none`;
 //! - `worker`: `probe --self`, the self-sandbox entry `fin-workers` calls before `hello`;
@@ -43,9 +43,13 @@ struct Case {
     /// The OSes the case applies to (default: every one).
     #[serde(default)]
     os: Option<Vec<String>>,
-    /// `namespaces`: the launcher's socket namespace (Linux, Decision 26).
+    /// `namespaces`: the launcher's socket namespace (Linux, Decision 26). `unixSockets`:
+    /// Landlock ABI 9 (kernel 6.15), which refuses a pathname socket not listed (Linux).
     #[serde(default)]
     needs: Option<String>,
+    /// The `agent` profile's harness: `codex` (default) or `claudeCode` (plan 7D Task 14).
+    #[serde(default)]
+    harness: Option<String>,
     /// `required` (default for `deny`), `root` (only as root) or `none`.
     #[serde(default)]
     control: Option<String>,
@@ -184,6 +188,19 @@ impl Tree {
             ("p/.finisher/segment", "s"),
             ("p/finisher.project.json", "{}"),
             ("p/hooks/check.sh", "#!/bin/sh\n"),
+            // What Claude Code would load by itself (plan 7D Task 14): the project's files, the
+            // user's, another session's configuration directory, the sign-in home and its store.
+            ("p/CLAUDE.md", "project memory"),
+            ("p/CLAUDE.local.md", "local memory"),
+            ("p/.claude/settings.json", "{}"),
+            ("home/.claude/settings.json", "{}"),
+            ("home/.claude.json", "{}"),
+            ("data/agents/s2/provider/settings.json", "{}"),
+            ("data/providers/claudeCode/home/.claude.json", "{}"),
+            (
+                "data/providers/claudeCode/home/store/.credentials.json",
+                "{}",
+            ),
             ("q/other.txt", "o"),
             ("home/.ssh/id_ed25519", "k"),
         ]);
@@ -212,10 +229,19 @@ impl Tree {
         }
         // The socket the open_tree case's root control connects to.
         #[cfg(target_os = "linux")]
-        let socks =
+        let mut socks =
             vec![std::os::unix::net::UnixListener::bind(t.join("home/.cache/ide.sock")).unwrap()];
         #[cfg(target_os = "macos")]
-        let socks = vec![];
+        let mut socks = vec![];
+        // Another session's Claude Code inbox (`<tmp>/cc-socks-<uid>/<pid>.sock`, plan 7D Task 0).
+        #[cfg(unix)]
+        {
+            std::fs::create_dir_all(t.join("inbox/cc-socks-1")).unwrap();
+            socks.push(
+                std::os::unix::net::UnixListener::bind(t.join("inbox/cc-socks-1/4242.sock"))
+                    .unwrap(),
+            );
+        }
         Tree {
             _d: d,
             t,
@@ -258,18 +284,24 @@ mod unix {
         v
     }
 
-    fn agent(t: &Tree) -> LaunchRequest {
+    fn agent(t: &Tree, harness: Harness) -> LaunchRequest {
+        let claude = harness == Harness::ClaudeCode;
         LaunchRequest::Agent(AgentInput {
             session_id: "s1".into(),
             mode: AgentMode::Draft,
-            harness: Harness::Codex,
+            harness,
             project_dir: t.p("p"),
             workspace_dir: t.p("p/workspace/s1"),
             shared_dir: Some(t.p("p/workspace/shared")),
             library_roots: vec![],
             session_dir: t.p("data/agents/s1"),
             sign_in_home: None,
-            sign_in_store: Some(t.p("data/providers/codex/home/auth.json")),
+            // A Claude Code store is a directory in the sign-in home (plan 7D Decision 3).
+            sign_in_store: Some(if claude {
+                t.p("data/providers/claudeCode/home/store")
+            } else {
+                t.p("data/providers/codex/home/auth.json")
+            }),
             toolchains: toolchains(),
             server_data: t.p("data"),
             home: t.p("home"),
@@ -382,9 +414,20 @@ mod unix {
     }
 
     /// `op` under `profile` built from the fixture `t`.
-    pub fn attempt(t: &Tree, profile: &str, op: &[String], namespaces: bool) -> Outcome {
+    pub fn attempt(
+        t: &Tree,
+        case: &Case,
+        profile: &str,
+        op: &[String],
+        namespaces: bool,
+    ) -> Outcome {
+        let harness = match case.harness.as_deref() {
+            None | Some("codex") => Harness::Codex,
+            Some("claudeCode") => Harness::ClaudeCode,
+            Some(other) => panic!("{}: unknown harness {other:?}", case.name),
+        };
         match profile {
-            "agent" => launched(t, &agent(t), op, namespaces),
+            "agent" => launched(t, &agent(t, harness), op, namespaces),
             "hook" => launched(t, &hook(t), op, namespaces),
             "worker" => {
                 let req = fin_jobs::sandbox::SelfSandbox {
@@ -426,6 +469,24 @@ mod unix {
         Err("no socket namespace on macOS".into())
     }
 
+    /// Whether the kernel refuses a pathname socket the policy does not list, or why not
+    /// (Landlock ABI 9; Seatbelt always does).
+    pub fn unix_sockets() -> Result<(), String> {
+        #[cfg(target_os = "linux")]
+        {
+            use fin_sandbox::linux::landlock::{Support, query};
+            match query() {
+                Support::Abi(a) if a.0 >= 9 => Ok(()),
+                other => Err(format!(
+                    "Landlock below ABI 9 does not scope pathname sockets ({other:?}); \
+                     SANDBOX_SOCKETS_EXPOSED"
+                )),
+            }
+        }
+        #[cfg(target_os = "macos")]
+        Ok(())
+    }
+
     pub fn is_root() -> bool {
         // SAFETY: getuid cannot fail.
         unsafe { libc::getuid() == 0 }
@@ -451,15 +512,23 @@ mod macos_support;
 #[cfg(unix)]
 fn run(case: &Case, profile: &str) -> (&'static str, String) {
     let namespaces = case.needs.as_deref() == Some("namespaces");
-    if let Some(n) = &case.needs {
-        assert_eq!(n, "namespaces", "{}: unknown need", case.name);
-        if let Err(why) = unix::namespaces() {
-            return ("skipped", why);
+    match case.needs.as_deref() {
+        None => {}
+        Some("namespaces") => {
+            if let Err(why) = unix::namespaces() {
+                return ("skipped", why);
+            }
         }
+        Some("unixSockets") => {
+            if let Err(why) = unix::unix_sockets() {
+                return ("skipped", why);
+            }
+        }
+        Some(n) => panic!("{}: unknown need {n:?}", case.name),
     }
     let tree = Tree::new();
     let op = tree.op(case);
-    let got = unix::attempt(&tree, profile, &op, namespaces);
+    let got = unix::attempt(&tree, case, profile, &op, namespaces);
     let (want_errnos, deny) = match &case.expect {
         Expect::Word(w) if w == "allow" => (vec![], false),
         Expect::Word(w) if w == "deny" => (DENIALS.to_vec(), true),
@@ -568,12 +637,18 @@ fn links_mounts() {
 }
 
 #[test]
+fn agent_claude() {
+    suite("agent-claude.json", include_str!("cases/agent-claude.json"));
+}
+
+#[test]
 fn every_case_file_names_known_profiles_and_oses() {
     // Pure: a typo in a case file would otherwise run nothing for it.
     for (file, text) in [
         ("server_data.json", include_str!("cases/server_data.json")),
         ("sessions.json", include_str!("cases/sessions.json")),
         ("links_mounts.json", include_str!("cases/links_mounts.json")),
+        ("agent-claude.json", include_str!("cases/agent-claude.json")),
     ] {
         let parsed: File = serde_json::from_str(text).unwrap();
         assert!(!parsed.cases.is_empty(), "{file}");
@@ -604,7 +679,23 @@ fn every_case_file_names_known_profiles_and_oses() {
                 Expect::Errno { errno } => assert!(!errno.is_empty(), "{file}: {}", c.name),
             }
             if let Some(n) = &c.needs {
-                assert_eq!(n, "namespaces", "{file}: {}", c.name);
+                assert!(
+                    ["namespaces", "unixSockets"].contains(&n.as_str()),
+                    "{file}: {}",
+                    c.name
+                );
+            }
+            if let Some(h) = &c.harness {
+                assert!(
+                    ["codex", "claudeCode"].contains(&h.as_str()),
+                    "{file}: {}",
+                    c.name
+                );
+                assert!(
+                    c.profiles.iter().all(|p| p == "agent"),
+                    "{file}: {}",
+                    c.name
+                );
             }
             if let Some(k) = &c.control {
                 assert!(

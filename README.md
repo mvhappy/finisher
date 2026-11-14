@@ -402,7 +402,7 @@ processes Finisher starts itself, on each OS where it is switched on.
 
 **The OS sandbox.** Every process Finisher starts for a CLI agent session, a media job or a
 plugin goes through `fin-sandbox`, under one of four profiles (`agent`, `hook`, `worker`,
-`plugin`; hooks and the Claude Code and Codex harnesses come in later versions). Where a profile
+`plugin`; hooks and the Claude Code harness are built, Codex comes in a later version). Where a profile
 is on:
 
 - **no profile can read the server's data**: `auth/` (`local.key`, `console.key`,
@@ -566,6 +566,44 @@ fin merge <branch>                           # take its work into your branch
 - **Windows sandbox limits.** Node tools that spawn child processes with piped stdio (npm
   scripts, Node hooks, Node MCP servers) fail fast with `WINDOWS_NODE_PIPES` inside the Windows
   sandbox, until Node ships libuv's fix. Warm media workers run cold there under the sandbox.
+
+**Claude Code.** A session can instead drive the Claude Code CLI you already have installed
+(version 2.1.321 or later; Finisher never bundles it), on **your own sign-in**. It is off until
+you set `agents.claudeCode.enabled` to `true` in `settings.json` (and `agents.claudeCode.path` if
+`claude` is not on the server's `PATH`). Sign in once, in a terminal on the server: the command
+below only prints what to run, runs nothing, and Finisher never reads, copies or stores the
+credential (the CLI keeps its own sign-in store in a folder under the server's data).
+
+```bash
+finisherd provider signin claudeCode             # prints the command; run it yourself, then answer the CLI's login
+finisherd agent providers                        # Claude Code detected, its version, signed in or not
+finisherd agent start --project <dir|id> --harness claudeCode [--model default] \
+  [--mode plan|draft] [--role editor] [--budget-usd 2] --prompt "tighten the intro"
+finisherd agent watch <session>                  # the same session commands as above
+finisherd provider account confirm claudeCode    # after you switched Claude Code accounts yourself
+finisherd provider signout claudeCode            # prints the logout command
+```
+
+- The CLI runs in the OS sandbox, in the session's own workspace and configuration folder, with
+  your user-level Claude settings, hooks, MCP servers, plugins and memory files, and the
+  project's `CLAUDE.md`, left out. It edits the project through `fin`, on the session's branch.
+- **Every tool call goes through Finisher's rules and approvals**, including reads: an `ask`
+  rule puts a card in front of you and the CLI waits. Its own subagents are off (use
+  `fin agent spawn`).
+- Models come from the CLI itself (`--model default`, `opus`, …). A subscription sign-in shows
+  its notional cost and charges tokens only, unless `agents.claudeCode.chargePlanMoney` is on;
+  a session with a money budget on any other sign-in also gets the CLI's own `--max-budget-usd`
+  as a backstop.
+- A line you send while the CLI works (`agent steer`) is held and goes with the next turn; if
+  the turn ends otherwise, the text is handed back as a note, and
+  `finisherd agent resume <session> --resend-returned` sends it again. An idle session's CLI
+  process is closed after `agents.claudeCode.idleCloseS` (300) seconds and resumed by the next
+  prompt.
+- If the Claude Code account on the server changes without you running the sign-in command,
+  new sessions are refused with `PROVIDER_ACCOUNT_CHANGED` until you confirm it.
+- Not yet validated on macOS and Windows, or against the CLI's token refresh under the sandbox;
+  whether subscription use this way fits Anthropic's terms is open (see `TASKS.md`), which is
+  why it is off by default.
 
 **Rules, approvals and subagents.** Command rules (`allow`, `ask` or `deny` on a command
 pattern) apply to every agent call the server gets, however it arrives. They come from

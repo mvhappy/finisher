@@ -146,6 +146,7 @@ fn write(
             sample_rate: opts.sample_rate,
             channels: 2,
             priming: 0,
+            presented: None,
         })
         .unwrap()
     });

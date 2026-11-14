@@ -20,6 +20,12 @@
 //   `approval` node `{status: expired, reason: withdrawn}` and sends no answer; the card, once no
 //   identical request waits on it, is expired (`Expiry.withdraw`). A request already answered is
 //   not withdrawn (nothing waits).
+// - **Run closed.** A run that closes under a waiting request (an interrupt, an end, the
+//   provider's exit, a turn's end) expires its cards in the same transition (`session.ts`); the
+//   engine then drops the run's requests here (`dropRun`, for every harness): an `approval` node
+//   `{status: expired, reason: runClosed, stop}` each, their timers stopped, no answer sent (the
+//   instance's own interrupt or exit has already ended what waited there). A late answer to the
+//   card is refused (it is expired) and reaches no one.
 // - **Deny messages.** Every deny carries the server's reason (`denyMessage`), which a provider
 //   shows its model (Claude Code's `deny.message`).
 // - **Unconfined.** `RequestContext.unconfined` (the session sandbox's `agent` profile is not
@@ -113,6 +119,9 @@ interface Pending {
 
 const run = <A, E>(e: Effect.Effect<A, E>) => Effect.runPromiseExit(e);
 
+/** An allow names the call it decided (an adapter that runs it sets `FIN_CALL`: 7D Task 13). */
+const callOf = (ctx: RequestContext) => (ctx.callId === undefined ? {} : { callId: ctx.callId });
+
 /** The 7A answer, kept for a runtime without provider permissions (and for `userInput`). */
 async function declined(ctx: RequestContext, e: RequestEvent, reason: string): Promise<void> {
   await ctx.node({ requestId: e.id, kind: e.kind, ...(e.tool === undefined ? {} : { tool: e.tool }), input: e.input ?? null, decision: "deny", by: "policy", reason });
@@ -171,7 +180,7 @@ export class ProviderRequests {
     const answer = async (allow: boolean, node: { readonly reason: string; readonly rule?: string; readonly layer?: string }) => {
       await ctx.node({ ...base, decision: allow ? "allow" : "deny", by: "policy", ...node });
       if (allow) await this.#opened(ctx, tool, input);
-      const err = await ctx.respond(allow ? { kind: "approval", allow } : { kind: "approval", allow, message: denyMessage(node) });
+      const err = await ctx.respond(allow ? { kind: "approval", allow, ...callOf(ctx) } : { kind: "approval", allow, message: denyMessage(node) });
       if (err) ctx.log("agent runtime: the provider refused an answer", { code: err.code });
     };
     const decided = await run(this.#d.permissions.explain(ctx.session, { tool, input, ...(ctx.unconfined === true ? { unconfined: true } : {}) }));
@@ -218,7 +227,7 @@ export class ProviderRequests {
       const node = a.status === "answered" ? { decision: a.decision, by: "user", answeredBy: a.by } : { decision: "deny", by: "policy", reason: "expired" };
       await p.ctx.node({ approvalId: a.id, requestId: p.requestId, kind: "provider", tool: p.tool, ...node });
       if (allow) await this.#opened(p.ctx, p.tool, p.input);
-      const err = await p.ctx.respond(allow ? { kind: "approval", allow } : { kind: "approval", allow, message: denyMessage({ reason: a.status === "answered" ? "user" : "expired" }) });
+      const err = await p.ctx.respond(allow ? { kind: "approval", allow, ...callOf(p.ctx) } : { kind: "approval", allow, message: denyMessage({ reason: a.status === "answered" ? "user" : "expired" }) });
       if (err) p.ctx.log("agent runtime: the provider refused an answer", { code: err.code });
     }
   }
@@ -240,6 +249,33 @@ export class ProviderRequests {
       }
       await p!.ctx.node({ approvalId: id, requestId, kind: "provider", tool: p!.tool, status: "expired", reason: "withdrawn" });
       return;
+    }
+  }
+
+  /**
+   * Run `runId` of `sessionId` closed (`stop`, module docs): its waiting requests leave, each
+   * with a node; their cards' timers stop (the transition already expired the cards).
+   */
+  async dropRun(sessionId: string, runId: string, stop: string): Promise<void> {
+    const dropped: Array<[string, Pending]> = [];
+    for (const [id, list] of [...this.#pending]) {
+      const kept = list.filter((p) => !(p.ctx.session.id === sessionId && p.ctx.runId === runId));
+      if (kept.length === list.length) continue;
+      for (const p of list) if (!kept.includes(p)) dropped.push([id, p]);
+      if (kept.length > 0) {
+        this.#pending.set(id, kept);
+        continue;
+      }
+      this.#pending.delete(id);
+      this.#timers.get(id)?.();
+      this.#timers.delete(id);
+    }
+    for (const [id, p] of dropped) {
+      try {
+        await p.ctx.node({ approvalId: id, requestId: p.requestId, kind: "provider", tool: p.tool, status: "expired", reason: "runClosed", stop });
+      } catch (e) {
+        p.ctx.log("agent runtime: a dropped request's node was not written", { error: String(e) });
+      }
     }
   }
 

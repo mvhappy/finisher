@@ -69,6 +69,32 @@ test("EncoderConfig may not have a Default", () => {
   }
 });
 
+test("audio/registry.rs is the only audio encoder opener", () => {
+  const ok = fixtureRoot({
+    "crates/fin-codecs/src/audio/registry.rs": "pub fn open_audio_encoder(cfg: &AudioEncoderConfig, purpose: EncodePurpose) {\n    b.open(cfg, AudioOpenToken(()));\n}\n",
+    "crates/fin-codecs/src/audio/opus.rs": "fn open(&self, cfg: &AudioEncoderConfig, _: AudioOpenToken) -> R { todo!() }\n",
+  });
+  assert.equal(gate(ok).code, 0, gate(ok).out);
+  const r = gate(fixtureRoot({ "crates/fin-codecs/src/audio/opus.rs": "fn f() {\n    backend.open(&cfg, AudioOpenToken(()));\n}\n" }));
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /ENCODER_CALL_SITE crates\/fin-codecs\/src\/audio\/opus\.rs:2: the audio encoder token/);
+});
+
+test("open_audio_encoder callers name an EncodePurpose and call it by name", () => {
+  const ok = "use fin_codecs::open_audio_encoder;\nfn f() { open_audio_encoder(&cfg, EncodePurpose::Proxy); }\n";
+  assert.equal(gate(fixtureRoot({ "crates/fin-workers/src/media/proxy.rs": ok })).code, 0);
+  const cases = {
+    purpose: ["fn f(p: EP) {\n    fin_codecs::open_audio_encoder(&cfg, p);\n}\n", /:2: open_audio_encoder without an EncodePurpose/],
+    renamed: ["use fin_codecs::open_audio_encoder as oae;\nfn f() { oae(&c, EncodePurpose::Proxy); }\n", /:1: open_audio_encoder renamed/],
+    value: ["fn f() {\n    let o = fin_codecs::open_audio_encoder;\n}\n", /:2: open_audio_encoder taken as a value/],
+  };
+  for (const [name, [src, re]] of Object.entries(cases)) {
+    const r = gate(fixtureRoot({ "crates/fin-workers/src/a.rs": src }));
+    assert.equal(r.code, 1, `${name}: ${r.out}`);
+    assert.match(r.out, re, name);
+  }
+});
+
 test("comments and strings are ignored", () => {
   const r = gate(fixtureRoot({ "crates/fin-workers/src/a.rs": '// VTCompressionSessionCreate is not called here\nconst S: &str = "CLSID_MSH264EncoderMFT open_encoder(";\n' }));
   assert.equal(r.code, 0, r.out);

@@ -1,10 +1,15 @@
 //! Data files shipped with the crate (`data/<os>/`), parsed here so every list has one reader.
 
+use fin_core::events::payloads::agent::Harness;
+
 use crate::policy::{Os, Profile};
 
 const TOOLCHAIN_LINUX: &str = include_str!("../data/linux/toolchain-base.txt");
 const TOOLCHAIN_MACOS: &str = include_str!("../data/macos/toolchain-base.txt");
 const TOOLCHAIN_WINDOWS: &str = include_str!("../data/windows/toolchain-base.txt");
+const CLAUDE_LINUX: &str = include_str!("../data/linux/toolchain-claudeCode.txt");
+const CLAUDE_MACOS: &str = include_str!("../data/macos/toolchain-claudeCode.txt");
+const CLAUDE_WINDOWS: &str = include_str!("../data/windows/toolchain-claudeCode.txt");
 const GIT_CONFIG: &str = include_str!("../data/linux/git-config");
 const MACH_AGENT: &str = include_str!("../data/macos/mach-agent.txt");
 const MACH_HOOK: &str = include_str!("../data/macos/mach-hook.txt");
@@ -49,6 +54,23 @@ pub fn toolchain_base(os: Os) -> Vec<&'static str> {
         Os::Linux => TOOLCHAIN_LINUX,
         Os::Macos => TOOLCHAIN_MACOS,
         Os::Windows => TOOLCHAIN_WINDOWS,
+    };
+    entries(text).collect()
+}
+
+/// The read list of `harness`'s own CLI on `os`, on top of [`toolchain_base`] (plan 7D Decision 6
+/// and Task 14): one absolute path per line, each file's header naming its evidence. Only Claude
+/// Code has one (empty on macOS and Windows until 7D Task 18 records a start there). The CLI's
+/// install tree is never in it: it moves with the person's install, so the adapter passes it
+/// as the process's `extraRead`. `profile::agent` adds this list to the policy's reads.
+pub fn toolchain_harness(os: Os, harness: Harness) -> Vec<&'static str> {
+    if harness != Harness::ClaudeCode {
+        return Vec::new();
+    }
+    let text = match os {
+        Os::Linux => CLAUDE_LINUX,
+        Os::Macos => CLAUDE_MACOS,
+        Os::Windows => CLAUDE_WINDOWS,
     };
     entries(text).collect()
 }

@@ -6,7 +6,7 @@
 // through the `fin` binary, and asserts the subscriber saw every committed rev in order and
 // that its last rev equals `snapshot.get`'s. The server and the temp dir are always cleaned up.
 //
-// Usage: node scripts/e2e.mjs [--skip-build] [basic|storage|history|reel|diagnostics|plugins|plugin-code|auth|look|agent|library|sandbox|remote|review|subagents|hooks|proxy ...]  (default: every scenario)
+// Usage: node scripts/e2e.mjs [--skip-build] [basic|storage|history|reel|diagnostics|plugins|plugin-code|auth|look|agent|library|sandbox|remote|review|subagents|hooks|claude|proxy ...]  (default: every scenario)
 //
 // Builds go to `CARGO_TARGET_DIR` when it is set (else `target/`), and so does the run's
 // `fin` and `fin-plugin`. Scenario temp dirs fall back to `/tmp` when `TMPDIR` is so deep that the
@@ -107,6 +107,15 @@
 // `PreMerge`; editing the file turns the hooks off until trusted again; `server.status.hooks`
 // counts the runs. On Linux a probe hook runs under the `hook` profile's launcher and cannot write
 // the project folder (plan 7F Task 11).
+// The "claude" scenario (scripts/e2e/claude*.mjs) runs Claude Code sessions from the console with
+// `fake-claude` as the CLI (`agents.claudeCode.path`, laid out as `claude/versions/<v>`): `agent
+// providers` and a `provider signin` that runs nothing, an `ask tool:Bash(curl *)` rule answered by a
+// person, edits through `fin` on the session's branch, a steer held for the next turn, an interrupt,
+// a restart mid-call and a resume that refuses the re-asked call (no repeated commit), an account
+// change that refuses the next start until confirmed, a budget stop whose approval gates the next
+// turn, the credential revoked at the end and the leak grep. On Linux it runs again under the
+// launcher (`FIN_TEST_SANDBOX_READY=agent`, the test-hooks fin-node; `FIN_REQUIRE_LANDLOCK=1` fails
+// instead of skipping where the profile cannot be enforced) (plan 7D Task 16).
 //
 // The "proxy" scenario (scripts/e2e/proxy*.mjs) makes proxies through the real media worker (6B-1
 // Task 20): a library's `proxy540` stage over generated AV1 clips (CFR, and VFR rotated 90°), the
@@ -138,6 +147,7 @@ import { run as runRemote } from "./e2e/remote.mjs";
 import { run as runReview } from "./e2e/review.mjs";
 import { run as runSubagents } from "./e2e/subagents.mjs";
 import { run as runHooks } from "./e2e/hooks.mjs";
+import { run as runClaude } from "./e2e/claude.mjs";
 import { run as runProxy } from "./e2e/proxy.mjs";
 
 // The servers of every scenario keep their secrets in files, never in the OS keychain (5B Decision 4).
@@ -147,7 +157,7 @@ export { parseFrames } from "./e2e/lib.mjs";
 export { checkRevs };
 
 const DEADLINE_MS = Number(process.env.E2E_DEADLINE_MS ?? 180_000);
-const SCENARIOS = { basic: runBasic, storage: runStorage, history: runHistory, reel: runReel, diagnostics: runDiagnostics, plugins: runPlugins, "plugin-code": runPluginCode, auth: runAuth, look: runLook, agent: runAgent, library: runLibrary, sandbox: runSandbox, remote: runRemote, review: runReview, subagents: runSubagents, hooks: runHooks, proxy: runProxy };
+const SCENARIOS = { basic: runBasic, storage: runStorage, history: runHistory, reel: runReel, diagnostics: runDiagnostics, plugins: runPlugins, "plugin-code": runPluginCode, auth: runAuth, look: runLook, agent: runAgent, library: runLibrary, sandbox: runSandbox, remote: runRemote, review: runReview, subagents: runSubagents, hooks: runHooks, claude: runClaude, proxy: runProxy };
 
 async function main(argv) {
   const names = argv.filter((a) => !a.startsWith("--"));
@@ -157,6 +167,8 @@ async function main(argv) {
     if (names.length === 0 || names.includes("plugin-code")) build("cargo", ["build", "--release", "-p", "example-rust-tools", "--bin", "rust-tools"]); // the Rust example plugin
     build("pnpm", ["--filter", "@finisher/fin-node", "build"]);
     build("pnpm", ["--filter", "@finisher/fin-node", "build:test"]);
+    // The fake Claude Code CLI the claude scenario runs as `agents.claudeCode.path`.
+    if (names.length === 0 || names.includes("claude")) build("cargo", ["build", "--release", "-p", "fin-agent-fakes", "--bin", "fake-claude"]);
     if (names.length === 0 || names.includes("look") || names.includes("sandbox") || names.includes("proxy")) {
       // The look scenario's fixture writer and CPU oracle (it runs them with `cargo run`, which finds them built); the sandbox and proxy scenarios' AV1 clips.
       build("cargo", ["build", "--release", "-p", "fin-codecs", "--features", "testing", "--example", "make_fixture"]);
@@ -172,7 +184,8 @@ async function main(argv) {
   // The deadline is per scenario: the sum of the scenarios outgrew one budget (review made it 12).
   for (const name of names.length > 0 ? names : Object.keys(SCENARIOS)) {
     process.stdout.write(`e2e: scenario ${name}\n`);
-    await withDeadline(SCENARIOS[name](), DEADLINE_MS);
+    // The claude scenario runs twice (direct, then under the launcher): twice the budget.
+    await withDeadline(SCENARIOS[name](), name === "claude" ? 2 * DEADLINE_MS : DEADLINE_MS);
   }
 }
 

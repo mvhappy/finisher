@@ -180,7 +180,7 @@ describe("the signed-in CLI's lines (7D Task 0, 2.1.321)", () => {
   test("outside_write_is_cli_denied: a notice per denial no prompt asked about, never an approval", () => {
     const asked = new Set(["toolu_01B"]);
     let ended = 0;
-    const events = all(new LineMapper(undefined, { asked: (d) => d.tool_use_id !== undefined && asked.has(d.tool_use_id), turnEnded: () => ended++ }), real.slice(1, 6));
+    const events = all(new LineMapper(undefined, { asked: (d) => d.tool_use_id !== undefined && asked.has(d.tool_use_id), turnEnded: () => void ended++ }), real.slice(1, 6));
     // The prompts' memory is per turn: dropped at each result.
     expect(ended).toBe(1);
     expect(events.filter((e) => e.type === "request")).toEqual([]);

@@ -110,11 +110,15 @@ afterEach(() => {
   rmSync(tmp, { recursive: true, force: true });
 });
 
-/** `fake-claude` installed as `<dir>/claude`, signed in to `account` (its sidecar knob). */
+/**
+ * `fake-claude` installed in the native layout `<name>/claude/versions/2.1.321` (Task 14: only
+ * that layout's directory is granted, so the sidecars beside it stay readable under the
+ * launcher), signed in to `account` (its sidecar knob).
+ */
 function installFake(name: string, o: { account?: string; script?: unknown } = {}): { dir: string; bin: string } {
-  const dir = join(tmp, name);
+  const dir = join(tmp, name, "claude", "versions");
   mkdirSync(dir, { recursive: true });
-  const bin = join(dir, WIN ? "claude.exe" : "claude");
+  const bin = join(dir, WIN ? "2.1.321.exe" : "2.1.321");
   copyFileSync(FAKE, bin);
   chmodSync(bin, 0o755);
   writeFileSync(join(dir, "script.json"), JSON.stringify(o.script ?? {}));

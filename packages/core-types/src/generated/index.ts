@@ -1101,17 +1101,17 @@ export type ArchiveFormat = "zip";
  */
 export type FileMode = "read" | "write" | "readWrite";
 /**
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "AudioCodec".
- */
-export type AudioCodec = ("aac" | "opus" | "mp3" | "flac" | "alac" | "pcm" | "ac3" | "eac3") | "other";
-/**
  * Who provides a backend (spec §6.1).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "VendorClass".
  */
 export type VendorClass = "os" | "gpu" | "software" | "plugin";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "AudioCodec".
+ */
+export type AudioCodec = ("aac" | "opus" | "mp3" | "flac" | "alac" | "pcm" | "ac3" | "eac3") | "vorbis" | "other";
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "Direction".
@@ -4958,6 +4958,19 @@ export interface FileGrant {
   mode: FileMode;
   name: string;
   path: string;
+}
+/**
+ * One audio backend: its name (a `MEDIA_BACKENDS` entry, Decision 24), its class and what it
+ * can decode and encode at most on the platforms it is built for.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "AudioBackendEntry".
+ */
+export interface AudioBackendEntry {
+  class: VendorClass;
+  decode: AudioCodec[];
+  encode: AudioCodec[];
+  name: string;
 }
 /**
  * One audio codec on this machine (none decode or encode before 6C; the rows carry the

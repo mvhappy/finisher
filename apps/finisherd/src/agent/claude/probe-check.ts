@@ -1,7 +1,7 @@
 // The capability predicates of plan 7D Decision 8 (Task 5), apart from the probe's process code:
 // what an `initialize` answer must hold, what every instance's `system/init` must hold
 // (`checkInit`), the first-turn gate that holds an instance's events back until its init passed,
-// the `finisher` SDK MCP server's handshake answers, and the `untestedVersion` notice.
+// and the `untestedVersion` notice (the `finisher` server's handshake is `mcp-host.ts`'s).
 //
 // Drift fails closed (Review Focus 6): a key the predicate reads that is absent is a failure
 // naming it, never a pass. The isolation items (Decision 6, as Task 0 amended it):
@@ -26,7 +26,10 @@ import { finError } from "../../errors.ts";
 import { type CliModel, parseClaudeInitialize } from "../catalogue/cli-models.ts";
 import { type LaunchPlan, MCP_SERVER } from "./launch.ts";
 import { CANARY_STYLE } from "./probe-types.ts";
-import type { CliLine, McpReply, SystemInit } from "./protocol.ts";
+import { isMcpToolCall } from "./mcp-host.ts";
+import type { CliLine, SystemInit } from "./protocol.ts";
+
+export { isMcpToolCall, mcpReply } from "./mcp-host.ts";
 
 export { CANARY_STYLE } from "./probe-types.ts";
 
@@ -222,9 +225,6 @@ export interface FirstTurnGate {
   readonly state: "waiting" | "open" | "refused";
 }
 
-/** An MCP `tools/call`: a CLI request like `can_use_tool` (Task 8), never part of the handshake. */
-export const isMcpToolCall = (message: unknown): boolean => typeof message === "object" && message !== null && (message as { method?: unknown }).method === "tools/call";
-
 /** Lines the caller always handles at once: the SDK MCP handshake and answers to its own requests. */
 const passes = (l: CliLine): boolean => (l.kind === "controlRequest" && l.request.subtype === "mcp_message" && !isMcpToolCall(l.request.message)) || l.kind === "controlResponse";
 
@@ -290,52 +290,14 @@ export function firstTurnGate(plan: Pick<LaunchPlan, "argv" | "tools" | "mcpTool
   };
 }
 
-// ---- the `finisher` SDK MCP server's handshake ----
-
-const MCP_TOOL_SCHEMAS: Readonly<Record<string, { description: string; inputSchema: Record<string, unknown> }>> = {
-  shell: {
-    description: "Runs a command in the session's shell.",
-    inputSchema: { type: "object", properties: { command: { type: "string" }, timeoutMs: { type: "integer", minimum: 1 } }, required: ["command"] },
-  },
-  approve: {
-    description: "Asks Finisher whether a tool call may run.",
-    inputSchema: { type: "object", properties: { tool_name: { type: "string" }, input: { type: "object" }, tool_use_id: { type: "string" } }, required: ["tool_name", "input"] },
-  },
-};
-
-/**
- * The answer to one `mcp_message` for the `finisher` server, as the Agent SDK's in-process
- * servers answer (Task 0: the CLI starts the handshake before it answers `initialize`, and waits
- * up to a minute for it): `initialize`, `notifications/*`, `tools/list` of `mcpTools`
- * (`mcp__finisher__<name>`); any other method is a JSON-RPC error (`tools/call` is the
- * session's, Tasks 8 and 13). A message for another server is an error.
- */
-export function mcpReply(serverName: string, message: unknown, mcpTools: readonly string[]): McpReply | { readonly error: string } {
-  if (serverName !== MCP_SERVER) return { error: `no MCP server named ${serverName.slice(0, 64)}` };
-  const m = (typeof message === "object" && message !== null ? message : {}) as { method?: unknown; id?: unknown; params?: { protocolVersion?: unknown } };
-  const id = m.id ?? null;
-  const ok = (result: unknown): McpReply => ({ mcp_response: { jsonrpc: "2.0", id, result } });
-  const method = typeof m.method === "string" ? m.method : "";
-  if (method === "initialize") {
-    const protocolVersion = typeof m.params?.protocolVersion === "string" ? m.params.protocolVersion : "2025-11-25";
-    return ok({ protocolVersion, capabilities: { tools: {} }, serverInfo: { name: MCP_SERVER, version: "1.0.0" } });
-  }
-  if (method.startsWith("notifications/")) return { mcp_response: { jsonrpc: "2.0", result: {} } };
-  if (method === "tools/list") {
-    const prefix = `mcp__${MCP_SERVER}__`;
-    const tools = mcpTools.filter((t) => t.startsWith(prefix)).map((t) => t.slice(prefix.length)).filter((t) => Object.hasOwn(MCP_TOOL_SCHEMAS, t));
-    return ok({ tools: tools.map((name) => ({ name, ...MCP_TOOL_SCHEMAS[name]! })) });
-  }
-  return { mcp_response: { jsonrpc: "2.0", id, error: { code: -32601, message: `method not served here: ${method.slice(0, 64)}` } } };
-}
-
 // ---- untested versions ----
 
 /**
- * The versions Task 15's recorded transcript suite passes. Empty until Task 15 records one: every
- * version then runs on the probe alone, with the notice below (spec §4.5).
+ * The versions Task 15's recorded transcript suite passes (`test/fixtures/claude/<version>/`,
+ * checked by `floor_is_lowest_passing_version`): they run without the `untestedVersion` notice,
+ * every other version on the probe alone (spec §4.5). Added per Finisher release with a recording.
  */
-export const TESTED_VERSIONS: readonly string[] = [];
+export const TESTED_VERSIONS: readonly string[] = ["2.1.321"];
 
 /**
  * A notice source for the session layer (Task 7): `notice {untestedVersion}` the first time a

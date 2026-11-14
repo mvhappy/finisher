@@ -32,11 +32,13 @@ import { finError } from "../../errors.ts";
 import type { Capabilities } from "../adapter.ts";
 import { openHostSandbox, type SandboxedChild, type SessionSandbox, type SessionSandboxDeps } from "../sandbox.ts";
 import { type ClaudeCodeSettings, claudeCodeSettings } from "../settings.ts";
+import { installTreeRead } from "./install.ts";
 import { accountChanged, accountCheck, accountIdentified, accountKey, accountProblem, ClaudeAccounts, labelOfOutput } from "./account.ts";
 
 /**
  * The lowest supported version (Decision 9): at least 2.1.314 (the `--setting-sources` leak fix)
- * and the version Task 0 validated, 2.1.321. Task 15's contract suite may raise it.
+ * and the version Task 0 validated, 2.1.321; Task 15's `floor_is_lowest_passing_version` keeps it
+ * equal to the highest of that and the lowest recorded version whose transcripts pass.
  */
 export const CLAUDE_FLOOR = "2.1.321";
 
@@ -247,7 +249,7 @@ async function finish(child: SandboxedChild, ms: number, step: string): Promise<
 /** Runs the CLI once in `box` (its folder readable), to its end. */
 function run(box: SessionSandbox, real: string, args: readonly string[], ms: number, platform: NodeJS.Platform): Effect.Effect<Ran, FinError> {
   const env = { DISABLE_AUTOUPDATER: "1", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" };
-  return box.spawn([real, ...args], { cwd: box.workspace, stdio: "pipe", env, extraRead: [pathOf(platform).dirname(real)] }).pipe(
+  return box.spawn([real, ...args], { cwd: box.workspace, stdio: "pipe", env, extraRead: installTreeRead(real, platform) }).pipe(
     Effect.flatMap((child) => Effect.tryPromise({ try: () => finish(child, ms, args.join(" ")), catch: (e) => e as FinError })),
   );
 }

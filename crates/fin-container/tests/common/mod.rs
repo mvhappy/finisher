@@ -115,6 +115,7 @@ pub fn with_audio(n: u32, priming: u32) -> Vec<u8> {
             sample_rate: 48_000,
             channels: 2,
             priming,
+            presented: None,
         })
         .unwrap();
     for i in 0..n {
