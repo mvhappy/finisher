@@ -10587,6 +10587,12 @@
           },
           "type": "array"
         },
+        "rev": {
+          "description": "The branch rev of the snapshot measured.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
         "stats": {
           "$ref": "#/$defs/ListenJobStats"
         },
@@ -10606,6 +10612,7 @@
       },
       "required": [
         "timeline",
+        "rev",
         "from",
         "to",
         "mix",
@@ -10660,7 +10667,7 @@
           "type": "number"
         },
         "silences": {
-          "description": "Runs of 10 ms blocks whose louder channel's RMS is below −60 dBFS, lasting 0.5 s or more,\nat 10 ms resolution from the range start and clipped to the range.",
+          "description": "Runs of 10 ms blocks whose louder channel's RMS is below −60 dBFS, lasting 0.5 s or more\n(or of any length when they touch an edge of the range, clipped there), at 10 ms resolution\nfrom the range start.",
           "items": {
             "$ref": "#/$defs/ListenSpan"
           },

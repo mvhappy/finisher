@@ -48,12 +48,30 @@ pub struct ListenParams {
 }
 
 impl ListenParams {
-    /// The checks serde cannot make: a range that starts at 0 or later and ends after it starts.
+    /// The checks serde cannot make: a range that starts at 0 or later, ends after it starts and
+    /// lasts at most [`super::MAX_PCM_SECONDS`]. Its end past the timeline's is the host's check
+    /// (`prepareListenJob`, which has the snapshot).
     pub fn check(&self) -> Result<(), CoreError> {
         if self.from.is_negative() {
             return Err(invalid(
                 "from",
                 format!("the range starts at 0 or later, not {}", self.from),
+            ));
+        }
+        let longest = Rational::from_int(super::MAX_PCM_SECONDS as i64);
+        if self
+            .to
+            .checked_sub(self.from)
+            .is_ok_and(|len| len > longest)
+        {
+            return Err(invalid(
+                "to",
+                format!(
+                    "the range is at most {} s long ({} to {})",
+                    super::MAX_PCM_SECONDS,
+                    self.from,
+                    self.to
+                ),
             ));
         }
         if self.to <= self.from {
@@ -164,8 +182,9 @@ pub struct ListenStats {
     #[schemars(with = "f64")]
     pub sample_peak: Option<f64>,
     pub clipped: ListenClipped,
-    /// Runs of 10 ms blocks whose louder channel's RMS is below −60 dBFS, lasting 0.5 s or more,
-    /// at 10 ms resolution from the range start and clipped to the range.
+    /// Runs of 10 ms blocks whose louder channel's RMS is below −60 dBFS, lasting 0.5 s or more
+    /// (or of any length when they touch an edge of the range, clipped there), at 10 ms resolution
+    /// from the range start.
     pub silences: Vec<ListenSpan>,
     /// Up to 5 short-term (3 s) loudness maxima, loudest first, at least 3 s apart.
     pub loudest: Vec<ListenMoment>,
@@ -216,6 +235,8 @@ pub struct ListenJobStats {
 #[serde(rename_all = "camelCase")]
 pub struct ListenResult {
     pub timeline: String,
+    /// The branch rev of the snapshot measured.
+    pub rev: u64,
     pub from: Rational,
     pub to: Rational,
     pub mix: ListenStats,
@@ -273,6 +294,14 @@ mod tests {
         );
         let e = params(r(-1, 1), r(1, 1)).check().unwrap_err();
         assert_eq!(e.details["field"], "from");
+        // At most MAX_PCM_SECONDS long (6C Task 21 review S1).
+        let max = super::super::MAX_PCM_SECONDS as i64;
+        assert!(params(r(5, 1), r(5 + max, 1)).check().is_ok());
+        let e = params(r(5, 1), r(6 + max, 1)).check().unwrap_err();
+        assert_eq!(
+            (e.code.as_str(), &e.details["field"]),
+            ("JOB_PARAMS_INVALID", &json!("to"))
+        );
         let mut v = serde_json::to_value(params(Rational::zero(), r(1, 1))).unwrap();
         v["surprise"] = json!(1);
         assert!(serde_json::from_value::<ListenParams>(v).is_err());

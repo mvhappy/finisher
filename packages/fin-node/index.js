@@ -167,8 +167,8 @@ export class Engine {
     return call(this.#native.prepareAssetJob(branch, asset, inputDir));
   }
 
-  prepareListenJob(branch, timeline, from, to, inputDir, paramsJson) {
-    return call(this.#native.prepareListenJob(branch, timeline, from, to, inputDir, paramsJson ?? null));
+  prepareListenJob(branch, timeline, from, to, inputDir, paramsJson, rev) {
+    return call(this.#native.prepareListenJob(branch, timeline, from, to, inputDir, paramsJson ?? null, rev ?? null));
   }
 
   setCollect(collect, metaJson) {

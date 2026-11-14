@@ -96,6 +96,33 @@ fn raw(c: Canonical, secs: i64) -> ListenStats {
     measure(&p, sources(vec![("a", c)]), 48_000).unwrap()
 }
 
+/// `|H(e^{jω})|²` of a biquad `b`/`a` at `hz` (48 kHz).
+fn biquad_power(b: [f64; 3], a: [f64; 3], hz: f64) -> f64 {
+    let w = 2.0 * std::f64::consts::PI * hz / 48_000.0;
+    let at = |c: [f64; 3]| {
+        let re = c[0] + c[1] * w.cos() + c[2] * (2.0 * w).cos();
+        let im = -c[1] * w.sin() - c[2] * (2.0 * w).sin();
+        re * re + im * im
+    };
+    at(b) / at(a)
+}
+
+/// The BS.1770 loudness of a stereo sine at `hz` whose RMS is `rms` dBFS on each channel.
+fn bs1770(hz: f64, rms: f64) -> f64 {
+    let shelf = biquad_power(
+        [1.53512485958697, -2.69169618940638, 1.19839281085285],
+        [1.0, -1.69065929318241, 0.73248077421585],
+        hz,
+    );
+    let hp = biquad_power(
+        [1.0, -2.0, 1.0],
+        [1.0, -1.99004745483398, 0.99007225036621],
+        hz,
+    );
+    let ms = 10f64.powf(rms / 10.0);
+    -0.691 + 10.0 * (2.0 * ms * shelf * hp).log10()
+}
+
 #[test]
 fn listen_mix_and_tracks() {
     let p = plan(
@@ -127,6 +154,18 @@ fn listen_mix_and_tracks() {
     // Each track reads what its source alone reads, within 0.2 LU.
     assert!((i1 - raw(a(), 10).integrated.unwrap()).abs() <= 0.2, "{i1}");
     assert!((i2 - raw(b(), 10).integrated.unwrap()).abs() <= 0.2, "{i2}");
+    // Both against BS.1770 computed: −0.691 + 10·log10(Σ channels' mean square × |K(f)|²), with
+    // the K filter's published 48 kHz coefficients; within 0.2 LU.
+    assert!(
+        (i1 - bs1770(1000.0, -20.0)).abs() <= 0.2,
+        "{i1} vs {}",
+        bs1770(1000.0, -20.0)
+    );
+    assert!(
+        (i2 - bs1770(1250.0, -26.0)).abs() <= 0.2,
+        "{i2} vs {}",
+        bs1770(1250.0, -26.0)
+    );
     // The mix is their power sum (uncorrelated tones), within 0.2 LU.
     let sum = 10.0 * (10f64.powf(i1 / 10.0) + 10f64.powf(i2 / 10.0)).log10();
     let m = mix.integrated.unwrap();
@@ -290,4 +329,52 @@ fn a_pass_lists_its_missing_sources_and_extreme_speeds_are_named() {
     assert_eq!(st.silences, [span(s(0), s(1))]);
     assert!(stretch_extreme(r(1, 5)) && stretch_extreme(s(5)));
     assert!(!stretch_extreme(r(1, 4)) && !stretch_extreme(s(4)) && !stretch_extreme(s(1)));
+}
+
+#[test]
+fn a_silence_touching_a_range_edge_is_reported_at_any_length() {
+    // 6C Task 21 review S3 (Decision 21: "a run touching a range edge is reported clipped, not
+    // dropped"): 0.3 s of silence at the start and at the end of the range.
+    let st = gaps(&[(r(3, 10), r(27, 10))], s(3));
+    assert_eq!(st.silences, [span(s(0), r(3, 10)), span(r(27, 10), s(3))]);
+    // Inside the range the 0.5 s rule holds.
+    let st = gaps(&[(s(0), s(1)), (r(13, 10), s(3))], s(3));
+    assert!(st.silences.is_empty(), "{:?}", st.silences);
+}
+
+#[test]
+fn an_item_that_has_ended_holds_no_buffer_and_its_source_is_closed() {
+    // 6C Task 21 review S2: many short items on their own sources; once each has ended, the mixer
+    // holds nothing of it.
+    let items: Vec<AudioItem> = (0..40)
+        .map(|k| {
+            item(
+                &format!("i{k}"),
+                "t1",
+                &format!("a{k}"),
+                r(k, 10),
+                r(k + 1, 10),
+                s(0),
+                0.0,
+            )
+        })
+        .collect();
+    let p = plan(s(0), s(5), items);
+    let srcs = sources(
+        (0..40)
+            .map(|k| (format!("a{k}"), tone(1000.0, -20.0, 1.0)))
+            .collect::<Vec<_>>()
+            .iter()
+            .map(|(a, c)| (a.as_str(), c.clone()))
+            .collect(),
+    );
+    let mut pass = Pass::new(&p, srcs).unwrap();
+    assert_eq!(pass.mixer().open_sources(), 40);
+    // Half a second in: the first five items have ended.
+    pass.render(24_000).unwrap();
+    assert_eq!(pass.mixer().open_sources(), 35);
+    // Past every item: no buffer, no source.
+    pass.render(4 * 48_000).unwrap();
+    assert_eq!(pass.mixer().buffered_frames(), 0);
+    assert_eq!(pass.mixer().open_sources(), 0);
 }

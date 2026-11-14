@@ -26,6 +26,8 @@
 //!   the output does not depend on the block lengths: control intervals are a function of the
 //!   sample index, the stretcher and the effects carry their state across blocks, and each
 //!   item's state starts at its first sample.
+//! - **Memory:** an item frees its buffers once it has ended, and a source is dropped (closed)
+//!   once every item reading it has ended, so a long plan holds only what is still to play.
 //! - A source missing from the map is silent and listed by [`Mixer::missing`]; an effect of a
 //!   kind the engine does not know is skipped and listed by [`Mixer::skipped_effects`].
 
@@ -68,6 +70,8 @@ pub struct Mixer {
     missing: Vec<String>,
     skipped: Vec<SkippedEffect>,
     position: i64,
+    /// The last end of the items reading each source: past it the source is closed.
+    last_end: BTreeMap<String, i64>,
 }
 
 impl Mixer {
@@ -81,12 +85,15 @@ impl Mixer {
         let mut missing = BTreeSet::new();
         let mut items = Vec::with_capacity(plan.items.len());
         let mut skipped = Vec::new();
+        let mut last_end = BTreeMap::new();
         for it in &plan.items {
             let layout = sources.get(&it.asset).map(|s| s.layout());
             if layout.is_none() {
                 missing.insert(it.asset.clone());
             }
             let item = ItemMix::new(it, layout)?;
+            let end = last_end.entry(it.asset.clone()).or_insert(item.end);
+            *end = (*end).max(item.end);
             skipped.extend_from_slice(item.skipped_effects());
             items.push(item);
         }
@@ -96,6 +103,7 @@ impl Mixer {
             missing: missing.into_iter().collect(),
             skipped,
             position: sample_at(plan.from)?,
+            last_end,
         })
     }
 
@@ -118,9 +126,26 @@ impl Mixer {
             if let Some(src) = self.sources.get_mut(&item.asset) {
                 item.render(src.as_mut(), b0, b1, out)?;
             }
+            if item.end <= b1 {
+                item.release();
+            }
         }
+        // A source no item reads after this block is closed (6C Task 21 review S2).
+        self.sources
+            .retain(|asset, _| self.last_end.get(asset).is_some_and(|&e| e > b1));
         self.position = b1;
         Ok(())
+    }
+
+    /// The frames the items hold allocated (their read and stretch buffers): an item that has
+    /// ended holds none (6C Task 21 review S2).
+    pub fn buffered_frames(&self) -> usize {
+        self.items.iter().map(ItemMix::buffered).sum()
+    }
+
+    /// The sources still open: a source is closed once every item reading it has ended.
+    pub fn open_sources(&self) -> usize {
+        self.sources.len()
     }
 
     /// The timeline sample the next `render` starts at.

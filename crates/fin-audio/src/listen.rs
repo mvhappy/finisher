@@ -10,8 +10,8 @@
 //!   when the range ends mid-block); a block is silent when the larger of its two channels'
 //!   mean squares is below −60 dBFS (`1e-6`, compared as a power: no logarithm); a silence is a
 //!   maximal run of silent blocks lasting 0.5 s or more, from its first block's start to its
-//!   last block's end. A run touching an edge of the range is cut there and reported when the
-//!   part inside lasts 0.5 s or more.
+//!   last block's end. A run touching an edge of the range is cut there and reported whatever
+//!   its length inside (Decision 21: clipped, not dropped).
 //! - **Loudest moments:** the meter's short-term (3 s) loudness read every 100 ms from the range
 //!   start; up to 5 readings, loudest first (an earlier one on a tie), each window starting at
 //!   least 3 s from every one already chosen; `at` is the start of the reading's 3 s window,
@@ -136,9 +136,13 @@ impl Analyser {
         }
     }
 
+    /// A run of silent blocks over `[from, to)`: reported when it lasts [`SILENCE_MIN`] or more,
+    /// or when it touches an edge of the range (Decision 21: clipped there, never dropped, since
+    /// the silence may go on outside the range).
     fn silence(&mut self, from: i64, to: i64) {
         let (from, to) = (from.max(self.start), to.min(self.end));
-        if to - from >= SILENCE_MIN {
+        let edge = from <= self.start || to >= self.end;
+        if to > from && (edge || to - from >= SILENCE_MIN) {
             self.silences.push((from, to));
         }
     }

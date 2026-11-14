@@ -207,8 +207,9 @@ export declare class Engine {
    * the audio plan of `[from, to)` references) and, with `paramsJson` (the job's `ListenParams`),
    * `params.json` with the plan samples filled into `inputDir` (the job's existing `in/`).
    * Resolves to `{ rev, planSamples, sources }` as JSON: one sample per 10 s window of the range.
+   * `INVALID_RANGE` past the timeline's end or over a day; `rev` is the one the caller read.
    */
-  prepareListenJob(branch: string, timeline: string, from: string, to: string, inputDir: string, paramsJson?: string | null): Promise<string>;
+  prepareListenJob(branch: string, timeline: string, from: string, to: string, inputDir: string, paramsJson?: string | null, rev?: number | null): Promise<string>;
   /**
    * Resolves to the `AudioPlan` JSON of `timeline` on `branch` over `[from, to)`. `rev` as
    * `evalFrame`'s.

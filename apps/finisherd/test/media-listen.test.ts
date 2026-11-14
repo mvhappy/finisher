@@ -9,7 +9,7 @@ import type { FinError } from "@finisher/contracts";
 import type { ListenResult } from "@finisher/core-types";
 import { Engine, MediaCache, validateJobParams } from "@finisher/fin-node";
 import { Effect } from "effect";
-import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import { toFinError } from "../src/errors.ts";
 import { makeKindRegistry } from "../src/jobs/kinds.ts";
 import { MEDIA_LISTEN, listenDedupe, mediaListenKind } from "../src/jobs/kinds/media.listen.ts";
@@ -17,6 +17,8 @@ import { registerMediaKinds } from "../src/jobs/kinds/media.look.ts";
 import { listen } from "../src/media/listen.ts";
 import { BATCH_MEMORY } from "../src/media/memory.ts";
 import { makePcmService } from "../src/media/pcm.ts";
+import type { MediaCacheService } from "../src/media/cache.ts";
+import { mediaWiring } from "../src/media/wiring.ts";
 import { closeTestEngines, testEngine } from "./support/jobs.ts";
 
 const OWNER = { kind: "local", id: "local" } as const;
@@ -81,6 +83,8 @@ describe("the kind", () => {
   test("params are fin-media's ListenParams; the plan samples are the host's", () => {
     expect(validateJobParams(MEDIA_LISTEN, 1, base)).toMatchObject({ ok: true });
     expect(validateJobParams(MEDIA_LISTEN, 1, { ...base, to: "0" })).toMatchObject({ ok: false });
+    // Review S1: a range longer than a day is refused at submit.
+    expect(validateJobParams(MEDIA_LISTEN, 1, { ...base, to: "1000000000" })).toMatchObject({ ok: false });
     expect(validateJobParams(MEDIA_LISTEN, 1, { ...base, planSamples: [{ at: "0", blake3: "0".repeat(64) }] })).toMatchObject({ ok: false });
   });
 
@@ -92,12 +96,12 @@ describe("the kind", () => {
 });
 
 /** A real engine with the media kinds and the cache over a project with the tone on `t2` over `[0, 3)`. */
-async function setup() {
+async function setup(fp = "fp-tone") {
   const serverData = realpathSync(mkdtempSync(join(work, "sd-")));
   const dir = join(mkdtempSync(join(work, "proj-")), "p");
   const engine = await Engine.create(serverData, dir, "Listen", "30");
   engines.push(engine);
-  await engine.commit(tx("t1", 0, [{ op: "asset.add", id: "$a1", path: tone, duration: "4", audio: { sampleRate: 48000, channels: 2 }, fingerprint: "fp-tone" }]));
+  await engine.commit(tx("t1", 0, [{ op: "asset.add", id: "$a1", path: tone, duration: "4", audio: { sampleRate: 48000, channels: 2 }, fingerprint: fp }]));
   const snap = JSON.parse(await engine.snapshot("main")) as { rev: number; project: { assets: object } };
   const asset = Object.keys(snap.project.assets)[0]!;
   await engine.commit(tx("t2", snap.rev, [{ op: "item.insert", id: "$i1", track: "t2", at: "0", duration: "3", mode: "overwrite", kind: "clip", asset, sourceIn: "0" }]));
@@ -130,6 +134,11 @@ describe("the RPC and the job", () => {
     expect((await flip(listen(deps, OWNER, { projectId: pid, from: "2", to: "2" }))).code).toBe("INVALID_RANGE");
     expect((await flip(listen(deps, OWNER, { projectId: pid, from: "1.5" }))).code).toBe("INVALID_TIME");
     expect((await flip(listen(deps, OWNER, { projectId: pid, timeline: "tl9" }))).code).toBe("NOT_FOUND");
+    // Review S1: the job's own inputs refuse a range past the timeline's end, whoever submitted it.
+    const inDir = mkdtempSync(join(work, "in-"));
+    const prep = (from: string, to: string) => Effect.runPromise(Effect.flip(Effect.tryPromise({ try: () => engines[0]!.prepareListenJob("main", "tl1", from, to, inDir), catch: toFinError })));
+    expect((await prep("0", "1000000000")).code).toBe("INVALID_RANGE");
+    expect((await prep("0", "4")).code).toBe("INVALID_RANGE");
     // `wait: false` answers the job at once.
     const { job } = (await run(listen(deps, OWNER, { projectId: pid, from: "1", to: "2", wait: false }))) as { job: { id: string } };
     expect((await t.wait(job.id, 120_000)).state).toBe("succeeded");
@@ -155,5 +164,45 @@ describe("the RPC and the job", () => {
     expect(cached.mix).toEqual(decoded.mix);
     // The job pinned the entry it listed (the media wiring's end hook releases it).
     expect(await cache.release(`job:${v.id}`)).toBe(1);
+  }, 240_000);
+});
+
+describe("the job's pins end with the job (the wiring's hook, review S4)", () => {
+  /** A project whose asset has a pcm48 entry, the wiring started over its engine; `fp` picks the worker's test hook. */
+  async function pinned(fp: string) {
+    const s = await setup(fp);
+    const pcm = makePcmService({ registry: s.registry, engine: s.t.engine, cache: () => s.cache });
+    const made = await run(pcm.request(OWNER, { projectId: s.pid, asset: s.asset }));
+    const wiring = mediaWiring({ cache: s.cache } as unknown as MediaCacheService, { onDrop: () => {} }, () => {});
+    wiring.start(s.t.engine, { registerStage: () => {}, registry: { list: () => [] } } as never, s.registry as never);
+    const jobPins = async () => (await s.cache.pinsOf(made.key)).filter((p) => p.startsWith("job:"));
+    const submit = () => s.t.submit(MEDIA_LISTEN, { projectId: s.pid, branch: "main", rev: 2, timeline: "tl1", from: "0", to: "3" }, { project: s.pid });
+    return { ...s, key: made.key, jobPins, submit };
+  }
+
+  test("released when it succeeds", async () => {
+    const s = await pinned("test-slow-tone");
+    const v = await s.submit();
+    await vi.waitFor(async () => expect(await s.jobPins()).toEqual([`job:${v.id}`]), { timeout: 30_000, interval: 20 });
+    expect((await s.t.wait(v.id, 120_000)).state).toBe("succeeded");
+    await vi.waitFor(async () => expect(await s.jobPins()).toEqual([]), { timeout: 10_000 });
+  }, 240_000);
+
+  test("released when it is cancelled", async () => {
+    const s = await pinned("test-slow-tone");
+    const v = await s.submit();
+    await vi.waitFor(async () => expect(await s.jobPins()).toEqual([`job:${v.id}`]), { timeout: 30_000, interval: 20 });
+    await run(s.t.engine.cancel(v.id));
+    expect((await s.t.wait(v.id, 120_000)).state).toBe("cancelled");
+    await vi.waitFor(async () => expect(await s.jobPins()).toEqual([]), { timeout: 10_000 });
+  }, 240_000);
+
+  test("released when it fails", async () => {
+    // Test builds of the worker abort on a `test-crash-` fingerprint after the first block.
+    const s = await pinned("test-crash-tone");
+    const v = await s.submit();
+    const done = await s.t.wait(v.id, 120_000);
+    expect(done.state, JSON.stringify(done)).toBe("failed");
+    await vi.waitFor(async () => expect(await s.jobPins()).toEqual([]), { timeout: 10_000 });
   }, 240_000);
 });

@@ -8142,6 +8142,10 @@ export interface ListenResult {
   from: Rational;
   mix: ListenStats;
   notes: ListenNote[];
+  /**
+   * The branch rev of the snapshot measured.
+   */
+  rev: number;
   stats: ListenJobStats;
   timeline: string;
   to: Rational;
@@ -8175,8 +8179,9 @@ export interface ListenStats {
    */
   samplePeak?: number;
   /**
-   * Runs of 10 ms blocks whose louder channel's RMS is below −60 dBFS, lasting 0.5 s or more,
-   * at 10 ms resolution from the range start and clipped to the range.
+   * Runs of 10 ms blocks whose louder channel's RMS is below −60 dBFS, lasting 0.5 s or more
+   * (or of any length when they touch an edge of the range, clipped there), at 10 ms resolution
+   * from the range start.
    */
   silences: ListenSpan[];
   /**

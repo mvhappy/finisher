@@ -54,6 +54,12 @@ struct Fixture {
 }
 
 fn fixture() -> Fixture {
+    fixture_with(false)
+}
+
+/// The fixture; `shared`: `a1` is played twice on `t2`, `$c1` over `[0, 3)` from source time 3
+/// and `$c3` over `[3, 5)` from 0 (one asset, two items, a non-zero source offset first).
+fn fixture_with(shared: bool) -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let root = std::fs::canonicalize(dir.path()).unwrap();
     let paths = [root.join("one.wav"), root.join("two.wav")];
@@ -63,7 +69,7 @@ fn fixture() -> Fixture {
         sample_rate: 48_000,
         channels,
     };
-    let clip = |id: &str, track: &str, at: i64, asset: &str, secs: i64| -> Op {
+    let clip = |id: &str, track: &str, at: i64, asset: &str, secs: i64, source_in: i64| -> Op {
         ItemInsert {
             id: id.into(),
             track: track.into(),
@@ -72,7 +78,7 @@ fn fixture() -> Fixture {
             mode: InsertMode::Overwrite,
             body: ItemBody::Clip {
                 asset: asset.into(),
-                source_in: s(0),
+                source_in: s(source_in),
                 speed: s(1),
             },
         }
@@ -105,9 +111,16 @@ fn fixture() -> Fixture {
             name: Some("A2".into()),
         }
         .into(),
-        clip("$c1", "t2", 0, "$a1", 3),
-        clip("$c2", "$t3", 1, "$a2", 4),
+        clip("$c1", "t2", 0, "$a1", 3, if shared { 3 } else { 0 }),
+        clip("$c2", "$t3", 1, "$a2", 4, 0),
     ];
+    let ops = if shared {
+        let mut ops = ops;
+        ops.push(clip("$c3", "t2", 3, "$a1", 2, 0));
+        ops
+    } else {
+        ops
+    };
     let p = new_project("p1".into(), "Listen".into(), s(30)).unwrap();
     let tx = Tx {
         tx_id: "tx-fixture".into(),
@@ -379,4 +392,70 @@ fn bad_params_are_refused() {
     let mut p = fx.params(s(0), s(6));
     p.to = s(0);
     assert_eq!(listen(&job, &p).error().code, "JOB_PARAMS_INVALID");
+}
+
+#[test]
+fn a_shared_asset_at_a_source_offset_mixes_from_decode_and_from_pcm48() {
+    // 6C Task 21 review B1: one asset under two items, the first from source time 3.
+    let fx = fixture_with(true);
+    let decoded = result(&listen(&fx.job(&fx.manifest(&[])), &fx.params(s(0), s(6))));
+    assert_eq!(decoded.tracks[0].track, "t2");
+    // t2 plays [0, 5) without a gap: one silence, from 5.
+    assert_eq!(decoded.tracks[0].stats.silences, [span(s(5), s(6))]);
+    let i = decoded.tracks[0].stats.integrated.unwrap();
+    assert!((i - -16.99).abs() <= 0.3, "{i}");
+    let keep = tempfile::tempdir().unwrap();
+    let keep = std::fs::canonicalize(keep.path()).unwrap();
+    let mut m = fx.manifest(&[]);
+    m.pcm.insert(fx.ids[0].clone(), make_pcm48(&fx, &keep));
+    let cached = result(&listen(&fx.job(&m), &fx.params(s(0), s(6))));
+    assert_eq!(cached.stats.sources_from_cache, 1);
+    assert_eq!(cached.tracks, decoded.tracks);
+    assert_eq!(cached.mix, decoded.mix);
+}
+
+#[test]
+fn a_nested_timeline_counts_for_the_track_of_its_compound_clip() {
+    let mut fx = fixture();
+    // `t3`'s clip moves into a nested timeline `tl2`, which `t3` plays over [1, 5).
+    let mut inner = fx.project.timelines[0].clone();
+    inner.id = "tl2".into();
+    let t3 = fx.project.timelines[0]
+        .tracks
+        .iter()
+        .position(|t| t.id == fx.t3)
+        .unwrap();
+    let clip = fx.project.timelines[0].tracks[t3].items.remove(0);
+    let mut moved = clip.clone();
+    moved.start = s(0);
+    for t in &mut inner.tracks {
+        t.items.clear();
+        t.transitions.clear();
+    }
+    inner.tracks[t3].items.push(moved);
+    let nested = fin_core::Item::new(
+        "n1",
+        s(1),
+        s(4),
+        fin_core::ItemBody::Nested {
+            timeline: "tl2".into(),
+            source_in: s(0),
+        },
+    );
+    fx.project.timelines[0].tracks[t3].items.push(nested);
+    fx.project.timelines.push(inner);
+    let r = result(&listen(&fx.job(&fx.manifest(&[])), &fx.params(s(0), s(6))));
+    let tracks: Vec<&str> = r.tracks.iter().map(|t| t.track.as_str()).collect();
+    assert_eq!(tracks, ["t2", fx.t3.as_str()]);
+    assert_eq!(
+        r.tracks[1].stats.silences,
+        [span(s(0), s(1)), span(s(5), s(6))]
+    );
+}
+
+#[test]
+fn the_result_names_the_rev_measured() {
+    let fx = fixture();
+    let r = result(&listen(&fx.job(&fx.manifest(&[])), &fx.params(s(0), s(6))));
+    assert_eq!(r.rev, 1);
 }

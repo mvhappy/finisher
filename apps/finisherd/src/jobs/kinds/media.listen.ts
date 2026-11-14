@@ -95,7 +95,7 @@ export function mediaListenKind(deps: ListenKindDeps): KindSpec<ListenParams, Li
         yield* Effect.tryPromise({ try: () => mkdirSafe(dirs.job, "in"), catch: toFinError });
         const { planSamples: _, ...request } = p;
         const done = yield* deps.projects.onBranch<{ rev: number; planSamples: ReadonlyArray<{ at: string; blake3: string }>; sources: ReadonlyArray<string> }>(projectId, p.branch, (engine, branch) =>
-          engine.prepareListenJob(branch, p.timeline, String(p.from), String(p.to), inDir, JSON.stringify(request)),
+          engine.prepareListenJob(branch, p.timeline, String(p.from), String(p.to), inDir, JSON.stringify(request), p.rev ?? null),
         );
         const cache = deps.cache();
         const pcmFiles = cache === undefined ? [] : yield* Effect.tryPromise({ try: () => cache.attachPcm(inDir, `job:${ctx.job.id}`, [projectId]), catch: toFinError });
