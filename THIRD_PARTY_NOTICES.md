@@ -37,7 +37,8 @@ status: planned
 status: planned
 
 ## dav1d (BSD-2-Clause) — `fin-dav1d-sys` (AV1 decode)
-status: used (sub-project 6A), built from source: the git submodule `third_party/dav1d` at
+status: used (sub-projects 6A and 6B-1: looks, proxies, thumbnails, the deep probe, AV1 in MP4 and
+WebM), built from source: the git submodule `third_party/dav1d` at
 tag 1.5.4 (commit 54706fc6bc0cdecab7e9593974a4039cc038fca7), the decoder library only (8- and
 16-bit, no tools), linked statically through `fin-dav1d-sys` (whose `csrc/dav1d_shim.c` is
 Finisher's own, MIT). AV1 itself is under the Alliance for Open Media Patent License 1.0 (the
@@ -371,7 +372,7 @@ identification within third-party archives.
 ```
 
 ## SVT-AV1 (BSD-3-Clause-Clear) — `fin-svt-sys` (AV1 encode)
-status: used (sub-project 6A), built from source: the git submodule `third_party/svt-av1` at
+status: used (sub-projects 6A and 6B-1: test fixtures, and the encoder of every 6B-1 proxy), built from source: the git submodule `third_party/svt-av1` at
 tag v4.3.0 (commit e3d63405f9ba8219913a7276c2c47d10e5d022fe), the encoder library only, linked
 statically through `fin-svt-sys` (whose `csrc/svt_shim.c` is Finisher's own, MIT). The
 compiled sources carry the licences below, in full; `third_party/native.json` pins each text by
@@ -719,7 +720,7 @@ OTHER DEALINGS IN THE SOFTWARE.
 ```
 
 ## libvpx (BSD-3-Clause)
-status: planned
+status: planned (VP9 decode, sub-batch 6B-2; moved out of 6B-1 by its plan's Decision 16)
 
 ## OpenTimelineIO (Apache-2.0) — file format
 status: planned
@@ -842,7 +843,7 @@ Native code compiled into Finisher's binaries by a crate's build script, as
 checks that every such package is listed, its licence allowed and named here).
 
 ### SQLite 3.54.0 (public domain) — `libsqlite3-sys` 0.39, bundled by `rusqlite` 0.41
-status: used (`fin-store`), the SQLite amalgamation compiled from the crate's sources. SQLite
+status: used (`fin-store`; `fin-node`'s media cache index, sub-project 6B-1), the SQLite amalgamation compiled from the crate's sources. SQLite
 is dedicated to the public domain (`blessing`); `libsqlite3-sys` itself is MIT.
 
 ### BLAKE3 (CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception) — `blake3` 1
@@ -938,6 +939,10 @@ edges, for each `deny.toml` target) and are named nowhere above. They are groupe
 expression in their `Cargo.toml`, with the count; each crate's licence text is its own
 `LICENSE-*` file in its package on crates.io. Where the expression has an `OR`, Finisher uses the
 crate under an alternative `deny.toml` allows.
+`objc2-core-media`, `objc2-core-video` and `objc2-video-toolbox` (macOS only) are declared by
+`fin-codecs` for VideoToolbox (sub-project 6B-1 plan Task 1) but no code calls them yet: the
+VideoToolbox and Media Foundation backends (plan Tasks 4–7) are not built. No OS framework is
+listed here; none is distributed.
 
 - MIT OR Apache-2.0 (134):
   `allocator-api2` 0.2.21, `anstyle` 1.0.14, `arrayvec` 0.7.8, `ash` 0.38.0+1.3.281,
