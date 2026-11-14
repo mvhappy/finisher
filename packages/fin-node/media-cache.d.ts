@@ -4,6 +4,9 @@ import type { CacheGcResult, CacheStatus, EntryMeta } from "@finisher/core-types
 
 export type { CacheGcResult, CacheStatus, EntryMeta };
 
+/** The most bytes one `readFile` returns. */
+export declare const MEDIA_READ_MAX: number;
+
 /** What the adoption at open did. */
 export interface MediaCacheOpenReport {
   /** Directories without a row whose `meta.json` validated, key recomputed and files matched. */
@@ -58,7 +61,7 @@ export declare class MediaCache {
    * meta is answered and the projects are added. Evicts down to the cap afterwards.
    */
   commit(jobOutDir: string, key: string, projects: ReadonlyArray<string>): Promise<EntryMeta>;
-  /** Pins `key` for `holder` (`job:<id>`, `project:<id>`); false when there is no such entry. */
+  /** Pins `key` for `holder` (`job:<id>`, `project:<id>`, `http:<id>`); false when there is no such entry. */
   pin(key: string, holder: string): Promise<boolean>;
   unpin(key: string, holder: string): Promise<boolean>;
   /** Removes every pin of `holder` (a job's end hook); how many. */
@@ -67,6 +70,31 @@ export declare class MediaCache {
   pinProject(projectId: string): Promise<number>;
   unpinProject(projectId: string): Promise<number>;
   pinsOf(key: string): Promise<string[]>;
+  /**
+   * Up to `len` bytes (at most {@link MEDIA_READ_MAX}) of the entry file `file` from `offset`,
+   * opened through fin-shm's checked opener (no link at any segment, one hard link, at most the
+   * listed size): empty at or past the end, `null` when there is no such entry or the entry
+   * lists no such file (`meta.json` is not listed). A link or a file larger than listed is
+   * `SHM_REFUSED`. A shorter answer than asked, inside the file, means the file is shorter than
+   * listed. Serving a file (spec §7.3) is a series of these reads, the entry pinned `http:<id>`.
+   */
+  readFile(key: string, file: string, offset: number, len: number): Promise<Buffer | null>;
+  /**
+   * Lists, in the job's `in/manifest.json` (`inDir`, written by `prepareMediaJob`), the `1080`
+   * proxy of each asset's fingerprint the index holds (`ManifestAsset.proxies`: tier, key,
+   * absolute directory, codec), pinned for `holder` (`job:<id>`; release it when the job
+   * ends). Each listed entry is a hit: it now serves `projects` (the job's, as `serve`), so they
+   * reach it and pin it while open. Resolves to the files a worker reads from those entries (absolute, for the job's
+   * `reads`): none when no asset has a proxy, and then the manifest is left as it is.
+   */
+  attachProxies(inDir: string, holder: string, projects: ReadonlyArray<string>): Promise<string[]>;
+  /**
+   * The `1080` proxy entry of the content `fingerprint` that `attachProxies` would list (the newest
+   * current one), now serving `projects` (pinned for those open), or `null` when there is none.
+   * Pins nothing for a job: `media.thumbs` plans from its `meta.json` (the original's media
+   * information and decoder class) when the original is not read.
+   */
+  currentProxy(fingerprint: string, projects: ReadonlyArray<string>): Promise<EntryMeta | null>;
   /** The entries made from the source with this fingerprint. */
   entriesFor(asset: { readonly fingerprint: string }): Promise<EntryMeta[]>;
   /** The projects `key` serves (reach for media bytes, spec §7.3). */

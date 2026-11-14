@@ -1,15 +1,15 @@
 //! The plugin protocol's types (8B plan Task 2, Decision 2): every type round-trips through
 //! JSON unchanged; host → plugin payloads ignore unknown fields and the rest refuse them; and
-//! the manifest's `commands` and `hooks` contributions parse and validate as host API 1.1
-//! orders.
+//! the manifest's `commands` (host API 1.1) and `hooks` (1.2, 7F Task 9) contributions parse and
+//! validate.
 
 mod support;
 
 use std::fmt::Debug;
 
 use fin_plugin_api::protocol::{
-    CallLimits, CommandOut, CommandRun, HostMethod, JobRights, PluginContext, PluginDirs,
-    PluginError, PluginRefFull, PluginScope, Reach, calls,
+    CallLimits, CommandOut, CommandRun, HookEvent, HostMethod, JobRights, PluginContext,
+    PluginDirs, PluginError, PluginRefFull, PluginScope, Reach, calls,
 };
 use fin_plugin_api::{
     CommandContribution, ContributionKind, HOST_API, HookContribution, SourceClass, consumable,
@@ -249,23 +249,20 @@ fn contributions_round_trip() {
     round::<CommandContribution>(c);
     let h = json!({ "event": "PostCommand", "handler": "on-post" });
     round::<HookContribution>(h.clone());
+    round::<HookContribution>(json!({ "event": "PreMerge", "handler": "gate", "timeoutS": 60 }));
     refuses_extra::<HookContribution>(h);
 }
 
 #[test]
-fn host_api_1_1_consumes_commands() {
-    assert_eq!(HOST_API, (1, 1, 0));
-    assert_eq!(host_api(), Version::new(1, 1, 0));
+fn host_api_consumes_commands_from_1_1() {
     assert_eq!(
-        consumable(&host_api()),
+        consumable(&Version::new(1, 1, 0)),
         [
             ContributionKind::FontCatalogs,
             ContributionKind::CaptionStyles,
             ContributionKind::Commands
         ]
     );
-    // Hooks wait for 7F (Decision 20).
-    assert!(!consumable(&host_api()).contains(&ContributionKind::Hooks));
     // A 1.0 host does not consume commands.
     assert!(!consumable(&Version::new(1, 0, 0)).contains(&ContributionKind::Commands));
     // A code plugin with a command validates and keeps it.
@@ -292,25 +289,208 @@ fn host_api_1_1_consumes_commands() {
     assert_eq!(errs[0].details["kind"], json!("commands"));
 }
 
-#[test]
-fn hooks_refused_until_consumable() {
-    let v = set(
+/// `code-node` (observes `PostCommand` and `PreCommand`) contributing `hooks`.
+fn with_hooks(hooks: Value) -> Value {
+    set(
         fixture("code-node"),
         "/contributes",
-        json!({ "hooks": [{ "event": "PostCommand", "handler": "on-post" }] }),
+        json!({ "hooks": hooks }),
+    )
+}
+
+fn check_hooks(hooks: Value) -> Vec<fin_plugin_api::Invalid> {
+    check(&with_hooks(hooks)).err().unwrap_or_default()
+}
+
+#[test]
+fn hooks_consumable_from_new_minor() {
+    // 7F Decision 20: `hooks` is consumed from host API 1.2, the minor after 8B's 1.1.
+    assert_eq!(HOST_API, (1, 2, 0));
+    assert_eq!(host_api(), Version::new(1, 2, 0));
+    assert_eq!(
+        consumable(&host_api()),
+        [
+            ContributionKind::FontCatalogs,
+            ContributionKind::CaptionStyles,
+            ContributionKind::Commands,
+            ContributionKind::Hooks
+        ]
     );
-    let errs = check(&v).unwrap_err();
+    assert!(!consumable(&Version::new(1, 1, 0)).contains(&ContributionKind::Hooks));
+    let hooks = json!([
+        { "event": "PostCommand", "handler": "on-post" },
+        { "event": "PreCommand", "handler": "guard", "timeoutS": 30 }
+    ]);
+    let m = check(&with_hooks(hooks.clone())).unwrap();
+    let h = m.contributes.hooks.as_deref().unwrap();
+    assert_eq!(h[0].event, HookEvent::PostCommand);
+    assert_eq!(h[1].handler, "guard");
+    assert_eq!(h[1].timeout_s, Some(30));
+    assert_eq!(m.contributes.kinds(), [ContributionKind::Hooks]);
+    // The manifest serialises them back unchanged.
+    assert_eq!(
+        serde_json::to_value(&m).unwrap()["contributes"]["hooks"],
+        hooks
+    );
+    // Still refused below the new minor.
+    let mut c = ctx(SourceClass::Registry);
+    c.host_api = Version::new(1, 1, 0);
+    let errs = check_with(&with_hooks(hooks), &MemFiles::full(), &c).unwrap_err();
     assert_eq!(errs.len(), 1, "{errs:?}");
     assert_eq!(errs[0].code, "PLUGIN_CONTRIBUTION_UNSUPPORTED");
     assert_eq!(errs[0].details["kind"], json!("hooks"));
     assert_eq!(errs[0].details["hostApi"], json!("1.1.0"));
     // A malformed hook entry is a schema error, not silently dropped.
+    assert_eq!(
+        reasons(check(&with_hooks(json!([{ "event": "PostCommand" }])))),
+        ["schema"]
+    );
+    // A content pack has no hooks.
+    let v = set(
+        fixture("content-pack"),
+        "/contributes/hooks",
+        json!([{ "event": "PostCommand", "handler": "on-post" }]),
+    );
+    let r = reasons(check(&v));
+    assert!(r.contains(&"contentHooks".to_string()), "{r:?}");
+}
+
+#[test]
+fn hook_needs_observe_for_its_event() {
+    let errs = check_hooks(json!([{ "event": "SessionStart", "handler": "greet" }]));
+    assert_eq!(errs.len(), 1, "{errs:?}");
+    assert_eq!(errs[0].path(), Some("/contributes/hooks/0/event"));
+    assert_eq!(errs[0].reason(), Some("hookNotObserved"));
+    assert_eq!(errs[0].details["event"], json!("SessionStart"));
+    // `hooks:modify` alone is not `hooks:observe` (and is refused without it anyway).
+    let v = set(
+        with_hooks(json!([{ "event": "PreCommand", "handler": "guard" }])),
+        "/permissions/0",
+        json!({ "perm": "hooks:observe", "hooks": ["PostCommand"] }),
+    );
+    let r = reasons(check(&v));
+    assert!(r.contains(&"hookNotObserved".to_string()), "{r:?}");
+    // No `hooks:observe` at all.
+    let v = set(
+        with_hooks(json!([{ "event": "PostCommand", "handler": "on-post" }])),
+        "/permissions",
+        json!([]),
+    );
+    assert_eq!(reasons(check(&v)), ["hookNotObserved"]);
+}
+
+#[test]
+fn unknown_event_refused() {
+    // In a contribution: `PreOp`/`PostOp` were cut from v1, and names are exact.
+    for bad in ["PreOp", "PostOp", "postCommand", "Whatever"] {
+        let r = reasons(check(&with_hooks(
+            json!([{ "event": bad, "handler": "h" }]),
+        )));
+        assert_eq!(r, ["schema"], "{bad}");
+    }
+    // In a permission: `hooks:observe` and `hooks:modify` name events.
+    let at = |perms: Value, path: &str| {
+        let errs = check(&set(fixture("code-node"), "/permissions", perms)).unwrap_err();
+        assert!(
+            errs.iter()
+                .any(|e| e.reason() == Some("hooks") && e.path() == Some(path)),
+            "{path}: {errs:?}"
+        );
+    };
+    at(
+        json!([{ "perm": "hooks:observe", "hooks": ["PreCommand", "PreOp"] }]),
+        "/permissions/0/hooks/1",
+    );
+    at(
+        json!([
+            { "perm": "hooks:observe", "hooks": ["PreCommand", "PreOp"] },
+            { "perm": "hooks:modify", "hooks": ["PreOp"] }
+        ]),
+        "/permissions/1/hooks/0",
+    );
+}
+
+#[test]
+fn duplicate_handler_refused() {
+    let errs = check_hooks(json!([
+        { "event": "PostCommand", "handler": "on-post" },
+        { "event": "PostCommand", "handler": "on-post" }
+    ]));
+    assert_eq!(errs.len(), 1, "{errs:?}");
+    assert_eq!(errs[0].path(), Some("/contributes/hooks/1/handler"));
+    assert_eq!(errs[0].reason(), Some("duplicateHook"));
+    // One handler on two events, and two handlers on one event, are fine.
+    assert!(
+        check_hooks(json!([
+            { "event": "PostCommand", "handler": "audit" },
+            { "event": "PreCommand", "handler": "audit" },
+            { "event": "PreCommand", "handler": "guard" }
+        ]))
+        .is_empty()
+    );
+    // Handler names: `[a-z][a-z0-9-]{0,63}`.
+    for bad in ["", "On-post", "-post", "9lives", "on_post", &"a".repeat(65)] {
+        let errs = check_hooks(json!([{ "event": "PostCommand", "handler": bad }]));
+        assert_eq!(errs.len(), 1, "{bad}: {errs:?}");
+        assert_eq!(errs[0].path(), Some("/contributes/hooks/0/handler"));
+        assert_eq!(errs[0].reason(), Some("hookHandler"), "{bad}");
+    }
+    assert!(check_hooks(json!([{ "event": "PostCommand", "handler": "a".repeat(64) }])).is_empty());
+}
+
+#[test]
+fn hook_timeout_bounds() {
+    use fin_plugin_api::protocol::{DEFAULT_HOOK_TIMEOUT_S, MAX_HOOK_TIMEOUT_S};
+    assert_eq!((DEFAULT_HOOK_TIMEOUT_S, MAX_HOOK_TIMEOUT_S), (10, 60));
+    for (t, ok) in [
+        (1, true),
+        (10, true),
+        (60, true),
+        (0, false),
+        (61, false),
+        (600, false),
+    ] {
+        let errs =
+            check_hooks(json!([{ "event": "PreCommand", "handler": "guard", "timeoutS": t }]));
+        assert_eq!(errs.is_empty(), ok, "{t}: {errs:?}");
+        if !ok {
+            assert_eq!(errs[0].path(), Some("/contributes/hooks/0/timeoutS"));
+            assert_eq!(errs[0].reason(), Some("hookTimeout"));
+        }
+    }
+}
+
+#[test]
+fn modify_permission_still_parses_and_validates() {
+    // 7F Decision 19: `hooks:modify` grants nothing in v1, but a manifest may still name it
+    // (high risk at install), within `hooks:observe`, with event names.
+    let m = check(&with_hooks(
+        json!([{ "event": "PreCommand", "handler": "guard" }]),
+    ))
+    .unwrap();
+    assert!(m.permissions.iter().any(|p| matches!(
+        p,
+        fin_plugin_api::Permission::HooksModify { hooks } if hooks == &["PreCommand"]
+    )));
     let v = set(
         fixture("code-node"),
-        "/contributes",
-        json!({ "hooks": [{ "event": "PostCommand" }] }),
+        "/permissions/1/hooks",
+        json!(["PostCommand"]),
     );
-    assert_eq!(reasons(check(&v)), ["schema"]);
+    assert!(check(&v).is_ok());
+    let v = set(
+        fixture("code-node"),
+        "/permissions/1/hooks",
+        json!(["SessionStart"]),
+    );
+    assert_eq!(reasons(check(&v)), ["modifyWithoutObserve"]);
+    let v = set(
+        fixture("code-node"),
+        "/permissions/1/hooks",
+        json!(["PreOp"]),
+    );
+    let r = reasons(check(&v));
+    assert!(r.contains(&"hooks".to_string()), "{r:?}");
 }
 
 fn command(name: &str) -> Value {

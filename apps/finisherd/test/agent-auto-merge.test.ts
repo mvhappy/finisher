@@ -6,12 +6,13 @@
 // merges as the `policy` actor; every other case leaves the item open. Availability and the
 // verdicts are injected through the server's options, never the environment; by default nothing
 // is read and nothing merges. No RPC reaches the trigger but through `branchReady`.
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { type ReviewItem, type Session, type Snapshot, STREAM_RPCS } from "@finisher/contracts";
 import type { BranchView } from "@finisher/core-types";
+import { sandboxStatus } from "@finisher/fin-node";
 import { Effect } from "effect";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { type AutoMergeOutcome, type AutoMergeTriggerOptions } from "../src/agent/auto-merge.ts";
@@ -51,6 +52,11 @@ vi.mock("../src/reviews/auto-merge.ts", async (importOriginal) => {
   const real = await importOriginal<typeof import("../src/reviews/auto-merge.ts")>();
   return { ...real, tryAutoMerge: vi.fn(real.tryAutoMerge) };
 });
+
+/** 7F Task 8: the fake hook as a user-layer hook, run unconfined (`direct`). */
+const FAKE_HOOK = join(import.meta.dirname, "fixtures", "hooks", "fake-hook.mjs");
+const HOOK_DIRECT = () => ({ ...sandboxStatus(), hook: { kind: "disabled" as const, reason: "profileNotReady" as const } });
+const userHook = (id: string, event: string, args: readonly string[], more: Record<string, unknown> = {}) => ({ id, event, run: ["node", "fake-hook.mjs", ...args], file: "fake-hook.mjs", ...more });
 
 let tmp: string;
 let serverData: string;
@@ -111,8 +117,9 @@ interface Booted {
  * A server (diagnostics on: the journal records `review.verdict`) and a project with an asset
  * on `main`. `available` (default true) and the verdicts reach the trigger through the options.
  */
-async function boot(o: { available?: boolean; verdicts?: VerdictSource | "none"; preMerge?: () => void } = {}): Promise<Booted> {
-  writeFileSync(settingsPath(serverData), JSON.stringify({ privacy: { diagnostics: "on" } }));
+async function boot(o: { available?: boolean; verdicts?: VerdictSource | "none"; preMerge?: () => void; hooks?: unknown[] } = {}): Promise<Booted> {
+  writeFileSync(settingsPath(serverData), JSON.stringify({ privacy: { diagnostics: "on" }, ...(o.hooks === undefined ? {} : { hooks: o.hooks }) }));
+  if (o.hooks !== undefined) copyFileSync(FAKE_HOOK, join(serverData, "fake-hook.mjs"));
   const source = verdictSource();
   const outcomes: AutoMergeOutcome[] = [];
   const autoMerge: AutoMergeTriggerOptions = {
@@ -121,7 +128,7 @@ async function boot(o: { available?: boolean; verdicts?: VerdictSource | "none";
     observe: (_ev, out) => void outcomes.push(out),
     ...(o.preMerge === undefined ? {} : { preMerge: () => Effect.sync(() => (o.preMerge!(), true)) }),
   };
-  server = new AgentServer(serverData, { timers: false, fakeScripts: [WORKING], autoMerge });
+  server = new AgentServer(serverData, { timers: false, fakeScripts: [WORKING], autoMerge, ...(o.hooks === undefined ? {} : { hooks: { status: HOOK_DIRECT } }) });
   await server.start();
   const local = await server.local();
   const projectId = ok<{ projectId: string }>(await local.call("project.create", { dir: join(tmp, "P"), name: "P", rate: "30" })).projectId;
@@ -688,6 +695,84 @@ function sources(): ReadonlyArray<[string, string]> {
 }
 
 const importers = (re: RegExp) => sources().filter(([, text]) => re.test(text)).map(([p]) => p).sort();
+
+describe("7F hooks at the merge point (Task 8, Decision 13)", () => {
+  const stats = () => server.agents.hookWiring.engine.stats().events;
+
+  test("branch_ready_block_refuses_auto_merge: hookBlocked, the item open, 5E never asked, no verdict read", async () => {
+    const b = await boot({ hooks: [userHook("stop", "BranchReady", ["--reply", "block:not yet"])] });
+    policy(b.projectId);
+    const { item, root, author } = await authored(b);
+    expect(b.outcomes).toEqual([{ merged: false, reason: "hookBlocked" }]);
+    const critic = await criticOf(b, root);
+    b.source.list = passing(item.snapshot!, critic.session.id);
+    await request(author.client, b.projectId, root);
+    expect(b.outcomes.at(-1)).toEqual({ merged: false, reason: "hookBlocked" });
+    expect(b.source.reads).toBe(0);
+    expect(vi.mocked(tryAutoMerge)).not.toHaveBeenCalled();
+    expect((await itemOf(b.local, item.id)).state).toBe("open");
+    // One run per event: the bridge's listener and the trigger's point shared it.
+    expect(stats().BranchReady).toMatchObject({ runs: 2, blocks: 2 });
+  });
+
+  test("pre_merge_block_refuses_auto_merge", async () => {
+    const b = await boot({ hooks: [userHook("guard", "PreMerge", ["--reply", "block:a person merges this"])] });
+    policy(b.projectId);
+    const { item, root, author } = await authored(b);
+    const critic = await criticOf(b, root);
+    b.source.list = passing(item.snapshot!, critic.session.id);
+    await request(author.client, b.projectId, root);
+    expect(b.outcomes.at(-1)).toEqual({ merged: false, reason: "hookBlocked" });
+    expect(vi.mocked(tryAutoMerge)).not.toHaveBeenCalled();
+    expect((await itemOf(b.local, item.id)).state).toBe("open");
+    expect(stats().PreMerge).toMatchObject({ runs: 2, blocks: 2 });
+  });
+
+  test("pre_merge_timeout_refuses_auto_merge: a PreMerge hook that times out blocks by default", { timeout: 60_000 }, async () => {
+    const b = await boot({ hooks: [userHook("slow", "PreMerge", ["--sleep", "5000"], { timeoutS: 1 })] });
+    policy(b.projectId);
+    const { item, root, author } = await authored(b);
+    const critic = await criticOf(b, root);
+    b.source.list = passing(item.snapshot!, critic.session.id);
+    await request(author.client, b.projectId, root);
+    expect(b.outcomes.at(-1)).toEqual({ merged: false, reason: "hookBlocked" });
+    expect(vi.mocked(tryAutoMerge)).not.toHaveBeenCalled();
+    expect((await itemOf(b.local, item.id)).state).toBe("open");
+    expect(stats().PreMerge.timeouts).toBe(2);
+  });
+
+  test("auto_merge_success_fires_post_merge: once, after the merge; allowing hooks change nothing", async () => {
+    const marker = join(tmp, "post-merge");
+    const b = await boot({
+      hooks: [userHook("ready", "BranchReady", ["--reply", "context:fine"]), userHook("pre", "PreMerge", ["--reply", "allow"]), userHook("post", "PostMerge", ["--write", marker])],
+    });
+    policy(b.projectId);
+    const { item, root, author } = await authored(b);
+    expect(b.outcomes).toEqual([{ merged: false, reason: "verdictMissing" }]);
+    await server.agents.hookWiring.engine.settled();
+    expect(existsSync(marker)).toBe(false);
+    const critic = await criticOf(b, root);
+    b.source.list = passing(item.snapshot!, critic.session.id);
+    await request(author.client, b.projectId, root);
+    expect(b.outcomes.at(-1)).toMatchObject({ merged: true });
+    expect((await itemOf(b.local, item.id)).state).toBe("merged");
+    await server.agents.hookWiring.engine.settled();
+    expect(existsSync(marker)).toBe(true);
+    expect(stats().PostMerge.runs).toBe(1);
+    expect(stats().PreMerge.runs).toBe(2);
+    expect(stats().BranchReady.runs).toBe(2);
+  });
+
+  test("test_pre_merge_option_still_overrides: the test's point runs, the PreMerge hooks do not", async () => {
+    let asked = 0;
+    const b = await boot({ preMerge: () => void asked++, hooks: [userHook("guard", "PreMerge", ["--reply", "block:never"])] });
+    policy(b.projectId);
+    await authored(b);
+    expect(asked).toBe(1);
+    expect(b.outcomes).toEqual([{ merged: false, reason: "verdictMissing" }]);
+    expect(stats().PreMerge.runs).toBe(0);
+  });
+});
 
 describe("no_rpc_reaches_the_trigger", () => {
   test("only the server wiring builds the trigger, and only the trigger imports 5E's path", () => {

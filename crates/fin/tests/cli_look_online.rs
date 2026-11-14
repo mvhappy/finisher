@@ -1,7 +1,8 @@
 //! `fin look`, `fin media caps` and `fin media probe` against a real finisherd and its `fin-workers media` (plan
 //! 6A Task 13): three times of a project rendered to PNGs, what a frame left out in `skipped`
 //! (the fixture clip is H.264, which 6A cannot decode), the error exits, `--no-wait`, and the
-//! worker's capabilities, the decode-level probe of an asset and `fin asset reprobe` (6B-1 Task 11). Rendering needs a GPU adapter: `FIN_GPU=software` (lavapipe, WARP)
+//! worker's capabilities, the decode-level probe of an asset and `fin asset reprobe` (6B-1 Task 11),
+//! and `fin media proxy|status` (6B-1 Task 14: the fixture's H.264 has no decoder on Linux). Rendering needs a GPU adapter: `FIN_GPU=software` (lavapipe, WARP)
 //! is set for the server; a machine with none skips the rendering checks unless
 //! `FIN_REQUIRE_GPU=1`.
 
@@ -10,7 +11,8 @@ mod support;
 use std::ffi::OsString;
 
 use serde_json::{Value, json};
-use support::{Server, assert_error, fin, media, ok};
+use support::fontserver::{test_native_dir, why_no_test_hooks};
+use support::{Server, assert_error, fin, fin_env, media, ok};
 
 fn gpu_required() -> bool {
     std::env::var("FIN_REQUIRE_GPU").is_ok_and(|v| v == "1")
@@ -267,6 +269,143 @@ fn asset_reprobe_reports_the_display_geometry() {
 }
 
 #[test]
+fn media_proxy_and_status_answer_typed() {
+    let Some(server) = Server::start_with("media_proxy", Vec::new(), None) else {
+        return;
+    };
+    let (sd, root) = (&server.sd, &server.root);
+    ok(fin(
+        sd,
+        root,
+        &["project", "create", "film", "--name", "Film"],
+    ));
+    let dir = root.join("film");
+    media(&dir.join("clip.mp4"), 1);
+    ok(fin(sd, &dir, &["asset", "add", "clip.mp4"]));
+    let rev = ok(fin(sd, &dir, &["status"]))["rev"].clone();
+    let made = fin(
+        sd,
+        &dir,
+        &["media", "proxy", "a1", "--tier", "540", "--no-wait"],
+    );
+    let status = fin(sd, &dir, &["media", "status", "a1"]);
+    if made.code == 0 {
+        // A decoder for H.264 here (macOS, Windows): a proxy is ready or being made.
+        assert!(
+            made.json["state"] == "ready" || made.json["state"] == "making",
+            "{}",
+            made.stdout
+        );
+        assert_eq!(ok(status)["tiers"].as_array().unwrap().len(), 2);
+    } else {
+        // No H.264 decoder (Linux until 6B-2): the key cannot be planned.
+        assert_error(&made, 5, "CODEC_UNAVAILABLE");
+        assert_eq!(made.json["error"]["details"]["direction"], "decode");
+        assert_error(&status, 5, "CODEC_UNAVAILABLE");
+    }
+    // Asking commits nothing.
+    assert_eq!(ok(fin(sd, &dir, &["status"]))["rev"], rev);
+    assert_error(
+        &fin(sd, &dir, &["media", "proxy", "a9"]),
+        3,
+        "ASSET_NOT_FOUND",
+    );
+    let bad = fin(sd, &dir, &["media", "proxy", "a1", "--codec", "hevc"]);
+    assert_eq!(bad.code, 2, "{}", bad.stdout);
+}
+
+#[test]
+fn media_thumbs_answer_typed() {
+    let Some(server) = Server::start_with("media_thumbs", Vec::new(), None) else {
+        return;
+    };
+    let (sd, root) = (&server.sd, &server.root);
+    ok(fin(
+        sd,
+        root,
+        &["project", "create", "film", "--name", "Film"],
+    ));
+    let dir = root.join("film");
+    media(&dir.join("clip.mp4"), 1);
+    ok(fin(sd, &dir, &["asset", "add", "clip.mp4"]));
+    let rev = ok(fin(sd, &dir, &["status"]))["rev"].clone();
+    // Exactly one of --at and --strip, each option with its own mode: usage errors (exit 2),
+    // before anything reaches the server.
+    for args in [
+        &["media", "thumbs", "a1"][..],
+        &["media", "thumbs", "a1", "--at", "0", "--strip"],
+        &["media", "thumbs", "a1", "--strip", "--max-side", "64"],
+        &["media", "thumbs", "a1", "--at", "0", "--tile-height", "64"],
+    ] {
+        let r = fin(sd, &dir, args);
+        assert_eq!(r.code, 2, "{args:?}: {}", r.stdout);
+    }
+    // A time that is not one is the time's own error, as for `fin look`.
+    assert_error(
+        &fin(sd, &dir, &["media", "thumbs", "a1", "--at", "soon"]),
+        3,
+        "INVALID_TIME",
+    );
+    let made = fin(
+        sd,
+        &dir,
+        &["media", "thumbs", "a1", "--at", "0,1.5s", "--no-wait"],
+    );
+    let strip = fin(sd, &dir, &["media", "thumbs", "a1", "--strip", "--no-wait"]);
+    if made.code == 0 {
+        // A decoder for H.264 here (macOS, Windows): the entry is ready or being made.
+        assert!(
+            made.json["state"] == "ready" || made.json["state"] == "making",
+            "{}",
+            made.stdout
+        );
+        assert_eq!(made.json["mode"], "thumbs");
+        assert_eq!(ok(strip)["mode"], "strip");
+    } else {
+        // No H.264 decoder (Linux until 6B-2): the key cannot be planned.
+        assert_error(&made, 5, "CODEC_UNAVAILABLE");
+        assert_eq!(made.json["error"]["details"]["direction"], "decode");
+        assert_error(&strip, 5, "CODEC_UNAVAILABLE");
+    }
+    // Asking commits nothing.
+    assert_eq!(ok(fin(sd, &dir, &["status"]))["rev"], rev);
+    assert_error(
+        &fin(sd, &dir, &["media", "thumbs", "a9", "--strip"]),
+        3,
+        "ASSET_NOT_FOUND",
+    );
+}
+
+/// `fin media proxy` waits as long as the server does (review of Task 14): the server's answer is
+/// held past fin's ordinary call timeout (`FIN_TEST_PROXY_DELAY_MS`, test-hooks builds only), and
+/// fin still prints it rather than `SERVER_TIMEOUT`.
+#[test]
+fn media_proxy_waits_past_the_call_timeout() {
+    let env = vec![
+        ("FIN_NODE_BINARY_DIR".into(), test_native_dir().into()),
+        ("FIN_TEST_PROXY_DELAY_MS".into(), OsString::from("2500")),
+    ];
+    let Some(server) = Server::start_with("media_proxy_waits", env, why_no_test_hooks()) else {
+        return;
+    };
+    let (sd, root) = (&server.sd, &server.root);
+    ok(fin(
+        sd,
+        root,
+        &["project", "create", "film", "--name", "Film"],
+    ));
+    let dir = root.join("film");
+    media(&dir.join("clip.mp4"), 1);
+    ok(fin(sd, &dir, &["asset", "add", "clip.mp4"]));
+    let short = [("FIN_TEST_CALL_TIMEOUT_MS", std::ffi::OsStr::new("1000"))];
+    let r = fin_env(sd, &dir, &["media", "proxy", "a1"], &short);
+    let code = r.json["error"]["code"].as_str().unwrap_or("");
+    assert_ne!(code, "SERVER_TIMEOUT", "{}", r.stdout);
+    // The server's own answer: a proxy (a decoder for H.264 here), or none to plan (Linux).
+    assert!(r.code == 0 || code == "CODEC_UNAVAILABLE", "{}", r.stdout);
+}
+
+#[test]
 fn look_and_caps_are_unavailable_offline() {
     let snapshot = json!({ "rev": 1, "project": fin_core::new_project("p".into(), "P".into(), "30".parse().unwrap()).unwrap() });
     let r = support::offline(&snapshot, &["look", "--at", "0"]);
@@ -276,6 +415,12 @@ fn look_and_caps_are_unavailable_offline() {
     let r = support::offline(&snapshot, &["media", "probe", "a1"]);
     assert_error(&r, 5, "SERVER_UNAVAILABLE");
     let r = support::offline(&snapshot, &["asset", "reprobe", "a1"]);
+    assert_error(&r, 5, "SERVER_UNAVAILABLE");
+    let r = support::offline(&snapshot, &["media", "proxy", "a1"]);
+    assert_error(&r, 5, "SERVER_UNAVAILABLE");
+    let r = support::offline(&snapshot, &["media", "status", "a1"]);
+    assert_error(&r, 5, "SERVER_UNAVAILABLE");
+    let r = support::offline(&snapshot, &["media", "thumbs", "a1", "--strip"]);
     assert_error(&r, 5, "SERVER_UNAVAILABLE");
 }
 

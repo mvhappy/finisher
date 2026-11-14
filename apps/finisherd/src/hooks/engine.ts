@@ -44,6 +44,13 @@
 //   its credential ended at the next dispatch that sees it. **Recursion guard:** an event whose
 //   principal is a hook credential (`isHook`) runs no hook (`fire` answers `{ran: 0}`, `observe`
 //   queues nothing).
+// - **The plugin layer** (Task 10, Decisions 19, 20): a plugin handler runs through
+//   `PluginHookPort` as a `plugin.hook` job (`plugins/host/hooks.ts`), named
+//   `plugin:<id>/<handler>` in `HOOK_BLOCKED`, notices and `contextHooks`; its `hook.block` row
+//   keeps `hookId: <handler>` with `layer: plugin` and `pluginId`. It has no `spec`: `principals`
+//   is `agent`, no `match`, the manifest's `timeoutS`, the event's default `onTimeout` (a plugin
+//   cannot loosen `PreMerge`). A handler that does not receive the event (`notReceived`) is
+//   skipped like a hook that no longer applies.
 // - **Sandbox warning:** a hook that runs unconfined (`direct`) is logged once per server start
 //   (`server.status` lists the `hook` profile's warning all along).
 // - **Closing** (`close`, at server stop): the queue is dropped, running processes are killed
@@ -55,23 +62,31 @@
 //   ignored ones included, and failures resolved to a block), `timeouts`, `failures`; `dropped`;
 //   `unreadable` layers.
 import { statSync } from "node:fs";
-import { type FinError, HOOK_CLASSES, HOOK_LIMITS, type HookEvent, type HookLayer, type Principal, type Session } from "@finisher/contracts";
+import { type FinError, HOOK_CLASSES, HOOK_LIMITS, type HookEvent, type HookLayer, type Session } from "@finisher/contracts";
 import type { HookRequest, HookSession } from "@finisher/core-types";
 import { Effect } from "effect";
 import { RACY_MS } from "../agent/file-cache.ts";
 import { globMatch } from "../agent/glob.ts";
 import type { AuditInput } from "../control/audit.ts";
 import { finError } from "../errors.ts";
+import type { Invoker } from "../plugins/host/rights.ts";
 import type { ConfiguredHook, HookConfig } from "./config.ts";
 import type { HookCredentialPort } from "./credential.ts";
 import { type HookFailure, type HookFailureKind, type HookProcessDeps, type HookRun, HookSlots, isCommandHook, isNotRun, runCommandHook } from "./process.ts";
 
-/** Where an event happens and whose it is. */
+/**
+ * Where an event happens and whose it is. No `projectId`: a server-scoped event (a call or a job
+ * that names no project): only the managed, user and plugin layers apply, the request carries
+ * no `project`, and a `fin` hook fails `unavailable` (its credential is a project's).
+ */
 export interface HookAt {
-  readonly projectId: string;
+  readonly projectId?: string;
   readonly session?: Session;
-  /** The caller (a block is audited as theirs; `principals` filters on its kind). */
-  readonly principal: Principal;
+  /**
+   * The caller (a block is audited as theirs; `principals` filters on its kind): a principal, or
+   * an invoker of no principal kind (`systemInvoker` for a system job's `JobDone`, Task 8).
+   */
+  readonly principal: Invoker;
   /** What a hook's `match` is tested against (Decision 6); none: hooks with a `match` do not run. */
   readonly names?: readonly string[];
 }
@@ -107,12 +122,18 @@ export interface SessionNotices {
   deliver(at: HookAt, event: HookEvent, outcome: HookOutcome): void;
 }
 
-/** The plugin layer (Task 10 fills it): one handler's run for a request. */
+/**
+ * The plugin layer (Task 10, `plugins/host/hooks.ts`): one handler's run for a request, as a
+ * `plugin.hook` job; `signal` aborts when the server stops (the job is cancelled).
+ */
 export interface PluginHookPort {
-  run(h: ConfiguredHook, req: HookRequest, at: HookAt): Promise<HookRun>;
-  /** Changes whenever the enabled plugins' hook rows do. */
+  run(h: ConfiguredHook, req: HookRequest, at: HookAt, signal?: AbortSignal): Promise<HookRun>;
+  /** Changes whenever the enabled plugins' hook rows do (called at every dispatch: cheap). */
   digest(): string;
 }
+
+/** How a hook is named in `HOOK_BLOCKED {hook}`, notices and `contextHooks`: a plugin handler's is `plugin:<id>/<handler>`. */
+export const hookName = (h: Pick<ConfiguredHook, "id" | "plugin">): string => (h.plugin === undefined ? h.id : `plugin:${h.plugin}/${h.id}`);
 
 export interface HookCounters {
   runs: number;
@@ -345,8 +366,9 @@ class Engine implements HookEngineImpl {
   async #chain(event: HookEvent, at: HookAt, payload: unknown, hooks: readonly ConfiguredHook[]): Promise<HookOutcome> {
     const cls = HOOK_CLASSES[event];
     const counters = this.#counters[event];
-    const dir = this.#d.config.dirOf(at.projectId);
-    const req: HookRequest = { event, v: 1, ...(at.session === undefined ? {} : { session: sessionOf(at.session) }), project: { id: at.projectId, dir: dir ?? "" }, payload };
+    const dir = at.projectId === undefined ? undefined : this.#d.config.dirOf(at.projectId);
+    const project = at.projectId === undefined ? {} : { project: { id: at.projectId, dir: dir ?? "" } };
+    const req: HookRequest = { event, v: 1, ...(at.session === undefined ? {} : { session: sessionOf(at.session) }), ...project, payload };
     const texts: string[] = [];
     const ids: string[] = [];
     let bytes = 0;
@@ -357,7 +379,7 @@ class Engine implements HookEngineImpl {
       ...(texts.length === 0 ? {} : { context: texts.join("\n\n"), contextHooks: [...ids] }),
     });
     for (const h of hooks) {
-      const tag = { event, id: h.id, layer: h.layer };
+      const tag = { event, id: hookName(h), layer: h.layer };
       let reason: string;
       if (h.unreadable === true) {
         reason = "unreadable";
@@ -381,7 +403,7 @@ class Engine implements HookEngineImpl {
           }
           bytes += sep + size;
           texts.push(r.text);
-          ids.push(h.id);
+          ids.push(tag.id);
           continue;
         } else if (r.reply === "block") {
           reason = r.reason;
@@ -396,13 +418,13 @@ class Engine implements HookEngineImpl {
       }
       this.#audit(h, at, event, cls === "blockingAfter");
       if (cls === "blockingAfter") this.#d.notices?.notice(at, { hook: { ...tag, blocked: reason } });
-      return outcome({ hook: h.id, reason, layer: h.layer });
+      return outcome({ hook: tag.id, reason, layer: h.layer });
     }
     return outcome();
   }
 
   /**
-   * One hook's run: its process, or the plugin layer's handler (none until Task 10: skipped).
+   * One hook's run: its process, or the plugin layer's handler (none without the port: skipped).
    * A run that rejects is an `unavailable` failure (Decision 3), never a defect of the caller.
    */
   async #run(h: ConfiguredHook, req: HookRequest, at: HookAt, dir: string | undefined): Promise<HookRun | undefined> {
@@ -420,15 +442,17 @@ class Engine implements HookEngineImpl {
   }
 
   #start(h: ConfiguredHook, req: HookRequest, at: HookAt, dir: string | undefined): Promise<HookRun | undefined> {
-    if (!isCommandHook(h)) return this.#d.plugins?.run(h, req, at) ?? Promise.resolve(undefined);
-    if (dir === undefined) return Promise.resolve({ kind: "unavailable", detail: "the project is not open on this server" } satisfies HookFailure);
+    if (!isCommandHook(h)) return this.#d.plugins?.run(h, req, at, this.#stopping.signal) ?? Promise.resolve(undefined);
+    const projectId = at.projectId;
+    if (projectId === undefined && h.spec?.fin === true) return Promise.resolve({ kind: "unavailable", detail: "a fin hook needs the event's project for its credential" } satisfies HookFailure);
+    if (projectId !== undefined && dir === undefined) return Promise.resolve({ kind: "unavailable", detail: "the project is not open on this server" } satisfies HookFailure);
     return Effect.runPromise(
       runCommandHook(h, req, {
         ...this.#d.process,
         serverData: this.#d.serverData,
         slots: this.#slots,
         signal: this.#stopping.signal,
-        ...(h.spec?.fin === true && this.#d.credentials !== undefined ? { credential: () => this.#d.credentials!.forRun(h, at.projectId) } : {}),
+        ...(h.spec?.fin === true && this.#d.credentials !== undefined && projectId !== undefined ? { credential: () => this.#d.credentials!.forRun(h, projectId) } : {}),
         recheck: () => this.#d.config.applies(at.projectId, h),
         onStart: ({ warning }) => {
           if (warning === undefined || this.#warned) return;
@@ -443,7 +467,7 @@ class Engine implements HookEngineImpl {
     const counters = this.#counters[tag.event];
     if (r.kind === "timeout") {
       counters.timeouts += 1;
-      this.#d.notices?.notice(at, { code: "HOOK_TIMEOUT", hook: h.id, event: tag.event, layer: h.layer, timeoutS: h.spec?.timeoutS ?? HOOK_LIMITS.timeoutS.default });
+      this.#d.notices?.notice(at, { code: "HOOK_TIMEOUT", hook: tag.id, event: tag.event, layer: h.layer, timeoutS: h.spec?.timeoutS ?? h.timeoutS ?? HOOK_LIMITS.timeoutS.default });
       return;
     }
     counters.failures += 1;
@@ -451,7 +475,7 @@ class Engine implements HookEngineImpl {
     this.#d.notices?.notice(at, { hook: { ...tag, failed: r.kind, detail: r.detail, ...(stderr === "" ? {} : { stderr }) } });
   }
 
-  /** `hook.block` as the caller's: never the reason (the session's notice holds it). */
+  /** `hook.block` as the caller's: never the reason (the session's notice holds it); a plugin handler's names its plugin. */
   #audit(h: ConfiguredHook, at: HookAt, event: HookEvent, after: boolean): void {
     try {
       this.#append(h, at, event, after);
@@ -466,7 +490,7 @@ class Engine implements HookEngineImpl {
       principal: { kind: at.principal.kind, id: at.principal.id },
       outcome: "denied",
       code: "HOOK_BLOCKED",
-      details: { event, hookId: h.id, layer: h.layer, projectId: at.projectId, ...(at.session === undefined ? {} : { session: at.session.id }), ...(after ? { after: true } : {}) },
+      details: { event, hookId: h.id, layer: h.layer, ...(h.plugin === undefined ? {} : { pluginId: h.plugin }), ...(at.projectId === undefined ? {} : { projectId: at.projectId }), ...(at.session === undefined ? {} : { session: at.session.id }), ...(after ? { after: true } : {}) },
     });
   }
 }

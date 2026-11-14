@@ -10,8 +10,8 @@
 //! the broker, so the plugin never connects itself. It records every call.
 //!
 //! A conformance profile ([`profiles`]) runs a plugin through it and reports findings: the
-//! `command` profile in 8B; `analyzer`, `provider`, `codec` and `matte` arrive with their
-//! batches (8C, 8G, 8H). `fin-plugin test` is its command line.
+//! `command` profile in 8B, the `hook` profile in 7F; `analyzer`, `provider`, `codec` and
+//! `matte` arrive with their batches (8C, 8G, 8H). `fin-plugin test` is its command line.
 
 pub mod calls;
 pub mod fake_host;
@@ -28,40 +28,45 @@ use std::path::PathBuf;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-pub use report::{Finding, Report};
+pub use report::{Finding, HookReport, Report};
 
 /// A profile `fin-plugin test --profile` names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Profile {
     /// Commands (spec §3.8): every declared command answers in time, with valid output.
     Command,
+    /// Hook handlers (7F Task 9): every declared handler answers a sample request of its event
+    /// in time with one valid reply (`allow`, `block`, `context`).
+    Hook,
 }
 
 impl Profile {
     pub fn name(self) -> &'static str {
         match self {
             Profile::Command => "command",
+            Profile::Hook => "hook",
         }
     }
 
-    /// `command`; a later batch's profile is refused with the batch it arrives in.
+    /// `command` or `hook`; a later batch's profile is refused with the batch it arrives in.
     pub fn parse(name: &str) -> Result<Profile, HarnessError> {
         let later = match name {
             "command" => return Ok(Profile::Command),
+            "hook" => return Ok(Profile::Hook),
             "analyzer" => "8C",
             "provider" => "8G",
             "codec" | "matte" => "8H",
             _ => {
                 return Err(HarnessError::new(
                     "USAGE",
-                    format!("unknown profile {name:?}; the profiles are: command"),
+                    format!("unknown profile {name:?}; the profiles are: command, hook"),
                 ));
             }
         };
         Err(HarnessError::new(
             "USAGE",
             format!(
-                "the {name} profile arrives with sub-project {later}; this harness has: command"
+                "the {name} profile arrives with sub-project {later}; this harness has: command, hook"
             ),
         )
         .with("profile", name)
@@ -147,5 +152,6 @@ pub fn run(opts: &Options) -> Result<Report, HarnessError> {
     };
     match opts.profile {
         Profile::Command => profiles::command::run(&plugin, &snapshot),
+        Profile::Hook => profiles::hook::run(&plugin, &snapshot),
     }
 }

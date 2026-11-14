@@ -84,16 +84,19 @@ pub fn check_projects(projects: &[String]) -> Result<Vec<String>, CoreError> {
     Ok(out)
 }
 
-/// A pin holder: `job:<id>` or `project:<id>`.
+/// A pin holder: `job:<id>`, `project:<id>` or `http:<id>` (an entry file being served, 6B-1 Task 17).
 pub fn check_holder(holder: &str) -> Result<(), CoreError> {
-    let ok = holder
-        .strip_prefix("job:")
-        .or_else(|| holder.strip_prefix("project:"))
+    let ok = ["job:", "project:", "http:"]
+        .iter()
+        .find_map(|p| holder.strip_prefix(p))
         .is_some_and(valid_id);
     if ok {
         Ok(())
     } else {
-        Err(bad("holder", "a pin holder is job:<id> or project:<id>"))
+        Err(bad(
+            "holder",
+            "a pin holder is job:<id>, project:<id> or http:<id>",
+        ))
     }
 }
 

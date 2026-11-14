@@ -1,4 +1,4 @@
-//! `test <dir> [--profile command] [--fixture <snapshot.json>] [--exec <path>] [--node <path>]`:
+//! `test <dir> [--profile command|hook] [--fixture <snapshot.json>] [--exec <path>] [--node <path>]`:
 //! runs the plugin in `dir` through a conformance profile on `fin-plugin-test`'s fake host
 //! (spec §7.4). A pass prints the report; a failed profile is `PLUGIN_TEST_FAILED` (exit 3)
 //! with the report, its findings first, in `details`.

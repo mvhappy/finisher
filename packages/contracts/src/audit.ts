@@ -295,6 +295,8 @@ const HOOK_FIELDS = {
   event: Schema.optional(HookEvent),
   hookId: Schema.optional(Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,63}(?:\.unreadable)?$/))),
   layer: Schema.optional(HookLayer),
+  /** A plugin handler's plugin (`layer: plugin`; `hookId` is its handler, 7F Task 10). */
+  pluginId: Schema.optional(PluginIdWord),
   session: Schema.optional(Id),
   after: Schema.optional(Schema.Literal(true)),
 };

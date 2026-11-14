@@ -38,7 +38,8 @@ export const EvalAudioPayload = Schema.Struct({
  * only inside its project's folder, a device inside the server's allowed roots (5B Decision 32). `size`: each side 1 to 8192 (the timeline's resolution when
  * absent). `wait` (default true) answers the `LookResult` (frames with their final paths, what
  * was `skipped`, the adapter) once the job finished, or its error; `wait: false` answers
- * `{job}` at once.
+ * `{job}` at once. `originals` (6B-1 Task 16): read originals only; by default a layer reads its
+ * asset's `1080` proxy when the media cache holds one (each frame's `source` says which).
  */
 export const MediaLookPayload = Schema.Struct({
   projectId: Schema.String,
@@ -48,6 +49,7 @@ export const MediaLookPayload = Schema.Struct({
   out: Schema.optional(Schema.String),
   size: Schema.optional(Schema.Struct({ width: Schema.Number, height: Schema.Number })),
   wait: Schema.optional(Schema.Boolean),
+  originals: Schema.optional(Schema.Boolean),
 });
 /** The generated `LookResult` (`wait`), or `{job}` (the job's view: `wait: false`). */
 export const MediaLookSuccess = Schema.Unknown;
@@ -145,3 +147,58 @@ export const FontsPlanPayload = Schema.Struct({
 });
 export const FontsPlanSchema = Schema.Unknown;
 export type FontsPlanResult = FontsPlan;
+/**
+ * 6B-1 Task 14: a proxy of a video asset (`tier` `540` by default, `codec` H.264 where a hardware
+ * encoder makes it, else AV1). A cache hit answers at once; otherwise a `media.proxy` job is
+ * submitted and, unless `wait: false`, waited for (up to 10 minutes). `branch` defaults to `main`.
+ */
+export const MediaProxyPayload = Schema.Struct({
+  projectId: Schema.String,
+  asset: Schema.String,
+  branch: Schema.optional(Schema.String),
+  tier: Schema.optional(Schema.Literals(["540", "1080"])),
+  codec: Schema.optional(Schema.Literals(["h264", "av1"])),
+  wait: Schema.optional(Schema.Boolean),
+});
+/** `{asset, tier, codec, key, state: ready | making, cached?, job?, result?}` (`result` is the generated `ProxyResult`). */
+export const MediaProxySuccess = Schema.Unknown;
+/** 6B-1 Task 14: each tier's proxy of an asset: `ready`, `making` (with its job), `failed` or `none`. */
+export const MediaProxyStatusPayload = Schema.Struct({
+  projectId: Schema.String,
+  asset: Schema.String,
+  branch: Schema.optional(Schema.String),
+});
+/** The generated `ProxyStatus`: `{asset, fingerprint, tiers: [{tier, state, key?, codec?, job?, code?}]}`. */
+export const MediaProxyStatusSuccess = Schema.Unknown;
+
+/**
+ * 6B-1 Task 15: thumbnails of a video asset at source times (`at`: rational seconds, at most 64,
+ * each `maxSide` px at most, 256 by default) or its filmstrip (`strip`: a sprite per 10 s and a
+ * tile per second `tileHeight` px tall, 90 by default), as one media cache entry. Exactly one of
+ * `at` and `strip`. A cache hit answers at once; otherwise a `media.thumbs` job is submitted and,
+ * unless `wait: false`, waited for (up to 10 minutes). `branch` defaults to `main`.
+ */
+export const MediaThumbsPayload = Schema.Struct({
+  projectId: Schema.String,
+  asset: Schema.String,
+  branch: Schema.optional(Schema.String),
+  at: Schema.optional(Schema.Array(Schema.String)),
+  strip: Schema.optional(Schema.Boolean),
+  maxSide: Schema.optional(Schema.Number),
+  tileHeight: Schema.optional(Schema.Number),
+  wait: Schema.optional(Schema.Boolean),
+});
+/** `{asset, mode: thumbs | strip, key, state: ready | making, cached?, job?, files?}`: `files` are the entry's (`media.url` makes a URL of one). */
+export const MediaThumbsSuccess = Schema.Unknown;
+
+/**
+ * 6B-1 Task 17: `media.url {key, file}` mints a capability URL for one file of a media cache
+ * entry (spec 6 §7.3, plan Decisions 13 and 14). It needs `project.read` and reach over one of
+ * the projects the entry serves (`"*"` reaches all); a key the caller cannot reach, a key that
+ * is not there and a file the entry's `meta.json` does not list are all `NOT_FOUND`. `url` is
+ * origin-relative, `/media/cap/<token>/<file>`: fetch it with `GET` or `HEAD` (single `bytes=`
+ * ranges) on the HTTP origin the connection reached the server on; it works for that file only,
+ * until `expiresAt` (ms since the epoch, at most 10 minutes) or until the principal is revoked.
+ */
+export const MediaUrlPayload = Schema.Struct({ key: Schema.String, file: Schema.String });
+export const MediaUrlSuccess = Schema.Struct({ url: Schema.String, expiresAt: Schema.Number });

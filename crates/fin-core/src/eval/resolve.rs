@@ -18,7 +18,7 @@ pub(crate) struct Resolver<'a> {
 
 /// The type of a stored value when the registry is not consulted: numbers and `vec2`s
 /// interpolate, everything else steps.
-fn shape_of(v: &ParamValue) -> ValueType {
+pub(crate) fn shape_of(v: &ParamValue) -> ValueType {
     match v {
         ParamValue::Number(_) => ValueType::Number,
         ParamValue::Vec2(_) => ValueType::Vec2,
@@ -27,7 +27,7 @@ fn shape_of(v: &ParamValue) -> ValueType {
 }
 
 /// A registry default as a stored value (`None`: the param has none, such as a LUT's asset).
-fn default_value(d: DefaultValue) -> Option<ParamValue> {
+pub(crate) fn default_value(d: DefaultValue) -> Option<ParamValue> {
     match d {
         DefaultValue::None => None,
         DefaultValue::Bool(b) => Some(ParamValue::Bool(b)),
@@ -38,7 +38,7 @@ fn default_value(d: DefaultValue) -> Option<ParamValue> {
 }
 
 /// A registry effect param's name (`exposure` of `colorAdjust.exposure`).
-fn param_name(spec: &ParamSpec) -> &'static str {
+pub(crate) fn param_name(spec: &ParamSpec) -> &'static str {
     spec.path.split_once('.').map_or(spec.path, |(_, p)| p)
 }
 

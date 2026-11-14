@@ -41,9 +41,11 @@ import { hooksHandlers } from "./hooks/rpc.ts";
 import { JobEngineTag } from "./jobs/layer.ts";
 import { chainJobs, jobHandlers } from "./jobs/rpc.ts";
 import { MediaCacheTag } from "./media/cache.ts";
+import { CapTokensTag, mediaUrl } from "./media/cap-tokens.ts";
 import { mediaCapabilities } from "./media/caps.ts";
 import { look as mediaLook } from "./media/look.ts";
 import { probeDeep } from "./media/probe-deep.ts";
+import { MediaProxyTag, type ProxyService } from "./media/proxy.ts";
 import { reprobe } from "./media/reprobe.ts";
 import { requireAbsolute, requireAbsoluteOpt } from "./paths.ts";
 import { dropPayload, metaJson } from "./history.ts";
@@ -106,6 +108,7 @@ export const HandlersLive = FinRpcs.toLayer(
     const deviceAccess = yield* DeviceAccessTag;
     const remoteListener = yield* RemoteListenerTag;
     const mediaCache = yield* MediaCacheTag;
+    const capTokens = yield* CapTokensTag;
     // Plugin commands (sp8b Task 9): served only where the plugin host runs.
     const pluginCommands = Option.getOrUndefined(yield* Effect.serviceOption(PluginCommandsTag));
     const admin: AdminDeps = {
@@ -155,7 +158,11 @@ export const HandlersLive = FinRpcs.toLayer(
     };
     // `media.look` and `media.capabilities` (6A Task 13): jobs on the engine's `media` family.
     const mediaDeps = { registry, engine };
-    const capabilitiesOf = mediaCapabilities(mediaDeps);
+    // 6B-1 Task 14: the server's one capability cache and its proxy service, when it has them.
+    const mediaProxy = Option.getOrUndefined(yield* Effect.serviceOption(MediaProxyTag));
+    const capabilitiesOf = mediaProxy?.capabilities ?? mediaCapabilities(mediaDeps);
+    const proxiesOf = <A>(f: (p: ProxyService) => Effect.Effect<A, FinError>): Effect.Effect<A, FinError> =>
+      mediaProxy === undefined ? Effect.fail(finError("SERVER_UNAVAILABLE", "proxies are not served here", { feature: "mediaProxy" })) : f(mediaProxy.proxies);
     const ownerOf = (options: object) => {
       const p = principalOf(options);
       return { kind: p.kind, id: p.id };
@@ -182,10 +189,12 @@ export const HandlersLive = FinRpcs.toLayer(
     // Then the outcome tracker (Task 11), once the session's own rows are written.
     // Then the review link (7B Task 11): a session's `review.request` is recorded and `branchReady` emitted.
     const tracked = withOutcomes(agentChainHooks({ reach, paths: new PathReach(agents.store, projects), sessions: agents.store, clock: agents.clock.now, attribution: agentRuntime.attribution }), agents.outcomes, projects);
-    const hooks = withReviewLink(tracked, agents.reviewLink, reach);
+    // Then `PostCommand` and `PostMerge` (7F Task 7), queued off the call's path.
+    const hooks = agentRuntime.hookWiring.wrapAfter(withReviewLink(tracked, agents.reviewLink, reach));
     // Then command rules (7B Task 2), for agent principals only; a person's allow is a one-time grant (Task 5).
     // Then protected branches (5E Task 6), for every principal without `branch.protected`.
-    const policies = [reach.policy, agentBranchLimitsExcept((p) => reach.covers(p)), protectedBranches, commandRules(agentRuntime.rules, agents.store, { grants: agentRuntime.grants })];
+    // Then the `PreCommand` and `PreMerge` hooks (7F Task 7): a rule's deny or ask comes first.
+    const policies = [reach.policy, agentBranchLimitsExcept((p) => reach.covers(p)), protectedBranches, commandRules(agentRuntime.rules, agents.store, { grants: agentRuntime.grants }), ...agentRuntime.hookWiring.policies];
     // A running session's rule ask becomes a durable card (7B Task 4): `APPROVAL_PENDING`.
     const agentAsk = agentAskPort(agentRuntime.approvals, agents.store, agentRuntime.approvalKey);
     /** An agent session's default branch, for `auth.whoami` (Decision 14a); none for any other principal. */
@@ -450,7 +459,18 @@ export const HandlersLive = FinRpcs.toLayer(
       // The media cache (6B-1 Task 13): its state, and an eviction down to the cap or `toGiB`.
       "media.cache.status": () => guard("media.cache.status", mediaCache.status()),
       "media.cache.gc": ({ toGiB }) => guard("media.cache.gc", mediaCache.gc(toGiB)),
+      // 6B-1 Task 17: a capability URL, with reach over the entry's projects (the chain checked `project.read`).
+      "media.url": (req, options) => guard("media.url", mediaUrl({ cache: mediaCache, tokens: capTokens }, principalOf(options), req)),
       "media.probeDeep": (req, options) => guard("media.probeDeep", probeDeep({ ...mediaDeps, capabilities: capabilitiesOf }, ownerOf(options), req)),
+      // 6B-1 Task 14: a proxy of a project asset, and the state of its tiers.
+      "media.proxy": (req, options) => guard("media.proxy", proxiesOf((p) => p.request(ownerOf(options), req))),
+      "media.proxy.status": (req, options) => guard("media.proxy.status", proxiesOf((p) => p.status(ownerOf(options), req))),
+      // 6B-1 Task 15: thumbnails at source times, or the filmstrip, of a video asset.
+      "media.thumbs": (req, options) =>
+        guard(
+          "media.thumbs",
+          mediaProxy?.thumbs === undefined ? Effect.fail(finError("SERVER_UNAVAILABLE", "thumbnails are not served here", { feature: "mediaThumbs" })) : mediaProxy.thumbs.request(ownerOf(options), req),
+        ),
       "asset.reprobe": (req, options) =>
         guard(
           "asset.reprobe",

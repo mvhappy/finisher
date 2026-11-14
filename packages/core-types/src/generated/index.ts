@@ -1118,6 +1118,21 @@ export type GuidanceCode =
   | "codecPlugin"
   | "laterBatch";
 /**
+ * A resolved value (plan 4C Decision 12): colours are sRGB `[r, g, b, a]` in 0…1.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PlanValue".
+ */
+export type PlanValue =
+  | boolean
+  | number
+  | [number, number]
+  | [number, number, number, number]
+  | string
+  | {
+      asset: string;
+    };
+/**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "ShapeKind".
  */
@@ -1333,6 +1348,27 @@ export type TrainingState = "on" | "off" | "undecided";
  */
 export type ContainerKind = "mp4" | "mov" | "webm" | "matroska";
 /**
+ * An event a hook can subscribe to (arch §10 without `PreOp`/`PostOp`, spec §9.1).
+ * `PreRender` and `PostRender` are accepted and inert until a render job kind exists.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "HookEvent".
+ */
+export type HookEvent =
+  | "SessionStart"
+  | "SessionEnd"
+  | "UserPrompt"
+  | "PreCommand"
+  | "PostCommand"
+  | "BranchReady"
+  | "PreMerge"
+  | "PostMerge"
+  | "PreRender"
+  | "PostRender"
+  | "JobDone"
+  | "Approval"
+  | "Notification";
+/**
  * Every key of spec §4.2, consumed or not.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -1397,20 +1433,13 @@ export type ProjectPolicy = "default" | "never" | "unknown";
  */
 export type JournalState = "off" | "on" | "suspended";
 /**
- * A resolved value (plan 4C Decision 12): colours are sRGB `[r, g, b, a]` in 0…1.
+ * What an effect kind processes: pictures (on items of video tracks) or sound (on clips of
+ * audio tracks).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "PlanValue".
+ * via the `definition` "EffectDomain".
  */
-export type PlanValue =
-  | boolean
-  | number
-  | [number, number]
-  | [number, number, number, number]
-  | string
-  | {
-      asset: string;
-    };
+export type EffectDomain = "visual" | "audio";
 /**
  * One engine event (`Engine.onEvent`), tagged by `type`.
  *
@@ -1517,6 +1546,13 @@ export type StorageKind =
   | "sync:onedrive"
   | "sync:googledrive"
   | "sync:unknown";
+/**
+ * How an HDR source was brought to SDR (Decision 9).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ToneMapped".
+ */
+export type ToneMapped = "os" | "shader";
 /**
  * What a merge does with a source record (the review's `status`).
  *
@@ -1815,27 +1851,6 @@ export type HelloRole = "worker" | "helper";
  * via the `definition` "PlacementOutcome".
  */
 export type PlacementOutcome = "clean" | "relocated" | "conflict";
-/**
- * An event a hook can subscribe to (arch §10 without `PreOp`/`PostOp`, spec §9.1).
- * `PreRender` and `PostRender` are accepted and inert until a render job kind exists.
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "HookEvent".
- */
-export type HookEvent =
-  | "SessionStart"
-  | "SessionEnd"
-  | "UserPrompt"
-  | "PreCommand"
-  | "PostCommand"
-  | "BranchReady"
-  | "PreMerge"
-  | "PostMerge"
-  | "PreRender"
-  | "PostRender"
-  | "JobDone"
-  | "Approval"
-  | "Notification";
 /**
  * A hook's answer (Decision 2): one JSON object on stdout, or a `plugin.hook` job's result.
  *
@@ -2254,6 +2269,13 @@ export type LibraryScanMode = "full" | "dirs" | "poll";
  */
 export type LogLevel = "debug" | "info" | "warn" | "error";
 /**
+ * What a look frame's pictures were read from (plan 6B-1 Task 16).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "LookSource".
+ */
+export type LookSource = "proxy" | "original";
+/**
  * `@<publisher>/<name>` (8A Decision 2).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -2290,6 +2312,20 @@ export type Runtime =
       node: string;
       type: "node";
     };
+/**
+ * The codec of a proxy (Decision 5).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProxyCodec".
+ */
+export type ProxyCodec = "h264" | "av1";
+/**
+ * A proxy tier (spec §7.1).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProxyTier".
+ */
+export type ProxyTier = "540" | "1080";
 /**
  * The OS confinement the worker applied to itself (spec §3.5.1).
  *
@@ -2555,6 +2591,28 @@ export type TestGarbage = "json" | "seq" | "long" | "otherJob" | "unknownType";
  * via the `definition` "TestHelperBehaviour".
  */
 export type TestHelperBehaviour = "ok" | "exitEarly" | "hang" | "spawn" | "call";
+/**
+ * What `media.thumbs` makes.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ThumbsMode".
+ */
+export type ThumbsMode =
+  | {
+      thumbs: {
+        maxSide: number;
+        times: Rational[];
+      };
+    }
+  | {
+      strip: {
+        /**
+         * 0 in a plan request: the host fills it from the duration.
+         */
+        sprites?: number;
+        tileHeight: number;
+      };
+    };
 /**
  * What one worker serves.
  *
@@ -4836,16 +4894,61 @@ export interface Guidance {
   fix: string;
 }
 /**
+ * One effect of an audio item: `numbers` cover the item's span `[from, to)` without gaps, in
+ * order; `values` are the params that do not move (enums, bools, text).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "AudioEffectPlan".
+ */
+export interface AudioEffectPlan {
+  id: string;
+  kind: string;
+  numbers?: {
+    [k: string]: ParamSegment[];
+  };
+  values?: {
+    [k: string]: PlanValue;
+  };
+}
+/**
+ * A number over `[from, to)`, read like a gain segment: the value at progress `x` of the
+ * segment is `lerp(v[0], v[1], ease(lerp(u[0], u[1], x)))`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ParamSegment".
+ */
+export interface ParamSegment {
+  from: Rational;
+  interp: Interp;
+  to: Rational;
+  /**
+   * @minItems 2
+   * @maxItems 2
+   */
+  u: [number, number];
+  /**
+   * @minItems 2
+   * @maxItems 2
+   */
+  v: [number, number];
+}
+/**
  * One item's part of the range: it plays `asset` from `sourceFrom` at `speed` over the
  * timeline span `[from, to)`. `gain` and `pan` cover that span without gaps, in order. An
  * item of a nested timeline lists the nested items it sounds through in `via`, outermost
- * first (its `item` and `track` are its own, on the nested timeline).
+ * first (its `item` and `track` are its own, on the nested timeline). `effects` are its
+ * enabled effects with their numbers as segments over the same span.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "AudioItem".
  */
 export interface AudioItem {
   asset: string;
+  /**
+   * The item's enabled audio effects in its order (plan 6C Decision 15); absent when none,
+   * so plans without effects hash as before.
+   */
+  effects?: AudioEffectPlan[];
   from: Rational;
   gain: GainSegment[];
   item: string;
@@ -5664,6 +5767,7 @@ export interface Contributes {
   captionStyles?: CaptionStyleContribution[];
   commands?: CommandContribution[];
   fontCatalogs?: FontCatalogContribution[];
+  hooks?: HookContribution[];
 }
 /**
  * A font catalog file (`fin_fonts::FontCatalog` JSON) whose entries join the server's
@@ -5674,6 +5778,29 @@ export interface Contributes {
  */
 export interface FontCatalogContribution {
   file: string;
+}
+/**
+ * A hook handler (agent §9; 7F Decision 20), run through a `plugin.hook` v1 job in the
+ * hook engine's `plugin` layer. Consumed from host API 1.2.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "HookContribution".
+ */
+export interface HookContribution {
+  /**
+   * Needs `hooks:observe` naming it.
+   */
+  event: HookEvent;
+  /**
+   * `[a-z][a-z0-9-]{0,63}`: the name the SDK dispatches on (`HookRun.handler`); one plugin
+   * lists each `(event, handler)` once.
+   */
+  handler: string;
+  /**
+   * Seconds, 1 to 60; 10 when absent. A failure or timeout follows the event's default
+   * `onTimeout` (a plugin cannot loosen `PreMerge`).
+   */
+  timeoutS?: number;
 }
 /**
  * A structured, machine-readable error. `code` is a stable `SCREAMING_SNAKE` string.
@@ -6121,6 +6248,10 @@ export interface EntryMeta {
   recipe: string;
   recipeVersion: number;
   renderVersion: number;
+  /**
+   * How an HDR source was brought to SDR (proxies, plan 6B-1 Decision 9); absent for SDR.
+   */
+  toneMapped?: ToneMapped;
 }
 /**
  * What a media file is (spec §6.3).
@@ -6817,17 +6948,6 @@ export interface Landed {
   track: string;
 }
 /**
- * A hook handler (agent §9). Typed now; consumable once 7F's hook engine lands (8B
- * Decision 20), refused as `PLUGIN_CONTRIBUTION_UNSUPPORTED` until then.
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "HookContribution".
- */
-export interface HookContribution {
-  event: string;
-  handler: string;
-}
-/**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "HookFin".
  */
@@ -6856,9 +6976,9 @@ export interface HookInput {
    */
   hookFile: string;
   /**
-   * Read-only.
+   * Read-only. Absent for a server-scoped event (no project): the hook reads no project.
    */
-  projectDir: string;
+  projectDir?: string;
   serverData: string;
   /**
    * The hook's time limit (`Limits.wall_ms`): the launcher ends the whole tree when it passes
@@ -6896,7 +7016,11 @@ export interface HookRequest {
    * The event's payload (over 1 MiB: `{payloadOmitted: true, bytes}`).
    */
   payload: unknown;
-  project: HookProject;
+  /**
+   * Absent for a server-scoped event (a call or a job that names no project): only the
+   * managed, user and plugin layers run for it.
+   */
+  project?: HookProject;
   /**
    * Absent for events outside a session (`JobDone` of a job, a person's merge, `UserPrompt`
    * before `agent.session.start` opens the session).
@@ -7920,7 +8044,31 @@ export interface LookFrame {
    * The plan's BLAKE3 (lowercase hex).
    */
   plan: string;
+  /**
+   * The assets whose proxy was listed in the manifest but could not be read (their layers
+   * read the original); absent when none.
+   */
+  proxyFallbacks?: LookProxyFallback[];
+  /**
+   * Where the frame's pictures came from.
+   */
+  source: LookSource;
   width: number;
+}
+/**
+ * Why a layer that had a proxy read its original instead (`LookFrame.proxyFallbacks`): the
+ * entry or its files were gone, changed or unreadable between the manifest and the open.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "LookProxyFallback".
+ */
+export interface LookProxyFallback {
+  asset: string;
+  /**
+   * `missing`, `changed`, `invalid` (the entry's files do not agree with each other or the
+   * original) or `decode` (a proxy frame did not decode).
+   */
+  reason: string;
 }
 /**
  * `media.look` v1: frames of `timeline` at each time in `at`, as PNGs in `out/`.
@@ -7937,6 +8085,11 @@ export interface LookParams {
    * The branch of the snapshot (an id, a name or `<name>#<id>`).
    */
   branch?: string;
+  /**
+   * Read the originals only: a layer never reads a proxy (`fin look --originals`, plan
+   * 6B-1 Task 16). Part of the job's identity (`dedupe`).
+   */
+  originals?: boolean;
   /**
    * Where the kind's `onSucceeded` moves the frames: absolute, or relative to the project
    * folder; `workspace/shared/look/` when absent. Never inside `.finisher/` or `assets/`
@@ -8126,6 +8279,32 @@ export interface ManifestAsset {
    * is missing.
    */
   original?: OriginalFile | null;
+  /**
+   * The proxies the media cache holds for this asset's fingerprint when the manifest was
+   * written (spec §4.2 "from 6B"; plan 6B-1 Task 16), pinned for the job's life by the host.
+   * A layer reads the `1080` one when `media.look` does not ask for originals
+   * ([`ManifestAsset::proxy`]).
+   */
+  proxies?: ManifestProxy[];
+}
+/**
+ * One proxy entry of the media cache (`cache/media/<key[0..2]>/<key>/`): `proxy.mp4`,
+ * `table.bin` (the original's sample table) and `meta.json` (plan 6B-1 Decision 7).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ManifestProxy".
+ */
+export interface ManifestProxy {
+  codec: ProxyCodec;
+  /**
+   * The entry's directory on this machine, absolute.
+   */
+  dir: string;
+  /**
+   * The entry's cache key.
+   */
+  key: string;
+  tier: ProxyTier;
 }
 /**
  * Font bytes for captions (plan 6A Decision 3): the server's font cache, read-only, then the
@@ -8772,6 +8951,160 @@ export interface ProjectViewText {
   text: string;
 }
 /**
+ * One move of the encode to another encoder (`ENCODER_HUNG`'s fallback, an encoder that did
+ * not open), as the result records it.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProxyFallback".
+ */
+export interface ProxyFallback {
+  from: string;
+  /**
+   * `openFailed` or `hung`.
+   */
+  reason: string;
+  to: string;
+}
+/**
+ * A library file the `proxy540` stage hands the worker (5D Decision 39): the library's
+ * canonical root, the file's raw chain below it and the `Expect` the opener checks, in
+ * `fin-library`'s wire forms (`RawRel`, `Expect`), which the worker decodes.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProxyLibraryFile".
+ */
+export interface ProxyLibraryFile {
+  /**
+   * `fin-library`'s `Expect`: `{size, mtimeNs, fileId?, dev?}`.
+   */
+  expect: unknown;
+  /**
+   * The library hydrates cloud-only files when read.
+   */
+  hydrate?: boolean;
+  library: string;
+  /**
+   * `fin-library`'s `RawRel`: `{components: [<base64>]}`.
+   */
+  rel: unknown;
+  /**
+   * The library's canonical root (absolute).
+   */
+  root: string;
+}
+/**
+ * `media.proxy` v1: a proxy of the source whose content is `fingerprint`, at `tier`, in
+ * `codec`, which the cache knows as `key`. A batch kind of one item, the fingerprint.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProxyParams".
+ */
+export interface ProxyParams {
+  /**
+   * A project asset, through the job's `in/manifest.json` (the asset's fingerprint there
+   * must equal `fingerprint`, else `ASSET_CHANGED`).
+   */
+  asset?: string;
+  /**
+   * The branch whose head names the asset (`main` when absent). Host only.
+   */
+  branch?: string;
+  codec: ProxyCodec;
+  /**
+   * The vendor class the host expects the original's decoder to have (part of the key).
+   */
+  decoderClass: VendorClass;
+  display?: Size;
+  /**
+   * A library file (the `proxy540` stage).
+   */
+  file?: ProxyLibraryFile;
+  fingerprint: string;
+  /**
+   * The encoder may make a 540 proxy all-intra (Decision 8: measured at ≥ 8× real time by
+   * the capability probe). Absent: a keyframe every 0.25 s.
+   */
+  intraOk?: boolean;
+  /**
+   * [`proxy_key`] of the fields above: where the host commits the entry. The worker writes
+   * `out/<key>/` and fails `PLAN_MISMATCH {reason: cacheKey}` when the decoder it opened
+   * gives another key.
+   */
+  key: string;
+  /**
+   * The project that asked (host only: `prepare` writes the manifest from its branch head,
+   * `onSucceeded` commits the entry for it).
+   */
+  projectId?: string;
+  tier: ProxyTier;
+}
+/**
+ * What `media.proxy` v1 answers for its item (the fingerprint).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProxyResult".
+ */
+export interface ProxyResult {
+  /**
+   * The encoder's backend (`svt-av1`, `videotoolbox`, `mf-hw`, …) and its vendor class.
+   */
+  backend: string;
+  /**
+   * The entry's bytes (its files, `meta.json` not included).
+   */
+  bytes: number;
+  class: VendorClass;
+  codec: ProxyCodec;
+  /**
+   * The decoder's backend.
+   */
+  decoder: string;
+  fellBack?: ProxyFallback[];
+  /**
+   * Proxy frames: the original's presented frames.
+   */
+  frames: number;
+  key: string;
+  /**
+   * The proxy's coded size.
+   */
+  size: Size;
+  tier: ProxyTier;
+  toneMapped?: ToneMapped;
+}
+/**
+ * `media.proxy.status`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProxyStatus".
+ */
+export interface ProxyStatus {
+  asset: string;
+  fingerprint: string;
+  tiers: ProxyTierStatus[];
+}
+/**
+ * One tier of `media.proxy.status`: its entry when the cache holds one, the job making it.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProxyTierStatus".
+ */
+export interface ProxyTierStatus {
+  /**
+   * The failed job's error code.
+   */
+  code?: string;
+  codec?: ProxyCodec;
+  job?: string;
+  key?: string;
+  /**
+   * `ready` (in the cache), `making` (a job runs), `failed` (the last job failed) or
+   * `none`.
+   */
+  state: string;
+  tier: ProxyTier;
+}
+/**
  * What a purge removed.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -9286,6 +9619,47 @@ export interface UnitEntry {
   source: UnitSource;
 }
 /**
+ * `strip.json`: where each time of the source is in the sprites.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "StripIndex".
+ */
+export interface StripIndex {
+  /**
+   * [`STRIP_SPRITE_SECONDS`].
+   */
+  spriteSeconds: number;
+  sprites: StripSprite[];
+  tileHeight: number;
+  /**
+   * [`STRIP_TILE_SECONDS`].
+   */
+  tileSeconds: number;
+  tileWidth: number;
+  version: number;
+}
+/**
+ * One sprite of `strip.json`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "StripSprite".
+ */
+export interface StripSprite {
+  file: string;
+  tiles: StripTile[];
+}
+/**
+ * One tile of a sprite in `strip.json`: its source time and the original frame it shows; its
+ * x offset in the sprite is its position times the tile width.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "StripTile".
+ */
+export interface StripTile {
+  at: Rational;
+  frame: number;
+}
+/**
  * A package target's signed custom metadata (`custom` in its publisher's delegated role): one
  * type for the editor that signs it, the TUF client that reads it and the plan that checks it.
  *
@@ -9660,6 +10034,152 @@ export interface TestWarmResult {
   probes?: (number | null)[];
   served: number;
   value: unknown;
+}
+/**
+ * What a thumbnail item reports (`item` value): its file in the entry and what it shows.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ThumbItem".
+ */
+export interface ThumbItem {
+  /**
+   * The requested time (thumbnails).
+   */
+  at?: Rational;
+  file: string;
+  /**
+   * The original frame index shown (`frame_at`), thumbnails only.
+   */
+  frame?: number;
+  height: number;
+  /**
+   * The tiles of the sprite (filmstrips).
+   */
+  tiles?: number;
+  width: number;
+}
+/**
+ * `media.thumbs` v1: thumbnails or a filmstrip of the asset `asset` (content `fingerprint`),
+ * which the cache knows as `key`. A batch kind whose items are the thumbnails or sprites.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ThumbsParams".
+ */
+export interface ThumbsParams {
+  /**
+   * A project asset, through the job's `in/manifest.json` (its fingerprint there must be
+   * `fingerprint`, else `ASSET_CHANGED`).
+   */
+  asset: string;
+  /**
+   * The branch whose head names the asset (`main` when absent). Host only.
+   */
+  branch?: string;
+  /**
+   * The vendor class the host expects the original's decoder to have (part of the key).
+   */
+  decoderClass: VendorClass;
+  /**
+   * The source's display size, for the kind's memory rule (Decision 18). Host only.
+   */
+  display?: Size;
+  fingerprint: string;
+  /**
+   * [`thumbs_key`] of the fields above: where the host commits the entry.
+   */
+  key: string;
+  mode: ThumbsMode;
+  /**
+   * The items still to make (a retry after a crash: the engine restricts the params to the
+   * items it has not acknowledged); all of them when absent. Files of the others are kept.
+   */
+  only?: string[];
+  /**
+   * The project that asked (host only: `prepare` writes the manifest from its branch head,
+   * `onSucceeded` commits the entry for it).
+   */
+  projectId?: string;
+}
+/**
+ * What `mediaThumbsPlan` answers.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ThumbsPlan".
+ */
+export interface ThumbsPlan {
+  /**
+   * The backend the report names first for the original's codec (absent when planned from
+   * a proxy's `decoderClass`).
+   */
+  decoder?: string;
+  decoderClass: VendorClass;
+  /**
+   * The job's items.
+   */
+  items: string[];
+  key: string;
+  /**
+   * The mode with a filmstrip's sprite count filled in.
+   */
+  mode: ThumbsMode;
+}
+/**
+ * What `mediaThumbsPlan` (fin-node) is asked: the key of a `media.thumbs` job before it is
+ * submitted. The decoder class comes from the original (`sourceCodec` and the report's
+ * `decoders` for it: the first that decodes it) or, when the original is not read, from the
+ * `1080` proxy entry the worker will read (`decoderClass`, which its `meta.json` records:
+ * Decision 11 keys the original's decoder class either way). Exactly one of the two.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ThumbsPlanRequest".
+ */
+export interface ThumbsPlanRequest {
+  /**
+   * The original's decoder class as a proxy entry records it (instead of `sourceCodec`).
+   */
+  decoderClass?: VendorClass;
+  /**
+   * The report's backends for `source_codec`, in the order they are tried.
+   */
+  decoders?: string[];
+  /**
+   * The source's duration in seconds (`MediaInfo.duration`; filmstrips).
+   */
+  duration?: Rational;
+  fingerprint: string;
+  /**
+   * A filmstrip with `sprites: 0` (or none) is planned from `duration`.
+   */
+  mode: ThumbsMode;
+  /**
+   * The original's video codec (the asset's `video.codec`).
+   */
+  sourceCodec?: VideoCodec;
+}
+/**
+ * What a `media.thumbs` run answers: where its frames came from.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ThumbsRun".
+ */
+export interface ThumbsRun {
+  /**
+   * The entry is complete (`meta.json` written).
+   */
+  complete: boolean;
+  /**
+   * Items made in this run.
+   */
+  made: number;
+  /**
+   * Why the proxy the manifest lists could not be read (the original was read instead):
+   * `missing`, `changed` or `invalid`, as a look's `proxyFallbacks` give it.
+   */
+  proxyFailed?: string;
+  /**
+   * `proxy` or `original`.
+   */
+  source: string;
 }
 /**
  * `tx.get` for a transaction that is not (or no longer) on its branch.

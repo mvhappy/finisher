@@ -65,8 +65,9 @@ pub struct AgentInput {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HookInput {
-    /// Read-only.
-    pub project_dir: PathBuf,
+    /// Read-only. Absent for a server-scoped event (no project): the hook reads no project.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_dir: Option<PathBuf>,
     /// The hook's own file.
     pub hook_file: PathBuf,
     #[serde(default)]

@@ -3,7 +3,7 @@
 
 use fin_jobs::KindParams;
 use fin_jobs::kinds::{find, schema_as, validate_as};
-use fin_media::jobs::{CapabilitiesParams, LookParams, ProbeDeepParams};
+use fin_media::jobs::{CapabilitiesParams, LookParams, ProbeDeepParams, ProxyParams, ThumbsParams};
 use napi_derive::napi;
 use serde_json::{Value, json};
 
@@ -18,14 +18,23 @@ static PARAMS: &[&[KindParams]] = &[
     PLUGIN,
 ];
 
-/// Sub-project 8B's plugin kinds: a command run (`fin_plugin_api::protocol::CommandRun`; the
-/// kind itself is registered by finisherd's plugin host, Task 9).
-static PLUGIN: &[KindParams] = &[KindParams {
-    kind: "plugin.command",
-    version: 1,
-    validate: validate_as::<fin_plugin_api::protocol::CommandRun>,
-    schema: schema_as::<fin_plugin_api::protocol::CommandRun>,
-}];
+/// Sub-project 8B's plugin kinds: a command run (`fin_plugin_api::protocol::CommandRun`) and a
+/// hook handler's run (`HookRun`, 7F Task 10); the kinds themselves are registered by
+/// finisherd's plugin host.
+static PLUGIN: &[KindParams] = &[
+    KindParams {
+        kind: fin_plugin_api::protocol::COMMAND_KIND,
+        version: fin_plugin_api::protocol::COMMAND_KIND_VERSION,
+        validate: validate_as::<fin_plugin_api::protocol::CommandRun>,
+        schema: schema_as::<fin_plugin_api::protocol::CommandRun>,
+    },
+    KindParams {
+        kind: fin_plugin_api::protocol::HOOK_KIND,
+        version: fin_plugin_api::protocol::HOOK_KIND_VERSION,
+        validate: validate_as::<fin_plugin_api::protocol::HookRun>,
+        schema: schema_as::<fin_plugin_api::protocol::HookRun>,
+    },
+];
 
 /// Sub-project 6's media kinds (`fin_media::jobs`; the worker side is `fin-workers media`).
 static MEDIA: &[KindParams] = &[
@@ -47,7 +56,36 @@ static MEDIA: &[KindParams] = &[
         validate: validate_as::<ProbeDeepParams>,
         schema: schema_as::<ProbeDeepParams>,
     },
+    KindParams {
+        kind: "media.proxy",
+        version: 1,
+        validate: validate_proxy,
+        schema: schema_as::<ProxyParams>,
+    },
+    KindParams {
+        kind: "media.thumbs",
+        version: 1,
+        validate: validate_thumbs,
+        schema: schema_as::<ThumbsParams>,
+    },
 ];
+
+/// `ProxyParams`, then one source and a well-formed key (6B-1 Task 14).
+fn validate_proxy(params: &Value) -> Result<Value, Vec<String>> {
+    let filled = validate_as::<ProxyParams>(params)?;
+    let p: ProxyParams = serde_json::from_value(filled.clone()).map_err(|e| vec![e.to_string()])?;
+    p.check().map_err(|e| vec![e.message])?;
+    Ok(filled)
+}
+
+/// `ThumbsParams`, then its counts, sizes and key (6B-1 Task 15).
+fn validate_thumbs(params: &Value) -> Result<Value, Vec<String>> {
+    let filled = validate_as::<ThumbsParams>(params)?;
+    let p: ThumbsParams =
+        serde_json::from_value(filled.clone()).map_err(|e| vec![e.to_string()])?;
+    p.check().map_err(|e| vec![e.message])?;
+    Ok(filled)
+}
 
 /// `LookParams`, then the checks serde cannot make (counts, sizes, the output name), as the
 /// worker makes them.

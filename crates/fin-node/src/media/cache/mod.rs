@@ -9,7 +9,13 @@
 //!   projects it serves, pinned for the open ones), `commit(jobOutDir, key, projects)` (rename,
 //!   then insert; `commit.rs`), `pin`/`unpin(key, holder)`, `release(holder)`,
 //!   `pinProject`/`unpinProject(projectId)`, `entriesFor(fingerprint)`, `projectsOf(key)`,
-//!   `status()`, `gc(targetBytes?)`, `setCap(capBytes?)`, `entryDir(key)`.
+//!   `status()`, `gc(targetBytes?)`, `setCap(capBytes?)`, `entryDir(key)`, and
+//!   `readFile(key, file, offset, len)` (an entry's listed file for HTTP; `read.rs`).
+//!
+//! - `attachProxies(inDir, holder, projects)` lists, in a job's `in/manifest.json`, the `1080`
+//!   proxy of each asset's fingerprint the index holds, pinned for `holder` and serving
+//!   `projects` (`proxies.rs`, Task 16); `currentProxy(fingerprint, projects)` answers the
+//!   one it would list, unpinned for a job (Task 15's planner).
 //!
 //! Eviction runs after each commit (here) and every 10 minutes (finisherd's timer calls `gc`).
 
@@ -17,6 +23,8 @@ mod adopt;
 mod commit;
 mod evict;
 mod index;
+mod proxies;
+mod read;
 mod state;
 
 use std::path::PathBuf;
@@ -24,13 +32,18 @@ use std::sync::{Arc, Mutex};
 
 use fin_core::CoreError;
 use fin_media::cache::CacheKey;
+use fin_media::jobs::ProxyTier;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use serde_json::json;
 
+use super::inputs;
 use crate::worker::Worker;
 use crate::{guarded, reject};
 use state::Cache;
+
+/// The tiers a media job's manifest lists: what a look reads (plan 6B-1 Task 16).
+const LISTED_TIERS: &[ProxyTier] = &[ProxyTier::Preview];
 
 /// The server's media cache (module docs).
 #[napi]
@@ -189,7 +202,7 @@ impl MediaCache {
         self.run(env, move |c| c.serve(&key, &projects))
     }
 
-    /// Pins `key` for `holder` (`job:<id>`, `project:<id>`); false when there is no such entry.
+    /// Pins `key` for `holder` (`job:<id>`, `project:<id>`, `http:<n>`); false when there is no such entry.
     #[napi(catch_unwind, ts_return_type = "Promise<boolean>")]
     pub fn pin<'e>(&self, env: &'e Env, key: String, holder: String) -> Result<Object<'e>> {
         self.run(env, move |c| c.pin(&key, &holder))
@@ -221,6 +234,72 @@ impl MediaCache {
     #[napi(catch_unwind, ts_return_type = "Promise<string>")]
     pub fn entries_for<'e>(&self, env: &'e Env, fingerprint: String) -> Result<Object<'e>> {
         self.run(env, move |c| json_of(&c.entries_for(&fingerprint)?))
+    }
+
+    /// Up to `len` bytes (at most 1 MiB) of the entry file `file` from `offset`, opened without
+    /// following a link; empty at or past its end; `null` when the entry lists no such file
+    /// (spec §7.3). `SHM_REFUSED` when the file is a link or larger than listed.
+    #[napi(catch_unwind, ts_return_type = "Promise<Buffer | null>")]
+    pub fn read_file<'e>(
+        &self,
+        env: &'e Env,
+        key: String,
+        file: String,
+        offset: f64,
+        len: f64,
+    ) -> Result<Object<'e>> {
+        let offset = bytes_arg("offset", Some(offset))?.unwrap_or(0);
+        let len = bytes_arg("len", Some(len))?.unwrap_or(0);
+        self.run(env, move |c| {
+            Ok(c.read_file(&key, &file, offset, len)?.map(Buffer::from))
+        })
+    }
+
+    /// Fills the `proxies` of the assets in the job's `in/manifest.json` (`inDir`, written by
+    /// `prepareMediaJob`) from the index: each asset's fingerprint's current `1080` proxy, its
+    /// directory on this machine, pinned for `holder` (`job:<id>`; release it when the job
+    /// ends) and serving `projects` (the job's: `serve`, pinned for those open). Resolves to the files a worker reads from those entries (absolute paths, for the
+    /// job's `reads`). Assets with no proxy are left as they are.
+    #[napi(catch_unwind, ts_return_type = "Promise<string[]>")]
+    pub fn attach_proxies<'e>(
+        &self,
+        env: &'e Env,
+        in_dir: String,
+        holder: String,
+        projects: Vec<String>,
+    ) -> Result<Object<'e>> {
+        self.run(env, move |c| {
+            let dir = std::path::Path::new(&in_dir);
+            let mut manifest = inputs::read_manifest(dir)?;
+            let fingerprints: Vec<String> = manifest
+                .assets
+                .iter()
+                .map(|a| a.fingerprint.clone())
+                .collect();
+            let found = c.proxies_for(&fingerprints, &holder, &projects, LISTED_TIERS)?;
+            inputs::with_proxies(&mut manifest, &found);
+            if !found.is_empty() {
+                inputs::write_json(dir, "manifest.json", &manifest)?;
+            }
+            Ok(inputs::proxy_files(&manifest))
+        })
+    }
+
+    /// The `EntryMeta` JSON of `fingerprint`'s current `1080` proxy (the one `attachProxies`
+    /// would list), serving `projects`; `null` when the cache holds none. `media.thumbs` plans
+    /// from it when the original is not read (6B-1 Task 15, review).
+    #[napi(catch_unwind, ts_return_type = "Promise<string | null>")]
+    pub fn current_proxy<'e>(
+        &self,
+        env: &'e Env,
+        fingerprint: String,
+        projects: Vec<String>,
+    ) -> Result<Object<'e>> {
+        self.run(env, move |c| {
+            c.current_proxy(&fingerprint, ProxyTier::Preview, &projects)?
+                .map(|m| json_of(&m))
+                .transpose()
+        })
     }
 
     /// The projects `key` serves (reach, spec §7.3).

@@ -1,12 +1,14 @@
 //! Permission grammar: each `perm` at most once, non-empty and duplicate-free lists, origins
-//! as `https://host[:port]`, and every `hooks:modify` hook also observed (receiving an event
-//! needs `hooks:observe`; modifying it needs `hooks:modify` too, spec §3.6).
+//! as `https://host[:port]`, hook names that are [`HookEvent`] names, and every `hooks:modify`
+//! hook also observed (receiving an event needs `hooks:observe`, spec §3.6; `hooks:modify`
+//! still validates but grants nothing in v1, 7F Decision 19).
 
 use std::collections::BTreeSet;
 
 use super::Invalid;
 use crate::manifest::Manifest;
 use crate::permission::Permission;
+use crate::protocol::HookEvent;
 
 pub(super) fn check(m: &Manifest, out: &mut Vec<Invalid>) {
     let mut seen = BTreeSet::new();
@@ -49,7 +51,7 @@ pub(super) fn check(m: &Manifest, out: &mut Vec<Invalid>) {
                     "hooks",
                     &items,
                     hook_ok,
-                    "a hook event name [A-Z][A-Za-z0-9]{0,63}",
+                    "a hook event name (SessionStart, PreCommand, ...)",
                     out,
                 );
             }
@@ -151,10 +153,7 @@ fn secret_ok(s: &str) -> bool {
             .all(|&c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_' || c == b'-')
 }
 
+/// One of [`HookEvent::ALL`] by its exact name.
 fn hook_ok(s: &str) -> bool {
-    let b = s.as_bytes();
-    !b.is_empty()
-        && b.len() <= 64
-        && b[0].is_ascii_uppercase()
-        && b.iter().all(u8::is_ascii_alphanumeric)
+    HookEvent::from_name(s).is_some()
 }

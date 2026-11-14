@@ -127,11 +127,12 @@ pub fn schema(words: &[String]) -> Result<Value, CoreError> {
 }
 
 /// `fin schema param [--scope <s>] [--path <p>]`: the settings registry (plan 4C Task 24), every
-/// spec with its type, range, unit, default, animatability and fix text. `scope` is a scope
-/// (`item`, `effect`, `track`, `timeline`, `marker`, `style`), an item kind (`clip`, `caption`,
-/// …) or an effect kind (`blur`, …); `path` keeps the paths it starts.
+/// spec with its type, range, unit, default, animatability and fix text, and an effect's
+/// `domain` (`visual` or `audio`, plan 6C Decision 13). `scope` is a scope (`item`, `effect`,
+/// `track`, `timeline`, `marker`, `style`), an item kind (`clip`, `caption`, …) or an effect
+/// kind of either domain (`blur`, `compressor`, …); `path` keeps the paths it starts.
 pub fn params(scope: Option<&str>, path: Option<&str>) -> Result<Value, CoreError> {
-    use fin_core::params::{Scope, effect_kinds, specs};
+    use fin_core::params::{Scope, effect_domain, effect_kinds, specs};
     const SCOPES: &[&str] = &["item", "effect", "track", "timeline", "marker", "style"];
     const KINDS: &[&str] = &[
         "clip",
@@ -169,7 +170,13 @@ pub fn params(scope: Option<&str>, path: Option<&str>) -> Result<Value, CoreErro
     let list: Vec<Value> = specs()
         .iter()
         .filter(|s| in_scope(s) && path.is_none_or(|p| s.path.starts_with(p)))
-        .map(|s| json!(s))
+        .map(|s| {
+            let mut v = json!(s);
+            if let Scope::Effect { kind } = s.scope {
+                v["domain"] = json!(effect_domain(kind));
+            }
+            v
+        })
         .collect();
     Ok(json!({ "count": list.len(), "params": list }))
 }

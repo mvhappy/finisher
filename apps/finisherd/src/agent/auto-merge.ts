@@ -19,8 +19,9 @@
 //   `notOwnBranch` (the item's source must be the event's branch and the session's own root:
 //   never a child's or a critic's branch), `targetNotAllowed` (the item's target must be the
 //   policy's `into`, default `main`), `approvalOpen`, `overBudget` (the runtime's `Budget`:
-//   held amounts and the day's money count); then `hookBlocked` (7F's `PreMerge`, a hook point
-//   that allows today) and the newest critic verdict (the one 5E judges): `criticUnknown` (it
+//   held amounts and the day's money count); then `hookBlocked` (7F's `PreMerge` and `BranchReady`
+//   hooks, `hooks/review.ts`: a `BranchReady` block, then a `PreMerge` block, with the item) and
+//   the newest critic verdict (the one 5E judges): `criticUnknown` (it
 //   names no session this server knows), `criticNotCritic` (that session's role is not
 //   `critic`), `criticNotDistinct` (the author or a session of its tree: the same root session),
 //   `criticStale` (the critic did not start from the item's source at the judged seq and hash).
@@ -64,8 +65,8 @@ export type AutoMergeReason =
 
 export type AutoMergeOutcome = { readonly merged: true; readonly mergeId: string } | { readonly merged: false; readonly reason: AutoMergeReason };
 
-/** 7F's `PreMerge` hook point: false blocks the merge. None today: every merge is allowed. */
-export type PreMergeHook = (ev: BranchReady, session: Session) => Effect.Effect<boolean>;
+/** 7F's `PreMerge` and `BranchReady` hooks (`hooks/review.ts`): false blocks the merge. Absent: allowed. */
+export type PreMergeHook = (ev: BranchReady, session: Session, item: ReviewItem) => Effect.Effect<boolean>;
 
 /** What the server's options may set (tests); none of it comes from the environment. */
 export interface AutoMergeTriggerOptions {
@@ -125,7 +126,7 @@ export function autoMergeTrigger(deps: AutoMergeTriggerDeps): (ev: BranchReady) 
       const item = yield* deps.reviews.workflow.item(itemId);
       const side = sessionSide(deps, ev, item, policy);
       if (side !== undefined) return refused(side);
-      if (deps.preMerge !== undefined && !(yield* deps.preMerge(ev, s))) return refused("hookBlocked");
+      if (deps.preMerge !== undefined && !(yield* deps.preMerge(ev, s, item))) return refused("hookBlocked");
       // Read once: 5E judges exactly these verdicts.
       const verdicts = [...(deps.verdicts ?? storedVerdicts(deps.reviews.store)).verdicts(itemId)];
       const critic = newestVerdict(verdicts, "critic");

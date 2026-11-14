@@ -1,21 +1,58 @@
-//! The built-in effects (plan 4C Decision 27): `colorAdjust`, `lut` and `blur`. Each also has
-//! `enabled`. Params are sparse: an absent one is its default. Plugins may declare more kinds
-//! later (sub-project 8); everything here is looked up by kind name.
+//! The built-in effects: the visual `colorAdjust`, `lut` and `blur` (plan 4C Decision 27) and
+//! the audio `eq`, `compressor`, `gate` and `deEsser` (plan 6C Decision 13,
+//! [`super::audio_effects`]). Each also has `enabled`. Params are sparse: an absent one is its
+//! default. Plugins may declare more kinds later (sub-project 8); everything here is looked up
+//! by kind name.
+//!
+//! Each kind has a domain ([`EffectDomain`]): the spec's `scope: audio` is not a [`Scope`]
+//! (whose one `Effect {kind}` variant covers both), so the domain is per kind, and `effect.add`
+//! matches it against the item's track (`TRACK_KIND_MISMATCH`).
 
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::error::CoreError;
 use crate::params::check::unknown;
-use crate::params::{DefaultValue, ParamSpec, ParamType, Scope};
+use crate::params::{DefaultValue, ParamSpec, ParamType, Scope, audio_effects};
 
-const KINDS: &[&str] = &["colorAdjust", "lut", "blur"];
+const VISUAL: &[&str] = &["colorAdjust", "lut", "blur"];
+const KINDS: &[&str] = &[
+    "colorAdjust",
+    "lut",
+    "blur",
+    "eq",
+    "compressor",
+    "gate",
+    "deEsser",
+];
 
-/// The effect kinds the registry knows, in a fixed order.
+/// The effect kinds the registry knows, in a fixed order: the visual ones, then the audio ones.
 pub fn effect_kinds() -> &'static [&'static str] {
     KINDS
 }
 
-const fn spec(
+/// What an effect kind processes: pictures (on items of video tracks) or sound (on clips of
+/// audio tracks).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum EffectDomain {
+    Visual,
+    Audio,
+}
+
+/// The domain of registry effect kind `kind`; `None` for a kind the registry does not know.
+pub fn effect_domain(kind: &str) -> Option<EffectDomain> {
+    if VISUAL.contains(&kind) {
+        Some(EffectDomain::Visual)
+    } else if audio_effects::KINDS.contains(&kind) {
+        Some(EffectDomain::Audio)
+    } else {
+        None
+    }
+}
+
+pub(super) const fn spec(
     path: &'static str,
     kind: &'static str,
     ty: ParamType,
@@ -35,7 +72,7 @@ const fn spec(
     }
 }
 
-const fn number(
+pub(super) const fn number(
     path: &'static str,
     kind: &'static str,
     min: f64,
@@ -55,7 +92,7 @@ const fn number(
     )
 }
 
-const fn enabled(path: &'static str, kind: &'static str) -> ParamSpec {
+pub(super) const fn enabled(path: &'static str, kind: &'static str) -> ParamSpec {
     spec(
         path,
         kind,
@@ -145,9 +182,9 @@ pub(super) const SPECS: &[ParamSpec] = &[
     ),
 ];
 
-/// The specs of effect kind `kind` (`enabled` included), in registry order.
+/// The specs of effect kind `kind` (`enabled` included), in registry order, visual or audio.
 pub(crate) fn of(kind: &str) -> impl Iterator<Item = &'static ParamSpec> + '_ {
-    SPECS
+    super::specs()
         .iter()
         .filter(move |s| matches!(s.scope, Scope::Effect { kind: k } if k == kind))
 }

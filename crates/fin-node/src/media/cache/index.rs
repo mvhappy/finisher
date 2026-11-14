@@ -4,8 +4,8 @@
 //!   meta}`: `bytes` counts the files and `meta.json`; `meta` is the entry's `meta.json` as
 //!   checked at commit or adoption, so a lookup reads no file;
 //! - `entry_projects {key, project_id}`: the projects an entry serves (reach, spec §7.3);
-//! - `pins {key, holder}`: holders `job:<id>` and `project:<id>`; a pinned entry is never
-//!   evicted. Pins do not outlive a server run: [`Index::clear_pins`] at open, and the server
+//! - `pins {key, holder}`: holders `job:<id>`, `project:<id>` and `http:<n>` (a response being
+//!   served); a pinned entry is never evicted. Pins do not outlive a server run: [`Index::clear_pins`] at open, and the server
 //!   pins again for what it opens.
 //!
 //! Rows of `entry_projects` and `pins` go with their entry (`ON DELETE CASCADE`). A damaged

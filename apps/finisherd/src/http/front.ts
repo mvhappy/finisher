@@ -82,9 +82,9 @@ const invalid = (status: number, reason: string, message: string): HttpAnswer =>
   body: { error: { code: "INVALID_REQUEST", message, details: { reason } } },
 });
 
-const hostRefused = () =>
+export const hostRefused = () =>
   finError("HOST_REFUSED", "this server does not answer to that host name", {}, "Reach the server by one of the addresses its owner shared with you.");
-const originRefused = () =>
+export const originRefused = () =>
   finError("ORIGIN_REFUSED", "this server does not accept requests from that web page", {}, "Open Finisher from the page or app its owner set up for this server.");
 
 function errorBody(e: FinError): unknown {

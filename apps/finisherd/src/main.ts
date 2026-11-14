@@ -55,6 +55,9 @@ import { LibrariesTag } from "./library/api.ts";
 import { CatalogsTag, layerCatalogs } from "./library/catalog/client.ts";
 import { LibraryServiceTag, librariesHolding, libraryWiring } from "./library/layer.ts";
 import { makeMediaCache, MediaCacheTag, releaseAll } from "./media/cache.ts";
+import { MediaProxyTag } from "./media/proxy.ts";
+import { mediaWiring } from "./media/wiring.ts";
+import { CapTokensTag } from "./media/cap-tokens.ts";
 import { layerPlugins } from "./plugins/registries.ts";
 import { makePluginHost } from "./plugins/host/processes.ts";
 import { PluginCommandsTag, serverPluginCommands } from "./plugins/host/command-rpc.ts";
@@ -172,8 +175,9 @@ export const serve = ({
       // confined warm media worker (Decision 19). Bound once the service runs.
       let libraryRoots: () => ReadonlyArray<string> = () => [];
       let onOpened: ((projectId: string) => void) | undefined; // re-derived reviews (5E Decision 22), bound with the reviews
+      const media = mediaWiring(mediaCache, tickets, (m) => logSink("warning", m)); // proxies, media URLs (6B-1 Tasks 14, 17)
       const registryContext = yield* Layer.build(
-        layerProjectRegistry(serverData, { ...registry, libraryUse: (paths, projectId) => releaseAll([libraryHold?.(paths), mediaCache.holdProject(projectId)]), onOpened: (id) => onOpened?.(id) }),
+        layerProjectRegistry(serverData, { ...registry, libraryUse: (paths, projectId) => releaseAll([libraryHold?.(paths), mediaCache.holdProject(projectId)]), onOpened: (id) => (onOpened?.(id), media.onOpened(id)), onCommitted: media.onCommitted }),
       );
       const projects = Context.get(registryContext, ProjectRegistry);
       // The code plugins' processes (sp8b Tasks 4, 5): the `plugin` family is registered with
@@ -187,7 +191,7 @@ export const serve = ({
       const register = (r: Parameters<typeof libraries.register>[0]) => {
         pluginHost.register(r);
         r.registerKind(pluginCommands.kind);
-        registerMediaKinds(r, { serverData, projects, libraryRoots: () => libraryRoots() });
+        registerMediaKinds(r, { serverData, projects, libraryRoots: () => libraryRoots(), proxy: media.kindDeps });
         jobOptions?.register?.(r);
         libraries.register(r);
       };
@@ -210,6 +214,7 @@ export const serve = ({
       );
       libraryHold = (paths) => library.use(librariesHolding(library.registry, paths));
       libraryRoots = () => library.registry.list().map((l) => l.root);
+      const mediaProxy = media.start(engine, library, projects);
 
       const audit = Context.get(control, AuditTag);
       // Windows: the native pipe listener (Task 11); a client of another user is refused
@@ -248,6 +253,7 @@ export const serve = ({
           policy: loopback,
           ...(serverSettings.loopbackPort === undefined ? {} : { port: serverSettings.loopbackPort }),
           onRequest: makeFront(httpRoutes, loopback, nonces, { onRefused: refusals.front }),
+          media: media.http(loopback),
           onRefused: refusals.upgrade("ws"),
         }),
         (e) => startFailure(e.reason.cause ?? e),
@@ -333,6 +339,7 @@ export const serve = ({
         onRefused: refusals.front,
         onUpgradeRefused: refusals.upgrade("wss"),
         remoteOf: remoteOptions?.remoteOf,
+        media: media.http,
       });
       onRemote?.(remote);
       if (checkMoved(environment, controlStore, identity.renewed)) {
@@ -415,7 +422,7 @@ export const serve = ({
         },
       });
       onAgentRuntime?.(agentRuntime);
-      const started = startAgentReviews({ control: controlStore, projects, audit, journal: diagnostics.journal, core: agentCore, runtime: agentRuntime.runtime, ...(agentOptions?.autoMerge === undefined ? {} : { autoMerge: agentOptions.autoMerge }) });
+      const started = startAgentReviews({ control: controlStore, projects, audit, journal: diagnostics.journal, core: agentCore, runtime: agentRuntime.runtime, hooks: agentRuntime.hookWiring, jobs: engine, ...(agentOptions?.autoMerge === undefined ? {} : { autoMerge: agentOptions.autoMerge }) });
       onOpened = started.opened;
       // One font layer for the handlers and the plugins, which feed it the packs' catalogs.
       const fontsLayer = layerFonts(serverData, fonts);
@@ -450,6 +457,8 @@ export const serve = ({
           Layer.succeed(LibrariesTag, library),
           Layer.succeed(LibraryServiceTag, library),
           Layer.succeed(MediaCacheTag, mediaCache),
+          Layer.succeed(MediaProxyTag, mediaProxy),
+          Layer.succeed(CapTokensTag, media.capTokens),
           Layer.succeed(KeysTag, keys),
           Layer.succeed(HandshakeTag, handshake),
           Layer.succeed(CredentialsTag, credentials),

@@ -563,7 +563,7 @@ describe("Windows grants (Decision 12)", () => {
   test("hook_file_is_granted_read_only: the table names a hook file outside the project with a read mask", () => {
     const sd = join(tmp, "sd");
     const input: HookInput = { projectDir: join(tmp, "P"), hookFile: join(tmp, "user-hooks", "lint.mjs"), toolchains: [], tmp: join(sd, "hooks", "run", "01J"), serverData: sd, home: join(tmp, "home") };
-    for (const d of [input.projectDir, dirname(input.hookFile), input.tmp]) mkdirSync(d, { recursive: true });
+    for (const d of [input.projectDir!, dirname(input.hookFile), input.tmp]) mkdirSync(d, { recursive: true });
     writeFileSync(input.hookFile, "");
     const table = sandboxHookGrants(input);
     const file = table.find((g) => g.path === input.hookFile);

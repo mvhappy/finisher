@@ -38,6 +38,9 @@ jobs:
           # third_party/svt-av1 and third_party/dav1d (fin-svt-sys and fin-dav1d-sys build SVT-AV1
           # and dav1d from them; shallow per .gitmodules).
           submodules: true
+          # The whole history: scripts/check-a0-history.mjs (in `pnpm gates`) checks every
+          # commit that touched the A0 hashes, and fails on a shallow clone.
+          fetch-depth: 0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .node-version
@@ -130,13 +133,14 @@ jobs:
         uses: bytecodealliance/actions/wasmtime/setup@9152e710e9f7182e4c29ad218e4f335a7b203613 # v1.1.3
         with:
           version: "50.0.1"
-      - name: Eval and text corpora on wasm32-wasip1 (the hashes must equal the native ones)
+      - name: Eval, text and audio (A0) corpora on wasm32-wasip1 (the hashes must equal the native ones)
         if: runner.os == 'Linux'
         run: |
           rustup target add wasm32-wasip1
           cargo test -p fin-core --target wasm32-wasip1 --test eval_corpus
           cargo test -p fin-text --target wasm32-wasip1 --test measure --test corpus_real
           cargo test -p fin-compositor --target wasm32-wasip1 --test reference --test geometry
+          cargo test -p fin-audio --features testing --target wasm32-wasip1 --test a0 -- --nocapture
         env:
           # `--dir .` gives the tests their corpus files (cargo runs them in the package
           # directory); the second `--dir` and the `--env`s give corpus_real the warmed cache.

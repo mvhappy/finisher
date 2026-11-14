@@ -827,7 +827,18 @@ fn specs_serialise_deterministically() {
     ] {
         assert!(paths.contains(&want), "{want}");
     }
-    assert_eq!(params::effect_kinds(), ["colorAdjust", "lut", "blur"]);
+    assert_eq!(
+        params::effect_kinds(),
+        [
+            "colorAdjust",
+            "lut",
+            "blur",
+            "eq",
+            "compressor",
+            "gate",
+            "deEsser"
+        ]
+    );
     // The schema names ParamSpec.
     assert!(fin_core::json_schema()["$defs"]["ParamSpec"].is_object());
 }
@@ -870,7 +881,15 @@ fn find_by_scope() {
     assert_eq!(e.message, "no effect kind glow");
     assert_eq!(
         e.details["alternatives"],
-        json!(["colorAdjust", "lut", "blur"])
+        json!([
+            "colorAdjust",
+            "lut",
+            "blur",
+            "eq",
+            "compressor",
+            "gate",
+            "deEsser"
+        ])
     );
 }
 

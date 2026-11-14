@@ -303,7 +303,7 @@ export function withChain<H extends object>(handlers: H, deps: ChainDeps): H {
         : resolved.payload;
       const credential = credentialOf(principal);
       const guard: WriteGuard = credential === undefined ? outcome.guard : { ...outcome.guard, credential };
-      return { payload: stamped, guard, principal, facts: resolved.facts, openedProject: resolved.openedProject, undo: outcome.undo };
+      return { payload: stamped, guard, principal, facts: resolved.facts, openedProject: resolved.openedProject, projects: resolved.projects, undo: outcome.undo };
     });
     return Effect.tapError(stages, deny(tag, principal, deps.connections.transport));
   };
@@ -313,7 +313,7 @@ export function withChain<H extends object>(handlers: H, deps: ChainDeps): H {
    * hooks' own (an agent session's writes recorded under it).
    */
   const after = (tag: FinRpcTag, c: Checked, headers: unknown) => (result: unknown) => {
-    const recorded = hooks.after === undefined ? Effect.succeed(result) : Effect.as(hooks.after(tag, c.principal, c.payload, result, headers), result);
+    const recorded = hooks.after === undefined ? Effect.succeed(result) : Effect.as(hooks.after(tag, c.principal, c.payload, result, headers, c.projects), result);
     if (tag !== "project.open" || c.principal.projects === "*") return recorded;
     const got = (result as { projectId?: unknown } | null)?.projectId;
     return got === c.openedProject ? recorded : Effect.fail(outOfReach(typeof got === "string" ? got : undefined));

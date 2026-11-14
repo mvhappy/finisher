@@ -83,9 +83,13 @@ export interface HookFailure {
   readonly started?: true;
 }
 
-/** A hook that did not run because it no longer applies (its configuration or a bound file changed). */
+/**
+ * A hook that did not run: it no longer applies (`changed`: its configuration or a bound file
+ * changed), or a plugin handler does not receive this event (`notReceived`: no grant, out of its
+ * rights' reach, disabled meanwhile; Task 10).
+ */
 export interface HookNotRun {
-  readonly notRun: "changed";
+  readonly notRun: "changed" | "notReceived";
   readonly detail: string;
 }
 
@@ -226,7 +230,7 @@ async function runOnce(h: ResolvedHook, req: HookRequest, deps: HookProcessDeps)
       const env = hookEnv(tmp, req.event, base, platform);
       if (granted !== undefined) {
         env.PATH = [env.PATH, dirname(granted.finPath)].filter((p) => p !== "").join(platform === "win32" ? ";" : ":");
-        Object.assign(env, { FIN_CREDENTIAL: granted.credential, FIN_SERVER: granted.server.env, FIN_PROJECT_DIR: req.project.dir });
+        Object.assign(env, { FIN_CREDENTIAL: granted.credential, FIN_SERVER: granted.server.env, ...(req.project === undefined ? {} : { FIN_PROJECT_DIR: req.project.dir }) });
       }
       let via: LaunchVia | undefined;
       let owner: string | undefined;
@@ -236,8 +240,9 @@ async function runOnce(h: ResolvedHook, req: HookRequest, deps: HookProcessDeps)
           const input = await hookInput(h, program, file ?? program, req, tmp, deps.serverData, base, Math.max(1, deadline - Date.now()), granted);
           const reason = sandboxHookCheck(input);
           if (reason !== null) return fail("unavailable", `the hook sandbox cannot be built: ${reason}`);
-          if (acl !== undefined && granted !== undefined) {
+          if (acl !== undefined && granted !== undefined && input.projectDir !== undefined) {
             // The project's container reaches `fin` over the pipe (spec §8.11): its SID is allowed there.
+            // (A `fin` hook always has a project: the engine never grants one to a server-scoped event.)
             const sid = (deps.containerSid ?? sandboxContainerSid)(sandboxProjectContainer(input.projectDir));
             if (sid === null || deps.allowPipe === undefined) return fail("unavailable", "the project's container cannot be admitted on the server's pipe");
             deps.allowPipe(sid);
@@ -364,16 +369,17 @@ function hookEnv(tmp: string, event: string, base: readonly string[], platform: 
 
 /** The `hook` profile's input: canonical paths, the program (and `node`'s folder) readable. */
 async function hookInput(h: ResolvedHook, program: string, file: string, req: HookRequest, tmp: string, serverData: string, base: readonly string[], timeoutMs: number, granted?: FinGrant): Promise<HookInput> {
-  const projectDir = await canonical(req.project.dir);
+  // A server-scoped event's hook reads no project.
+  const projectDir = req.project === undefined ? undefined : await canonical(req.project.dir);
   const prog = await canonical(program);
   const hookFile = await canonical(file);
   // The program is read through `toolchains` unless it is the hook's own file or project content.
-  const own = prog === hookFile || within(prog, projectDir) ? [] : [prog];
+  const own = prog === hookFile || (projectDir !== undefined && within(prog, projectDir)) ? [] : [prog];
   const node = "node" in h.program ? [dirname(prog)] : [];
   const fin = granted === undefined ? [] : [await canonical(granted.finPath)];
   const endpoint = granted?.server.fin;
   return {
-    projectDir,
+    ...(projectDir === undefined ? {} : { projectDir }),
     hookFile,
     toolchains: [...new Set([...base, ...own, ...node, ...fin])],
     tmp,
@@ -480,6 +486,15 @@ export function parseReply(bytes: Uint8Array): HookReply | HookFailure {
   } catch {
     return fail("invalid", "stdout is not one JSON value");
   }
+  return checkReply(json);
+}
+
+/**
+ * One decoded reply value (Decision 2): `decodeHookReply` (strict: no `modify`, no unknown
+ * field), `reason` ≤ 1 KiB and `text` ≤ 16 KiB after control characters are stripped; a command
+ * hook's line and a plugin handler's `HookOut` alike.
+ */
+export function checkReply(json: unknown): HookReply | HookFailure {
   const decoded = decodeHookReply(json);
   if (Exit.isFailure(decoded)) return fail("invalid", "not a reply: allow, block {reason} or context {text}");
   const r = decoded.value;

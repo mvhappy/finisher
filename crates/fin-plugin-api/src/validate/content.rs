@@ -1,7 +1,7 @@
 //! Contributions: a kind this host does not consume is `PLUGIN_CONTRIBUTION_UNSUPPORTED
 //! {kind, hostApi}` (8A Decision 4); font catalogs and caption styles are checked through the
 //! injected [`ContentChecks`]; commands' names, timeouts and argument schemas here (8B
-//! Task 2).
+//! Task 2); hooks' handler names, timeouts, duplicates and `hooks:observe` (7F Task 9).
 
 use std::collections::BTreeSet;
 
@@ -10,7 +10,8 @@ use serde_json::json;
 use super::{ContentChecks, Invalid, PackageFiles, ValidateCtx};
 use crate::contribution::{ContributionKind, consumable};
 use crate::manifest::Manifest;
-use crate::protocol::MAX_COMMAND_TIMEOUT_S;
+use crate::permission::Permission;
+use crate::protocol::{MAX_COMMAND_TIMEOUT_S, MAX_HOOK_TIMEOUT_S};
 
 fn unsupported(kind: &str, ctx: &ValidateCtx) -> Invalid {
     Invalid::new(
@@ -66,6 +67,75 @@ pub(super) fn check(
     }
     if eaten.contains(&ContributionKind::Commands) {
         commands(m, out);
+    }
+    if eaten.contains(&ContributionKind::Hooks) {
+        hooks(m, out);
+    }
+}
+
+/// `[a-z][a-z0-9-]{0,63}`.
+fn handler_ok(s: &str) -> bool {
+    let b = s.as_bytes();
+    !b.is_empty()
+        && b.len() <= 64
+        && b[0].is_ascii_lowercase()
+        && b.iter()
+            .all(|&c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+}
+
+/// Each hook: a handler name, a timeout of 1 to 60 s, its `(event, handler)` once, and its
+/// event named by `hooks:observe` (a plugin receives only the events it observes).
+fn hooks(m: &Manifest, out: &mut Vec<Invalid>) {
+    let observed: BTreeSet<&str> = m
+        .permissions
+        .iter()
+        .filter_map(|p| match p {
+            Permission::HooksObserve { hooks } => Some(hooks),
+            _ => None,
+        })
+        .flatten()
+        .map(String::as_str)
+        .collect();
+    let mut seen = BTreeSet::new();
+    for (i, h) in m.contributes.hooks.iter().flatten().enumerate() {
+        let base = format!("/contributes/hooks/{i}");
+        let event = h.event.name();
+        if !handler_ok(&h.handler) {
+            out.push(Invalid::manifest(
+                &format!("{base}/handler"),
+                "hookHandler",
+                format!(
+                    "{:?} is not a hook handler name [a-z][a-z0-9-]{{0,63}}",
+                    h.handler
+                ),
+            ));
+        }
+        if !seen.insert((h.event, h.handler.as_str())) {
+            out.push(Invalid::manifest(
+                &format!("{base}/handler"),
+                "duplicateHook",
+                format!("handler {} is listed twice for {event}", h.handler),
+            ));
+        }
+        if let Some(t) = h.timeout_s
+            && !(1..=MAX_HOOK_TIMEOUT_S).contains(&t)
+        {
+            out.push(Invalid::manifest(
+                &format!("{base}/timeoutS"),
+                "hookTimeout",
+                format!("a hook's timeout is 1 to {MAX_HOOK_TIMEOUT_S} s, not {t}"),
+            ));
+        }
+        if !observed.contains(event) {
+            out.push(
+                Invalid::manifest(
+                    &format!("{base}/event"),
+                    "hookNotObserved",
+                    format!("a {event} hook needs hooks:observe {event}"),
+                )
+                .with("event", event),
+            );
+        }
     }
 }
 

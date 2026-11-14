@@ -2,6 +2,9 @@
 // cache's own thread; JSON answers are parsed here.
 import { call, native, toFinError } from "./native.js";
 
+/** The most bytes one `readFile` returns (`crates/fin-node/src/media/cache/read.rs`). */
+export const MEDIA_READ_MAX = 1 << 20;
+
 const json = async (p) => {
   const text = await call(p);
   return text == null ? null : JSON.parse(text);
@@ -68,6 +71,18 @@ export class MediaCache {
 
   pinsOf(key) {
     return call(this.#native.pinsOf(key));
+  }
+
+  readFile(key, file, offset, len) {
+    return call(this.#native.readFile(key, file, offset, len));
+  }
+
+  attachProxies(inDir, holder, projects) {
+    return call(this.#native.attachProxies(inDir, holder, [...projects]));
+  }
+
+  currentProxy(fingerprint, projects) {
+    return json(this.#native.currentProxy(fingerprint, [...projects]));
   }
 
   entriesFor(asset) {

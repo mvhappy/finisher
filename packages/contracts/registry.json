@@ -1564,6 +1564,60 @@
     },
     {
       "argKinds": {},
+      "group": "media",
+      "identity": [
+        "projectId",
+        "branch",
+        "asset",
+        "tier",
+        "codec"
+      ],
+      "name": "media.proxy",
+      "rpcs": [
+        {
+          "method": "media.proxy"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "media",
+      "identity": [
+        "projectId",
+        "branch",
+        "asset"
+      ],
+      "name": "media.status",
+      "rpcs": [
+        {
+          "method": "media.proxy.status"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "media",
+      "identity": [
+        "projectId",
+        "branch",
+        "asset",
+        "at",
+        "strip",
+        "maxSide",
+        "tileHeight"
+      ],
+      "name": "media.thumbs",
+      "rpcs": [
+        {
+          "method": "media.thumbs"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
       "group": "fonts",
       "identity": [],
       "name": "fonts.ls",

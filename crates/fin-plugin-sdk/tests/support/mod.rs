@@ -189,6 +189,15 @@ pub fn command_with(
     HostMsg::Start(s)
 }
 
+/// A `start` of `plugin.hook` v1 calling `handler` with `request` (a `HookRun`), with
+/// [`context`] in `extra`.
+pub fn hook(id: &str, handler: &str, request: Value) -> HostMsg {
+    command_with(id, "", json!({}), 0, |s| {
+        s.job.kind = "plugin.hook".into();
+        s.job.params = json!({ "handler": handler, "request": request });
+    })
+}
+
 /// `project.snapshot` pages of `bytes`, `page_bytes` each, all of `rev`.
 pub fn snapshot_page(bytes: &[u8], page_bytes: usize, page: u32, rev: u64) -> Value {
     let chunks: Vec<&[u8]> = bytes.chunks(page_bytes.max(1)).collect();

@@ -495,6 +495,12 @@ status: used (sub-project 6A, Task 11), as Cargo dependencies; no code is copied
 - `fdeflate` 0.3 (MIT OR Apache-2.0): `png`'s fast deflate; the rest of its stack (`flate2`,
   `crc32fast`, `miniz_oxide`) is listed under `fin-fonts` and "Other Cargo dependencies".
 
+## ebur128 — `fin-audio` (BS.1770 loudness measurement)
+status: used (sub-project 6C, Task 10), as Cargo dependencies; no code is copied.
+- `ebur128` 0.1.11 (MIT): integrated loudness, loudness range, sample and true peak, built with
+  default features only (no C reference tests);
+- `dasp_frame` and `dasp_sample` 0.11.0 (MIT OR Apache-2.0): `ebur128`'s sample and frame types.
+
 ## keyring, secret-service and zbus — `fin-node` (the vault's OS keychain)
 status: used (sub-project 5B, Task 2), as Cargo dependencies; no code is copied.
 - `keyring` **=3.6.3** (MIT OR Apache-2.0), `default-features = false` with `apple-native`,

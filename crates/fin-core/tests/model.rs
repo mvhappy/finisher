@@ -49,7 +49,7 @@ fn new_project_has_default_timeline_and_tracks() {
     assert!(tl.markers.is_empty());
     assert_eq!(p.rate, rate());
     assert_eq!(p.schema_version, SCHEMA_VERSION);
-    assert_eq!(SCHEMA_VERSION, 5);
+    assert_eq!(SCHEMA_VERSION, 6);
     assert!(p.bins.is_empty() && p.assets.is_empty() && p.styles.is_empty());
     assert!(p.fonts.is_empty());
 }
@@ -60,7 +60,7 @@ fn new_project_has_default_timeline_and_tracks() {
 fn defaults_are_omitted() {
     let p = new_project("p1".into(), "Demo".into(), rate()).unwrap();
     let golden = concat!(
-        r#"{"id":"p1","name":"Demo","schemaVersion":5,"rate":"30000/1001","timelines":["#,
+        r#"{"id":"p1","name":"Demo","schemaVersion":6,"rate":"30000/1001","timelines":["#,
         r#"{"id":"tl1","name":"Timeline 1","rate":"30000/1001","#,
         r#""resolution":{"width":1080,"height":1920},"tracks":["#,
         r#"{"id":"t1","kind":"video","name":"V1","items":[]},"#,
@@ -88,7 +88,7 @@ fn project_json_round_trips_byte_identically() {
     let back: Project = serde_json::from_str(&json).unwrap();
     assert_eq!(back, p);
     assert_eq!(serde_json::to_string(&back).unwrap(), json);
-    assert!(json.contains("\"schemaVersion\":5") && json.contains("\"sourceIn\":\"1/2\""));
+    assert!(json.contains("\"schemaVersion\":6") && json.contains("\"sourceIn\":\"1/2\""));
 }
 
 /// Common fields away from every default, so each one is written.

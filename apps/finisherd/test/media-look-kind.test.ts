@@ -118,7 +118,7 @@ describe("the kind", () => {
     });
     const r = makeKindRegistry();
     registerMediaKinds(r, { serverData: "/sd", projects: { prepareMediaJob: () => fail(0), dirOf: () => undefined } });
-    expect(r.family("media")).toMatchObject({ profile: "worker", env: ["FIN_GPU"] });
+    expect(r.family("media")).toMatchObject({ profile: "worker", env: ["FIN_GPU", "VK_ICD_FILENAMES", "VK_DRIVER_FILES", "VK_ADD_DRIVER_FILES"] });
     expect(r.program("media", { params: {} } as never, "warm")).toEqual({ binary: "fin-workers", args: ["media", "--warm"] });
     expect(r.program("media", { params: {} } as never, "cold")).toEqual({ binary: "fin-workers", args: ["media"] });
   });
@@ -163,7 +163,7 @@ describe("the kind", () => {
       "$defs": Record<string, { properties: Record<string, unknown>; required?: string[] }>;
     };
     const look = schema.$defs.LookParams!;
-    expect(Object.keys(look.properties).sort()).toEqual(["at", "branch", "outDir", "outName", "planSamples", "projectId", "rev", "size", "timeline"]);
+    expect(Object.keys(look.properties).sort()).toEqual(["at", "branch", "originals", "outDir", "outName", "planSamples", "projectId", "rev", "size", "timeline"]);
     expect([...look.required!].sort()).toEqual(["at", "outName", "timeline"]);
   });
 
@@ -172,7 +172,7 @@ describe("the kind", () => {
     const key = lookDedupe(base);
     expect(key).toBeDefined();
     expect(lookDedupe({ ...base })).toBe(key);
-    for (const other of [{ rev: 2 }, { at: ["1"] }, { size: { width: 8, height: 8 } }, { timeline: "tl2" }, { branch: "b" }, { projectId: "q" }, { outDir: "x" }, { outName: "other" }]) {
+    for (const other of [{ rev: 2 }, { at: ["1"] }, { size: { width: 8, height: 8 } }, { timeline: "tl2" }, { branch: "b" }, { projectId: "q" }, { outDir: "x" }, { outName: "other" }, { originals: true }]) {
       expect(lookDedupe({ ...base, ...other } as LookParams)).not.toBe(key);
     }
     expect(lookDedupe({ timeline: "tl1", at: ["0"] as never, outName: "look" })).toBeUndefined();
@@ -183,6 +183,9 @@ describe("the kind", () => {
     const hd = { width: 1920, height: 1080 };
     expect(finalName("tl1", "37/5", hd, "0123456789abcdef".repeat(4))).toBe("tl1-37_5-1920x1080-01234567.png");
     expect(finalName("tl1", "12", hd, h("f"))).toBe("tl1-12_1-1920x1080-ffffffff.png");
+    // A frame read from a proxy never overwrites the original's.
+    expect(finalName("tl1", "12", hd, h("f"), "proxy")).toBe("tl1-12_1-1920x1080-ffffffff-proxy.png");
+    expect(finalName("tl1", "12", hd, h("f"), "original")).toBe(finalName("tl1", "12", hd, h("f")));
     expect(finalName("a b/../c", "0", { width: 8, height: 8 }, h("a"))).toBe("a_b____c-0_1-8x8-aaaaaaaa.png");
     // The plan hash does not cover the size, so the name must: same time and plan, two sizes.
     expect(finalName("tl1", "0", hd, h("a"))).not.toBe(finalName("tl1", "0", { width: 1280, height: 720 }, h("a")));
@@ -291,7 +294,7 @@ describe("onSucceeded believes the host, not the worker (review B2)", () => {
     const k = mediaLookKind({ serverData: join(work, "sd-none"), jobsRoot, projects: { prepareMediaJob: () => fail(0), dirOf: () => dir } });
     const at = over.at ?? ["0"];
     const params = { timeline: "tl1", at, outName: "look", projectId: "p", branch: "main", rev: 1, planSamples: [], ...(over.size ? { size: over.size } : {}) };
-    const frames = (over.frames ?? [{}]).map((f) => ({ at: "0", file: "look-0.png", width: 8, height: 8, plan: h("a"), ...f }));
+    const frames = (over.frames ?? [{}]).map((f) => ({ at: "0", file: "look-0.png", width: 8, height: 8, plan: h("a"), source: "original", ...f }));
     const extra = { planSamples: (over.samples ?? [h("a")]).map((blake3, i) => ({ at: at[i] ?? "0", blake3 })), rev: 1 };
     const ctx = { job: { id: "j1", params }, result: { frames, skipped: [], adapter: {}, stats: {} }, extra, items: new Map(), rerun: false, attempt: 1, open: () => fail(0) };
     const run = () => Effect.runPromise(Effect.flip(k.onSucceeded!(ctx as never) as Effect.Effect<LookResult, FinError>));
@@ -314,6 +317,17 @@ describe("onSucceeded believes the host, not the worker (review B2)", () => {
     expect(r.frames).toHaveLength(1);
     expect(r.frames[0]).toMatchObject({ at: "7/2", file: join(f.look, `tl1-7_2-8x8-${h("a").slice(0, 8)}.png`) });
     expect(readdirSync(f.look)).toEqual([`tl1-7_2-8x8-aaaaaaaa.png`]);
+  });
+
+  test("a frame read from a proxy is named for it; a source the worker made up fails the job", async () => {
+    const f = fixture({ frames: [{ source: "proxy" }] });
+    expect((await f.ok()).frames[0]).toMatchObject({ source: "proxy", file: join(f.look, "tl1-0_1-8x8-aaaaaaaa-proxy.png") });
+    expect(readdirSync(f.look)).toEqual(["tl1-0_1-8x8-aaaaaaaa-proxy.png"]);
+    for (const source of ["../x", "", "PROXY", undefined]) {
+      const bad = fixture({ frames: [{ source } as never] });
+      expect(await bad.run(), String(source)).toMatchObject({ code: "JOB_FAILED" });
+      expect(readdirSync(bad.look), String(source)).toEqual([]);
+    }
   });
 
   test("a frame of another size than the named one fails the job; an unnamed size is the frame's own", async () => {
@@ -498,7 +512,7 @@ describe("replay", () => {
     const done = JSON.parse(await s.p.engine.prepareMediaJob("main", "tl1", ["0", "3/5"], join(jobDir, "in"), { fontCache: join(s.serverData, "fonts"), paramsJson: JSON.stringify(params) })) as {
       planSamples: { at: string; blake3: string }[];
     };
-    const run = spawnSync(workersBinaryPath(), ["media", "--replay", jobDir, "--originals-anywhere"], { env: { FIN_GPU: process.env.FIN_GPU ?? "software" }, encoding: "utf8" });
+    const run = spawnSync(workersBinaryPath(), ["media", "--replay", jobDir, "--originals-anywhere"], { env: { ...passEnv(["VK_ICD_FILENAMES", "VK_DRIVER_FILES", "VK_ADD_DRIVER_FILES"], process.env), FIN_GPU: process.env.FIN_GPU ?? "software" }, encoding: "utf8" });
     const answer = JSON.parse(run.stdout) as { result?: LookResult; error?: { code: string } };
     if (answer.error?.code === "GPU_UNAVAILABLE" && !GPU_REQUIRED) return;
     expect(answer.error).toBeUndefined();

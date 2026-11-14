@@ -39,7 +39,7 @@ fin-media = { path = "../fin-media", features = ["testing"] }
 
 [features]
 # `make_fixture`-style helpers for other crates' tests (pattern clips as AV1 in MP4).
-testing = ["fin-media/testing"]
+testing = ["fin-media/testing", "fin-container/testing"]
 
 [[example]]
 name = "make_fixture"

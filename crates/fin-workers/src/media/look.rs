@@ -129,10 +129,12 @@ pub fn run(job: &StartJob, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<Valu
             .effective_size(Size::new(plan.resolution.width, plan.resolution.height))
             .map_err(job_error)?;
         let mut src = Sources::new(&manifest, &mut warm.sources, &warm.probe);
+        src.originals = params.originals;
         let state = warm.gpu.as_mut().expect("made above");
         let started = Instant::now();
         let rendered = state.compositor.render(&state.gpu, &plan, &mut src, size);
         let frame_micros = micros_since(started);
+        let (source, proxy_fallbacks) = (src.source(), std::mem::take(&mut src.fallbacks));
         stats.sources_opened += src.opened;
         stats.sources_reused += src.reused;
         first_decode = first_decode.or(src.first_decode);
@@ -184,6 +186,8 @@ pub fn run(job: &StartJob, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<Valu
             width: size.width,
             height: size.height,
             plan: hash,
+            source,
+            proxy_fallbacks,
         };
         ctx.item(
             &item,

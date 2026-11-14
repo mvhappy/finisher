@@ -16,16 +16,17 @@ use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::{Component, Path, Prefix};
 
 use windows_sys::Win32::Foundation::{
-    ERROR_NOT_SAME_DEVICE, ERROR_SHARING_VIOLATION, GENERIC_READ, GENERIC_WRITE, HANDLE,
-    INVALID_HANDLE_VALUE,
+    ERROR_ALREADY_EXISTS, ERROR_NOT_SAME_DEVICE, ERROR_SHARING_VIOLATION, GENERIC_READ,
+    GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    BY_HANDLE_FILE_INFORMATION, CREATE_NEW, CreateFileW, DELETE, FILE_ATTRIBUTE_DEVICE,
-    FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
-    FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
-    FILE_READ_ATTRIBUTES, FILE_RENAME_INFO, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-    FILE_TYPE_DISK, FileDispositionInfo, FileRenameInfo, GetFileInformationByHandle, GetFileType,
-    GetFinalPathNameByHandleW, OPEN_EXISTING, SetFileInformationByHandle,
+    BY_HANDLE_FILE_INFORMATION, CREATE_NEW, CreateDirectoryW, CreateFileW, DELETE,
+    FILE_ATTRIBUTE_DEVICE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL,
+    FILE_ATTRIBUTE_REPARSE_POINT, FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS,
+    FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_RENAME_INFO, FILE_SHARE_DELETE,
+    FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TYPE_DISK, FileDispositionInfo, FileRenameInfo,
+    GetFileInformationByHandle, GetFileType, GetFinalPathNameByHandleW, OPEN_EXISTING,
+    SetFileInformationByHandle,
 };
 
 use super::{Mode, Opened, copy_exact, temp_name};
@@ -284,6 +285,30 @@ pub(crate) fn create(path: &Path) -> Result<Opened, Fail> {
         flags,
     )?;
     finish(h, &full, held)
+}
+
+/// Makes the directory `path` names below the checked walk; one already there is kept when it
+/// is a real directory (a retried attempt's), refused when it is a reparse point or a file.
+pub(crate) fn create_dir(path: &Path) -> Result<(), Fail> {
+    let (held, full) = walk(path)?;
+    let p = wide(&full);
+    // SAFETY: a NUL-terminated wide string; default security attributes.
+    if unsafe { CreateDirectoryW(p.as_ptr(), std::ptr::null()) } == 0 {
+        let e = io::Error::last_os_error();
+        if e.raw_os_error() != Some(ERROR_ALREADY_EXISTS as i32) {
+            return Err(Fail::io(e));
+        }
+    }
+    let share = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+    let flags = FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT;
+    let h = create_file(&full, FILE_READ_ATTRIBUTES, share, OPEN_EXISTING, flags)?;
+    let kind = info(&h)?.kind;
+    drop(held);
+    match kind {
+        Kind::Dir => Ok(()),
+        Kind::Link => Err(Fail::new(Reason::Link, "the directory is a reparse point")),
+        _ => Err(Fail::new(Reason::NotRegular, "the path is not a directory")),
+    }
 }
 
 /// Removes the entry `path` names (a link itself, not its target). The caller has just walked

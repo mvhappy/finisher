@@ -75,6 +75,12 @@ fn event_names_are_pascal_case_and_complete() {
                 .to_owned()
         })
         .collect();
+    // `name()` and `from_name()` agree with serde (manifests and permissions use them).
+    for (e, n) in HookEvent::ALL.iter().zip(&names) {
+        assert_eq!(e.name(), n);
+        assert_eq!(HookEvent::from_name(n), Some(*e));
+    }
+    assert_eq!(HookEvent::from_name("PreOp"), None);
     assert_eq!(
         names,
         [
@@ -142,10 +148,10 @@ fn request_v_is_1() {
             harness: Harness::Fake,
             root_branch: Some("main".into()),
         }),
-        HookProject {
+        Some(HookProject {
             id: "01J00000000000000000000001".into(),
             dir: "/projects/demo".into(),
-        },
+        }),
         json!({"rpc": "item.trim"}),
     );
     assert_eq!(req.v, 1);
@@ -172,14 +178,32 @@ fn request_v_is_1() {
     let bare = HookRequest::new(
         HookEvent::JobDone,
         None,
-        HookProject {
+        Some(HookProject {
             id: "p".into(),
             dir: "/p".into(),
-        },
+        }),
         Value::Null,
     );
     let v = serde_json::to_value(&bare).unwrap();
     assert!(v.get("session").is_none(), "{v}");
+
+    // A server-scoped event (a call or a job that names no project): no `project` key, and a
+    // request without one decodes.
+    let server = HookRequest::new(
+        HookEvent::PreCommand,
+        None,
+        None,
+        json!({"rpc": "auth.whoami"}),
+    );
+    let v = serde_json::to_value(&server).unwrap();
+    assert!(v.get("project").is_none(), "{v}");
+    assert_eq!(
+        serde_json::from_value::<HookRequest>(json!({"event": "JobDone", "v": 1, "payload": null}))
+            .unwrap()
+            .project,
+        None
+    );
+    assert_eq!(serde_json::from_value::<HookRequest>(v).unwrap(), server);
 
     // A plugin handler's job params carry the same request.
     let run = HookRun {
@@ -190,4 +214,46 @@ fn request_v_is_1() {
     assert_eq!(v["handler"], "onPreCommand");
     assert_eq!(v["request"]["v"], 1);
     assert_eq!(serde_json::from_value::<HookRun>(v).unwrap(), run);
+}
+
+#[test]
+fn reply_limits_after_stripping_control_characters() {
+    use fin_plugin_api::protocol::hook::{MAX_BLOCK_REASON_BYTES, MAX_CONTEXT_TEXT_BYTES};
+    assert_eq!(
+        (MAX_BLOCK_REASON_BYTES, MAX_CONTEXT_TEXT_BYTES),
+        (1024, 16 * 1024)
+    );
+    let block = |r: String| HookReply::Block { reason: r };
+    let context = |t: String| HookReply::Context { text: t };
+    // At the limit passes; one byte over is refused, never truncated.
+    assert_eq!(
+        block("r".repeat(1024)).checked(),
+        Ok(block("r".repeat(1024)))
+    );
+    let e = block("r".repeat(1025)).checked().unwrap_err();
+    assert_eq!((e.field, e.bytes, e.max), ("reason", 1025, 1024));
+    assert_eq!(
+        context("t".repeat(16384)).checked(),
+        Ok(context("t".repeat(16384)))
+    );
+    let e = context("t".repeat(16385)).checked().unwrap_err();
+    assert_eq!((e.field, e.bytes, e.max), ("text", 16385, 16384));
+    // UTF-8 bytes, not characters: 512 two-byte characters fit, 513 do not.
+    assert!(block("é".repeat(512)).checked().is_ok());
+    assert!(block("é".repeat(513)).checked().is_err());
+    // Control characters (C0 but `\n` and `\t`, DEL, C1) are stripped first, and kept out.
+    let noisy = format!("{}\u{1b}\u{7f}\u{85}\r\0", "r".repeat(1024));
+    assert_eq!(noisy.len(), 1024 + 6);
+    assert_eq!(block(noisy).checked(), Ok(block("r".repeat(1024))));
+    assert_eq!(
+        context("a\n\tb\u{7}c".into()).checked(),
+        Ok(context("a\n\tbc".into()))
+    );
+    // `\n` and `\t` count.
+    assert!(
+        context(format!("{}\n", "t".repeat(16384)))
+            .checked()
+            .is_err()
+    );
+    assert_eq!(HookReply::Allow {}.checked(), Ok(HookReply::Allow {}));
 }
