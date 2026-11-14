@@ -272,8 +272,8 @@ describe("the CLIs' own model lists", () => {
       ["model/list", { cursor: "page-2" }],
     ]);
     expect(models).toEqual([
-      { id: "test-codex-1", displayName: "Test Codex 1", isDefault: true },
-      { id: "test-codex-2", displayName: "Test Codex 2", isDefault: false },
+      { id: "test-codex-1", alias: "m1", displayName: "Test Codex 1", isDefault: true },
+      { id: "test-codex-2", alias: "m3", displayName: "Test Codex 2", isDefault: false },
     ]);
     expect(code(() => parseCodexModelPage({ nope: 1 }))).toBe("PROVIDER_PROTOCOL");
   });

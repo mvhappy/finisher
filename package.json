@@ -15,7 +15,8 @@
     "sandbox:suite": "node scripts/sandbox-suite.mjs",
     "check:crate-age": "node scripts/check-crate-age.mjs",
     "check:npm-age": "node scripts/check-npm-age.mjs",
-    "check:dep-age": "node scripts/check-dep-age.mjs"
+    "check:dep-age": "node scripts/check-dep-age.mjs",
+    "codex:pin": "node scripts/codex-pin.mjs"
   },
   "devDependencies": {
     "typescript": "7.0.2",

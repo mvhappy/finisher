@@ -1,0 +1,10 @@
+{
+  "turns": [
+    {
+      "steps": [
+        { "say": "Hello from fake-codex." },
+        { "usage": { "last": { "inputTokens": 1200, "cachedInputTokens": 400, "outputTokens": 80, "reasoningOutputTokens": 16 } } }
+      ]
+    }
+  ]
+}

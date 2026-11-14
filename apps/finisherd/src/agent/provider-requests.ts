@@ -68,7 +68,7 @@ export interface ProviderRequestsDeps {
   readonly consume: (approvalId: string) => void;
   /** Runs `f` in `ms` of real time; answers the cancel (default `setTimeout`, unref'd). */
   readonly schedule?: Schedule;
-  /** Opens an allowed shell call's window before its answer (`claude/attribution.ts`). */
+  /** Opens an allowed shell call's window before its answer (`cli/attribution.ts`). */
   readonly attribution?: { allowed(sessionId: string, callId: string | undefined, tool: string, input: unknown): Promise<void> };
 }
 

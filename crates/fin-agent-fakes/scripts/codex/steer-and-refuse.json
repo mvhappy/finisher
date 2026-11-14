@@ -1,0 +1,6 @@
+{
+  "turns": [
+    { "steps": [{ "expect": "steer" }, { "say": "steered" }] },
+    { "steer": "refuse", "steps": [{ "expect": "interrupt" }] }
+  ]
+}

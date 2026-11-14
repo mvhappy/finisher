@@ -41,6 +41,11 @@ impl HttpTransport {
             .http_status_as_error(false)
             .max_redirects(0)
             .timeout_global(Some(Duration::from_secs(30)))
+            // No connection reuse: `ureq` pools an `HTTP/1.0` response's connection (no
+            // `Connection: close` header, as Python's `http.server` answers) and the next fetch
+            // fails when the server's close lands after its liveness probe. One fetch is a few
+            // small files, so a fresh connection each costs nothing here.
+            .max_idle_connections(0)
             .user_agent(concat!(
                 "finisher-registry-test/",
                 env!("CARGO_PKG_VERSION")

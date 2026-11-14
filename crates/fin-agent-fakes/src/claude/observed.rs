@@ -2,16 +2,20 @@
 //! order and never removed, so a test can count the processes a resume started. A record holds
 //! the flags, environment NAMES (never values), the control traffic, answers and spawns.
 //!
-//! Several processes may share the file: each update takes `<file>.lock` (created exclusively),
-//! rewrites the array with its own record replaced (temp file, then rename) and drops the lock.
+//! Several processes may share the file: each update takes an OS lock on `<file>.lock` (a file
+//! that is never removed, so a dead holder's lock ends with it and no lock is ever broken),
+//! rewrites the array with its own record replaced (temp file, then rename) and unlocks. Each
+//! update writes the whole record, so one that could not be written is carried by the next; a
+//! failure is said on stderr, and a file that is not a JSON array is never overwritten.
 
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value, json};
 
-const LOCK_WAIT: Duration = Duration::from_secs(2);
+/// How long an update waits for another process's lock before it says so on stderr.
+const LOCK_WAIT: Duration = Duration::from_secs(30);
 
 pub struct Observed {
     path: Option<PathBuf>,
@@ -59,43 +63,60 @@ impl Observed {
 
     fn flush(&self) {
         let Some(p) = &self.path else { return };
-        let Some(_lock) = Lock::take(p) else { return };
-        let mut all: Vec<Value> = std::fs::read_to_string(p)
-            .ok()
-            .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or_default();
+        let Some(_lock) = Lock::take(p) else {
+            eprintln!(
+                "observed: {} stayed locked for {LOCK_WAIT:?}; this update waits for the next",
+                p.display()
+            );
+            return;
+        };
+        let mut all: Vec<Value> = match std::fs::read_to_string(p) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => vec![],
+            Err(e) => {
+                eprintln!("observed: {}: {e}", p.display());
+                return;
+            }
+            Ok(t) => match serde_json::from_str(&t) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!(
+                        "observed: {} is not a JSON array ({e}); left as it is",
+                        p.display()
+                    );
+                    return;
+                }
+            },
+        };
         let me = Value::Object(self.doc.clone());
         match all.iter_mut().find(|r| r["id"] == self.id.as_str()) {
             Some(slot) => *slot = me,
             None => all.push(me),
         }
         let tmp = p.with_extension(format!("{}.tmp", self.id));
-        if std::fs::write(&tmp, Value::Array(all).to_string()).is_ok() {
-            let _ = std::fs::rename(&tmp, p);
+        if let Err(e) = std::fs::write(&tmp, Value::Array(all).to_string())
+            .and_then(|()| std::fs::rename(&tmp, p))
+        {
+            eprintln!("observed: {}: {e}", p.display());
         }
     }
 }
 
-struct Lock(PathBuf);
+/// An exclusive OS lock on `<path>.lock`, released when dropped (or when the process dies).
+struct Lock(File);
 
 impl Lock {
-    /// Takes `<path>.lock`; a lock older than the wait is a dead process's and is broken.
     fn take(path: &Path) -> Option<Lock> {
-        let lock = PathBuf::from(format!("{}.lock", path.display()));
+        let f = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(format!("{}.lock", path.display()))
+            .ok()?;
         let end = Instant::now() + LOCK_WAIT;
         loop {
-            match OpenOptions::new().write(true).create_new(true).open(&lock) {
-                Ok(_) => return Some(Lock(lock)),
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    if Instant::now() >= end {
-                        let _ = std::fs::remove_file(&lock);
-                        return OpenOptions::new()
-                            .write(true)
-                            .create_new(true)
-                            .open(&lock)
-                            .ok()
-                            .map(|_| Lock(lock));
-                    }
+            match f.try_lock() {
+                Ok(()) => return Some(Lock(f)),
+                Err(TryLockError::WouldBlock) if Instant::now() < end => {
                     std::thread::sleep(Duration::from_millis(2));
                 }
                 Err(_) => return None,
@@ -106,6 +127,6 @@ impl Lock {
 
 impl Drop for Lock {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+        let _ = self.0.unlock();
     }
 }

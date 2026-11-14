@@ -50,6 +50,7 @@ export interface AgentSettings {
   readonly limits?: Partial<SessionLimits>;
   readonly savedPrompts?: readonly unknown[];
   readonly claudeCode: ClaudeCodeSettings;
+  readonly codex: CodexSettings;
 }
 
 /** `agents.claudeCode` (plan 7D Decision 22): where the CLI is, and whether it may be used. */
@@ -67,6 +68,27 @@ export interface ClaudeCodeSettings {
 
 export const CLAUDE_CODE_DEFAULT: ClaudeCodeSettings = { enabled: false };
 
+/** `agents.codex` (plan 7E Task 6): the bundled Codex has no path setting (§4.6), only these. */
+export interface CodexSettings {
+  readonly enabled: boolean;
+  /** As `ClaudeCodeSettings.chargePlanMoney`. */
+  readonly chargePlanMoney?: boolean;
+  /** As `ClaudeCodeSettings.idleCloseS` (default 300). */
+  readonly idleCloseS?: number;
+}
+
+export const CODEX_DEFAULT: CodexSettings = { enabled: false };
+
+/** The keys both CLIs share, each checked on its own (`name` is `agents.<key>` in a problem). */
+function readCliKeys(v: Record<string, unknown>, name: string, problems: string[]): { enabled: boolean; chargePlanMoney?: true; idleCloseS?: number } {
+  if (v.enabled !== undefined && typeof v.enabled !== "boolean") problems.push(`${name}.enabled must be true or false`);
+  if (v.chargePlanMoney !== undefined && typeof v.chargePlanMoney !== "boolean") problems.push(`${name}.chargePlanMoney must be true or false`);
+  const idle = v.idleCloseS;
+  const idleOk = typeof idle === "number" && Number.isInteger(idle) && idle >= 1 && idle <= 86_400;
+  if (idle !== undefined && !idleOk) problems.push(`${name}.idleCloseS must be a whole number of seconds from 1 to 86400`);
+  return { enabled: v.enabled === true, ...(v.chargePlanMoney === true ? { chargePlanMoney: true as const } : {}), ...(idleOk ? { idleCloseS: idle } : {}) };
+}
+
 /** `agents.claudeCode`, each key checked on its own; a bad one is reported and reads as the default. */
 function readClaudeCode(v: unknown, problems: string[]): ClaudeCodeSettings {
   if (v === undefined) return CLAUDE_CODE_DEFAULT;
@@ -76,12 +98,17 @@ function readClaudeCode(v: unknown, problems: string[]): ClaudeCodeSettings {
   }
   const path = typeof v.path === "string" && v.path !== "" ? v.path : undefined;
   if (v.path !== undefined && path === undefined) problems.push("agents.claudeCode.path must be a path");
-  if (v.enabled !== undefined && typeof v.enabled !== "boolean") problems.push("agents.claudeCode.enabled must be true or false");
-  if (v.chargePlanMoney !== undefined && typeof v.chargePlanMoney !== "boolean") problems.push("agents.claudeCode.chargePlanMoney must be true or false");
-  const idle = v.idleCloseS;
-  const idleOk = typeof idle === "number" && Number.isInteger(idle) && idle >= 1 && idle <= 86_400;
-  if (idle !== undefined && !idleOk) problems.push("agents.claudeCode.idleCloseS must be a whole number of seconds from 1 to 86400");
-  return { ...(path === undefined ? {} : { path }), enabled: v.enabled === true, ...(v.chargePlanMoney === true ? { chargePlanMoney: true } : {}), ...(idleOk ? { idleCloseS: idle } : {}) };
+  return { ...(path === undefined ? {} : { path }), ...readCliKeys(v, "agents.claudeCode", problems) };
+}
+
+/** `agents.codex`, as `readClaudeCode` without a path. */
+function readCodex(v: unknown, problems: string[]): CodexSettings {
+  if (v === undefined) return CODEX_DEFAULT;
+  if (!isObject(v)) {
+    problems.push("agents.codex must be an object");
+    return CODEX_DEFAULT;
+  }
+  return readCliKeys(v, "agents.codex", problems);
 }
 
 /** How far sessions spread (7B Decisions 17, 19). */
@@ -151,10 +178,10 @@ function readLocal(v: unknown): LocalEndpoint | undefined {
 /** The `agents` section, each key checked on its own (a bad key is dropped, with `error`). */
 export function readAgentSettings(serverData: string): { settings: AgentSettings; error?: string } {
   const { raw, error } = readRaw(serverData);
-  if (error !== undefined) return { settings: { models: [], claudeCode: CLAUDE_CODE_DEFAULT }, error };
+  if (error !== undefined) return { settings: { models: [], claudeCode: CLAUDE_CODE_DEFAULT, codex: CODEX_DEFAULT }, error };
   const agents = raw.agents;
-  if (agents === undefined) return { settings: { models: [], claudeCode: CLAUDE_CODE_DEFAULT } };
-  if (!isObject(agents)) return { settings: { models: [], claudeCode: CLAUDE_CODE_DEFAULT }, error: "agents must be an object" };
+  if (agents === undefined) return { settings: { models: [], claudeCode: CLAUDE_CODE_DEFAULT, codex: CODEX_DEFAULT } };
+  if (!isObject(agents)) return { settings: { models: [], claudeCode: CLAUDE_CODE_DEFAULT, codex: CODEX_DEFAULT }, error: "agents must be an object" };
   const problems: string[] = [];
   const models = agents.models === undefined ? [] : Array.isArray(agents.models) ? (agents.models as ExtraModel[]) : (problems.push("agents.models must be a list"), []);
   const local = agents.local === undefined ? undefined : readLocal(agents.local);
@@ -169,9 +196,11 @@ export function readAgentSettings(serverData: string): { settings: AgentSettings
   const savedPrompts = Array.isArray(agents.savedPrompts) ? (agents.savedPrompts as unknown[]) : undefined;
   if (agents.savedPrompts !== undefined && savedPrompts === undefined) problems.push("agents.savedPrompts must be a list");
   const claudeCode = readClaudeCode(agents.claudeCode, problems);
+  const codex = readCodex(agents.codex, problems);
   const settings: AgentSettings = {
     models,
     claudeCode,
+    codex,
     ...(local === undefined ? {} : { local }),
     ...(finPath === undefined ? {} : { finPath }),
     ...(retentionDays === undefined ? {} : { retentionDays }),
@@ -190,6 +219,11 @@ export function localEndpoint(serverData: string): LocalEndpoint | undefined {
 /** `agents.claudeCode` now (re-read at each use, as the local endpoint). */
 export function claudeCodeSettings(serverData: string): ClaudeCodeSettings {
   return readAgentSettings(serverData).settings.claudeCode;
+}
+
+/** `agents.codex` now (re-read at each use). */
+export function codexSettings(serverData: string): CodexSettings {
+  return readAgentSettings(serverData).settings.codex;
 }
 
 /** The counsel gate (Decision 28): `pendingCounsel` unless a person recorded another state. */

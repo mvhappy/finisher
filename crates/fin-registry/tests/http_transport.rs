@@ -156,3 +156,57 @@ fn feature_off_in_default_members() {
         "a default member enables test-http"
     );
 }
+
+/// Answers like Python's `http.server` (the `tuf-conformance` simulator): an `HTTP/1.0`
+/// response with no `Connection` header, after which the server closes the socket. The close
+/// lands `late` after the response (a slow runner), and a second request on the same socket
+/// is never read. Returns the URL and the number of connections accepted.
+fn serve_http10(late: std::time::Duration) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/", listener.local_addr().unwrap());
+    let accepted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = accepted.clone();
+    std::thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(mut conn) = conn else { continue };
+            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            std::thread::spawn(move || {
+                let mut reader = BufReader::new(conn.try_clone().unwrap());
+                loop {
+                    let mut h = String::new();
+                    if reader.read_line(&mut h).unwrap_or(0) == 0 || h == "\r\n" {
+                        break;
+                    }
+                }
+                let body = b"{}";
+                let head = format!("HTTP/1.0 200 OK\r\nContent-Length: {}\r\n\r\n", body.len());
+                let _ = conn.write_all(head.as_bytes());
+                let _ = conn.write_all(body);
+                std::thread::sleep(late);
+            });
+        }
+    });
+    (url, accepted)
+}
+
+#[test]
+fn an_http10_response_is_never_reused_even_when_the_close_is_late() {
+    // An HTTP/1.0 response without `Connection: keep-alive` ends its connection (RFC 9112
+    // §9.3), but `ureq` 3.5 pools it unless the close has already arrived; the next fetch then
+    // fails `REGISTRY_UNREACHABLE: … Peer disconnected` (tuf-conformance on CI, 2026-11-14).
+    let (url, accepted) = serve_http10(std::time::Duration::from_millis(500));
+    let t = HttpTransport::at(&url);
+    for path in [
+        "metadata/timestamp.json",
+        "metadata/1.snapshot.json",
+        "metadata/2.root.json",
+    ] {
+        let got = t.fetch(path, 1024);
+        assert!(got.is_ok(), "{path}: {got:?}");
+    }
+    assert_eq!(
+        accepted.load(std::sync::atomic::Ordering::SeqCst),
+        3,
+        "one connection per fetch"
+    );
+}

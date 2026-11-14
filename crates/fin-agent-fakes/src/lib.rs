@@ -126,5 +126,144 @@
 //!
 //! After an interrupt ends a turn, its remaining steps are skipped up to the next
 //! `expect: "user"`.
+//!
+//! # `fake-codex`
+//!
+//! A stand-in for `codex app-server --listen stdio://` (codex-cli 0.167.0): newline-delimited
+//! JSON-RPC on stdin/stdout, shaped after plan 7E's Task 0 and the 7E Task 4 review's side by
+//! side runs of the pinned binary (unsigned), and checked line by line against the committed
+//! schema (`vendor/codex/0.167.0/schema/`) by `tests/fake_codex*.rs`. Every behaviour the real
+//! binary was not seen doing is marked `UNOBSERVED(7E Task 0 Step 3)` in the source.
+//!
+//! **Argv** (Decision 4): `app-server --listen stdio:// --strict-config -c k=v ... --enable F
+//! ... --disable F ...`, plus `--version` (`codex-cli <version>`). An unknown flag or a missing
+//! subcommand is a usage error (stderr, exit 2). An unknown feature (the rows of the committed
+//! `features.txt`) exits 1 `Unknown feature flag: F`. A `-c` value of the wrong type for a key
+//! the fake types (`codex::config_check`) exits 1 with serde's message and ``in `key` ``, with or
+//! without `--strict-config`; under `--strict-config` an unknown `-c` key exits 1 ``unknown
+//! configuration field `prefix` in -c/--config override`` (the key up to its first unknown
+//! segment), and an unknown key of `$CODEX_HOME/config.toml` exits 1 ``<file>:<line>:<col>:
+//! unknown configuration field `k` ``.
+//!
+//! **Configuration**: the sidecar `<directory of the executable>/fake-codex.json`, `{"script",
+//! "observed", "version"}` (a relative `script` is relative to that directory), or the variables
+//! `FAKE_CODEX_SCRIPT`, `FAKE_CODEX_OBSERVED`, `FAKE_CODEX_VERSION`, which win. TS tests run
+//! `target/debug/fake-codex[.exe]` (built by `cargo build -p fin-agent-fakes`), as for
+//! `fake-claude`. `CODEX_HOME` (else `$HOME/.codex`) is where it keeps threads
+//! (`sessions/rollout-<id>.json`, so a resume in a new process finds them), reads `config.toml`
+//! (the `user` layer) and looks for `auth.json`, `skills/`, `hooks.json`, `AGENTS.md`. Unless
+//! `skills.bundled.enabled = false`, it writes the five bundled skills under
+//! `$CODEX_HOME/skills/.system/` at start, as 0.167.0 does. Example scripts:
+//! `scripts/codex/*.json`.
+//!
+//! **Methods** (a positive set; anything else is `-32600 "Invalid request: unknown variant
+//! `m`, expected one of ..."`, not `-32601`; a line that is not a JSON-RPC message, or longer
+//! than 16 MiB, is logged on stderr and never answered): `initialize` (before it `-32600 "Not
+//! initialized"`, twice `"Already initialized"`; then an unprompted
+//! `remoteControl/status/changed`), `config/read` (layers, highest first, with
+//! `includeLayers`: `sessionFlags` from `-c`/`--enable`/`--disable`, `user` from
+//! `$CODEX_HOME/config.toml`, `system`; merged table by table, so `-c mcp_servers={}` keeps a
+//! user's server; origins per leaf, a table feature's as `features.F.enabled`),
+//! `configRequirements/read`, `skills/list` (planted `SKILL.md`s under the cwd's and each
+//! parent's `.agents/skills` up to the project root (`project_root_markers`, `.git`),
+//! `$HOME/.agents/skills`, `$CODEX_HOME/skills`, then the bundled `system` ones), `hooks/list`
+//! (`$CODEX_HOME/hooks.json`, unless the `hooks` feature is off), `plugin/installed`,
+//! `mcpServerStatus/list` (the effective `mcp_servers`; the fake runs none, so an enabled one
+//! failed to start), `app/installed` (empty), `experimentalFeature/list`, `account/read`
+//! (signed out without `$CODEX_HOME/auth.json`; signed in from `fake-account.json` beside it,
+//! else an `account` object in `auth.json`, else the script's `account`, else a ChatGPT Plus
+//! person; a ChatGPT `email` of `null` or `""` is answered as given), `model/list` (paged by `limit` and `cursor`; `invalid cursor: X`, `cursor N exceeds
+//! total models M`), `thread/start` (`instructionSources` lists `$CODEX_HOME/AGENTS.md` or its
+//! override, and the cwd's while `project_doc_max_bytes > 0`; unset settings come from the
+//! effective config; `dynamicTools` and `multiAgentMode` need the `experimentalApi` capability;
+//! then `thread/started` and each enabled MCP server's `starting`/`failed`), `thread/resume`
+//! (`no rollout found for thread id X` when unknown or ephemeral), `thread/read` (a loaded
+//! thread; a stored one `notLoaded`; else `thread not loaded: X`), `thread/revert` (`thread not
+//! found: X` unless loaded in this process, `turn not found: X`; drops `beforeTurnId` and every
+//! later turn; a running turn is interrupted first and the answer follows its `turn/completed`;
+//! the answer's `turns` is empty, then `thread/reverted`), `turn/start` (during a turn of the
+//! same thread: the input joins that turn, which is the answer), `turn/steer`,
+//! `turn/interrupt` (`no active turn to interrupt`, `expected active turn id X but found Y`).
+//! Params are checked as 0.167.0's serde types check them (`codex::params`: `Invalid request:
+//! unknown variant ...`, `missing field ...`, `invalid type ...`; ids are UUIDs, `invalid
+//! thread id: ...`); `thread not found: X` for a thread not loaded. EOF on stdin exits 0 at once.
+//!
+//! ## Script
+//!
+//! `{"version", "observed", "account", "models", "requirements", "plugins", "apps",
+//! "mcpServers" (planted `plugin/installed` marketplaces, `app/installed` apps and
+//! `mcpServerStatus/list` data), "refuseDynamicTools" (a pin without them: `thread/start` with
+//! `dynamicTools` is `-32600 unknown field`), "signedInElsewhere" (`account/read` signed in with
+//! no `auth.json`), "steer": "join"|"refuse",
+//! "onInterrupt": "completed"|"ignore"|"exit", "resumeRestoresDynamicTools" (default true),
+//! "revertFails", "accountRead": "crash"|"hang" (fake-only, for detection's failure paths:
+//! `account/read` is never answered; `crash` exits 1, `hang` keeps serving), "turns":
+//! [{"steer"?, "onInterrupt"?, "steps": [...]}]}`. **The nth turn
+//! started on a thread plays `turns[n]`**: the count is kept with the thread (and saved when the
+//! turn starts), so after a crash in turn 0 a resume in a new process plays turn 1; past the end
+//! (or with no script) a turn is a plain `"ok"` agent message. `observed` may be `@codex/<name>`
+//! for `$CODEX_HOME/<name>`. A turn is: response (`turn` `inProgress`, no items, `startedAt`
+//! null), `thread/status/changed` active, `turn/started`, the user message item (once in the
+//! turn's items), the steps, then `thread/status/changed` idle and `turn/completed` (no items,
+//! `itemsView: "notLoaded"`; `thread/read` has them) or, failed, `thread/status/changed`
+//! `systemError`, `error {willRetry: false}` and `turn/completed`. The turn is saved with the
+//! thread as it starts; one a crash cut short reads back `interrupted`. A step runs these
+//! fields in order (all optional):
+//!
+//! 1. `expect: "steer"|"interrupt"`: wait for a `turn/steer` (or a joining `turn/start`;
+//!    consumed one by one) or a `turn/interrupt` (the wait ends the turn `interrupted` unless
+//!    `onInterrupt` is `ignore`).
+//! 2. `sleep` (ms), still serving requests.
+//! 3. `emit [{method, params}]` (`"$threadId"`/`"$turnId"` replaced), `say "text"`
+//!    (`item/started`, `item/agentMessage/delta`, `item/completed`).
+//! 4. `usage {last, total?, modelContextWindow?}`: `thread/tokenUsage/updated`; counts default
+//!    to 0, `totalTokens` to input + output, `total` to the thread's running total plus `last`
+//!    (kept in the thread, so a resume carries on).
+//! 5. `unknownNotification` (`true` or a method name), `accountChange {type, email,
+//!    planType}` (writes `fake-account.json`, sends `account/updated`).
+//! 6. `dynamicTool {tool, arguments, callId?, onSuccess?, onFailure?}`: `item/started`
+//!    `dynamicToolCall`, the server request `item/tool/call`, the wait for its answer
+//!    (`{contentItems, success}`), `serverRequest/resolved`, `item/completed` (`failed` unless
+//!    `success`). A tool the thread did not declare in `dynamicTools` (or lost on a resume with
+//!    `resumeRestoresDynamicTools: false`) is skipped, as the model could not call it, and
+//!    recorded under `skippedTools`.
+//! 7. `patch {changes, itemId?, onAccept?, onDecline?}`: `item/started` `fileChange`, the
+//!    server request `item/fileChange/requestApproval {itemId, ...}` (the changes are in the
+//!    item, as on the real server), the wait, `serverRequest/resolved`, `item/completed`.
+//!    `accept`/`acceptForSession` write the changes to disk (`codex::patch_fs`: `add` writes
+//!    `diff` as the text, `delete` removes, `update` applies the unified diff, then `move_path`;
+//!    relative to the thread's cwd; all or nothing) and complete the item, `failed` when a hunk
+//!    does not apply (recorded under `patchErrors`); `decline` and `cancel` write nothing and
+//!    decline it; `cancel` also ends the turn `interrupted`.
+//! 8. `notLoggedIn`: the capture's unsigned turn: `error {willRetry}` "Reconnecting... 2/5" to
+//!    "5/5" over the WebSocket (`responseStreamDisconnected` 401), the warning "Falling back
+//!    from WebSockets to HTTPS transport. ...", "1/5" to "5/5" over HTTPS, then the turn fails
+//!    `httpConnectionFailed` 401 (without the 14 s). `fail {codexErrorInfo, message?,
+//!    additionalDetails?, retries?}`: `retries` retry `error`s, then a failed turn.
+//!    `crash {signal: KILL|TERM|SEGV|INT|HUP}` or `{code}`.
+//!
+//! **A server request open when the turn is interrupted** (`turn/interrupt`, a revert) is
+//! withdrawn: `serverRequest/resolved`, its item completed (`failed` tool call with `success:
+//! false`, `declined` patch), the turn `interrupted`; an answer that comes later is recorded
+//! with `late: true`. An answer that does not match the schema's response type (`contentItems`
+//! and `success`; a known `decision`) is recorded under `badAnswers` and counts as an error.
+//!
+//! `turn/steer`: `join` writes the text as a user message item of the active turn and answers
+//! `{turnId}`; `refuse` answers `-32600` with `data.codexErrorInfo.activeTurnNotSteerable`; a
+//! stale `expectedTurnId` and no active turn are `-32600` errors.
+//!
+//! ## Observed file
+//!
+//! As `fake-claude`: a JSON array with one record per process, appended in start order and
+//! never removed (updates take an OS lock on `<file>.lock`; a failed update is said on stderr
+//! and carried by the next): `{"id", "pid", "argv", "flags": {"strictConfig", "listen",
+//! "config": {key: "raw TOML text"}, "enable": [...], "disable": [...], "version"}, "envNames":
+//! [sorted names, never values], "clientInfo", "capabilities", "received": [{"method", "id"?,
+//! "params"}] (every message the client sent, notifications included, before any check),
+//! "answers": [{"id", "method", "result"|"error", "late"?}] (the client's answers to server
+//! requests), "badAnswers": [{"id", "method", "reason", "raw"}], "patchErrors": [{"itemId",
+//! "error"}], "steers": [{"turnId", "input", "joined", "via"?}], "skippedTools": [...], "exit":
+//! {"code"|"signal", "reason": "eof"|"crash"|"interrupted"}}`.
 
 pub mod claude;
+pub mod codex;

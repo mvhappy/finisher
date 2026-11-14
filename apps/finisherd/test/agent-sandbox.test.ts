@@ -115,7 +115,8 @@ describe("the session environment (spec §8.5)", () => {
     const codex = make({ session: { id: SESSION.id, harness: "codex" }, store: { grant: "/data/providers/codex/home/auth.json" } });
     expect(codex.CODEX_HOME).toBe(`/data/agents/${SESSION.id}/provider`);
     expect(codex.CLAUDE_CONFIG_DIR).toBeUndefined();
-    expect([codex.HOME, codex.SHELL]).toEqual(["/home/u", undefined]);
+    // Its own home and shell too (plan 7E Decision 5).
+    expect([codex.HOME, codex.SHELL]).toEqual([`/data/agents/${SESSION.id}/tmp/home`, sessionShell()]);
     expect(() => assertSessionEnv(codex, { id: SESSION.id, harness: "codex" }, { expect: codex, platform: "linux" })).not.toThrow();
     // Windows: the session's temp and LOCALAPPDATA (spike S9 point 7).
     const store = "C:\\data\\providers\\claudeCode\\home\\store";
@@ -193,9 +194,10 @@ describe("the session environment (spec §8.5)", () => {
       expect(() => assertSessionEnv({ ...good, [k]: "x" }, SESSION, { extra: [k], platform: "linux" }), k).toThrow(/the session environment is wrong/);
     }
     expect([...sessionKeys("codex", "linux")]).not.toContain("CLAUDE_SECURESTORAGE_CONFIG_DIR");
-    // Another harness has no `SHELL` to set; one there is outside its environment.
-    const codex = make({ session: { id: SESSION.id, harness: "codex" }, store: { grant: "/data/providers/codex/home/auth.json" } });
-    expect(() => assertSessionEnv({ ...codex, SHELL: "/bin/sh" }, { id: SESSION.id, harness: "codex" }, { platform: "linux" })).toThrow(/outside the session's/);
+    // A harness without its own home (the fake; Codex has one since plan 7E Decision 5) has no
+    // `SHELL` to set; one there is outside its environment.
+    const fake = make({ session: { id: SESSION.id, harness: "fake" }, store: { grant: "/data/providers/fake/home/sign-in.json" } });
+    expect(() => assertSessionEnv({ ...fake, SHELL: "/bin/sh" }, { id: SESSION.id, harness: "fake" }, { platform: "linux" })).toThrow(/outside the session's/);
     expect(sessionShell((p) => p === "/bin/sh")).toBe("/bin/sh");
     expect(sessionShell(() => false)).toBe("/bin/sh");
     expect(sessionShell(() => true)).toBe("/bin/bash");

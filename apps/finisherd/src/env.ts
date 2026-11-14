@@ -52,8 +52,12 @@ export const NEVER_PASSED = [
   "WAYLAND_DISPLAY",
 ] as const;
 
-/** A provider secret by name (§8.5): every `*_API_KEY`, and Claude Code's own variables (`CLAUDE_CODE_OAUTH_TOKEN`). */
-export const secretName = (key: string) => /_API_KEY$/i.test(key) || key === "CLAUDECODE" || key.startsWith("CLAUDE_CODE_");
+/**
+ * A provider secret by name (§8.5): every `*_API_KEY`, Claude Code's own variables
+ * (`CLAUDE_CODE_OAUTH_TOKEN`), Codex's token (`CODEX_ACCESS_TOKEN`; `CODEX_API_KEY` is a key) and
+ * every `OPENAI_*` (the key, the endpoint, the organisation and project: plan 7E Decision 5).
+ */
+export const secretName = (key: string) => /_API_KEY$/i.test(key) || key === "CLAUDECODE" || key.startsWith("CLAUDE_CODE_") || /^CODEX_ACCESS_TOKEN$/i.test(key) || /^OPENAI_/i.test(key);
 
 /** Never passed through, even if a future allow-list change would admit them. */
 function denied(key: string): boolean {
@@ -64,7 +68,7 @@ function denied(key: string): boolean {
  * Builds a child environment from the §27.7 allow-list: `PATH`, `HOME`, `LANG`, `LC_*`,
  * `TMPDIR` (plus the Windows system equivalents on win32), then `FIN_SERVER`, `FIN_SESSION`,
  * `FIN_PROJECT_DIR`, `FIN_CREDENTIAL` and `FIN_CALL` from `extra`. Everything else — notably `ELECTRON_RUN_AS_NODE`,
- * `CLAUDECODE`, `CLAUDE_CODE_*`, `*_API_KEY` and [`NEVER_PASSED`] — is dropped.
+ * `CLAUDECODE`, `CLAUDE_CODE_*`, `CODEX_ACCESS_TOKEN`, `OPENAI_*`, `*_API_KEY` and [`NEVER_PASSED`] — is dropped.
  */
 export function childEnv(
   extra: ChildEnvExtra = {},

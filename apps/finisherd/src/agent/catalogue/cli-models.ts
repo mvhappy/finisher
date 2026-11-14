@@ -15,6 +15,8 @@ export interface CliModel {
   readonly isDefault: boolean;
   /** Claude Code: the concrete model id an alias resolves to (a model is accepted by `id` or this). */
   readonly resolvedModel?: string;
+  /** Codex: the entry's other name when `model` and `id` differ (`id` is `model`; either is accepted). */
+  readonly alias?: string;
 }
 
 const str = (v: unknown): string | undefined => (typeof v === "string" && v !== "" ? v : undefined);
@@ -27,7 +29,9 @@ export function parseCodexModelPage(result: unknown): { models: CliModel[]; next
   for (const m of data as Record<string, unknown>[]) {
     const id = str(m?.model) ?? str(m?.id);
     if (id === undefined || m.hidden === true) continue;
-    models.push({ id, displayName: str(m.displayName) ?? id, isDefault: m.isDefault === true });
+    // `model` is what `turn/start` takes; the entry's `id` is accepted as well.
+    const other = str(m.id);
+    models.push({ id, displayName: str(m.displayName) ?? id, isDefault: m.isDefault === true, ...(other === undefined || other === id ? {} : { alias: other }) });
   }
   const next = (result as { nextCursor?: unknown }).nextCursor;
   return { models, nextCursor: typeof next === "string" && next !== "" ? next : null };

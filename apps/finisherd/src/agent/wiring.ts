@@ -35,7 +35,7 @@ import { remember } from "./remember.ts";
 import { builtinEnvironment } from "./builtin/environment.ts";
 import { localClient, type ModelClient, openrouterClient } from "./builtin/compat.ts";
 import { finIndex } from "./builtin/fin-tool.ts";
-import { indexOf, ShellAttribution } from "./claude/attribution.ts";
+import { indexOf, ShellAttribution } from "./cli/attribution.ts";
 import { BuiltinAdapter } from "./builtin/loop.ts";
 import { builtinTools } from "./builtin/tools.ts";
 import { BUNDLED_CATALOGUE, Catalogue } from "./catalogue/catalogue.ts";
@@ -60,11 +60,13 @@ import { RuleStore } from "./rule-store.ts";
 import type { AclBroker } from "../sandbox/broker.ts";
 import { BROKERED_SHELL_TEST_ENV, ClaudeCodeAdapter } from "./claude/adapter.ts";
 import { claudeProviderInfo } from "./claude/detect.ts";
+import { codexProviderInfo } from "./codex/detect.ts";
+import { type CodexAccess, CodexModelCache, codexAccess, withCodexPricing } from "./codex/models.ts";
 import { remainingIn } from "./claude/usage.ts";
 import { type ClaudeAccess, ClaudeModelCache, claudeAccess, withClaudePricing } from "./claude/models.ts";
 import { type SessionSandboxDeps, sessionSandboxes } from "./sandbox.ts";
 import { launcherServer } from "./sandbox-input.ts";
-import { claudeCodeSettings, readAgentSettings, resolveFinPath } from "./settings.ts";
+import { claudeCodeSettings, codexSettings, readAgentSettings, resolveFinPath } from "./settings.ts";
 import type { AgentStore } from "./store.ts";
 import { reviewPort } from "./review-link.ts";
 import type { ProjectRegistryShape } from "../projects.ts";
@@ -234,6 +236,16 @@ export function claudeWiring(info: () => Promise<ProviderInfo>, serverData: stri
   return { cache, planning: async () => claudeAccess(await info(), cache), pricing: withClaudePricing };
 }
 
+/**
+ * Codex's share of the wiring (plan 7E Task 9): the model cache (Task 10's session records its
+ * `model/list` there), what the planner may know of it (absent unless detected and enabled, the
+ * models of the detected version and account, with the account's method) and `openai` pricing.
+ */
+export function codexWiring(info: () => Promise<ProviderInfo>, serverData: string, chargePlanMoney: () => boolean = () => codexSettings(serverData).chargePlanMoney === true): { cache: CodexModelCache; planning: () => Promise<CodexAccess>; pricing: (base: Pricing) => Pricing } {
+  const cache = new CodexModelCache(serverData);
+  return { cache, planning: async () => codexAccess(await info(), cache, chargePlanMoney()), pricing: withCodexPricing };
+}
+
 export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntimeParts, never, Scope.Scope> =>
   Effect.gen(function* () {
     const { core, serverData, log } = d;
@@ -268,11 +280,14 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
         d.audit.append({ kind: "sandbox.violation", principal: { kind: "agent", id: v.sessionId }, outcome: "denied", details: { session: v.sessionId, op: v.op, profile: v.profile, rootKind: v.rootKind } }),
     };
     const claudeInfo = () => claudeProviderInfo({ sandbox: sandboxDeps });
+    const codexInfo = () => codexProviderInfo({ sandbox: sandboxDeps });
+    const codex = codexWiring(() => Effect.runPromise(codexInfo()), serverData);
     const admin = new AgentAdmin({
       serverData,
       secrets,
       localPresets: catalogue.localPresets,
       claudeCode: claudeInfo,
+      codex: codexInfo,
       ...(d.options?.fetch === undefined ? {} : { fetch: d.options.fetch }),
       audit: (by, details) => d.audit.append({ kind: "settings.write", principal: { kind: by.kind, id: by.id }, outcome: "ok", details }),
     });
@@ -344,6 +359,8 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
       localModels: (e) => listLocalModels(e.baseUrl, d.options?.fetch),
       // Claude Code plans only when detected and enabled, read at each plan.
       claude: claude.planning,
+      // Codex likewise (its adapter registers with Task 10: until then `HARNESS_UNKNOWN`).
+      codex: codex.planning,
       // Best effort: the cached listing stands when OpenRouter cannot be reached.
       // One fetch at a time, and none for 15 minutes after a failure (`OpenRouterPrices`).
       refreshListing: () =>
@@ -388,7 +405,7 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
       ...(d.options?.afterChildOpened === undefined ? {} : { afterChildOpened: d.options.afterChildOpened }),
       ...(d.options?.stopGraceMs === undefined ? {} : { stopGraceMs: d.options.stopGraceMs }),
       journal: attribution.journal(core.journal),
-      pricing: claude.pricing(cataloguePricing(catalogue)),
+      pricing: codex.pricing(claude.pricing(cataloguePricing(catalogue))),
       // Children's roles and limits, live limits (7B Task 6).
       roles,
       ...(settings.limits === undefined ? {} : { limits: settings.limits }),
