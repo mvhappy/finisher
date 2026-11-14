@@ -49,6 +49,10 @@ pub struct LegacyWorkerInfo {
     pub version: String,
     /// [`RENDER_VERSION`](crate::RENDER_VERSION): part of every cache key (spec §2.5).
     pub render_version: u32,
+    /// The OS confinement the worker applied to itself (spec §3.5.1, plan 6B-1 Task 18); an
+    /// answer from before it has none: `none`.
+    #[serde(default)]
+    pub sandbox: WorkerSandbox,
 }
 
 /// What `media.capabilities` v1 answers (plan 6A Task 13): codecs, the GPU a render would use
@@ -272,9 +276,10 @@ pub struct EncoderCaps {
 }
 
 /// The OS confinement the worker applied to itself (spec §3.5.1).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum WorkerSandbox {
+    #[default]
     None,
     /// 7C's Linux Landlock `worker` profile (6B-1 Task 18).
     Landlock,

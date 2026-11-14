@@ -25,7 +25,7 @@ import { mediaWiring } from "../src/media/wiring.ts";
 import { makeProjectRegistry } from "../src/projects.ts";
 import { PROXY540_STAGE, proxy540Stage } from "../src/media/stages.ts";
 import type { StageFile } from "../src/library/api.ts";
-import { closeTestEngines, testEngine } from "./support/jobs.ts";
+import { closeTestEngines, testEngine, until } from "./support/jobs.ts";
 import { makeAv1Fixture } from "./support/media.ts";
 
 const GPU_REQUIRED = process.env.FIN_REQUIRE_GPU === "1";
@@ -172,7 +172,7 @@ async function project(serverData: string, fp: string): Promise<Engine> {
 }
 
 /** A real engine with the media kinds, the cache and the proxy service over one project. */
-async function setup(fp = "fp-a1") {
+async function setup(fp = "fp-a1", engineOpts: { diagnostics?: () => boolean } = {}) {
   const serverData = realpathSync(mkdtempSync(join(work, "sd-")));
   const engine = await project(serverData, fp);
   const cache = await MediaCache.open(serverData);
@@ -186,6 +186,7 @@ async function setup(fp = "fp-a1") {
   const t = await testEngine({
     serverData,
     register: (r) => registerMediaKinds(r, { serverData, projects, proxy: { cache: () => cache, report: () => caps?.current() } }),
+    ...engineOpts,
   });
   caps = mediaCapabilities({ engine: t.engine });
   const registry = {
@@ -320,6 +321,32 @@ function stageFile(probe: unknown): StageFile {
   } as StageFile;
 }
 
+describe("diagnostics (6B-1 Task 19)", () => {
+  test("a media.proxy job's job.done carries the media object; its encoder is in render.stats", async () => {
+    const { t, proxies, pid, serverData } = await setup("fp-diag", { diagnostics: () => true });
+    const made = await Effect.runPromise(Effect.result(proxies.request(OWNER, { projectId: pid, asset: "a1" })));
+    if (made._tag === "Failure" && noGpu(made.failure)) return;
+    if (made._tag === "Failure") throw made.failure;
+    const done = await until(() => t.sink.done.find((d) => d.kind === MEDIA_PROXY));
+    expect(done.outcome).toBe("succeeded");
+    expect(done.extra?.["media"]).toEqual({ codec: "av1", backend: "dav1d", hw: false, resolution: "sd", frames: 12, rtFactorMilli: expect.any(Number), cacheHit: false, copyPath: "copy" });
+    const stats = t.sink.forwarded.filter((f) => f.kind === "render.stats").map((f) => f.payload as { phase: string; backend: string; histogram: { count: number } });
+    const encode = stats.filter((s) => s.phase === "encode" && s.backend === "svt-av1").reduce((n, s) => n + s.histogram.count, 0);
+    expect(encode).toBe(13);
+    expect(JSON.stringify([done.extra, stats])).not.toContain(serverData);
+  });
+
+  test("with diagnostics off the proxy's job.done has no media object", async () => {
+    const { t, proxies, pid } = await setup("fp-quiet");
+    const made = await Effect.runPromise(Effect.result(proxies.request(OWNER, { projectId: pid, asset: "a1" })));
+    if (made._tag === "Failure" && noGpu(made.failure)) return;
+    if (made._tag === "Failure") throw made.failure;
+    const done = await until(() => t.sink.done.find((d) => d.kind === MEDIA_PROXY));
+    expect(done.extra ?? {}).not.toHaveProperty("media");
+    expect(t.sink.forwarded).toEqual([]);
+  });
+});
+
 describe("the proxy540 stage", () => {
   const video = { media: { video: { codec: "av1", display: { width: 160, height: 90 } } } };
 
@@ -341,14 +368,14 @@ describe("the proxy540 stage", () => {
   test("the stage runs for a library file: the entry is committed and isDone sees it", async () => {
     const { t, cache } = await setup();
     const s = proxy540Stage({ report: () => V1, cache: () => cache });
-    expect(await Effect.runPromise(s.isDone!("fp-lib"))).toBe(false);
+    expect(await Effect.runPromise(s.isDone!("fp-lib", stageFile(video)))).toBe(false);
     const p = s.params([stageFile(video)], { library: "l1", pools: {} as never }) as ProxyParams;
     const v: JobView = await t.runJob(MEDIA_PROXY, p, { library: "l1" });
     if (v.state === "failed" && noGpu(v.error)) return;
     expect(v.state, JSON.stringify(v.error)).toBe("succeeded");
     expect(((v.result as { items: Record<string, ProxyResult> }).items["fp-lib"])?.frames).toBe(12);
     expect(await cache.projectsOf(p.key)).toEqual([]);
-    expect(await Effect.runPromise(s.isDone!("fp-lib"))).toBe(true);
+    expect(await Effect.runPromise(s.isDone!("fp-lib", stageFile(video)))).toBe(true);
   }, 180_000);
 });
 

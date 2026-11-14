@@ -1019,12 +1019,41 @@ export type VerdictVia = "undo" | "revert" | "archive" | "merge" | "critic" | "a
  */
 export type BackendClass = ("os" | "gpu" | "software" | "plugin") | "other";
 /**
+ * Which way a backend serves a codec.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "CodecDirection".
+ */
+export type CodecDirection = "decode" | "encode";
+/**
  * How a codec direction is served: hardware, software, or not at all.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "SupportClass".
  */
 export type SupportClass = "hw" | "sw" | "none";
+/**
+ * The sub-project 6 batch that closes a `laterBatch` gap.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "GuidanceBatch".
+ */
+export type GuidanceBatch = "6B-2" | "6C" | "6D" | "6E" | "6F" | "6G";
+/**
+ * What a gap in the report is about (`fin-media`'s `GapCode`): the code only, never the
+ * guidance text (the `fix` stays in the capability answer).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "GapCode".
+ */
+export type GapCode =
+  | "hevcExtensions"
+  | "av1Extension"
+  | "mediaFeaturePack"
+  | "ltscStoreCodecs"
+  | "gpuDriver"
+  | "codecPlugin"
+  | "laterBatch";
 /**
  * The worker sandbox in force (spec §3.5): `none` in 6A.
  *
@@ -1747,7 +1776,7 @@ export type EventPayload =
     }
   | {
       kind: "media.capabilities";
-      kv: 1;
+      kv: 2;
       payload: MediaCapabilitiesEvent;
     }
   | {
@@ -2763,6 +2792,23 @@ export interface Actor {
  * via the `definition` "AdapterId".
  */
 export interface AdapterId {
+  /**
+   * The PCI device id.
+   */
+  deviceId: number;
+  driverMajor?: number;
+  /**
+   * The PCI vendor id.
+   */
+  vendorId: number;
+}
+/**
+ * A GPU by its numeric ids (owner decision 7): never a name or driver string.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "AdapterIds".
+ */
+export interface AdapterIds {
   /**
    * The PCI device id.
    */
@@ -4401,7 +4447,9 @@ export interface JobDone {
 /**
  * The `media` object of `job.done` `kv` 2: what a media job did. `codec`, `backend` and `hw`
  * describe the decode that served the job (the first source it decoded; `none` when it
- * decoded nothing).
+ * decoded nothing). Kinds (6B-1 Task 19): `media.look`; `media.proxy` (frames encoded, the
+ * proxy's size; its encoder is in `render.stats`' `encode` rows); `media.thumbs` (thumbnails or
+ * sprites made, from the proxy or the original it decoded); `media.probeDeep` (its first frame).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "JobMedia".
@@ -4426,7 +4474,9 @@ export interface JobMedia {
   /**
    * Media seconds produced per wall second of rendering, in thousandths (1000 = real
    * time): the frames' durations at the timeline's rate over decode + composite +
-   * readback time. `0` when the job took no measurable time.
+   * readback time (`media.proxy`: the frames' durations at the source's nominal rate over the
+   * decode, scale and encode time). `0` when the job took no measurable time, and for kinds
+   * that do not play media through (`media.thumbs`, `media.probeDeep`).
    */
   rtFactorMilli: number;
 }
@@ -4553,15 +4603,20 @@ export interface ReviewVerdict {
   via?: VerdictVia;
 }
 /**
- * `media.capabilities` (`kv` 1): once per server run, what the media worker can decode,
- * encode and draw on.
+ * `media.capabilities` (`kv` 2, 6B-1 plan Decision 19): once per server run, what the media
+ * worker can decode and encode per codec, profile and bit depth (with the guidance codes of
+ * every gap), its audio rows, the encoders that passed their test clip with their session
+ * limits and adapters, the GPU it draws on and the sandbox it runs in. `kv` 1 (6A) is gone, as
+ * `job.done` 1 went: no upcaster.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "MediaCapabilitiesEvent".
  */
 export interface MediaCapabilitiesEvent {
+  audio: AudioCodecEntry[];
   codecs: CodecEntry[];
   copyPath: CopyPath;
+  encoders: EncoderEntry[];
   gpu?: GpuEntry;
   /**
    * `RENDER_VERSION`: part of every cache key.
@@ -4570,29 +4625,80 @@ export interface MediaCapabilitiesEvent {
   sandbox: Sandbox;
 }
 /**
- * One codec's support on this machine.
+ * One audio codec on this machine (none before 6C: the rows carry the guidance).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "CodecEntry".
+ * via the `definition` "AudioCodecEntry".
  */
-export interface CodecEntry {
-  /**
-   * The backends that would be used, decode first.
-   */
+export interface AudioCodecEntry {
   backends: BackendEntry[];
   codec: Name;
   decode: SupportClass;
   encode: SupportClass;
+  guidance?: GuidanceEntry[];
 }
 /**
- * A backend and who provides it.
+ * A backend, who provides it (spec §6.1's vendor class), which way it serves the row and
+ * whether it runs on hardware.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "BackendEntry".
  */
 export interface BackendEntry {
   class: BackendClass;
+  direction: CodecDirection;
+  hw: boolean;
   name: Name;
+}
+/**
+ * One gap of a row, by code.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "GuidanceEntry".
+ */
+export interface GuidanceEntry {
+  batch?: GuidanceBatch;
+  code: GapCode;
+}
+/**
+ * One video codec (and profile and bit depth, when the row is about one) on this machine.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "CodecEntry".
+ */
+export interface CodecEntry {
+  /**
+   * The backends that would serve it, decode first, in the order they are tried.
+   */
+  backends: BackendEntry[];
+  bitDepth?: number;
+  codec: Name;
+  decode: SupportClass;
+  encode: SupportClass;
+  guidance?: GuidanceEntry[];
+  profile?: Name;
+}
+/**
+ * An encoder that encoded the capability probe's test clip (6B-1 plan Decision 19).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "EncoderEntry".
+ */
+export interface EncoderEntry {
+  adapter?: AdapterIds;
+  backend: Name;
+  class: BackendClass;
+  codec: Name;
+  hw: boolean;
+  /**
+   * Intra-only frames per second at 540p on the test clip.
+   */
+  intraFps?: number;
+  intraOnly: boolean;
+  /**
+   * Concurrent sessions that opened, up to 4.
+   */
+  sessionLimit?: number;
 }
 /**
  * The GPU adapter frames are composited on: numeric ids only (owner decision 7). The
@@ -4623,8 +4729,8 @@ export interface GpuEntry {
 }
 /**
  * `render.stats` (`kv` 1): per-minute histograms of render stages in micros, one entry per
- * phase and backend. `backend` is the decode backend for `decode` and the GPU API for
- * `composite` and `readback`. A worker sends what it measured since its last job ended, so
+ * phase and backend. `backend` is the decode backend for `decode`, the GPU API for
+ * `composite` and `readback`, and the encoder for `encode` (6B-1: proxies). A worker sends what it measured since its last job ended, so
  * several entries may share a window (`histogram.start`): readers add them.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -7828,6 +7934,11 @@ export interface LegacyWorkerInfo {
    */
   renderVersion: number;
   /**
+   * The OS confinement the worker applied to itself (spec §3.5.1, plan 6B-1 Task 18); an
+   * answer from before it has none: `none`.
+   */
+  sandbox?: "none" | "landlock" | "worker";
+  /**
    * The `fin-workers` crate's version.
    */
   version: string;
@@ -9196,6 +9307,7 @@ export interface ProbeDeepResult {
    * The frame was decoded on hardware.
    */
   hw?: boolean;
+  media?: JobMedia;
 }
 /**
  * Why the first frame did not decode: the decoder's error code and message (a codec nothing
@@ -10557,6 +10669,7 @@ export interface ThumbsRun {
    * Items made in this run.
    */
   made: number;
+  media?: JobMedia;
   /**
    * Why the proxy the manifest lists could not be read (the original was read instead):
    * `missing`, `changed` or `invalid`, as a look's `proxyFallbacks` give it.

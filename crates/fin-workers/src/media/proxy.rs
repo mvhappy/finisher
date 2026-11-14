@@ -29,11 +29,12 @@
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use fin_codecs::{DecodeThreads, EncoderConfig, FrameReader, Gop, RateControl, RawFrame};
 use fin_container::Limits;
 use fin_core::CoreError;
-use fin_core::events::payloads::RenderPhase;
+use fin_core::events::payloads::{JobMedia, RenderPhase};
 use fin_jobs::worker::JobCtx;
 use fin_jobs::{JobError, ProgressUnit, StartJob};
 use fin_library::{Expect, OpenError, RawRel, open_for_read};
@@ -48,9 +49,11 @@ use fin_media::{ColourTags, MediaInfo, VideoTrackInfo};
 use fin_shm::JobDir;
 use serde_json::{Value, json};
 
+use super::diag::{self, RunFacts};
 use super::encode_pipeline::{self, Frames, Track};
 use super::inputs::{self, MANIFEST_CAP};
 use super::open_cache::{WORKER_MAX_PIXELS, open_original_in};
+use super::sources::micros_since;
 use super::{Warm, job_error, look, proxy_audio, scale};
 
 /// The proxy's video file in its entry.
@@ -89,11 +92,15 @@ pub fn run(job: &StartJob, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<Valu
     let fp = p.fingerprint.clone();
     ctx.begin(&fp);
     match make(&p, ctx, warm) {
-        Ok(result) => {
+        Ok((result, media)) => {
             let value = serde_json::to_value(&result)
                 .map_err(|e| job_error(CoreError::new("INTERNAL", e.to_string())))?;
             ctx.item(&fp, Some(value));
-            Ok(json!({ "made": 1 }))
+            // `job.done`'s `media` object (6B-1 Task 19), with diagnostics on only.
+            Ok(match media {
+                Some(m) => json!({ "made": 1, "media": m }),
+                None => json!({ "made": 1 }),
+            })
         }
         Err(Fail::Item(e)) => {
             ctx.item_failed(&fp, e);
@@ -220,7 +227,11 @@ fn test_crash(fp: &str) {
 #[cfg(not(feature = "test-hooks"))]
 fn test_crash(_: &str) {}
 
-fn make(p: &ProxyParams, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<ProxyResult, Fail> {
+fn make(
+    p: &ProxyParams,
+    ctx: &mut JobCtx<'_>,
+    warm: &mut Warm,
+) -> Result<(ProxyResult, Option<JobMedia>), Fail> {
     let dir = inputs::job_dir(ctx).map_err(Fail::Job)?;
     inputs::out_dir(ctx, &dir).map_err(Fail::Job)?;
     let file = open_source(p, ctx, &dir, warm)?;
@@ -329,6 +340,9 @@ fn make(p: &ProxyParams, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<ProxyR
         .map_err(Fail::Job)?;
     let caps = warm.probe.clone();
     let mut tone_mapped = None;
+    let diagnostics = ctx.diagnostics();
+    let mut decode_hw = None;
+    let started = Instant::now();
     let mut src = Source {
         reader: &mut reader,
         video: &video,
@@ -340,6 +354,9 @@ fn make(p: &ProxyParams, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<ProxyR
         path: out.join(PROXY_FILE),
         dir: &dir,
         tone_mapped: &mut tone_mapped,
+        diagnostics,
+        decode_hw: &mut decode_hw,
+        gpu_api: None,
     };
     let encoded = encode_pipeline::encode_with_audio(
         &caps,
@@ -353,6 +370,19 @@ fn make(p: &ProxyParams, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<ProxyR
         &mut src,
         audio.as_ref(),
     )?;
+    let media = diagnostics.then(|| {
+        diag::run_media(&RunFacts {
+            decode: Some((video.codec, decoder)),
+            hw: decode_hw.unwrap_or(false),
+            largest: Some((size.width, size.height)),
+            frames: u32::try_from(encoded.frames).unwrap_or(u32::MAX),
+            rt_factor_milli: diag::rt_factor_milli(
+                encoded.frames,
+                Some(video.nominal_rate),
+                micros_since(started),
+            ),
+        })
+    });
     write_file(&dir, &out.join(TABLE_FILE), &table_bin::encode(&table))?;
     let files = vec![
         entry_file(&dir, &out, PROXY_FILE)?,
@@ -380,7 +410,7 @@ fn make(p: &ProxyParams, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<ProxyR
     let text =
         serde_json::to_vec_pretty(&meta).map_err(|e| CoreError::new("INTERNAL", e.to_string()))?;
     write_file(&dir, &out.join(META_FILE), &text)?;
-    Ok(ProxyResult {
+    let result = ProxyResult {
         key: key.to_string(),
         tier: p.tier,
         codec: p.codec,
@@ -398,7 +428,8 @@ fn make(p: &ProxyParams, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<ProxyR
             r
         }),
         audio_skipped: audio_skipped.map(|code| ProxyAudioSkipped { code }),
-    })
+    };
+    Ok((result, media))
 }
 
 /// The audio pass's `between`: cancel, and a `progress` of phase `encodeAudio` at its start and
@@ -498,11 +529,25 @@ struct Source<'a, 'c> {
     /// The job directory: errors name `path` relative to it.
     dir: &'a JobDir,
     tone_mapped: &'a mut Option<fin_media::jobs::ToneMapped>,
+    /// Stage timings go to `render.stats` (diagnostics on).
+    diagnostics: bool,
+    /// The decoder ran on hardware (the first frame's word).
+    decode_hw: &'a mut Option<bool>,
+    /// The GPU API the scale runs on, once known.
+    gpu_api: Option<String>,
 }
 
 impl Frames for Source<'_, '_> {
     fn frame(&mut self, i: u64) -> Result<RawFrame, CoreError> {
+        let decoder = self.reader.backend().0;
+        let started = Instant::now();
         let f = self.reader.frame(i as usize)?;
+        if self.diagnostics {
+            self.warm
+                .render_stats
+                .record(RenderPhase::Decode, decoder, micros_since(started));
+        }
+        self.decode_hw.get_or_insert(f.hw);
         let colour = scale::colour_of(f, self.video);
         if let Some(t) = scale::tone_mapped(&colour, self.video) {
             *self.tone_mapped = Some(t);
@@ -513,7 +558,24 @@ impl Frames for Source<'_, '_> {
             details: e.details,
             fix: None,
         })?;
-        scale::scale(&mut g.compositor, &g.gpu, f, self.video, self.size)
+        let started = Instant::now();
+        let out = scale::scale(&mut g.compositor, &g.gpu, f, self.video, self.size);
+        if self.diagnostics {
+            let api = self.gpu_api.get_or_insert_with(|| g.gpu.info().backend);
+            let micros = micros_since(started);
+            self.warm
+                .render_stats
+                .record(RenderPhase::Composite, api, micros);
+        }
+        out
+    }
+
+    fn encoded(&mut self, backend: &'static str, micros: u64) {
+        if self.diagnostics {
+            self.warm
+                .render_stats
+                .record(RenderPhase::Encode, backend, micros);
+        }
     }
 
     fn between(&mut self, done: u64) -> Result<(), CoreError> {

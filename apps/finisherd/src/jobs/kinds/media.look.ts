@@ -337,8 +337,6 @@ export function mediaLookKind(deps: MediaKindDeps): KindSpec<LookJobParams, Look
   };
 }
 
-/** `job.done`'s `media` object (Task 14): see `media.journal.ts`. */
-
 /** The plan hashes `prepare` computed, in `at` order (`extra.planSamples`). */
 /** Each existing path resolved (a missing one is left out: the worker reports it missing). */
 async function canonicalReads(paths: ReadonlyArray<string>): Promise<string[]> {

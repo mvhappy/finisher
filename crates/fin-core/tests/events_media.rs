@@ -1,6 +1,7 @@
-//! The media diagnostics kinds (6A plan Task 14): the optional `media` object of `job.done`
-//! (`kv` 2), `media.capabilities`, `render.stats`, the reserved `preview.stats` and
-//! `render.sample`, and the `MEDIA_CODECS` / `MEDIA_BACKENDS` tables. The emitters are the
+//! The media diagnostics kinds (6A plan Task 14, 6B-1 plan Task 19): the optional `media` object
+//! of `job.done` (`kv` 2), `media.capabilities` (`kv` 2), `render.stats`, the reserved
+//! `preview.stats` and `render.sample`, and the `MEDIA_CODECS` / `MEDIA_BACKENDS` /
+//! `MEDIA_PROFILES` / `MEDIA_AUDIO_CODECS` tables. The emitters are the
 //! `media` worker family (`crates/fin-workers/tests/media_diag.rs`).
 
 #[path = "events_samples/mod.rs"]
@@ -10,7 +11,9 @@ use std::collections::BTreeSet;
 
 use fin_core::events::names::TABLES;
 use fin_core::events::names_jobs;
-use fin_core::events::names_media::{BackendClass, MEDIA_BACKENDS, MEDIA_CODECS, backend_class};
+use fin_core::events::names_media::{
+    BackendClass, MEDIA_AUDIO_CODECS, MEDIA_BACKENDS, MEDIA_CODECS, MEDIA_PROFILES, backend_class,
+};
 use fin_core::events::payloads::*;
 use fin_core::events::*;
 use serde_json::{Value, json};
@@ -29,13 +32,18 @@ fn walk<'a>(v: &'a Value, out: &mut Vec<&'a str>) {
 
 #[test]
 fn media_kinds_are_registered() {
-    for name in ["media.capabilities", "render.stats"] {
-        let k = kind(name, 1).unwrap_or_else(|| panic!("{name} v1"));
+    // `media.capabilities` is `kv` 2 (6B-1 Decision 19) with no upcaster, as `job.done` 1 went.
+    for (name, v) in [("media.capabilities", 2), ("render.stats", 1)] {
+        let k = kind(name, v).unwrap_or_else(|| panic!("{name} v{v}"));
         assert!(!k.reserved && !k.training_only, "{name}");
         // No new `Source` variant: workers' diagnostics go through `finisherd` (spec §15).
         assert_eq!(k.sources, [Source::Finisherd], "{name}");
-        assert!(kind(name, 0).is_none() && kind(name, 2).is_none(), "{name}");
+        assert!(
+            kind(name, 0).is_none() && kind(name, v + 1).is_none(),
+            "{name}"
+        );
     }
+    assert!(kind("media.capabilities", 1).is_none());
     let preview = kind("preview.stats", 0).expect("preview.stats v0");
     assert!(preview.reserved && !preview.training_only);
     let sample = kind("render.sample", 0).expect("render.sample v0");
@@ -60,7 +68,15 @@ fn media_payloads_round_trip_and_strip_content_is_a_no_op() {
         samples::render_stats().into(),
         MediaCapabilitiesEvent {
             gpu: None,
+            audio: Vec::new(),
+            encoders: Vec::new(),
             ..samples::media_capabilities()
+        }
+        .into(),
+        RenderStats {
+            phase: RenderPhase::Encode,
+            backend: MEDIA_BACKENDS.get("svt-av1").unwrap(),
+            ..samples::render_stats()
         }
         .into(),
     ];
@@ -128,14 +144,95 @@ fn media_schemas_have_no_free_strings() {
     walk(&caps, &mut all);
     walk(&stats, &mut all);
     for s in all {
-        let word = s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+        let word = s
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
         assert!(word, "{s:?} is not a plain name");
     }
 }
 
 #[test]
+fn media_capabilities_v2_wire_shape() {
+    let v = serde_json::to_value(samples::media_capabilities()).unwrap();
+    assert_eq!(
+        v["codecs"][0],
+        json!({
+            "codec": "av1", "profile": "main", "bitDepth": 10, "decode": "sw", "encode": "sw",
+            "backends": [
+                { "name": "dav1d", "class": "software", "direction": "decode", "hw": false },
+                { "name": "svt-av1", "class": "software", "direction": "encode", "hw": false },
+            ],
+        })
+    );
+    assert_eq!(
+        v["codecs"][1]["guidance"],
+        json!([{ "code": "laterBatch", "batch": "6B-2" }, { "code": "codecPlugin" }])
+    );
+    assert_eq!(
+        v["audio"][0],
+        json!({ "codec": "aac", "decode": "none", "encode": "none", "backends": [],
+                "guidance": [{ "code": "laterBatch", "batch": "6C" }] })
+    );
+    assert_eq!(
+        v["encoders"][0],
+        json!({
+            "backend": "mf-hw", "class": "gpu", "codec": "h264", "hw": true, "intraOnly": true,
+            "intraFps": 480, "sessionLimit": 2,
+            "adapter": { "vendorId": 4318, "deviceId": 9860, "driverMajor": 560 },
+        })
+    );
+    assert_eq!(v["sandbox"], "landlock");
+    // Guidance is a code, never its text: the `fix` stays in the capability answer.
+    assert!(!v.to_string().contains("\"fix\""), "{v}");
+}
+
+#[test]
+fn media_capabilities_names_outside_the_tables_read_as_other() {
+    // A report whose strings are an adapter's name, a path and an MFT's friendly name.
+    let hostile = json!({
+        "codecs": [{
+            "codec": "/home/someone/clip.mp4", "profile": "C:\\Users\\x\\High", "decode": "hw",
+            "encode": "none",
+            "backends": [{ "name": "NVIDIA H.264 Encoder MFT", "class": "gpu", "direction": "decode", "hw": true }],
+        }],
+        "audio": [{ "codec": "/tmp/aac", "decode": "none", "encode": "none", "backends": [] }],
+        "encoders": [{
+            "backend": "Intel® Quick Sync Video H.264 Encoder MFT", "class": "gpu",
+            "codec": "h264", "hw": true, "intraOnly": false,
+        }],
+        "copyPath": "copy", "sandbox": "none", "renderVersion": 2,
+    });
+    let spec = kind("media.capabilities", 2).unwrap();
+    let p = decode_payload(spec, &hostile).unwrap();
+    let text = serde_json::to_string(&p).unwrap();
+    for banned in ["someone", "Users", "NVIDIA", "Intel", "MFT", "tmp"] {
+        assert!(
+            !text.contains(banned),
+            "{banned} reached the payload: {text}"
+        );
+    }
+    let AnyPayload::MediaCapabilities(e) = p else {
+        panic!("not a capabilities payload")
+    };
+    assert_eq!(e.codecs[0].codec, Name::OTHER);
+    assert_eq!(e.codecs[0].profile, Some(Name::OTHER));
+    assert_eq!(e.codecs[0].backends[0].name, Name::OTHER);
+    assert_eq!(e.audio[0].codec, Name::OTHER);
+    assert_eq!(e.encoders[0].backend, Name::OTHER);
+    // An unknown guidance code or batch is not a payload at all (closed enums).
+    let mut bad = hostile.clone();
+    bad["codecs"][0]["guidance"] = json!([{ "code": "install /usr/lib/x.so" }]);
+    assert!(decode_payload(spec, &bad).is_err());
+}
+
+#[test]
 fn media_tables_are_registered_and_unknown_values_read_as_other() {
-    for t in [&MEDIA_CODECS, &MEDIA_BACKENDS] {
+    for t in [
+        &MEDIA_CODECS,
+        &MEDIA_BACKENDS,
+        &MEDIA_PROFILES,
+        &MEDIA_AUDIO_CODECS,
+    ] {
         assert!(TABLES.iter().any(|x| std::ptr::eq(*x, t)), "{}", t.table);
         let unique: BTreeSet<&str> = t.entries().iter().copied().collect();
         assert_eq!(unique.len(), t.entries().len(), "{} repeats", t.table);

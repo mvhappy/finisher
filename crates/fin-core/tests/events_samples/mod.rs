@@ -5,7 +5,9 @@
 
 use fin_core::events::names::{self, CLI_COMMANDS, MEDIA_TYPES, OP_KINDS};
 use fin_core::events::names_jobs;
-use fin_core::events::names_media::{MEDIA_BACKENDS, MEDIA_CODECS, backend_class};
+use fin_core::events::names_media::{
+    MEDIA_AUDIO_CODECS, MEDIA_BACKENDS, MEDIA_CODECS, MEDIA_PROFILES, backend_class,
+};
 use fin_core::events::payloads::*;
 use fin_core::events::*;
 use serde_json::{Value, json};
@@ -328,30 +330,67 @@ pub fn job_media() -> JobMedia {
 }
 
 pub fn media_capabilities() -> MediaCapabilitiesEvent {
+    let backend = |name: &str, direction, hw| BackendEntry {
+        name: MEDIA_BACKENDS.get(name).unwrap(),
+        class: backend_class(name),
+        direction,
+        hw,
+    };
+    let later = |batch| GuidanceEntry {
+        code: GapCode::LaterBatch,
+        batch: Some(batch),
+    };
     MediaCapabilitiesEvent {
         codecs: vec![
             CodecEntry {
                 codec: MEDIA_CODECS.get("av1").unwrap(),
+                profile: Some(MEDIA_PROFILES.get("main").unwrap()),
+                bit_depth: Some(10),
                 decode: SupportClass::Sw,
                 encode: SupportClass::Sw,
                 backends: vec![
-                    BackendEntry {
-                        name: MEDIA_BACKENDS.get("dav1d").unwrap(),
-                        class: backend_class("dav1d"),
-                    },
-                    BackendEntry {
-                        name: MEDIA_BACKENDS.get("svt-av1").unwrap(),
-                        class: backend_class("svt-av1"),
-                    },
+                    backend("dav1d", CodecDirection::Decode, false),
+                    backend("svt-av1", CodecDirection::Encode, false),
                 ],
+                guidance: Vec::new(),
             },
             CodecEntry {
                 codec: MEDIA_CODECS.get("h264").unwrap(),
+                profile: None,
+                bit_depth: None,
                 decode: SupportClass::None,
                 encode: SupportClass::None,
                 backends: Vec::new(),
+                guidance: vec![
+                    later(GuidanceBatch::B6b2),
+                    GuidanceEntry {
+                        code: GapCode::CodecPlugin,
+                        batch: None,
+                    },
+                ],
             },
         ],
+        audio: vec![AudioCodecEntry {
+            codec: MEDIA_AUDIO_CODECS.get("aac").unwrap(),
+            decode: SupportClass::None,
+            encode: SupportClass::None,
+            backends: Vec::new(),
+            guidance: vec![later(GuidanceBatch::B6c)],
+        }],
+        encoders: vec![EncoderEntry {
+            backend: MEDIA_BACKENDS.get("mf-hw").unwrap(),
+            class: backend_class("mf-hw"),
+            codec: MEDIA_CODECS.get("h264").unwrap(),
+            hw: true,
+            intra_only: true,
+            intra_fps: Some(480),
+            session_limit: Some(2),
+            adapter: Some(AdapterIds {
+                vendor_id: 0x10de,
+                device_id: 0x2684,
+                driver_major: Some(560),
+            }),
+        }],
         gpu: Some(GpuEntry {
             backend: MEDIA_BACKENDS.get("vulkan").unwrap(),
             adapter_type: AdapterType::Cpu,
@@ -361,8 +400,8 @@ pub fn media_capabilities() -> MediaCapabilitiesEvent {
             software: true,
         }),
         copy_path: CopyPath::Copy,
-        sandbox: Sandbox::None,
-        render_version: 1,
+        sandbox: Sandbox::Landlock,
+        render_version: 2,
     }
 }
 

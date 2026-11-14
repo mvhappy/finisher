@@ -4,26 +4,26 @@
       "name": "VideoToolbox",
       "provider": "os",
       "license": "Apple OS component",
-      "note": "macOS frameworks fin-codecs links (6B-1 Tasks 4–5, objc2-video-toolbox, objc2-core-media, objc2-core-video): decode, pixel transfer (OS tone mapping) and H.264 encode. Linked as system frameworks, never loaded by name; part of the OS."
+      "note": "macOS frameworks fin-codecs will link (6B-1 Tasks 4–5, not built yet; objc2-video-toolbox, objc2-core-media, objc2-core-video): decode, pixel transfer (OS tone mapping) and H.264 encode. Linked as system frameworks, never loaded by name; part of the OS."
     },
     {
       "name": "CoreMedia",
       "provider": "os",
       "license": "Apple OS component",
-      "note": "macOS frameworks fin-codecs links (6B-1 Tasks 4–5, objc2-video-toolbox, objc2-core-media, objc2-core-video): decode, pixel transfer (OS tone mapping) and H.264 encode. Linked as system frameworks, never loaded by name; part of the OS."
+      "note": "macOS frameworks fin-codecs will link (6B-1 Tasks 4–5, not built yet; objc2-video-toolbox, objc2-core-media, objc2-core-video): decode, pixel transfer (OS tone mapping) and H.264 encode. Linked as system frameworks, never loaded by name; part of the OS."
     },
     {
       "name": "CoreVideo",
       "provider": "os",
       "license": "Apple OS component",
-      "note": "macOS frameworks fin-codecs links (6B-1 Tasks 4–5, objc2-video-toolbox, objc2-core-media, objc2-core-video): decode, pixel transfer (OS tone mapping) and H.264 encode. Linked as system frameworks, never loaded by name; part of the OS."
+      "note": "macOS frameworks fin-codecs will link (6B-1 Tasks 4–5, not built yet; objc2-video-toolbox, objc2-core-media, objc2-core-video): decode, pixel transfer (OS tone mapping) and H.264 encode. Linked as system frameworks, never loaded by name; part of the OS."
     },
     {
       "name": "Media Foundation",
       "files": ["mfplat.dll", "mf.dll", "mfreadwrite.dll"],
       "provider": "os",
       "license": "Windows OS component",
-      "note": "Windows 11 Media Foundation (6B-1 Tasks 6–7, `windows` crate import libraries): MFStartup, MFTEnumEx and the stateful MFTs. Absent on N editions without the Media Feature Pack (CODEC_UNAVAILABLE with mediaFeaturePack guidance). Never loaded by name."
+      "note": "Windows 11 Media Foundation that fin-codecs will use (6B-1 Tasks 6–7, not built yet; `windows` crate import libraries): MFStartup, MFTEnumEx and the stateful MFTs. Absent on N editions without the Media Feature Pack (CODEC_UNAVAILABLE with mediaFeaturePack guidance). Never loaded by name."
     },
     {
       "name": "Microsoft MFTs",
