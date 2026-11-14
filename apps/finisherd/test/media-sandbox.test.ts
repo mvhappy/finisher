@@ -21,7 +21,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
 import { toFinError } from "../src/errors.ts";
 import type { KindRegistry, KindSpec } from "../src/jobs/kinds.ts";
 import { registerMediaKinds } from "../src/jobs/kinds/media.look.ts";
-import { MEDIA_PROXY, libraryFileReads } from "../src/jobs/kinds/media.proxy.ts";
+import { MEDIA_PROXY, libraryFileReads, mediaProxyKind, unnameable } from "../src/jobs/kinds/media.proxy.ts";
 import { mediaCapabilities } from "../src/media/caps.ts";
 import { makeProxyService } from "../src/media/proxy.ts";
 import { proxy540Stage } from "../src/media/stages.ts";
@@ -285,5 +285,30 @@ describe.skipIf(process.platform === "win32")("libraryFileReads", () => {
     writeFileSync(join(root, "a", "b", "\uFEFFf.mp4"), "x");
     expect(await libraryFileReads({ root, rel: rel("a", "b", "\uFEFFf.mp4") })).toEqual([join(root, "a", "b", "\uFEFFf.mp4")]);
     expect(await libraryFileReads({ root: join(root, "missing"), rel: rel("f.mp4") })).toEqual([]);
+  });
+});
+
+describe("a library file whose name is not UTF-8", () => {
+  const b64 = (s: string | Buffer) => Buffer.from(s).toString("base64");
+  const file = { root: "/lib", rel: { components: [b64("a"), b64(Buffer.from([0x63, 0xe9, 0x2e, 0x6d, 0x70, 0x34]))] } };
+  const kind = (confined: boolean) =>
+    mediaProxyKind({ serverData: work, projects: { onBranch: () => Effect.die("unused") } as never, cache: () => undefined, report: () => undefined, workerConfined: () => confined });
+  const prepare = (confined: boolean) =>
+    Effect.runPromise(Effect.result(kind(confined).prepare!({ job: { params: { file, fingerprint: "fp", key: "k" } } } as never) as Effect.Effect<unknown, FinError>));
+
+  test("fails up front with INVALID_PATH and rename guidance when the worker is confined", async () => {
+    expect(unnameable(file.rel)).toBe(true);
+    expect(unnameable({ components: [b64("a"), b64("b.mp4")] })).toBe(false);
+    const r = (await prepare(true)) as { _tag: string; failure?: FinError };
+    expect(r._tag).toBe("Failure");
+    expect(r.failure?.code).toBe("INVALID_PATH");
+    expect(r.failure?.details).toEqual({ reason: "notUtf8" });
+    expect(r.failure?.fix).toMatch(/rename/);
+  });
+
+  test("runs unconfined, where the worker opens the raw name itself", async () => {
+    const r = (await prepare(false)) as { _tag: string; success?: unknown };
+    expect(r._tag).toBe("Success");
+    expect(r.success).toEqual({ extra: { reads: [] } });
   });
 });

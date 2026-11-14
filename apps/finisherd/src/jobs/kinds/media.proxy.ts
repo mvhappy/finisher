@@ -25,6 +25,7 @@ import { Effect } from "effect";
 import { finError, toFinError } from "../../errors.ts";
 import { mediaBatchMemory } from "../../media/memory.ts";
 import type { ProjectRegistryShape } from "../../projects.ts";
+import { currentSandboxStatus } from "../../sandbox/status.ts";
 import { jobDirs } from "../files.ts";
 import { mkdirSafe } from "../fsafe.ts";
 import type { KindSpec, PoolName } from "../kinds.ts";
@@ -43,7 +44,11 @@ export interface ProxyKindDeps {
   readonly report: () => unknown;
   /** `<server-data>/jobs` (default: `join(serverData, "jobs")`). */
   readonly jobsRoot?: string;
+  /** Whether the worker profile is enforced (default: the server's sandbox status). */
+  readonly workerConfined?: () => boolean;
 }
+
+const workerConfined = (): boolean => currentSandboxStatus().worker.kind === "enforced";
 
 interface EncoderRow {
   readonly codec?: unknown;
@@ -165,6 +170,24 @@ export async function libraryFileReads(file: { readonly root: string; readonly r
   }
 }
 
+/**
+ * Whether a library file's raw chain has a component this process cannot name (not UTF-8).
+ * Under an enforced worker profile such a file cannot be granted, so its proxy fails up front.
+ */
+export function unnameable(rel: unknown): boolean {
+  const raw = (rel as { components?: unknown } | null | undefined)?.components;
+  return Array.isArray(raw) && raw.map(component).includes(undefined);
+}
+
+/** `INVALID_PATH` for a library file the worker sandbox cannot grant (deterministic: no retry helps). */
+export const unnameableError = (): FinError =>
+  finError(
+    "INVALID_PATH",
+    "the file's name is not UTF-8, so the confined media worker cannot be granted it",
+    { reason: "notUtf8" },
+    "rename the file (or a folder above it) to a UTF-8 name; the library picks the new name up",
+  );
+
 function readsOf(extra: unknown): ReadonlyArray<string> {
   const reads = (extra as { reads?: unknown } | null | undefined)?.reads;
   return Array.isArray(reads) ? reads.filter((r): r is string => typeof r === "string") : [];
@@ -209,6 +232,7 @@ export function mediaProxyKind(deps: ProxyKindDeps): KindSpec<ProxyParams, unkno
       Effect.gen(function* () {
         const p = ctx.job.params;
         if (p.file != null) {
+          if (unnameable(p.file.rel) && (deps.workerConfined ?? workerConfined)()) return yield* Effect.fail(unnameableError());
           const reads = yield* Effect.promise(() => libraryFileReads(p.file!));
           return { extra: { reads } };
         }
