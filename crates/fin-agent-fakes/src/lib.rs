@@ -34,7 +34,8 @@
 //! [{"requestId", "subtype", "request"}], "controlResponses": [{"requestId", "subtype",
 //! "raw"}] (every answer the host sent, the line byte for byte), "answers": [{"tool",
 //! "requestId", "via": "stdio"|"mcp", "answer", "raw"}], "cancelled": [requestId],
-//! "spawned": [{"argv", "code"}], "refused": "<reason>"}`.
+//! "spawned": [{"argv", "code"}], "mcpCalls": [{"tool", "requestId", "toolUseId", "result",
+//! "error"}], "refused": "<reason>"}`.
 //!
 //! ## Script
 //!
@@ -106,6 +107,13 @@
 //!    and the call's `tool_result` is written (an error one when denied), recorded under
 //!    `spawned`. `input.run_in_background: true` is refused before any prompt under
 //!    `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`; without it the process is not waited for.
+//!    `mcp: true` plays a tool of an SDK MCP server (`tool` = `mcp__<server>__<tool>`, e.g.
+//!    Finisher's brokered `mcp__finisher__shell`, plan 7D Task 13): announced like `bash`, refused
+//!    before any prompt when no connected server listed it; once allowed, an `mcp_message`
+//!    `tools/call {name, arguments: input, _meta: {"claudecode/toolUseId"}}` to that server, and
+//!    the call's `tool_result` is the answer's `content` (`is_error` from `isError` or a JSON-RPC
+//!    error), recorded under `mcpCalls`. An interrupt while it waits ends the turn and sends
+//!    `notifications/cancelled {requestId}`.
 //! 6. `notLoggedIn`: the unsigned turn of the CLI (a synthetic `assistant` with
 //!    `error: "authentication_failed"`, then `result {subtype: "success", is_error: true,
 //!    terminal_reason: "api_error", modelUsage: {}}`).

@@ -3,6 +3,7 @@
 
 mod argv;
 mod config;
+mod loads;
 mod observed;
 mod runner;
 mod script;

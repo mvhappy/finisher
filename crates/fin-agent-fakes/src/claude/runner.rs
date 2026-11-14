@@ -14,6 +14,7 @@ mod ask;
 mod bash;
 mod lines;
 mod mcp;
+mod mcp_call;
 mod results;
 mod resume;
 
@@ -65,6 +66,7 @@ pub fn main(argv: Vec<String>) -> i32 {
         .observed
         .or_else(|| script.observed.clone())
         .and_then(|s| config::observed_path(&s));
+    config::log_invocation(&cfg.invocations, &argv);
     let mut observed = Observed::new(observed_path);
     let args = match argv::parse(&argv, &script.refuse_flag_values) {
         Ok(a) => a,
@@ -157,6 +159,7 @@ impl Runner {
         };
         let settings = Settings::load(args.str("--settings"));
         observed.set("settings", json!(settings.state));
+        super::loads::observe(&args, &mut observed);
         let mcp = mcp::Mcp::new(settings::mcp_servers(args.str("--mcp-config")));
         let mode = match args.str("--permission-mode") {
             None | Some("manual") => "default",
@@ -210,6 +213,12 @@ impl Runner {
         // A host gone does not stop the turn (verified 2.1.321, Task 0, s5C).
         let mut out = std::io::stdout().lock();
         let _ = writeln!(out, "{v}").and_then(|()| out.flush());
+    }
+
+    /// A conversation line the fake writes itself: in the transcript, then on stdout.
+    fn emit_conversation(&self, v: &Value) {
+        self.transcript.append(v);
+        self.emit(v);
     }
 
     fn emit_script_line(&self, v: &Value) {
@@ -469,8 +478,13 @@ impl Runner {
         }
         if let Some(ask) = &s.ask {
             let (outcome, tool_use_id) = self.ask(ask);
-            if ask.bash && matches!(outcome, Outcome::Allowed | Outcome::Denied) {
-                self.bash(ask, &tool_use_id, matches!(outcome, Outcome::Allowed));
+            if (ask.bash || ask.mcp) && matches!(outcome, Outcome::Allowed | Outcome::Denied) {
+                let allowed = matches!(outcome, Outcome::Allowed);
+                if ask.mcp {
+                    self.mcp_call(ask, &tool_use_id, allowed);
+                } else {
+                    self.bash(ask, &tool_use_id, allowed);
+                }
             }
             match outcome {
                 Outcome::Interrupted => return,

@@ -3,7 +3,8 @@
 //! TODO(7D Task 0 Step 1/5): what the real CLI does on `--resume` with a `tool_use` whose
 //! result never came (its process was killed mid-tool): leaves it, adds its own interrupted
 //! result, or asks again. Modelled here as `leave` (the default) or `reask`: a `can_use_tool`
-//! with the same `tool_use_id` at the first turn; the call runs again only when allowed.
+//! with the same `tool_use_id` at the first turn (not announced again); the call runs again only
+//! when allowed, and its result (or a denial's) goes into the transcript.
 
 use serde_json::{Value, json};
 
@@ -12,7 +13,10 @@ use super::ask::Outcome;
 use crate::claude::script::{Ask, OnDangling};
 
 impl Runner {
-    /// At the first turn of a resumed process (once): each dangling call asked again under `reask`.
+    /// At the first turn of a resumed process (once): each dangling call asked again under
+    /// `reask`, as the call it was: a `Bash` call allowed runs its command again and an MCP call
+    /// is called again (the duplicate side effect the runtime must refuse); an answered one gets
+    /// its result, so it is dangling no more.
     pub(super) fn reask_dangling(&mut self) {
         if self.script.on_resume_dangling != OnDangling::Reask {
             self.dangling.clear();
@@ -20,19 +24,30 @@ impl Runner {
         }
         for (id, tool, input) in std::mem::take(&mut self.dangling) {
             let ask = Ask {
+                bash: tool == "Bash",
+                mcp: tool.starts_with("mcp__"),
                 tool,
                 input,
                 cancel_after_ms: None,
                 tool_use_id: Some(id.clone()),
-                bash: false,
                 run: false,
             };
-            let key = match self.ask(&ask).0 {
+            let outcome = self.ask_as(&ask, false).0;
+            let key = match outcome {
                 Outcome::Allowed => "reran",
                 Outcome::Denied | Outcome::Refused => "rerunDenied",
                 Outcome::Cancelled | Outcome::Interrupted => "rerunDropped",
             };
+            // Recorded before the call runs again: a test sees a re-run at once.
             self.observed.push(key, json!(id));
+            if matches!(outcome, Outcome::Allowed | Outcome::Denied) {
+                let allowed = matches!(outcome, Outcome::Allowed);
+                if ask.bash {
+                    self.bash(&ask, &id, allowed);
+                } else if ask.mcp {
+                    self.mcp_call(&ask, &id, allowed);
+                }
+            }
         }
     }
 

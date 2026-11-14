@@ -1,6 +1,6 @@
 //! Where the fake's configuration comes from: `FAKE_CLAUDE_*` variables, else the sidecar
-//! `<directory of the executable>/fake-claude.json` (`{script, observed, version}`), else the
-//! script itself (`observed`, `version`). `account` is the label a signed-in CLI reports in
+//! `<directory of the executable>/fake-claude.json` (`{script, observed, version, account,
+//! invocations}`), else the script itself (`observed`, `version`). `account` is the label a signed-in CLI reports in
 //! `initialize.account.email` (never in `auth status`, which names the account only from its
 //! config dir's profile on 2.1.321), so a test can switch accounts without a new script.
 
@@ -17,6 +17,7 @@ struct Sidecar {
     observed: Option<String>,
     version: Option<String>,
     account: Option<String>,
+    invocations: Vec<String>,
 }
 
 #[derive(Debug, Default)]
@@ -25,6 +26,9 @@ pub struct Config {
     pub observed: Option<String>,
     pub version: Option<String>,
     pub account: Option<String>,
+    /// Where each process appends its invocation line (`invocations.rs`): `@store/<name>`,
+    /// `@config/<name>` or a path (`FAKE_CLAUDE_INVOCATIONS`: one).
+    pub invocations: Vec<String>,
 }
 
 /// The sidecar next to the running executable, merged under the environment.
@@ -52,14 +56,37 @@ pub fn load() -> Result<Config, String> {
         observed: env("FAKE_CLAUDE_OBSERVED").or(side.observed),
         version: env("FAKE_CLAUDE_VERSION").or(side.version),
         account: env("FAKE_CLAUDE_ACCOUNT").or(side.account),
+        invocations: env("FAKE_CLAUDE_INVOCATIONS").map_or(side.invocations, |v| vec![v]),
     })
 }
 
-/// `@config/<name>` is `<$CLAUDE_CONFIG_DIR>/<name>` (None when that variable is unset);
-/// anything else is a path as given.
+/// `@config/<name>` is `<$CLAUDE_CONFIG_DIR>/<name>`, `@store/<name>` is
+/// `<$CLAUDE_SECURESTORAGE_CONFIG_DIR>/<name>` (the sign-in store: writable in detection's and
+/// every session's sandbox), None when the variable is unset; anything else is a path as given.
 pub fn observed_path(spec: &str) -> Option<PathBuf> {
-    match spec.strip_prefix("@config/") {
-        Some(name) => std::env::var_os("CLAUDE_CONFIG_DIR").map(|d| PathBuf::from(d).join(name)),
-        None => Some(PathBuf::from(spec)),
+    let under = |var: &str, name: &str| std::env::var_os(var).map(|d| PathBuf::from(d).join(name));
+    if let Some(name) = spec.strip_prefix("@config/") {
+        under("CLAUDE_CONFIG_DIR", name)
+    } else if let Some(name) = spec.strip_prefix("@store/") {
+        under("CLAUDE_SECURESTORAGE_CONFIG_DIR", name)
+    } else {
+        Some(PathBuf::from(spec))
+    }
+}
+
+/// Appends this process's invocation (`{pid, argv}`, one JSON line) to each of `specs` it can
+/// write (`observed_path`); a spec it cannot resolve or write is skipped. The host's own runs
+/// (`--version`, `auth status`) are logged too, so a test can count every CLI process.
+pub fn log_invocation(specs: &[String], argv: &[String]) {
+    use std::io::Write;
+    let line = serde_json::json!({"pid": std::process::id(), "argv": argv}).to_string();
+    for path in specs.iter().filter_map(|s| observed_path(s)) {
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
+            let _ = writeln!(f, "{line}");
+        }
     }
 }

@@ -14,11 +14,13 @@
 //   makes `-p` drop the whole file silently, `disableAllHooks` and the `ask` list with it).
 // - **A CLI reaches `fin` through its shell**: `fin` in the allow-set enables `Bash` (Decision 2);
 //   every call still asks, and 7B's `permissions.ts` decides it.
-// - **Windows** (Decision 21, owner Q2(a)): until Task 13 builds the brokered shell, Windows
-//   sessions run `direct` and use the CLI's own `Bash`, as on Linux and macOS. Decision 21's
-//   shape (no `Bash`; the `finisher` SDK MCP server's `shell` tool, which `finisherd` serves) is
-//   kept behind `ProbeResult.brokeredShell`, off by default. The server is declared on every OS:
-//   the MCP permission fallback (Decision 10) and 7G's tools are served by it too.
+// - **Windows** (Decision 21, owner Q2(a)): the brokered shell (Task 13: no `Bash`; the
+//   `finisher` SDK MCP server's `shell` tool, which `finisherd` serves through the session
+//   sandbox, `mcp-host.ts` and `shell-tool.ts`) is on where `ProbeResult.brokeredShell` is,
+//   which nothing sets yet: until 7C Task 16's Windows validation, Windows sessions run `direct`
+//   and use the CLI's own `Bash`, as on Linux and macOS. `LaunchContext.brokeredShell` turns the
+//   shape on for any OS (tests, so it runs on Linux with `sh`). The server is declared on every
+//   OS: the MCP permission fallback (Decision 10) and 7G's tools are served by it too.
 // - **Paths come from the sandbox**: `settings/` and `CLAUDE_CODE_TMPDIR` are derived from the
 //   session environment's `TMPDIR`, so they name the directories the sandbox protects and grants.
 // - **The session id** is the session ULID's 128 bits written as a UUID (Decision 12), so a
@@ -64,6 +66,8 @@ export interface LaunchContext {
    * exit (then the adapter sets this), restarted after a kill (then 0).
    */
   readonly restoredCostMicros?: number;
+  /** The brokered shell on any OS (tests: `FIN_TEST_BROKERED_SHELL`); else Windows with `ProbeResult.brokeredShell`. */
+  readonly brokeredShell?: boolean;
 }
 
 /** The CLI tools Finisher maps, in `--tools` order (Decision 2). */
@@ -231,7 +235,7 @@ export function launchPlan(s: Session, spec: SessionSpec, probe: ProbeResult, os
   if (ref !== null && (ref.kind !== "claudeCode" || ref.id !== uuid)) {
     throw finError("PROVIDER_PROTOCOL", "the session's provider reference is not its Claude Code session", { sessionId: s.id, kind: ref.kind });
   }
-  const { tools, shell, dropped } = cliTools(spec.tools, os === "win32" && probe.brokeredShell === true);
+  const { tools, shell, dropped } = cliTools(spec.tools, ctx.brokeredShell === true || (os === "win32" && probe.brokeredShell === true));
   const budget = ctx.remainingMoneyMicros !== null && !ctx.planSignIn ? maxBudgetUsd(s, ctx.remainingMoneyMicros, ref === null ? 0 : (ctx.restoredCostMicros ?? 0)) : null;
   const plan = instancePlan({ binary: ctx.binary, dirs, os, uuid, resume: ref !== null, tools, shell, probe, model: spec.model, system: spec.system, retentionDays: ctx.retentionDays, budgetUsd: budget });
   // The CLI's temporary directory is the sandbox's own (`assertSessionEnv` holds it to `TMPDIR`).

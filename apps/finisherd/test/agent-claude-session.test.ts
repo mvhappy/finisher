@@ -81,10 +81,13 @@ function enforced(): boolean {
 const ACCOUNT = "tester@example.invalid";
 const UUID_VAR = "$session_id";
 
-/** The fake installed as a CLI of its own: the binary, its sidecar and script; the observations in the session's config dir. */
+/** The fake installed as a CLI of its own, in the native layout (`…/claude/versions/<v>`, the
+ * only one whose directory a session reads: `install.ts`): the binary, its sidecar and script;
+ * the observations in the session's config dir. */
 function install(script: Record<string, unknown>, observedAt = "@config/observed.json", account = ACCOUNT): string {
-  const dir = mkdtempSync(join(tmp, "cli-"));
-  const binary = join(dir, "claude");
+  const dir = join(mkdtempSync(join(tmp, "cli-")), "claude", "versions");
+  mkdirSync(dir, { recursive: true });
+  const binary = join(dir, VERSION);
   copyFileSync(FAKE, binary);
   writeFileSync(join(dir, "script.json"), JSON.stringify(script));
   writeFileSync(join(dir, "fake-claude.json"), JSON.stringify({ script: "script.json", observed: observedAt, version: VERSION, account }));
@@ -193,9 +196,9 @@ describe("a turn through the runtime", () => {
     // The fake's sign-in is a plan (`claude.ai`): its money shown, not charged (Task 9).
     expect(content[6]!.payload).toMatchObject({ input: 30, output: 7, cacheRead: 100, moneyMicros: 4200, costBasis: "subscription" });
     expect(runOf(s.id, content[0]!.runId!)).toMatchObject({ status: "completed" });
-    // api_retry_is_notice; the version is untested (no transcript suite yet, spec §4.5).
+    // api_retry_is_notice; the version is tested (Task 15's contract suite), so no untested notice.
     expect(notices(ns, "retry")).toEqual([{ attempt: 1, code: "PROVIDER_OVERLOADED", delayMs: 800 }]);
-    expect(notices(ns, "untestedVersion")).toEqual([{ harness: "claudeCode", version: VERSION }]);
+    expect(notices(ns, "untestedVersion")).toEqual([]);
     // deltas_streamed_not_stored: the partial text is in no node.
     expect(JSON.stringify(ns)).not.toMatch(/"Hel"|"lo"/);
     // The process ran with the session's UUID and the launch plan's flags.
@@ -627,6 +630,8 @@ describe("the instance", () => {
     const w = await openWatched({ steps: [{ expect: "user", cumulativeUsage: { inputTokens: 1, outputTokens: 1 } }] });
     expect(w.spawns).toHaveLength(1);
     expect(w.spawns[0]!.argv[0]).toBe(realpathSync(w.binary));
+    // The native layout (`…/claude/versions/<v>`): its directory (any other binary is granted
+    // alone, `agent-claude-install.test.ts`).
     expect(w.spawns[0]!.opts.extraRead).toEqual([dirname(realpathSync(w.binary))]);
     expect(w.spawns[0]!.opts.env).toMatchObject({ CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1" });
     // Without its sandbox the adapter starts nothing.
@@ -649,7 +654,7 @@ describe("the instance", () => {
     await until(async () => ((await readProbeCache(w.serverData))[0]?.result.initPending === undefined ? true : undefined));
     // The gate held `turnStarted` back until the init passed, then released it first; the
     // result's per-model split is a notice (Task 9).
-    expect(w.events.map((e) => e.type)).toEqual(["turnStarted", "notice", "usage", "notice", "turnCompleted"]);
+    expect(w.events.map((e) => e.type)).toEqual(["turnStarted", "usage", "notice", "turnCompleted"]);
   });
 });
 
@@ -847,12 +852,12 @@ describe("review of Task 7", () => {
     await completed(1);
     await run(w.provider.startTurn({ runId: "r2", text: "two" }));
     await completed(2);
-    // Nothing held or released twice: the untested-version notice once, each turn's events once.
-    expect(w.events.map((e) => e.type)).toEqual(["turnStarted", "notice", "usage", "notice", "turnCompleted", "turnStarted", "usage", "notice", "turnCompleted"]);
+    // Nothing held or released twice: each turn's events once (2.1.321 is tested: no untested notice).
+    expect(w.events.map((e) => e.type)).toEqual(["turnStarted", "usage", "notice", "turnCompleted", "turnStarted", "usage", "notice", "turnCompleted"]);
     await run(w.provider.startTurn({ runId: "r3", text: "three" }));
     await waitFor(w, "exited");
-    expect(w.events.slice(9).map((e) => e.type)).toEqual(["turnStarted", "turnFailed", "exited"]);
-    expect(w.events[10]).toMatchObject({ error: { code: "PROVIDER_VERSION", details: { missing: "isolation", item: "init:agents" } } });
+    expect(w.events.slice(8).map((e) => e.type)).toEqual(["turnStarted", "turnFailed", "exited"]);
+    expect(w.events[9]).toMatchObject({ error: { code: "PROVIDER_VERSION", details: { missing: "isolation", item: "init:agents" } } });
     expect(JSON.stringify(w.events)).not.toContain("never");
   });
 

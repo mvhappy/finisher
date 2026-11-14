@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 use fin_core::events::payloads::agent::{AgentMode, Harness};
 
-use super::{component, exactly, finish, inside, not_under, path, paths, sensitive_home};
+use super::{component, exactly, finish, inside, not_over, not_under, path, paths, sensitive_home};
 use crate::error::PolicyError;
 use crate::inputs::{AgentInput, FinEndpoint};
 use crate::policy::{Limits, Net, Os, Profile, ReadPolicy, SandboxPolicy, headless_devices, under};
@@ -108,9 +108,16 @@ pub fn agent_on(os: Os, i: &AgentInput) -> Result<SandboxPolicy, PolicyError> {
     // Only the session's own files and the store are holes in the denied paths.
     not_under("projectDir", [&i.project_dir], &deny)?;
     not_under("toolchains", &i.toolchains, &deny)?;
+    // Nor above one, or the home: a process's `extraRead` (the CLI's install, plan 7D Task 14)
+    // is a toolchain, and `$HOME` or `/` there would grant all of it but `deny_read`.
+    let over: Vec<PathBuf> = deny.iter().chain([&i.home]).cloned().collect();
+    not_over("toolchains", &i.toolchains, &over)?;
+    let own = harness_reads(os, i.harness);
+    not_under("harness toolchains", &own, &deny)?;
     not_under("libraryRoots", &i.library_roots, &deny)?;
 
     let mut read: Vec<PathBuf> = i.toolchains.clone();
+    read.extend(own);
     read.push(i.project_dir.clone());
     read.extend(i.library_roots.iter().cloned());
     read.extend(SESSION_READ.iter().map(|f| under(&i.session_dir, f)));
@@ -161,6 +168,20 @@ pub fn agent_on(os: Os, i: &AgentInput) -> Result<SandboxPolicy, PolicyError> {
         devices: headless_devices(os),
         limits: Limits::default(),
     })
+}
+
+/// The harness's own CLI reads (`data/<os>/toolchain-<harness>.txt`, plan 7D Task 14), as the
+/// policy takes them. An entry that is not absolute on this host (a Linux list built for a
+/// golden on Windows) or starts with a Windows variable (`%…%`, expanded by the broker's
+/// caller) is left out; a Linux entry that is not on this host is skipped by the kernel layer
+/// like any root.
+fn harness_reads(os: Os, h: Harness) -> Vec<PathBuf> {
+    crate::data::toolchain_harness(os, h)
+        .into_iter()
+        .filter(|e| !e.starts_with('%'))
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .collect()
 }
 
 /// A ULID: 26 characters of Crockford's base 32, upper case, the first at most `7`.
@@ -219,6 +240,42 @@ mod tests {
     }
 
     #[test]
+    fn a_toolchain_root_over_the_home_or_a_denied_path_is_refused() {
+        // A process's `extraRead` (the CLI's install, plan 7D Task 14 review) joins the
+        // toolchains: a root that holds the home or a denied path would hand the session
+        // everything else beside it (deny_read takes out only the listed paths).
+        let root = PathBuf::from(if cfg!(windows) { "C:\\r" } else { "/r" });
+        let top = PathBuf::from(if cfg!(windows) { "C:\\" } else { "/" });
+        let home = root.join("home");
+        let mut i = input(&root);
+        i.harness = Harness::ClaudeCode;
+        for bad in [
+            top,
+            root.clone(),
+            home.clone(),
+            home.join(".config"),
+            home.join(".local").join("share"),
+            root.join("p"),
+            root.join("data").join(".."),
+        ] {
+            i.toolchains = vec![bad.clone()];
+            let e = agent_on(Os::Linux, &i).unwrap_err().to_string();
+            assert!(e.contains("toolchains"), "{bad:?}: {e}");
+        }
+        for ok in [
+            home.join(".local")
+                .join("share")
+                .join("claude")
+                .join("versions"),
+            home.join("claude"),
+            root.join("opt").join("claude"),
+        ] {
+            i.toolchains = vec![ok.clone()];
+            assert!(agent_on(Os::Linux, &i).is_ok(), "{ok:?}");
+        }
+    }
+
+    #[test]
     fn every_os_denies_its_sensitive_paths() {
         let root = PathBuf::from(if cfg!(windows) { "C:\\r" } else { "/r" });
         for (os, rel) in [
@@ -240,5 +297,34 @@ mod tests {
                 "{os:?}"
             );
         }
+    }
+
+    #[test]
+    fn claude_code_reads_its_own_list_and_no_other_harness_does() {
+        let root = PathBuf::from(if cfg!(windows) { "C:\\r" } else { "/r" });
+        let mut claude = input(&root);
+        claude.harness = Harness::ClaudeCode;
+        for mode in [AgentMode::Draft, AgentMode::Plan] {
+            claude.mode = mode;
+            let p = agent_on(Os::Macos, &claude).unwrap();
+            assert!(
+                !p.read_roots().iter().any(|r| r.starts_with("/proc")),
+                "macOS lists nothing yet"
+            );
+        }
+        if cfg!(windows) {
+            return; // a Linux list's paths are not absolute on Windows
+        }
+        let own: Vec<PathBuf> = crate::data::toolchain_harness(Os::Linux, Harness::ClaudeCode)
+            .into_iter()
+            .map(PathBuf::from)
+            .collect();
+        assert!(own.contains(&PathBuf::from("/proc/stat")));
+        let p = agent_on(Os::Linux, &claude).unwrap();
+        for e in &own {
+            assert!(p.read_roots().contains(e), "{}", e.display());
+        }
+        let other = agent_on(Os::Linux, &input(&root)).unwrap();
+        assert!(!other.read_roots().contains(&PathBuf::from("/proc/stat")));
     }
 }

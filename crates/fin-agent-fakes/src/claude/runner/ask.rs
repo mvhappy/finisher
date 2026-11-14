@@ -49,14 +49,20 @@ impl Runner {
 
     /// The prompt for `ask`, and the call's `tool_use_id`.
     pub(super) fn ask(&mut self, ask: &Ask) -> (Outcome, String) {
+        self.ask_as(ask, true)
+    }
+
+    /// `ask`; a `Bash` or MCP call is announced first unless `announce` is false (a resume's
+    /// re-ask of a call its transcript already holds).
+    pub(super) fn ask_as(&mut self, ask: &Ask, announce: bool) -> (Outcome, String) {
         let via = mcp_tool(self.args.str("--permission-prompt-tool"));
         let tool_use_id = ask
             .tool_use_id
             .clone()
             .unwrap_or_else(|| format!("toolu_fake_{}", self.req_n + 1));
-        if ask.bash {
+        if announce && (ask.bash || ask.mcp) {
             self.announce(ask, &tool_use_id);
-            if self.bash_rejected(ask, &tool_use_id) {
+            if self.bash_rejected(ask, &tool_use_id) || self.mcp_absent(ask, &tool_use_id) {
                 return (Outcome::Cancelled, tool_use_id);
             }
         }

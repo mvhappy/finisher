@@ -263,8 +263,10 @@ describe("the init predicate", () => {
     expect(notice(VERSION)).toEqual({ type: "notice", name: "untestedVersion", details: { harness: "claudeCode", version: VERSION } });
     expect(notice(VERSION)).toBeNull();
     expect(notice("2.1.322")).toMatchObject({ name: "untestedVersion" });
-    // A fresh source (another server start) notices again; the default list is Task 15's.
-    expect(untestedVersionNotices()(VERSION)).not.toBeNull();
+    // A fresh source (another server start) notices again; the default list is Task 15's
+    // (the recorded versions, `agent-claude-contract.test.ts`): 2.1.321 is tested, a newer one is not.
+    expect(untestedVersionNotices()(VERSION)).toBeNull();
+    expect(untestedVersionNotices()("2.1.322")).not.toBeNull();
   });
 
   test("mcp_handshake_answers", () => {

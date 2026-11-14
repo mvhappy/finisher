@@ -394,8 +394,11 @@ async function claudeServer(script: Record<string, unknown>, opts: { status?: ()
   restore ??= previous;
   const serverData = join(tmp, "server-data");
   mkdirSync(serverData, { recursive: true, mode: 0o700 });
-  const dir = mkdtempSync(join(tmp, "cli-"));
-  const binary = join(dir, "claude");
+  // The native layout (`…/claude/versions/<v>`): a session reads only its directory, where the
+  // fake's sidecars are (any other binary is granted alone, `install.ts`).
+  const dir = join(mkdtempSync(join(tmp, "cli-")), "claude", "versions");
+  mkdirSync(dir, { recursive: true });
+  const binary = join(dir, VERSION);
   copyFileSync(FAKE, binary);
   writeFileSync(join(dir, "script.json"), JSON.stringify({ ...SIGNED, ...script }));
   writeFileSync(join(dir, "fake-claude.json"), JSON.stringify({ script: "script.json", observed: "@config/observed.json", version: VERSION }));
@@ -618,6 +621,21 @@ describe("through the runtime", () => {
     // A late answer reaches no one.
     expect((await confirmed(r.owner, "agent.approval.answer", { id: card.id, decision: "allow" })).ok).toBe(false);
   }, 20_000);
+
+  withFake("interrupt_drops_waiting_request (review of 7D Task 13): the card is expired, nothing waits on it, a late answer reaches no one", async () => {
+    const r = await claudeServer(asks({ tool: "Bash", input: { command: "git status" } }), { rules: [{ effect: "ask", command: "tool:Bash" }] });
+    const s = await start(r);
+    const card = await openCard(s.id);
+    await until(() => (server!.agents.requests.waiting === 1 ? true : undefined));
+    ok(await r.local.call("agent.session.interrupt", { sessionId: s.id }));
+    expect((await settle(s.id)).status).toBe("interrupted");
+    await until(() => (server!.agents.requests.waiting === 0 ? true : undefined), 2000);
+    expect(server!.core.store.approval(card.id)!.status).toBe("expired");
+    expect(approvalNodes(s.id).at(-1)).toMatchObject({ approvalId: card.id, tool: "Bash", status: "expired", reason: "runClosed" });
+    expect((await confirmed(r.owner, "agent.approval.answer", { id: card.id, decision: "allow" })).ok).toBe(false);
+    expect(server!.agents.requests.waiting).toBe(0);
+    expect(answers(r, s.id).filter((a) => a.answer.behavior === "allow")).toEqual([]);
+  });
 
   withFake("deny_rule_beats_everything: an ask rule, an allow rule and the managed ask lose to a deny", async () => {
     const rules = [

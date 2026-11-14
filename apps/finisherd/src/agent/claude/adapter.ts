@@ -13,7 +13,7 @@
 // decides whether a session may start on it, and each open checks the setting again. Nothing
 // runs the CLI at boot.
 import { realpathSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import type { FinError, Node, ProviderEvent, Session } from "@finisher/contracts";
 import { Effect } from "effect";
 import type { KeyFs } from "../../auth/keys.ts";
@@ -26,18 +26,26 @@ import { aliveProcesses, type CliBaseline, forgetProcess, lastBaseline, lastEnd,
 import type { SandboxedChild, SessionSandbox, SessionSandboxDeps } from "../sandbox.ts";
 import { claudeCodeSettings } from "../settings.ts";
 import { CLAUDE_CAPABILITIES, type ClaudeDetection, detectClaude } from "./detect.ts";
-import { launchPlan, sessionUuid, writeLaunchFiles } from "./launch.ts";
+import { launchPlan, SHELL_TOOL, sessionUuid, writeLaunchFiles } from "./launch.ts";
 import { instanceAccount, instanceAccountHash, labelOf } from "./account.ts";
 import type { ClaudeModelCache } from "./models.ts";
 import { completeProbe, probe, probeFlagsHash } from "./probe.ts";
 import { signInIgnored, untestedVersionNotices } from "./probe-check.ts";
 import { ClaudeSession, IDLE_CLOSE_MS } from "./instances.ts";
+import { installTreeRead } from "./install.ts";
 import { claudePermissions } from "./permissions.ts";
 import { interruptedNote, resumeState, toldIds } from "./resume.ts";
 import { ClaudeInstance, CLOSE_EXIT_WAIT_MS, type EventSink, type RequestPort } from "./session.ts";
+import { shellTool } from "./shell-tool.ts";
 import { baselineOf, ClaudeUsage, type ResumeTotals, restoredOffset, turnProjection, ZERO_TOTALS } from "./usage.ts";
 
 export { sessionUuid } from "./launch.ts";
+
+/**
+ * The variable a test-hooks build reads (`fakeAllowed`, `wiring.ts`) to run the brokered shell
+ * (Decision 21) on any OS: off everywhere otherwise (owner Q2a), so its tests run on Linux.
+ */
+export const BROKERED_SHELL_TEST_ENV = "FIN_TEST_BROKERED_SHELL";
 
 /** How long an instance's `initialize` answer may take (Task 0: under a second). */
 export const INITIALIZE_TIMEOUT_MS = 30_000;
@@ -84,6 +92,8 @@ export interface ClaudeDeps {
   readonly nodes?: (sessionId: string) => Promise<readonly Node[]> | readonly Node[];
   /** Decision 12's idle close (default: `agents.claudeCode.idleCloseS`, 300 s); ≤ 0 never. */
   readonly idleCloseMs?: number;
+  /** Decision 21's brokered shell on any OS (`BROKERED_SHELL_TEST_ENV`; tests only). */
+  readonly brokeredShell?: boolean;
   readonly log?: (message: string, details: Record<string, unknown>) => void;
 }
 
@@ -155,7 +165,7 @@ export function ClaudeCodeAdapter(deps: ClaudeDeps): ProviderAdapter {
         if (d.problem?.code === "PROVIDER_AUTH" && spec.providerRef === null && !resume) return yield* Effect.fail(d.problem);
         const binary = yield* attempt(() => realpathSync(d.path));
         // Decision 7: the CLI's install tree, resolved, which its process reads.
-        const extraRead = [dirname(binary)];
+        const extraRead = installTreeRead(binary, os);
         const flagsHash = probeFlagsHash(os);
         const found = yield* probe(asDetection(d), flagsHash, { sandbox: deps.sandbox, binary, os, extraRead });
         // Decision 15: a plan sign-in's money is shown, not charged (unless the owner asked), so
@@ -180,7 +190,7 @@ export function ClaudeCodeAdapter(deps: ClaudeDeps): ProviderAdapter {
         // O2: the baseline at each `result` (an unseen end then re-charges only the unseen tail).
         let pid: number | null = null;
         const plan = yield* attempt(() =>
-          launchPlan(s, { ...spec, providerRef: resume ? ref : null }, found, os, { binary, retentionDays: deps.retentionDays ?? 90, remainingMoneyMicros: deps.remaining?.(s.id).moneyMicros ?? null, planSignIn, restoredCostMicros }),
+          launchPlan(s, { ...spec, providerRef: resume ? ref : null }, found, os, { binary, retentionDays: deps.retentionDays ?? 90, remainingMoneyMicros: deps.remaining?.(s.id).moneyMicros ?? null, planSignIn, restoredCostMicros, ...(deps.brokeredShell === true ? { brokeredShell: true } : {}) }),
         );
         const usage: ClaudeUsage = new ClaudeUsage({
           baseline: offset,
@@ -237,6 +247,8 @@ export function ClaudeCodeAdapter(deps: ClaudeDeps): ProviderAdapter {
           },
           usage,
           requests: deps.requests?.() ?? claudePermissions({ rerun }),
+          // Decision 21: each call a fresh process of this session's sandbox (`shell-tool.ts`).
+          ...(plan.mcpTools.includes(SHELL_TOOL) ? { shell: shellTool({ box, os }) } : {}),
           ...(spec.gate === undefined ? {} : { gate: spec.gate, projection: () => turnProjection(deps.remaining?.(s.id).tokens ?? null, deps.turnEstimateTokens) }),
           ...(deps.interruptWaitMs === undefined ? {} : { interruptWaitMs: deps.interruptWaitMs }),
           ...(deps.sigintGraceMs === undefined ? {} : { sigintGraceMs: deps.sigintGraceMs }),
