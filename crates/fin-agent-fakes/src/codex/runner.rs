@@ -65,6 +65,11 @@ fn rpc(message: impl Into<String>) -> RpcError {
 
 type Reply = Result<Value, RpcError>;
 
+/// A list the script plants, else `[]`.
+fn planted(v: &Option<Value>) -> Value {
+    v.clone().unwrap_or_else(|| json!([]))
+}
+
 /// Work to do after a response is written (the real server's notifications follow it).
 enum Task {
     Notify(&'static str, Value),
@@ -424,9 +429,13 @@ impl Fake {
                 "requirements": self.script.requirements.clone().unwrap_or(Value::Null)})),
             "skills/list" => Ok(self.skills_list(p)),
             "hooks/list" => Ok(self.hooks_list(p)),
-            "plugin/installed" => Ok(json!({"marketplaces": [], "marketplaceLoadErrors": []})),
-            "mcpServerStatus/list" => Ok(self.mcp_status()),
-            "app/installed" => Ok(json!({"apps": []})),
+            "plugin/installed" => Ok(json!({"marketplaces": planted(&self.script.plugins),
+                "marketplaceLoadErrors": []})),
+            "mcpServerStatus/list" => Ok(match &self.script.mcp_servers {
+                Some(v) => json!({"data": v, "nextCursor": null}),
+                None => self.mcp_status(),
+            }),
+            "app/installed" => Ok(json!({"apps": planted(&self.script.apps)})),
             "experimentalFeature/list" => self.feature_list(p),
             "account/read" => Ok(self.account_read()),
             "model/list" => self.model_list(p),

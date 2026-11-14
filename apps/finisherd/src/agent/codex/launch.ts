@@ -68,6 +68,11 @@ export interface CodexLaunchOptions {
   readonly binary?: string;
   /** The pin's `features list` output (default the committed `vendor/codex/<pin>/features.txt`). */
   readonly features?: string;
+  /**
+   * The capability probe's launch (Task 8): `spec.env` is a host sandbox's (`hostEnv`, no
+   * session), checked as one (`assertSessionEnv` with `host`), and `s.id` is its `host-<ulid>`.
+   */
+  readonly host?: boolean;
 }
 
 /**
@@ -235,7 +240,7 @@ export function codexLaunch(s: Session, spec: SessionSpec, probe: CodexProbe, os
   // if a refresh replaces `auth.json` by rename, spec §8.6's fallback branches here.
   const env = { NO_COLOR: "1" };
   assertSpawnEnv(env, s, os);
-  assertSessionEnv({ ...spec.env, ...env }, s, { extra: harnessExtra("codex"), platform: os });
+  assertSessionEnv({ ...spec.env, ...env }, s, { extra: harnessExtra("codex"), platform: os, ...(o.host === true ? { host: true } : {}) });
   const disabled = disabledFeatures(o.features ?? featuresOf(pinned));
   const config = [
     'cli_auth_credentials_store="file"',

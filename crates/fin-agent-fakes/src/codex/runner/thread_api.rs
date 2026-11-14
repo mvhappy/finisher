@@ -141,6 +141,9 @@ impl Fake {
     }
 
     pub(super) fn thread_start(&mut self, p: &Value) -> Reply {
+        if self.script.refuse_dynamic_tools && !p["dynamicTools"].is_null() {
+            return Err(rpc("Invalid request: unknown field `dynamicTools`"));
+        }
         params::thread_start(p, self.experimental).map_err(rpc)?;
         let tools = p["dynamicTools"].as_array().cloned().unwrap_or_default();
         let id = threads::new_id();

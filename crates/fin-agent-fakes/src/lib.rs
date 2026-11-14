@@ -190,7 +190,11 @@
 //!
 //! ## Script
 //!
-//! `{"version", "observed", "account", "models", "requirements", "steer": "join"|"refuse",
+//! `{"version", "observed", "account", "models", "requirements", "plugins", "apps",
+//! "mcpServers" (planted `plugin/installed` marketplaces, `app/installed` apps and
+//! `mcpServerStatus/list` data), "refuseDynamicTools" (a pin without them: `thread/start` with
+//! `dynamicTools` is `-32600 unknown field`), "signedInElsewhere" (`account/read` signed in with
+//! no `auth.json`), "steer": "join"|"refuse",
 //! "onInterrupt": "completed"|"ignore"|"exit", "resumeRestoresDynamicTools" (default true),
 //! "revertFails", "turns": [{"steer"?, "onInterrupt"?, "steps": [...]}]}`. **The nth turn
 //! started on a thread plays `turns[n]`**: the count is kept with the thread (and saved when the

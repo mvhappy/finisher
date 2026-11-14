@@ -84,12 +84,12 @@ impl Fake {
         Ok(json!({"data": data, "nextCursor": next}))
     }
 
-    /// The signed-in account: only with an `auth.json`; its fields from, in order, the
+    /// The signed-in account: only with an `auth.json` (or the script's `signedInElsewhere`); its fields from, in order, the
     /// `fake-account.json` beside it (what `accountChange` writes), an `account` object inside
     /// `auth.json`, the script's `account`, else a ChatGPT Plus person.
     pub(super) fn account(&self) -> Option<Value> {
         let auth = self.home.join("auth.json");
-        if !auth.exists() {
+        if !auth.exists() && !self.script.signed_in_elsewhere {
             return None;
         }
         let read = |p: std::path::PathBuf| {

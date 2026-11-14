@@ -139,6 +139,12 @@ export interface RpcIo {
 
 export interface CodexRpc {
   request<M extends ClientMethod>(m: M, p: ParamsOf<M>): Effect.Effect<ResultOf<M>, FinError>;
+  /**
+   * As `request`, with the result also as Codex sent it: the generated schemas keep only the keys
+   * they list (`Config` lists 25 of `config/read`'s), and the capability check (Task 8) reads
+   * others (`features`, `project_doc_max_bytes`, an unknown managed requirement).
+   */
+  requestRaw<M extends ClientMethod>(m: M, p: ParamsOf<M>): Effect.Effect<{ readonly result: ResultOf<M>; readonly raw: unknown }, FinError>;
   notify(m: (typeof P.CLIENT_NOTIFICATIONS)[number]): Effect.Effect<void>;
   /** The server's notifications in order; ends at its EOF, fails `PROVIDER_PROTOCOL` on drift. */
   readonly notifications: Stream.Stream<ServerNotification, FinError>;
@@ -229,6 +235,8 @@ export function decodeIncoming(line: string): Incoming | FinError {
 
 interface Pending {
   readonly method: AllowedMethod;
+  /** Resume with `{result, raw}` (`requestRaw`). */
+  readonly raw: boolean;
   readonly resume: (e: Effect.Effect<never, FinError> | Effect.Effect<unknown, FinError>) => void;
 }
 
@@ -275,6 +283,14 @@ class Rpc implements CodexRpc {
   }
 
   request<M extends ClientMethod>(m: M, p: ParamsOf<M>): Effect.Effect<ResultOf<M>, FinError> {
+    return this.#call(m, p, false) as Effect.Effect<ResultOf<M>, FinError>;
+  }
+
+  requestRaw<M extends ClientMethod>(m: M, p: ParamsOf<M>): Effect.Effect<{ readonly result: ResultOf<M>; readonly raw: unknown }, FinError> {
+    return this.#call(m, p, true) as Effect.Effect<{ readonly result: ResultOf<M>; readonly raw: unknown }, FinError>;
+  }
+
+  #call<M extends ClientMethod>(m: M, p: ParamsOf<M>, raw: boolean): Effect.Effect<unknown, FinError> {
     return Effect.suspend(() => {
       if (!ALLOWED_METHODS.has(m) || !Object.hasOwn(P.CLIENT_REQUESTS, m))
         return Effect.fail(protocol(`Finisher never sends ${JSON.stringify(name64(String(m)))} to Codex`, { method: name64(String(m)), reason: "methodNotAllowed" }));
@@ -282,9 +298,9 @@ class Rpc implements CodexRpc {
       const stopped = this.#stopped;
       if (stopped !== null) return Effect.fail(stopped === "eof" ? exited(method, "eof") : stopped);
       if (this.#stdinEnded) return Effect.fail(exited(method, "stdinClosed"));
-      return Effect.callback<ResultOf<M>, FinError>((resume) => {
+      return Effect.callback<unknown, FinError>((resume) => {
         const id = this.#nextId++;
-        this.#pending.set(id, { method, resume: resume as Pending["resume"] });
+        this.#pending.set(id, { method, raw, resume: resume as Pending["resume"] });
         this.#write({ id, method, ...(p === undefined ? {} : { params: p }) }, (ok) => {
           if (ok || !this.#pending.delete(id)) return;
           resume(Effect.fail(exited(method, "stdinClosed")));
@@ -339,7 +355,7 @@ class Rpc implements CodexRpc {
           return;
         }
         const r = decodeResult(p.method, m.result);
-        p.resume(r instanceof FinError ? Effect.fail(r) : Effect.succeed(r));
+        p.resume(r instanceof FinError ? Effect.fail(r) : Effect.succeed(p.raw ? { result: r, raw: m.result } : r));
         return;
       }
       case "notification": {
