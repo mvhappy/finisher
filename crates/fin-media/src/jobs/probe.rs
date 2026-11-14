@@ -3,6 +3,7 @@
 //! the decoder `open_decoder` picks, and reads in-band HDR SEI when the container has no HDR
 //! boxes. It answers what it found; nothing is written to the project.
 
+use fin_core::events::payloads::JobMedia;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -109,6 +110,11 @@ pub struct ProbeDeepResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "ProbeFailure")]
     pub failure: Option<ProbeFailure>,
+    // The `media` object of the job's `job.done` (6B-1 Task 19): present when diagnostics were
+    // on at the worker; numbers and table names only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "JobMedia")]
+    pub media: Option<JobMedia>,
 }
 
 /// The boxes' HDR metadata, with the mastering display and content light level they lack taken

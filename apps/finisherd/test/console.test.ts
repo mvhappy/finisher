@@ -12,7 +12,7 @@ import { answerChallenge, issueChallenge } from "../src/auth/challenges.ts";
 import { authDir } from "../src/auth/keys.ts";
 import { connectConsole } from "../src/console/client.ts";
 import { CONFIRM_TRIES } from "../src/console/confirm.ts";
-import { CONFLICT_CODES, DENIED_CODES, JOB_RESULT_CODES, PENDING_CODES, UNAVAILABLE_CODES, USAGE_CODES, VALIDATION_CODES } from "../src/console/exit-codes.ts";
+import { CONFLICT_CODES, DENIED_CODES, exitCodeOf, JOB_RESULT_CODES, PENDING_CODES, UNAVAILABLE_CODES, USAGE_CODES, VALIDATION_CODES } from "../src/console/exit-codes.ts";
 import { isServeCommand, runConsole } from "../src/console/main.ts";
 import type { Prompt } from "../src/console/prompt.ts";
 import { person } from "./support/person.ts";
@@ -155,6 +155,13 @@ describe("dispatch and connection", () => {
     expect(JOB_RESULT_CODES).toEqual(list("JOB_RESULT_CODES"));
     expect(UNAVAILABLE_CODES).toEqual(list("UNAVAILABLE_CODES"));
     expect(VALIDATION_CODES).toEqual(list("VALIDATION_CODES"));
+  });
+
+  test("6B-1's codes exit as the plan says (Task 19)", () => {
+    for (const code of ["ENCODER_HUNG", "PROXY_UNAVAILABLE", "CACHE_IO"]) expect(exitCodeOf(code), code).toBe(5);
+    expect(exitCodeOf("ASSET_CHANGED")).toBe(3);
+    // 7C's exit: the job host or the platform could not confine a worker.
+    expect(exitCodeOf("SANDBOX_UNAVAILABLE")).toBe(5);
   });
 });
 

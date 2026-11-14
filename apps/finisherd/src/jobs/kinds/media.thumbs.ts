@@ -28,6 +28,7 @@ import type { ProjectRegistryShape } from "../../projects.ts";
 import { jobDirs } from "../files.ts";
 import { mkdirSafe } from "../fsafe.ts";
 import type { KindSpec } from "../kinds.ts";
+import { mediaCombine, mediaJournal } from "./media.journal.ts";
 import { outcomeOf } from "./media.proxy.ts";
 
 export const MEDIA_THUMBS = "media.thumbs";
@@ -91,8 +92,9 @@ export function mediaThumbsKind(deps: ThumbsKindDeps): KindSpec<ThumbsParams, un
     timeoutS: THUMBS_TIMEOUT_S,
     stallS: 600,
     maxAttempts: 2,
-    batch: { items: thumbsItems, restrict: (p, items) => ({ ...p, only: [...items] }) },
+    batch: { items: thumbsItems, restrict: (p, items) => ({ ...p, only: [...items] }), combine: mediaCombine },
     dedupe: thumbsDedupe,
+    journal: mediaJournal,
     rememberPoison: true,
     memory: (p) => mediaBatchMemory(p.display ?? undefined),
     files: () => [

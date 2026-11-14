@@ -148,6 +148,33 @@
       ],
       "type": "object"
     },
+    "AdapterIds": {
+      "description": "A GPU by its numeric ids (owner decision 7): never a name or driver string.",
+      "properties": {
+        "deviceId": {
+          "description": "The PCI device id.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "driverMajor": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "vendorId": {
+          "description": "The PCI vendor id.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "vendorId",
+        "deviceId"
+      ],
+      "type": "object"
+    },
     "AdapterType": {
       "description": "A GPU adapter's type (`wgpu::DeviceType`).",
       "enum": [
@@ -1102,6 +1129,39 @@
       ],
       "type": "object"
     },
+    "AudioCodecEntry": {
+      "description": "One audio codec on this machine (none before 6C: the rows carry the guidance).",
+      "properties": {
+        "backends": {
+          "items": {
+            "$ref": "#/$defs/BackendEntry"
+          },
+          "type": "array"
+        },
+        "codec": {
+          "$ref": "#/$defs/Name"
+        },
+        "decode": {
+          "$ref": "#/$defs/SupportClass"
+        },
+        "encode": {
+          "$ref": "#/$defs/SupportClass"
+        },
+        "guidance": {
+          "items": {
+            "$ref": "#/$defs/GuidanceEntry"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "codec",
+        "decode",
+        "encode",
+        "backends"
+      ],
+      "type": "object"
+    },
     "AudioEffectPlan": {
       "description": "One effect of an audio item: `numbers` cover the item's span `[from, to)` without gaps, in\norder; `values` are the params that do not move (enums, bools, text).",
       "properties": {
@@ -1366,10 +1426,16 @@
       ]
     },
     "BackendEntry": {
-      "description": "A backend and who provides it.",
+      "description": "A backend, who provides it (spec §6.1's vendor class), which way it serves the row and\nwhether it runs on hardware.",
       "properties": {
         "class": {
           "$ref": "#/$defs/BackendClass"
+        },
+        "direction": {
+          "$ref": "#/$defs/CodecDirection"
+        },
+        "hw": {
+          "type": "boolean"
         },
         "name": {
           "$ref": "#/$defs/Name"
@@ -1377,7 +1443,9 @@
       },
       "required": [
         "name",
-        "class"
+        "class",
+        "direction",
+        "hw"
       ],
       "type": "object"
     },
@@ -2574,15 +2642,29 @@
       ],
       "type": "object"
     },
+    "CodecDirection": {
+      "description": "Which way a backend serves a codec.",
+      "enum": [
+        "decode",
+        "encode"
+      ],
+      "type": "string"
+    },
     "CodecEntry": {
-      "description": "One codec's support on this machine.",
+      "description": "One video codec (and profile and bit depth, when the row is about one) on this machine.",
       "properties": {
         "backends": {
-          "description": "The backends that would be used, decode first.",
+          "description": "The backends that would serve it, decode first, in the order they are tried.",
           "items": {
             "$ref": "#/$defs/BackendEntry"
           },
           "type": "array"
+        },
+        "bitDepth": {
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
         },
         "codec": {
           "$ref": "#/$defs/Name"
@@ -2592,6 +2674,15 @@
         },
         "encode": {
           "$ref": "#/$defs/SupportClass"
+        },
+        "guidance": {
+          "items": {
+            "$ref": "#/$defs/GuidanceEntry"
+          },
+          "type": "array"
+        },
+        "profile": {
+          "$ref": "#/$defs/Name"
         }
       },
       "required": [
@@ -3841,6 +3932,49 @@
       ],
       "type": "object"
     },
+    "EncoderEntry": {
+      "description": "An encoder that encoded the capability probe's test clip (6B-1 plan Decision 19).",
+      "properties": {
+        "adapter": {
+          "$ref": "#/$defs/AdapterIds"
+        },
+        "backend": {
+          "$ref": "#/$defs/Name"
+        },
+        "class": {
+          "$ref": "#/$defs/BackendClass"
+        },
+        "codec": {
+          "$ref": "#/$defs/Name"
+        },
+        "hw": {
+          "type": "boolean"
+        },
+        "intraFps": {
+          "description": "Intra-only frames per second at 540p on the test clip.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "intraOnly": {
+          "type": "boolean"
+        },
+        "sessionLimit": {
+          "description": "Concurrent sessions that opened, up to 4.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "backend",
+        "class",
+        "codec",
+        "hw",
+        "intraOnly"
+      ],
+      "type": "object"
+    },
     "EngineEvent": {
       "description": "One engine event (`Engine.onEvent`), tagged by `type`.",
       "oneOf": [
@@ -4983,7 +5117,7 @@
               "type": "string"
             },
             "kv": {
-              "const": 1,
+              "const": 2,
               "type": "integer"
             },
             "payload": {
@@ -6058,6 +6192,19 @@
       ],
       "type": "object"
     },
+    "GapCode": {
+      "description": "What a gap in the report is about (`fin-media`'s `GapCode`): the code only, never the\nguidance text (the `fix` stays in the capability answer).",
+      "enum": [
+        "hevcExtensions",
+        "av1Extension",
+        "mediaFeaturePack",
+        "ltscStoreCodecs",
+        "gpuDriver",
+        "codecPlugin",
+        "laterBatch"
+      ],
+      "type": "string"
+    },
     "Generation": {
       "description": "A branch generation as a caller holds it: the database's incarnation and the branch's\nrewind count in it (module docs).",
       "properties": {
@@ -6201,6 +6348,18 @@
       ],
       "type": "object"
     },
+    "GuidanceBatch": {
+      "description": "The sub-project 6 batch that closes a `laterBatch` gap.",
+      "enum": [
+        "6B-2",
+        "6C",
+        "6D",
+        "6E",
+        "6F",
+        "6G"
+      ],
+      "type": "string"
+    },
     "GuidanceCode": {
       "description": "What a gap in the report is about: one closed table (`fin-codecs`' `probe/guidance.rs`\nholds the text).",
       "oneOf": [
@@ -6240,6 +6399,21 @@
           "type": "string"
         }
       ]
+    },
+    "GuidanceEntry": {
+      "description": "One gap of a row, by code.",
+      "properties": {
+        "batch": {
+          "$ref": "#/$defs/GuidanceBatch"
+        },
+        "code": {
+          "$ref": "#/$defs/GapCode"
+        }
+      },
+      "required": [
+        "code"
+      ],
+      "type": "object"
     },
     "Harness": {
       "description": "What runs the agent.",
@@ -8584,7 +8758,7 @@
       "type": "object"
     },
     "JobMedia": {
-      "description": "The `media` object of `job.done` `kv` 2: what a media job did. `codec`, `backend` and `hw`\ndescribe the decode that served the job (the first source it decoded; `none` when it\ndecoded nothing).",
+      "description": "The `media` object of `job.done` `kv` 2: what a media job did. `codec`, `backend` and `hw`\ndescribe the decode that served the job (the first source it decoded; `none` when it\ndecoded nothing). Kinds (6B-1 Task 19): `media.look`; `media.proxy` (frames encoded, the\nproxy's size; its encoder is in `render.stats`' `encode` rows); `media.thumbs` (thumbnails or\nsprites made, from the proxy or the original it decoded); `media.probeDeep` (its first frame).",
       "properties": {
         "backend": {
           "$ref": "#/$defs/Name"
@@ -8617,7 +8791,7 @@
           "description": "The largest frame the job produced."
         },
         "rtFactorMilli": {
-          "description": "Media seconds produced per wall second of rendering, in thousandths (1000 = real\ntime): the frames' durations at the timeline's rate over decode + composite +\nreadback time. `0` when the job took no measurable time.",
+          "description": "Media seconds produced per wall second of rendering, in thousandths (1000 = real\ntime): the frames' durations at the timeline's rate over decode + composite +\nreadback time (`media.proxy`: the frames' durations at the source's nominal rate over the\ndecode, scale and encode time). `0` when the job took no measurable time, and for kinds\nthat do not play media through (`media.thumbs`, `media.probeDeep`).",
           "format": "uint32",
           "minimum": 0,
           "type": "integer"
@@ -11195,8 +11369,14 @@
       "type": "object"
     },
     "MediaCapabilitiesEvent": {
-      "description": "`media.capabilities` (`kv` 1): once per server run, what the media worker can decode,\nencode and draw on.",
+      "description": "`media.capabilities` (`kv` 2, 6B-1 plan Decision 19): once per server run, what the media\nworker can decode and encode per codec, profile and bit depth (with the guidance codes of\nevery gap), its audio rows, the encoders that passed their test clip with their session\nlimits and adapters, the GPU it draws on and the sandbox it runs in. `kv` 1 (6A) is gone, as\n`job.done` 1 went: no upcaster.",
       "properties": {
+        "audio": {
+          "items": {
+            "$ref": "#/$defs/AudioCodecEntry"
+          },
+          "type": "array"
+        },
         "codecs": {
           "items": {
             "$ref": "#/$defs/CodecEntry"
@@ -11205,6 +11385,12 @@
         },
         "copyPath": {
           "$ref": "#/$defs/CopyPath"
+        },
+        "encoders": {
+          "items": {
+            "$ref": "#/$defs/EncoderEntry"
+          },
+          "type": "array"
         },
         "gpu": {
           "$ref": "#/$defs/GpuEntry"
@@ -11221,6 +11407,8 @@
       },
       "required": [
         "codecs",
+        "audio",
+        "encoders",
         "copyPath",
         "sandbox",
         "renderVersion"
@@ -14866,6 +15054,9 @@
         "hw": {
           "description": "The frame was decoded on hardware.",
           "type": "boolean"
+        },
+        "media": {
+          "$ref": "#/$defs/JobMedia"
         }
       },
       "required": [
@@ -16573,7 +16764,7 @@
         },
         {
           "const": "encode",
-          "description": "No emitter before sub-project 6B (export).",
+          "description": "An encoder's send and receive calls per frame (6B-1: `media.proxy`).",
           "type": "string"
         }
       ]
@@ -16582,7 +16773,7 @@
       "type": "object"
     },
     "RenderStats": {
-      "description": "`render.stats` (`kv` 1): per-minute histograms of render stages in micros, one entry per\nphase and backend. `backend` is the decode backend for `decode` and the GPU API for\n`composite` and `readback`. A worker sends what it measured since its last job ended, so\nseveral entries may share a window (`histogram.start`): readers add them.",
+      "description": "`render.stats` (`kv` 1): per-minute histograms of render stages in micros, one entry per\nphase and backend. `backend` is the decode backend for `decode`, the GPU API for\n`composite` and `readback`, and the encoder for `encode` (6B-1: proxies). A worker sends what it measured since its last job ended, so\nseveral entries may share a window (`histogram.start`): readers add them.",
       "properties": {
         "backend": {
           "$ref": "#/$defs/Name"
@@ -19437,6 +19628,9 @@
           "format": "uint32",
           "minimum": 0,
           "type": "integer"
+        },
+        "media": {
+          "$ref": "#/$defs/JobMedia"
         },
         "proxyFailed": {
           "description": "Why the proxy the manifest lists could not be read (the original was read instead):\n`missing`, `changed` or `invalid`, as a look's `proxyFallbacks` give it.",

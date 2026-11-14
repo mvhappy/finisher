@@ -21,6 +21,13 @@ const WORKER_EXIT_KV = 2;
 let known: ReadonlySet<string> | undefined;
 
 /**
+ * The `kv` a worker's `diag` of each kind is recorded at (fin-core's registry; the envelope's
+ * `diag` carries no version): a kind not listed is `kv` 1. `media.capabilities` is 2 (6B-1 Task
+ * 19); a bump in the registry without one here is refused by the journal and logged.
+ */
+export const DIAG_KV: Readonly<Record<string, number>> = { "media.capabilities": 2 };
+
+/**
  * `job.done` `kv` 2: the engine's fields and, from a kind's `journal(job)` extras, the `media`
  * object of sub-project 6 (no other extra key reaches the journal). The journal decodes it
  * against the registered kind.
@@ -81,7 +88,7 @@ export function journalSink(journal: JournalLike, log: Log): JobEventSink {
         log("debug", `job engine: a ${origin.family} worker's diag ${kind} is not a journal kind; dropped`);
         return;
       }
-      record(kind, 1, payload, `a ${origin.family} worker's ${kind}`);
+      record(kind, DIAG_KV[kind] ?? 1, payload, `a ${origin.family} worker's ${kind}`);
     },
   };
 }

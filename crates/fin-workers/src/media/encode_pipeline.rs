@@ -10,6 +10,7 @@
 //! output is made again from frame 0 with the new encoder's configuration record.
 
 use std::fs::File;
+use std::time::Instant;
 
 use fin_codecs::{EncoderConfig, EncoderSession, Fed, Output, ProbeResult, RawFrame, open_encoder};
 use fin_container::{Mp4Options, Mp4Writer, TrackRef, VideoTrackConfig};
@@ -67,10 +68,17 @@ pub trait Frames {
     fn frame(&mut self, i: u64) -> Result<RawFrame, CoreError>;
     fn between(&mut self, done: u64) -> Result<(), CoreError>;
     fn output(&mut self) -> Result<File, CoreError>;
+    /// The time `backend` took to take one frame and give what it had (its send and receive
+    /// calls; the end of the stream counts as one more), for `render.stats`' `encode` rows.
+    fn encoded(&mut self, _backend: &'static str, _micros: u64) {}
 }
 
 fn encode_failed(message: impl Into<String>, entry: &BackendEntry) -> CoreError {
     CoreError::new("ENCODE_FAILED", message).with_details(json!({ "backend": entry.name }))
+}
+
+fn micros(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX)
 }
 
 /// The bytes the `moov` of `frames` samples may need, reserved after `ftyp`.
@@ -153,6 +161,7 @@ pub fn encode(
         for i in 0..frames {
             src.between(i)?;
             let frame = src.frame(i)?;
+            let started = Instant::now();
             if session.send(frame, i as i64, i % every == 0)? == Fed::Restart {
                 continue 'again;
             }
@@ -163,8 +172,10 @@ pub fn encode(
                     Output::Restart => continue 'again,
                 }
             }
+            src.encoded(entry.name, micros(started));
         }
         src.between(frames)?;
+        let started = Instant::now();
         if session.finish()? == Fed::Restart {
             continue 'again;
         }
@@ -176,6 +187,7 @@ pub fn encode(
                 Output::Restart => continue 'again,
             }
         }
+        src.encoded(entry.name, micros(started));
         if next != frames {
             return Err(encode_failed(
                 format!("{next} packets for {frames} frames"),

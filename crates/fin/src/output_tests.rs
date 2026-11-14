@@ -56,9 +56,14 @@ fn exit_codes_follow_the_contract() {
         "GPU_OUT_OF_MEMORY",
         "ENCODER_HUNG",
         "CACHE_IO",
+        // 6B-1 (plan Task 19): the proxy a consumer needs is being made; 7C's sandbox code.
+        "PROXY_UNAVAILABLE",
+        "SANDBOX_UNAVAILABLE",
     ] {
         assert_eq!(exit_code(code), 5, "{code}");
     }
+    // An original's content changed under a request (6B-1).
+    assert_eq!(exit_code("ASSET_CHANGED"), 3);
     assert_eq!(exit_code("FONTS_DAMAGED"), 5);
     assert_eq!(exit_code("SHM_REFUSED"), 5);
     // Registries (8A Task 9a, spec §13): 3 for what is not there or malformed, 4 for a

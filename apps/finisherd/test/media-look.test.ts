@@ -250,6 +250,12 @@ describe("media diagnostics (Task 14)", () => {
     expect(s.t.sink.forwarded.filter((f) => f.kind === "media.capabilities")).toHaveLength(1);
     const event = sent[0]?.payload as { gpu?: Record<string, unknown>; sandbox: string; copyPath: string };
     expect(event).toMatchObject({ sandbox: "none", copyPath: "copy" });
+    // v2 (6B-1 Task 19): rows per codec, profile and bit depth; the encoders; the audio rows.
+    expect(event).toMatchObject({
+      codecs: expect.arrayContaining([expect.objectContaining({ codec: "av1", profile: "main", bitDepth: 10, decode: "sw" })]),
+      encoders: [expect.objectContaining({ backend: "svt-av1", class: "software", codec: "av1" })],
+      audio: [expect.objectContaining({ codec: "aac", decode: "none" })],
+    });
     const gpu = first.gpu;
     if (gpu != null) {
       expect(event.gpu).toMatchObject({ vendorId: gpu.vendor, deviceId: gpu.device, software: gpu.software });
