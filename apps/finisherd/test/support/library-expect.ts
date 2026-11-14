@@ -2,7 +2,9 @@
 // for tests that hand a stage a file without scanning its library. The file id is the
 // platform's form: the inode as 8 big-endian bytes on Unix (`source/unix.rs`), the 128-bit
 // `FileIdInfo` on Windows, which NTFS fills with the 64-bit file index (Node's `ino`) as
-// little-endian bytes and 8 zero bytes (`source/win.rs` `id64_bytes`).
+// little-endian bytes and 8 zero bytes (`source/win.rs` `id64_bytes`). NTFS only: ReFS (a Dev
+// Drive) has 128-bit ids, which Node's 64-bit `ino` cannot give, so a test on ReFS sees
+// `FILE_CHANGED`.
 import { statSync } from "node:fs";
 
 export interface LibraryExpect {

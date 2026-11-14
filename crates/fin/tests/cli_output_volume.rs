@@ -486,7 +486,7 @@ fn follow_ups_carry_project_and_branch() {
     let q = if plain {
         d.to_string()
     } else {
-        format!("'{d}'")
+        format!("'{}'", d.replace('\'', r"'\''"))
     };
     let pre = format!("fin --project {q} --branch work");
     let v = run(&p, &["--project", d, "--branch", "work", "view"]);

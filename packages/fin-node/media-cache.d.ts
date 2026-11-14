@@ -42,7 +42,8 @@ export declare class MediaCache {
   openReport(): MediaCacheOpenReport;
   /**
    * Closes the cache once every call before it is done: the index is let go (Windows cannot
-   * delete an open SQLite file) and every call after it rejects with `CACHE_IO {reason: io}`.
+   * delete an open SQLite file) and every call after it rejects with `CACHE_IO {reason: io}`
+   * (but `openReport` and `entryDir`, which read no index).
    * Closing again does nothing.
    */
   close(): Promise<void>;

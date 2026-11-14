@@ -21,7 +21,8 @@
 //!
 //! - `close()` runs after every call before it and drops the index (`index.db`), so a stopped
 //!   server holds no file in the cache (Windows cannot delete an open SQLite file); every call
-//!   after it rejects with `CACHE_IO {reason: io}`. A garbage-collected cache closes the same way.
+//!   after it that reads the index rejects with `CACHE_IO {reason: io}`. A garbage-collected
+//!   cache closes the same way.
 //!
 //! Eviction runs after each commit (here) and every 10 minutes (finisherd's timer calls `gc`).
 
@@ -169,15 +170,25 @@ impl MediaCache {
     }
 
     /// Closes the cache once every call before it is done: the index is dropped and every call
-    /// after it rejects with `CACHE_IO {reason: io}`. Closing again does nothing.
+    /// after it rejects with `CACHE_IO {reason: io}` (but `openReport` and `entryDir`, which read
+    /// no index). Closing again does nothing.
     #[napi(catch_unwind, ts_return_type = "Promise<void>")]
     pub fn close<'e>(&self, env: &'e Env) -> Result<Object<'e>> {
         let (deferred, promise) = env.create_deferred::<(), _>()?;
         let cache = self.cache.clone();
         self.worker.submit(Box::new(move || {
-            let dropped = cache.lock().unwrap_or_else(|p| p.into_inner()).take();
-            drop(dropped);
-            deferred.resolve(|_env| Ok(()));
+            let done = guarded(
+                || {
+                    let dropped = cache.lock().unwrap_or_else(|p| p.into_inner()).take();
+                    drop(dropped);
+                    Ok(())
+                },
+                || {},
+            );
+            match done {
+                Ok(()) => deferred.resolve(|_env| Ok(())),
+                Err(e) => deferred.reject(e),
+            }
         }))?;
         Ok(promise)
     }

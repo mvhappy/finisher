@@ -39,6 +39,8 @@ describe("isEntry", () => {
   test("withoutVerbatim drops the \\\\?\\ prefix on Windows only", () => {
     expect(withoutVerbatim(String.raw`\\?\C:\a\main.ts`, "win32")).toBe(String.raw`C:\a\main.ts`);
     expect(withoutVerbatim(String.raw`\\?\UNC\host\share\main.ts`, "win32")).toBe(String.raw`\\host\share\main.ts`);
+    expect(withoutVerbatim(String.raw`\\?\unc\host\share\main.ts`, "win32")).toBe(String.raw`\\host\share\main.ts`);
+    expect(withoutVerbatim(String.raw`\\?\Volume{0}\main.ts`, "win32")).toBe(String.raw`\\?\Volume{0}\main.ts`);
     expect(withoutVerbatim(String.raw`C:\a\main.ts`, "win32")).toBe(String.raw`C:\a\main.ts`);
     expect(withoutVerbatim(String.raw`\\?\C:\a`, "linux")).toBe(String.raw`\\?\C:\a`);
   });

@@ -9,9 +9,10 @@ import { fileURLToPath } from "node:url";
  * `\\?\C:\repo\apps/finisherd/src/main.ts` would never equal the module's own path.
  */
 export function withoutVerbatim(p: string, platform: NodeJS.Platform = process.platform): string {
-  if (platform !== "win32") return p;
-  if (p.startsWith("\\\\?\\UNC\\")) return `\\\\${p.slice(8)}`;
-  if (p.startsWith("\\\\?\\")) return p.slice(4);
+  if (platform !== "win32" || !p.startsWith("\\\\?\\")) return p;
+  // `\\?\Volume{…}\` has no plain form: kept, so it is never taken for a relative path.
+  if (/^\\\\\?\\UNC\\/i.test(p)) return `\\\\${p.slice(8)}`;
+  if (/^\\\\\?\\[A-Za-z]:\\/.test(p)) return p.slice(4);
   return p;
 }
 

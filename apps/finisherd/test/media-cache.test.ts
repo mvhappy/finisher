@@ -16,17 +16,12 @@ import { runConsole } from "../src/console/main.ts";
 import { capFromSettings, GIB, makeMediaCache, type MediaCacheService } from "../src/media/cache.ts";
 import { connectProved, type Exit as RpcExit, ok, type RunningServer, startServer } from "./support/ndjson-client.ts";
 import { person } from "./support/person.ts";
+import { closeCaches, openCache } from "./support/media-caches.ts";
 
 let tmp: string;
 let serverData: string;
 let server: RunningServer | undefined;
-/** Caches a test opened itself: closed before the folder goes (Windows keeps an open index). */
-const opened: MediaCache[] = [];
-const open = async (capBytes?: number): Promise<MediaCache> => {
-  const c = await MediaCache.open(serverData, capBytes);
-  opened.push(c);
-  return c;
-};
+const open = (capBytes?: number): Promise<MediaCache> => openCache(serverData, capBytes);
 
 beforeEach(() => {
   tmp = realpathSync(mkdtempSync(join(tmpdir(), "fin-media-cache-")));
@@ -37,7 +32,7 @@ beforeEach(() => {
 afterEach(async () => {
   await server?.stop();
   server = undefined;
-  for (const c of opened.splice(0)) await c.close();
+  await closeCaches();
   rmSync(tmp, { recursive: true, force: true });
 });
 

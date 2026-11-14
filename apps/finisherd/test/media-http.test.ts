@@ -27,6 +27,7 @@ import { LOCAL } from "../src/principal.ts";
 import { makeTicketedWebSocketServer } from "../src/upgrade.ts";
 import { pattern, writeEntry } from "./support/media-entry.ts";
 import { confirmed, connectProved, hello, NdjsonClient, ok, startServer, type RunningServer } from "./support/ndjson-client.ts";
+import { closeCaches, openCache } from "./support/media-caches.ts";
 
 const agentOf = (id: string, projects: Principal["projects"]): Principal => ({ kind: "agent", id, scopes: ["project.read"], projects, branches: "*", human: false });
 const A = "01jpa000000000000000000001";
@@ -53,6 +54,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   for (const s of scopes.splice(0)) await Effect.runPromise(Scope.close(s, Exit.void));
+  await closeCaches();
   await server?.stop();
   server = undefined;
   rmSync(tmp, { recursive: true, force: true });
@@ -779,7 +781,7 @@ describe("on a running server", () => {
     const projectId = ok<{ projectId: string }>(await local.call("project.create", { dir: join(tmp, "P"), name: "P", rate: "30" })).projectId;
     await local.close();
     await server.stop();
-    const offline = await MediaCache.open(serverData);
+    const offline = await openCache(serverData);
     const key = await commitEntry(offline, "fp-live", [projectId]);
     const stranger = await commitEntry(offline, "fp-stranger", ["01jpzzzzzzzzzzzzzzzzzzzzzz"]);
     server = await startServer(serverData);
@@ -821,7 +823,7 @@ describe("on a running server", () => {
     const projectId = ok<{ projectId: string }>(await local.call("project.create", { dir: join(tmp, "P"), name: "P", rate: "30" })).projectId;
     await local.close();
     await server.stop();
-    const offline = await MediaCache.open(serverData);
+    const offline = await openCache(serverData);
     const key = await commitEntry(offline, "fp-revoke", [projectId]);
     server = await startServer(serverData);
     const console = await connectProved(server, "console");
