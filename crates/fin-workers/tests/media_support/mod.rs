@@ -238,6 +238,7 @@ impl Fixture {
                 asset(&self.h264_id, "fp-h264", &self.h264),
             ],
             fonts: ManifestFonts::default(),
+            pcm: Default::default(),
         }
     }
 

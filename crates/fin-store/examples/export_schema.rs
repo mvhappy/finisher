@@ -124,6 +124,9 @@ fn main() {
         // `media.waveform` (6C Task 19): params and an item's value.
         g.subschema_for::<fin_media::jobs::WaveParams>();
         g.subschema_for::<fin_media::jobs::WaveResult>();
+        // `media.listen` (6C Task 21): params and result.
+        g.subschema_for::<fin_media::jobs::ListenParams>();
+        g.subschema_for::<fin_media::jobs::ListenResult>();
         g.subschema_for::<fin_library::RawRel>();
         g.subschema_for::<fin_library::Expect>();
         g.subschema_for::<fin_library::ScanEntry>();

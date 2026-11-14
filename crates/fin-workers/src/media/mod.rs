@@ -21,6 +21,8 @@
 //!   (`pcm.rs`; decoded audio meets `fin-audio` only in `audio_src.rs`).
 //! - `media.waveform` v1 (plan 6C Task 19, cold): the `wave` peaks of an asset into `out/<key>/`
 //!   (`wave.rs`), from its `pcm48` entry or the decode.
+//! - `media.listen` v1 (plan 6C Task 21, cold): loudness, peaks, clipping and silences of a
+//!   range per track and for the mix (`listen.rs`), from `pcm48` entries or decoded originals.
 
 use fin_codecs::{Capabilities, ProbeResult};
 use fin_compositor::{Compositor, Gpu};
@@ -34,6 +36,7 @@ mod diag;
 mod encode_pipeline;
 mod fonts;
 mod inputs;
+mod listen;
 mod look;
 mod open_cache;
 mod pcm;
@@ -57,6 +60,7 @@ static KINDS: &[KindVersion] = &[
     KindVersion::new("media.thumbs", 1),
     KindVersion::new("media.pcm", 1),
     KindVersion::new("media.waveform", 1),
+    KindVersion::new("media.listen", 1),
 ];
 
 /// The GPU state a warm worker keeps.
@@ -138,6 +142,7 @@ impl Family for MediaFamily {
             ("media.thumbs", 1) => thumbs::run(job, ctx, &mut self.state),
             ("media.pcm", 1) => pcm::run(job, ctx, &mut self.state),
             ("media.waveform", 1) => wave::run(job, ctx, &mut self.state),
+            ("media.listen", 1) => listen::run(job, ctx, &mut self.state),
             (kind, version) => Err(JobError::new(
                 "JOB_KIND_UNKNOWN",
                 format!("family media has no kind {kind} v{version}"),

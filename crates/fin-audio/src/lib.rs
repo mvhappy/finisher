@@ -9,6 +9,7 @@
 pub mod buf;
 pub mod channels;
 pub mod effects;
+pub mod listen;
 pub mod loudness;
 pub mod mix;
 pub mod peaks;

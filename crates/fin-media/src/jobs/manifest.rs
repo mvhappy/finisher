@@ -1,5 +1,7 @@
 //! The job inputs `fin-node` writes (spec §4.2): `in/snapshot.json` and `in/manifest.json`.
 
+use std::collections::BTreeMap;
+
 use fin_core::{AssetKind, Project};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -29,6 +31,11 @@ pub struct RenderManifest {
     pub assets: Vec<ManifestAsset>,
     #[serde(default)]
     pub fonts: ManifestFonts,
+    /// The `pcm48` entries the media cache holds for the assets, by asset id (plan 6C Task 21:
+    /// `media.listen` mixes from them and decodes the originals of the others), pinned for the
+    /// job's life by the host. Absent for every other kind.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub pcm: BTreeMap<String, ManifestPcm>,
 }
 
 impl RenderManifest {
@@ -73,6 +80,18 @@ pub struct ManifestProxy {
     /// The entry's directory on this machine, absolute.
     pub dir: String,
     pub codec: ProxyCodec,
+}
+
+/// One `pcm48` entry of the media cache (`cache/media/<key[0..2]>/<key>/`): `meta.json` and its
+/// chunks (plan 6C Decision 7). The worker reads it through `audio_src::CachedSource`, which
+/// recomputes the key from `meta.json` and checks every chunk's size and BLAKE3.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ManifestPcm {
+    /// The entry's cache key.
+    pub key: String,
+    /// The entry's directory on this machine, absolute.
+    pub dir: String,
 }
 
 /// A file a worker opens, with what it looked like when the manifest was written.

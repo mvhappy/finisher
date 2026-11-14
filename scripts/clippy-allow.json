@@ -142,5 +142,9 @@
   {
     "path": "crates/fin-workers/src/media/proxy_audio_tests.rs",
     "reason": "Unit tests check the proxy audio's scratch file in a temporary job directory by path; never a library path."
+  },
+  {
+    "path": "crates/fin-node/tests/media_cache_pcm.rs",
+    "reason": "Tests build and inspect temporary cache trees by path; none is a library reader."
   }
 ]

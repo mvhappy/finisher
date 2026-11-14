@@ -1,0 +1,418 @@
+//! `media.listen` v1 (plan 6C Task 21, Decision 21; sub-project 6 spec §8.7): loudness, peaks,
+//! clipping, silences and the loudest moments of a range of a timeline, per track and for the
+//! mix, cold.
+//!
+//! 1. **The plan** comes from `in/snapshot.json` only: every 10 s window of the range is
+//!    evaluated (`eval_audio`) and its BLAKE3 compared with the host's plan sample
+//!    (`PLAN_MISMATCH` on any difference or a missing sample), then the whole range's plan is
+//!    the one mixed.
+//! 2. **Sources**, decided once per asset for the whole job: an asset with a `pcm48` entry in the
+//!    manifest's `pcm` that verifies (every chunk's size and BLAKE3) is read from it
+//!    ([`CachedSource`], one per mix: random access); otherwise its original is decoded
+//!    (`fin-library`'s no-follow opener, then `AudioReader` → canonical → 48 kHz), **one decoder
+//!    per item** (a [`DecodedSource`] reads forward only), opened at the item's first read and
+//!    closed when it ends. An asset with neither is silent and noted `missingSource {asset,
+//!    reason}`.
+//! 3. **The mixes:** the master bus and one per track (that track's items alone; a nested
+//!    timeline's items count for the track their compound clip is on), each a `fin_audio::listen`
+//!    pass, rendered in lockstep in blocks of one second: progress after each, cancel between
+//!    them. Nothing is normalised: `fin listen` reports, it does not change.
+//! 4. **Notes:** `STRETCH_EXTREME {item, speed}` for an item WSOLA cannot do well,
+//!    `skippedEffect {item, effect, kind}` for an effect this engine does not know.
+//!
+//! Nothing is written to `out/`; the answer is the job's result ([`ListenResult`]).
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+
+use fin_audio::channels::Canonical;
+use fin_audio::listen::{Pass, filter_plan, range, stretch_extreme};
+use fin_audio::{PcmSource, SourceLayout};
+use fin_core::eval::{AudioItem, AudioPlan, eval_audio};
+use fin_core::{CoreError, Project, Rational};
+use fin_jobs::worker::JobCtx;
+use fin_jobs::{JobError, Progress, ProgressUnit, StartJob};
+use fin_media::jobs::{
+    JobSnapshot, ListenJobStats, ListenNote, ListenParams, ListenResult, ListenTrack,
+    MANIFEST_VERSION, OriginalFile, PcmLayout, PcmRecipe, RenderManifest, audio_plan_hash,
+    listen_windows,
+};
+use serde_json::{Value, json};
+
+use super::audio_src::{CachedSource, DecodedSource};
+use super::inputs::{self, MANIFEST_CAP, SNAPSHOT_CAP};
+use super::open_cache::open_original_in;
+use super::{Warm, job_error};
+
+/// Frames mixed between two progress reports (and cancel checks): one second.
+const BLOCK: usize = 48_000;
+
+fn mismatch(t: Rational, want: Option<&str>, got: &str) -> JobError {
+    let reason = if want.is_some() { "hash" } else { "noSample" };
+    JobError::new(
+        "PLAN_MISMATCH",
+        format!("the worker's audio plan at {t} differs from the host's ({reason})"),
+    )
+    .with_details(json!({ "at": t, "reason": reason, "want": want, "got": got }))
+}
+
+/// Every window's plan against its sample (module docs, step 1).
+fn check_samples(project: &Project, p: &ListenParams) -> Result<(), JobError> {
+    for (a, b) in listen_windows(p.from, p.to).map_err(job_error)? {
+        let hash = audio_plan_hash(&eval_audio(project, &p.timeline, a, b).map_err(job_error)?);
+        let want = p.sample(a).map(|s| s.blake3.as_str());
+        if want != Some(hash.as_str()) {
+            return Err(mismatch(a, want, &hash));
+        }
+    }
+    Ok(())
+}
+
+/// The track of the measured timeline an item sounds on: its own, or for a nested timeline's
+/// item, the track of the compound clip it sounds through (`via[0]`).
+fn outer_track(project: &Project, timeline: &str, item: &AudioItem) -> String {
+    let Some(outer) = item.via.first() else {
+        return item.track.clone();
+    };
+    project
+        .timelines
+        .iter()
+        .find(|t| t.id == timeline)
+        .and_then(|t| {
+            t.tracks
+                .iter()
+                .find(|tr| tr.items.iter().any(|i| &i.id == outer))
+        })
+        .map_or_else(|| item.track.clone(), |tr| tr.id.clone())
+}
+
+/// The tracks with items in `plan`, in the timeline's order (any the timeline does not list
+/// after them, in plan order).
+fn tracks_of(project: &Project, timeline: &str, plan: &AudioPlan) -> Vec<String> {
+    let used: Vec<String> = plan
+        .items
+        .iter()
+        .map(|i| outer_track(project, timeline, i))
+        .collect();
+    let mut out: Vec<String> = project
+        .timelines
+        .iter()
+        .find(|t| t.id == timeline)
+        .map(|t| {
+            t.tracks
+                .iter()
+                .filter(|tr| used.contains(&tr.id))
+                .map(|tr| tr.id.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+    for t in used {
+        if !out.contains(&t) {
+            out.push(t);
+        }
+    }
+    out
+}
+
+/// What an asset is read from, decided once for the whole job (every mix reads it the same way).
+#[derive(Clone)]
+enum Verdict {
+    /// Its `pcm48` entry, verified.
+    Cached,
+    /// Its original, decoded; the feed's layout.
+    Decoded(PcmLayout),
+    /// Neither: the opener's code.
+    Missing(String),
+}
+
+/// An item's decoded original, opened on its first read (so a long plan does not hold a decoder
+/// and a file per item from the start; the mixer drops it once the item has ended).
+struct LazyDecoded {
+    original: OriginalFile,
+    confine: Option<PathBuf>,
+    layout: PcmLayout,
+    inner: Option<DecodedSource>,
+}
+
+impl PcmSource for LazyDecoded {
+    fn layout(&self) -> SourceLayout {
+        match self.layout {
+            PcmLayout::Mono => SourceLayout::Mono,
+            PcmLayout::Stereo => SourceLayout::Stereo,
+        }
+    }
+
+    fn read(&mut self, at: i64, frames: usize, out: &mut Canonical) -> Result<(), CoreError> {
+        if self.inner.is_none() {
+            let file = open_original_in(&self.original, self.confine.as_deref()).map_err(|r| {
+                CoreError::new("ORIGINALS_MISSING", r.message)
+                    .with_details(json!({ "reason": r.reason }))
+            })?;
+            let src = DecodedSource::open(file, PcmRecipe::Pcm48)?;
+            if src.feed_layout() != self.layout {
+                return Err(CoreError::new(
+                    "MEDIA_CORRUPT",
+                    "the original's channel layout changed during the listen",
+                )
+                .with_details(json!({ "reason": "channelsChange" })));
+            }
+            self.inner = Some(src);
+        }
+        self.inner
+            .as_mut()
+            .expect("opened above")
+            .read(at, frames, out)
+    }
+}
+
+/// Opens the sources of the job's mixes (module docs, step 2), deciding each asset once.
+struct Opener<'a> {
+    manifest: &'a RenderManifest,
+    confine: Option<&'a Path>,
+    verdicts: BTreeMap<String, Verdict>,
+}
+
+impl Opener<'_> {
+    /// Whether the asset's `pcm48` entry is usable: every chunk verified (one read of each: a
+    /// chunk that fails its size or BLAKE3 would otherwise surface mid-mix).
+    fn entry_verifies(&self, asset: &str) -> bool {
+        let Some(entry) = self.manifest.pcm.get(asset) else {
+            return false;
+        };
+        let Ok(mut src) = CachedSource::open(Path::new(&entry.dir), &entry.key) else {
+            return false;
+        };
+        let (per, frames) = (src.entry().layout.chunk_frames(), src.entry().frames);
+        let mut one = Canonical::Mono(Vec::new());
+        let mut at = 0u64;
+        while at < frames {
+            if src.read(at as i64, 1, &mut one).is_err() {
+                return false;
+            }
+            at += per;
+        }
+        true
+    }
+
+    fn original(&self, asset: &str) -> Result<&OriginalFile, String> {
+        self.manifest
+            .asset(asset)
+            .and_then(|a| a.original.as_ref())
+            .ok_or_else(|| "ORIGINALS_MISSING".to_string())
+    }
+
+    /// The asset's verdict, decided on first ask.
+    fn verdict(&mut self, asset: &str) -> Verdict {
+        if let Some(v) = self.verdicts.get(asset) {
+            return v.clone();
+        }
+        let v = if self.entry_verifies(asset) {
+            Verdict::Cached
+        } else {
+            let opened = self.original(asset).and_then(|o| {
+                let file = open_original_in(o, self.confine)
+                    .map_err(|_| "ORIGINALS_MISSING".to_string())?;
+                DecodedSource::open(file, PcmRecipe::Pcm48).map_err(|e| e.code)
+            });
+            match opened {
+                Ok(src) => Verdict::Decoded(src.feed_layout()),
+                Err(reason) => Verdict::Missing(reason),
+            }
+        };
+        self.verdicts.insert(asset.to_string(), v.clone());
+        v
+    }
+
+    /// `plan` as one mix reads it, and its sources: an asset's `pcm48` entry once (random
+    /// access), a decoded original once per item (each reads forward from its own offset: the
+    /// item's `asset` is renamed `<asset>#<k>` for its own source); an asset that cannot be read
+    /// is absent (silent).
+    fn sources(&mut self, plan: &AudioPlan) -> (AudioPlan, BTreeMap<String, Box<dyn PcmSource>>) {
+        let mut plan = plan.clone();
+        let mut out: BTreeMap<String, Box<dyn PcmSource>> = BTreeMap::new();
+        for (k, item) in plan.items.iter_mut().enumerate() {
+            match self.verdict(&item.asset) {
+                Verdict::Cached => {
+                    if out.contains_key(&item.asset) {
+                        continue;
+                    }
+                    let entry = &self.manifest.pcm[&item.asset];
+                    if let Ok(src) = CachedSource::open(Path::new(&entry.dir), &entry.key) {
+                        out.insert(item.asset.clone(), Box::new(src));
+                    }
+                }
+                Verdict::Decoded(layout) => {
+                    let Ok(original) = self.original(&item.asset).cloned() else {
+                        continue;
+                    };
+                    let key = format!("{}#{k}", item.asset);
+                    out.insert(
+                        key.clone(),
+                        Box::new(LazyDecoded {
+                            original,
+                            confine: self.confine.map(Path::to_path_buf),
+                            layout,
+                            inner: None,
+                        }),
+                    );
+                    item.asset = key;
+                }
+                Verdict::Missing(_) => {}
+            }
+        }
+        (plan, out)
+    }
+
+    fn missing(&self) -> BTreeMap<String, String> {
+        self.verdicts
+            .iter()
+            .filter_map(|(a, v)| match v {
+                Verdict::Missing(r) => Some((a.clone(), r.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn count(&self, cached: bool) -> u32 {
+        self.verdicts
+            .values()
+            .filter(|v| {
+                matches!(
+                    (v, cached),
+                    (Verdict::Cached, true) | (Verdict::Decoded(_), false)
+                )
+            })
+            .count() as u32
+    }
+}
+
+/// Test builds only, after each block: an asset whose fingerprint starts `test-slow-` makes the
+/// worker wait 300 ms, `test-crash-` aborts it (a listen that runs long enough to cancel, and one
+/// that fails: the pins' release on every end).
+#[cfg(feature = "test-hooks")]
+fn test_block(manifest: &RenderManifest) {
+    for a in &manifest.assets {
+        if a.fingerprint.starts_with("test-slow-") {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+        }
+        if a.fingerprint.starts_with("test-crash-") {
+            std::process::abort();
+        }
+    }
+}
+
+#[cfg(not(feature = "test-hooks"))]
+fn test_block(_: &RenderManifest) {}
+
+fn notes_of(plan: &AudioPlan, mix: &Pass, missing: &BTreeMap<String, String>) -> Vec<ListenNote> {
+    let mut notes: Vec<ListenNote> = missing
+        .iter()
+        .map(|(asset, reason)| ListenNote::MissingSource {
+            asset: asset.clone(),
+            reason: reason.clone(),
+        })
+        .collect();
+    let mut seen = BTreeSet::new();
+    for it in &plan.items {
+        if stretch_extreme(it.speed) && seen.insert(it.item.clone()) {
+            notes.push(ListenNote::StretchExtreme {
+                item: it.item.clone(),
+                speed: it.speed,
+            });
+        }
+    }
+    notes.extend(
+        mix.mixer()
+            .skipped_effects()
+            .iter()
+            .map(|s| ListenNote::SkippedEffect {
+                item: s.item.clone(),
+                effect: s.effect.clone(),
+                kind: s.kind.clone(),
+            }),
+    );
+    notes
+}
+
+pub fn run(job: &StartJob, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<Value, JobError> {
+    let mut p: ListenParams = serde_json::from_value(job.params.clone())
+        .map_err(|e| JobError::new("JOB_PARAMS_INVALID", format!("params: {e}")))?;
+    p.check().map_err(job_error)?;
+    // As `media.look`: the samples `prepare` computed win over any in the params.
+    if let Some(samples) = job.extra.as_ref().and_then(|e| e.get("planSamples")) {
+        p.plan_samples = serde_json::from_value(samples.clone())
+            .map_err(|e| JobError::new("JOB_PARAMS_INVALID", format!("extra.planSamples: {e}")))?;
+    }
+    let dir = inputs::job_dir(ctx)?;
+    let snapshot: JobSnapshot = inputs::read_json(ctx, &dir, "in/snapshot.json", SNAPSHOT_CAP)?;
+    let manifest: RenderManifest = inputs::read_json(ctx, &dir, "in/manifest.json", MANIFEST_CAP)?;
+    if manifest.version != MANIFEST_VERSION {
+        return Err(JobError::new(
+            "JOB_INPUT_INVALID",
+            format!(
+                "manifest version {} (this worker reads {MANIFEST_VERSION})",
+                manifest.version
+            ),
+        )
+        .with_details(json!({ "file": "in/manifest.json", "version": manifest.version })));
+    }
+    let project = &snapshot.project;
+    check_samples(project, &p)?;
+    let plan = eval_audio(project, &p.timeline, p.from, p.to).map_err(job_error)?;
+    let tracks = tracks_of(project, &p.timeline, &plan);
+    let mut opener = Opener {
+        manifest: &manifest,
+        confine: warm.sources.confined(),
+        verdicts: BTreeMap::new(),
+    };
+    let (mix_plan, mix_sources) = opener.sources(&plan);
+    let mut mix = Pass::new(&mix_plan, mix_sources).map_err(job_error)?;
+    let mut passes = Vec::with_capacity(tracks.len());
+    for t in &tracks {
+        let only = filter_plan(&plan, |i| &outer_track(project, &p.timeline, i) == t);
+        let (only, sources) = opener.sources(&only);
+        passes.push(Pass::new(&only, sources).map_err(job_error)?);
+    }
+    let (start, end) = range(&plan).map_err(job_error)?;
+    let total = (end - start) as u64;
+    let mut done = 0u64;
+    while done < total {
+        if ctx.cancelled().is_some() {
+            return Err(JobError::cancelled());
+        }
+        let n = (total - done).min(BLOCK as u64) as usize;
+        mix.render(n).map_err(job_error)?;
+        for pass in &mut passes {
+            pass.render(n).map_err(job_error)?;
+        }
+        done += n as u64;
+        test_block(&manifest);
+        let mut pr = Progress::new(done as f64, ProgressUnit::Frames);
+        pr.total = Some(total as f64);
+        pr.phase = Some("mix".into());
+        ctx.progress(pr);
+    }
+    let notes = notes_of(&plan, &mix, &opener.missing());
+    let stats = ListenJobStats {
+        sources_from_cache: opener.count(true),
+        sources_decoded: opener.count(false),
+    };
+    let result = ListenResult {
+        timeline: p.timeline.clone(),
+        rev: snapshot.rev,
+        from: p.from,
+        to: p.to,
+        mix: mix.finish(),
+        tracks: tracks
+            .into_iter()
+            .zip(passes)
+            .map(|(track, pass)| ListenTrack {
+                track,
+                stats: pass.finish(),
+            })
+            .collect(),
+        notes,
+        stats,
+    };
+    Ok(serde_json::to_value(result).expect("a result serialises"))
+}

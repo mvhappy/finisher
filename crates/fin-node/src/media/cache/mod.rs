@@ -16,6 +16,8 @@
 //!   proxy of each asset's fingerprint the index holds, pinned for `holder` and serving
 //!   `projects` (`proxies.rs`, Task 16); `currentProxy(fingerprint, projects)` answers the
 //!   one it would list, unpinned for a job (Task 15's planner).
+//! - `attachPcm(inDir, holder, projects)` lists, in a `media.listen` job's manifest, the `pcm48`
+//!   entry of each asset's fingerprint, likewise pinned and serving (`pcm.rs`, 6C Task 21).
 //!
 //! Eviction runs after each commit (here) and every 10 minutes (finisherd's timer calls `gc`).
 
@@ -23,6 +25,7 @@ mod adopt;
 mod commit;
 mod evict;
 mod index;
+mod pcm;
 mod proxies;
 mod read;
 mod state;
@@ -282,6 +285,36 @@ impl MediaCache {
                 inputs::write_json(dir, "manifest.json", &manifest)?;
             }
             Ok(inputs::proxy_files(&manifest))
+        })
+    }
+
+    /// Fills the manifest's `pcm` (by asset id) of the job's `in/manifest.json` (`inDir`, written
+    /// by `prepareListenJob`) from the index: each asset's fingerprint's current `pcm48` entry,
+    /// its directory on this machine, pinned for `holder` (`job:<id>`; release it when the job
+    /// ends) and serving `projects`. Resolves to the files a worker reads from those entries
+    /// (absolute, for the job's `reads`). Assets with no entry are left out (6C Task 21).
+    #[napi(catch_unwind, ts_return_type = "Promise<string[]>")]
+    pub fn attach_pcm<'e>(
+        &self,
+        env: &'e Env,
+        in_dir: String,
+        holder: String,
+        projects: Vec<String>,
+    ) -> Result<Object<'e>> {
+        self.run(env, move |c| {
+            let dir = std::path::Path::new(&in_dir);
+            let mut manifest = inputs::read_manifest(dir)?;
+            let fingerprints: Vec<String> = manifest
+                .assets
+                .iter()
+                .map(|a| a.fingerprint.clone())
+                .collect();
+            let found = c.pcm_for(&fingerprints, &holder, &projects)?;
+            let files = inputs::with_pcm(&mut manifest, &found);
+            if !found.is_empty() {
+                inputs::write_json(dir, "manifest.json", &manifest)?;
+            }
+            Ok(files)
         })
     }
 

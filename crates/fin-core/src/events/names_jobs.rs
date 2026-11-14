@@ -43,6 +43,7 @@ pub static JOB_KINDS: NameTable = NameTable::new(
         "media.thumbs",
         "media.pcm",
         "media.waveform",
+        "media.listen",
     ],
 );
 

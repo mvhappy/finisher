@@ -1,5 +1,5 @@
-// Types of `media-proxy.js` (re-exported by `index.d.ts`): the plan of `media.proxy` (6B-1 Task 14,
-// Decision 11).
+// Types of `media-proxy.js` (re-exported by `index.d.ts`): `media.proxy`'s plan (6B-1 Task 14)
+// and this build's versions.
 /** What `mediaProxyPlan` is asked. */
 export interface MediaProxyPlanRequest {
   readonly fingerprint: string;
@@ -27,3 +27,6 @@ export declare function mediaProxyPlan(request: MediaProxyPlanRequest): {
   /** What the key says of the source's audio (`ProxySourceAudio`): `media.proxy`'s `audio` param. */
   audio: "none" | "unavailable" | { decoded: "os" | "gpu" | "software" | "plugin" };
 };
+
+/** 6B-1 Task 14: this build's `RENDER_VERSION`, `AUDIO_VERSION` (6C) and its cache recipes' versions (`proxy-540`: 1, …). */
+export declare function mediaVersions(): { renderVersion: number; audioVersion: number; recipes: Record<string, number> };

@@ -2264,6 +2264,29 @@ export type JobSpawnRole = "worker" | "helper";
  */
 export type LibraryScanMode = "full" | "dirs" | "poll";
 /**
+ * Something the listen could not hear as planned; never a failure.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ListenNote".
+ */
+export type ListenNote =
+  | {
+      asset: string;
+      code: "missingSource";
+      reason: string;
+    }
+  | {
+      code: "STRETCH_EXTREME";
+      item: string;
+      speed: Rational;
+    }
+  | {
+      code: "skippedEffect";
+      effect: string;
+      item: string;
+      kind: string;
+    };
+/**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "LogLevel".
  */
@@ -8062,6 +8085,171 @@ export interface LibraryScanResult {
   unchanged: number;
 }
 /**
+ * Samples above full scale.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ListenClipped".
+ */
+export interface ListenClipped {
+  /**
+   * The first frame holding one, on the timeline (exact: its sample index ÷ 48,000).
+   */
+  firstAt?: Rational;
+  /**
+   * Samples (each channel's) whose magnitude is above 1.0.
+   */
+  samples: number;
+}
+/**
+ * Where the sources were read from.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ListenJobStats".
+ */
+export interface ListenJobStats {
+  /**
+   * Assets decoded from their original (no entry, or one that did not verify).
+   */
+  sourcesDecoded: number;
+  /**
+   * Assets read from their `pcm48` cache entry (the manifest's `pcm`).
+   */
+  sourcesFromCache: number;
+}
+/**
+ * One of the loudest moments: the 3 s window starting at `at` (clipped to the range start)
+ * read `shortTerm` LUFS.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ListenMoment".
+ */
+export interface ListenMoment {
+  at: Rational;
+  shortTerm: number;
+}
+/**
+ * `media.listen` v1: measure `[from, to)` of `timeline`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ListenParams".
+ */
+export interface ListenParams {
+  /**
+   * The branch of the snapshot (an id, a name or `<name>#<id>`).
+   */
+  branch?: string;
+  from: Rational;
+  /**
+   * One sample per window of [`listen_windows`]; a plan the worker evaluates differently is
+   * `PLAN_MISMATCH`. A submitter leaves them out: the kind's `prepare` computes them from the
+   * snapshot it writes and hands them to the worker as `start.job.extra.planSamples` (and in
+   * `in/params.json` for `--replay`).
+   */
+  planSamples?: PlanSample[];
+  /**
+   * The project measured. Only the host reads it (the kind's `dedupe` and `prepare`).
+   */
+  projectId?: string;
+  /**
+   * The branch's rev the submitter saw: part of the job's identity (`dedupe`).
+   */
+  rev?: number;
+  timeline: string;
+  to: Rational;
+}
+/**
+ * The BLAKE3 of a frame plan at one time (plan 6A Decision 4): lowercase hex of the plan's
+ * compact JSON, as `fin-core`'s eval corpus hashes it.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PlanSample".
+ */
+export interface PlanSample {
+  at: Rational;
+  blake3: string;
+}
+/**
+ * What `media.listen` v1 answers.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ListenResult".
+ */
+export interface ListenResult {
+  from: Rational;
+  mix: ListenStats;
+  notes: ListenNote[];
+  /**
+   * The branch rev of the snapshot measured.
+   */
+  rev: number;
+  stats: ListenJobStats;
+  timeline: string;
+  to: Rational;
+  /**
+   * The tracks with items in the range, in the timeline's order.
+   */
+  tracks: ListenTrack[];
+}
+/**
+ * What one mix (the master bus, or one track's items alone) measured (Decision 21).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ListenStats".
+ */
+export interface ListenStats {
+  clipped: ListenClipped;
+  /**
+   * Integrated loudness, LUFS; absent when nothing is above the −70 LUFS gate.
+   */
+  integrated?: number;
+  /**
+   * Up to 5 short-term (3 s) loudness maxima, loudest first, at least 3 s apart.
+   */
+  loudest: ListenMoment[];
+  /**
+   * Loudness range, LU.
+   */
+  range: number;
+  /**
+   * dBFS; absent for silence.
+   */
+  samplePeak?: number;
+  /**
+   * Runs of 10 ms blocks whose louder channel's RMS is below −60 dBFS, lasting 0.5 s or more
+   * (or of any length when they touch an edge of the range, clipped there), at 10 ms resolution
+   * from the range start.
+   */
+  silences: ListenSpan[];
+  /**
+   * dBTP; absent for silence.
+   */
+  truePeak?: number;
+}
+/**
+ * A span of the timeline, `[from, to)`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ListenSpan".
+ */
+export interface ListenSpan {
+  from: Rational;
+  to: Rational;
+}
+/**
+ * One track's own statistics.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ListenTrack".
+ */
+export interface ListenTrack {
+  stats: ListenStats;
+  /**
+   * The track of the measured timeline (a nested timeline's items count for the track their
+   * compound clip is on).
+   */
+  track: string;
+}
+/**
  * A plugin in search results: its newest version that is not yanked.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -8188,17 +8376,6 @@ export interface LookParams {
    */
   size?: Size;
   timeline: string;
-}
-/**
- * The BLAKE3 of a frame plan at one time (plan 6A Decision 4): lowercase hex of the plan's
- * compact JSON, as `fin-core`'s eval corpus hashes it.
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "PlanSample".
- */
-export interface PlanSample {
-  at: Rational;
-  blake3: string;
 }
 /**
  * What `media.look` v1 answers.
@@ -8382,6 +8559,24 @@ export interface ManifestFonts {
    */
   cache?: string;
   files?: FontFileRef[];
+}
+/**
+ * One `pcm48` entry of the media cache (`cache/media/<key[0..2]>/<key>/`): `meta.json` and its
+ * chunks (plan 6C Decision 7). The worker reads it through `audio_src::CachedSource`, which
+ * recomputes the key from `meta.json` and checks every chunk's size and BLAKE3.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ManifestPcm".
+ */
+export interface ManifestPcm {
+  /**
+   * The entry's directory on this machine, absolute.
+   */
+  dir: string;
+  /**
+   * The entry's cache key.
+   */
+  key: string;
 }
 /**
  * What `media.capabilities` v2 answers: per codec, profile and bit depth what this machine
@@ -9583,6 +9778,14 @@ export interface RenderManifest {
    */
   assets: ManifestAsset[];
   fonts?: ManifestFonts1;
+  /**
+   * The `pcm48` entries the media cache holds for the assets, by asset id (plan 6C Task 21:
+   * `media.listen` mixes from them and decodes the originals of the others), pinned for the
+   * job's life by the host. Absent for every other kind.
+   */
+  pcm?: {
+    [k: string]: ManifestPcm;
+  };
   /**
    * [`MANIFEST_VERSION`].
    */

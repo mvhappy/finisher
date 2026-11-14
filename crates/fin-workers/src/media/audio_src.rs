@@ -14,7 +14,9 @@
 //!   checked against its listed size and BLAKE3 before a sample of it is used.
 //!
 //! Both are [`PcmSource`]s. A `DecodedSource` decodes forward only: a read before the frames it
-//! still holds is `INTERNAL` (the mixer reads each source forward).
+//! still holds is `INTERNAL`, so each mixer item reads its own one (the mixer reads each source
+//! forward). It drops decoded frames before the first one asked for as it goes, so a read far
+//! into the source holds about one packet beyond the read, not everything before it.
 //!
 //! `media.pcm` streams a `DecodedSource`; the mixer's readers (`media.waveform`, `media.listen`:
 //! Tasks 19 and 21) are the first callers of `CachedSource` and of the `PcmSource` reads.
@@ -34,6 +36,9 @@ use fin_media::backend::VendorClass;
 use fin_media::cache::{CacheKey, EntryMeta, META_FILE};
 use fin_media::jobs::{MAX_PCM_SECONDS, PcmEntry, PcmLayout, PcmRecipe};
 use serde_json::json;
+
+/// Spare capacity a decoded source keeps before giving memory back (frames).
+const SHRINK_SLACK: usize = 16_384;
 
 /// The most `meta.json` a worker reads for a PCM entry (its chunk list is long for long sources).
 const META_CAP: u64 = fin_media::cache::MAX_META_BYTES;
@@ -113,6 +118,12 @@ impl DecodedSource {
 
     pub fn decoder_class(&self) -> VendorClass {
         self.reader.decoder_class()
+    }
+
+    /// The frames the source holds allocated (its buffer's capacity): bounded by a read's
+    /// length plus one packet, whatever the position read (6C Task 21 review B1).
+    pub fn held_capacity(&self) -> usize {
+        self.held.l.capacity().max(self.held.r.capacity())
     }
 
     /// The output frames the source will have, when its container states its length.
@@ -236,13 +247,28 @@ impl PcmSource for DecodedSource {
             ));
         }
         let end = at.saturating_add(frames as i64);
-        while self.base + (self.held.len() as i64) < end && self.pull()? {}
+        // Frames before the first one asked for are dropped as they are decoded, never held: a
+        // read far into the source holds about one packet beyond the read (review B1).
+        self.forget_before(first);
+        while self.base + (self.held.len() as i64) < end && self.pull()? {
+            self.forget_before(first);
+        }
         let (mut l, mut r) = (vec![0.0; frames], vec![0.0; frames]);
         copy_into(&self.held.l, self.base, &mut l, at);
         if self.layout == PcmLayout::Stereo {
             copy_into(&self.held.r, self.base, &mut r, at);
         }
         // Frames before `at` are never read again.
+        self.forget_before(at);
+        *out = canonical_of(self.layout, l, r);
+        Ok(())
+    }
+}
+
+impl DecodedSource {
+    /// Drops the held frames before output frame `at` and gives back the memory a large buffer
+    /// no longer needs.
+    fn forget_before(&mut self, at: i64) {
         let drop = (at - self.base).clamp(0, self.held.len() as i64) as usize;
         if drop > 0 {
             self.held.l.drain(..drop);
@@ -251,8 +277,11 @@ impl PcmSource for DecodedSource {
             }
             self.base += drop as i64;
         }
-        *out = canonical_of(self.layout, l, r);
-        Ok(())
+        for v in [&mut self.held.l, &mut self.held.r] {
+            if v.capacity() > 2 * v.len() + SHRINK_SLACK {
+                v.shrink_to(v.len() + SHRINK_SLACK / 2);
+            }
+        }
     }
 }
 

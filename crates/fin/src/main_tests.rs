@@ -23,6 +23,7 @@ fn every_registry_command_parses() {
         "project acknowledge --rewind 2 --branch main",
         "status",
         "look --at 1s,f30 --size 960x540 --out looks --no-wait",
+        "listen --from 1s --to f90 --json --no-wait",
         "view --track t1 --range 1s.. --budget 200",
         "branch new b --from main@3",
         "branch ls --all",

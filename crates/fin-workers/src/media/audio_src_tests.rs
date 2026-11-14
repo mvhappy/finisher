@@ -196,3 +196,31 @@ fn cached_entry_reads_equal_the_decode() {
         "PLAN_MISMATCH"
     );
 }
+
+#[test]
+fn a_read_far_into_the_source_holds_only_about_a_block() {
+    // 20 s at 48 kHz: a read at 18 s decodes the 18 s before it but keeps none of them, and frames
+    // behind a read are released, not just dropped from view (6C Task 21 review B1).
+    let tmp = tempfile::tempdir().unwrap();
+    let path = wav_file(tmp.path(), 20 * 48_000, 48_000, 2);
+    let want = stream(open(&path, PcmRecipe::Pcm48));
+    let mut s = open(&path, PcmRecipe::Pcm48);
+    let mut out = Canonical::Mono(Vec::new());
+    s.read(18 * 48_000, 1_000, &mut out).unwrap();
+    let at = 2 * 18 * 48_000;
+    assert_eq!(interleave(&out), want[at..at + 2_000]);
+    assert!(
+        s.held_capacity() <= 96_000,
+        "{} frames held",
+        s.held_capacity()
+    );
+    // Forward reads keep the bound.
+    for k in 1..50 {
+        s.read(18 * 48_000 + k * 1_000, 1_000, &mut out).unwrap();
+        assert!(
+            s.held_capacity() <= 96_000,
+            "{} frames held",
+            s.held_capacity()
+        );
+    }
+}

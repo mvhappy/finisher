@@ -203,6 +203,14 @@ export declare class Engine {
    */
   prepareAssetJob(branch: string, asset: string, inputDir: string): Promise<string>;
   /**
+   * Prepares a `media.listen` (6C Task 21): writes `snapshot.json`, `manifest.json` (the assets
+   * the audio plan of `[from, to)` references) and, with `paramsJson` (the job's `ListenParams`),
+   * `params.json` with the plan samples filled into `inputDir` (the job's existing `in/`).
+   * Resolves to `{ rev, planSamples, sources }` as JSON: one sample per 10 s window of the range.
+   * `INVALID_RANGE` past the timeline's end or over a day; `rev` is the one the caller read.
+   */
+  prepareListenJob(branch: string, timeline: string, from: string, to: string, inputDir: string, paramsJson?: string | null, rev?: number | null): Promise<string>;
+  /**
    * Resolves to the `AudioPlan` JSON of `timeline` on `branch` over `[from, to)`. `rev` as
    * `evalFrame`'s.
    */
@@ -453,9 +461,6 @@ export declare function endCredential(credential: string): void;
  */
 export declare function commitJobOutput(from: string, to: string, maxBytes: number, copy?: boolean | undefined | null): Promise<void>;
 
-/** 6B-1 Task 14: this build's `RENDER_VERSION`, `AUDIO_VERSION` (6C) and its cache recipes' versions (`proxy-540`: 1, …). */
-export declare function mediaVersions(): { renderVersion: number; audioVersion: number; recipes: Record<string, number> };
-
 /**
  * Probes a media file (MP4/MOV/M4A/WAV), image (PNG/JPEG/WebP), SVG, dotLottie, font
  * (TTF/OTF/TTC) or `.cube` LUT; resolves to `Probe` JSON (`{ kind, duration?, video?, audio?,
@@ -527,10 +532,10 @@ export * from "./library.js";
 export * from "./media-cache.js";
 // Thumbnail and filmstrip plans (`media-thumbs.js`, 6B-1 Task 15).
 export * from "./media-thumbs.js";
-// Proxy plans (`media-proxy.js`, 6B-1 Task 14).
-export * from "./media-proxy.js";
 // PCM feed plans (`media-pcm.js`, 6C Task 18).
 export * from "./media-pcm.js";
+// Proxy plans and the build's versions (`media-proxy.js`, 6B-1 Task 14).
+export * from "./media-proxy.js";
 // The native Windows pipe listener (`pipe.js`).
 export * from "./pipe.js";
 // The vault and the identity key (`vault.js`, 5B).

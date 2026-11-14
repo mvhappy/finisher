@@ -14,8 +14,8 @@ export {
 export { kindNames, kindVersion, validatePrivacy } from "./events.js";
 export { MEDIA_READ_MAX, MediaCache } from "./media-cache.js";
 export { mediaThumbsPlan } from "./media-thumbs.js";
-export { mediaProxyPlan } from "./media-proxy.js";
 export { mediaPcmPlan, mediaWavePlan } from "./media-pcm.js";
+export { mediaProxyPlan, mediaVersions } from "./media-proxy.js";
 export { PipeServer } from "./pipe.js";
 export { decodePluginCall, permissionRisks, PluginCommandArgs, pluginCommandOutcome, pluginProjectView } from "./plugin-calls.js";
 export { checkServerDataLocal, serverId } from "./server-data.js";
@@ -165,6 +165,10 @@ export class Engine {
 
   prepareAssetJob(branch, asset, inputDir) {
     return call(this.#native.prepareAssetJob(branch, asset, inputDir));
+  }
+
+  prepareListenJob(branch, timeline, from, to, inputDir, paramsJson, rev) {
+    return call(this.#native.prepareListenJob(branch, timeline, from, to, inputDir, paramsJson ?? null, rev ?? null));
   }
 
   setCollect(collect, metaJson) {
@@ -521,11 +525,6 @@ export function probeBeneath(root, path) {
 
 export function commitJobOutput(from, to, maxBytes, copy) {
   return call(native.commitJobOutput(from, to, maxBytes, copy ?? null));
-}
-
-/** This build's `RENDER_VERSION` and cache recipe versions; see `index.d.ts`. */
-export function mediaVersions() {
-  return JSON.parse(sync(() => native.mediaVersions()));
 }
 
 /** The plugin store and registries of a server (`registry.js`). */
