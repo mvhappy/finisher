@@ -2449,6 +2449,29 @@ export type Placeholder =
  */
 export type Severity = "low" | "medium" | "high" | "critical";
 /**
+ * The codec of a proxy's audio (spec §7.1).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProxyAudioCodec".
+ */
+export type ProxyAudioCodec = "opus";
+/**
+ * What a proxy's key says of the source's audio (6C Task 20 review): none, one this build
+ * has no decoder for, or one a decoder of a class decodes. A later build (or a plugin) that
+ * gains the decoder changes the key, so a video-only entry made without it is not served
+ * again; a track that is decodable but fails to decode (corrupt, or a profile the decoder
+ * refuses) keys as decodable, since the file will not change.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProxySourceAudio".
+ */
+export type ProxySourceAudio =
+  | "none"
+  | "unavailable"
+  | {
+      decoded: VendorClass;
+    };
+/**
  * What to purge (`fin diagnostics purge`, `diagnostics.purge`).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -9089,14 +9112,22 @@ export interface ProxyAudio {
    * Bits a second.
    */
   bitrate: number;
-  /**
-   * Always `opus`.
-   */
-  codec: AudioCodec;
+  codec: ProxyAudioCodec;
   /**
    * The encoder's delay in samples (the edit list's media time, `dOps` pre-skip).
    */
   priming: number;
+}
+/**
+ * Why a source's audio track is not in its proxy (6C Task 20 review): the decode's error code
+ * (`CODEC_UNAVAILABLE`, `UNSUPPORTED_CONTAINER`, `MEDIA_LIMIT`, `MEDIA_CORRUPT`,
+ * `DECODE_FAILED`). The mix reads `pcm48`, which reports the same failure as its own.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProxyAudioSkipped".
+ */
+export interface ProxyAudioSkipped {
+  code: string;
 }
 /**
  * One move of the encode to another encoder (`ENCODER_HUNG`'s fallback, an encoder that did
@@ -9126,6 +9157,10 @@ export interface ProxyParams {
    * must equal `fingerprint`, else `ASSET_CHANGED`).
    */
   asset?: string;
+  /**
+   * What the host expects of the original's audio ([`source_audio`], part of the key).
+   */
+  audio: ProxySourceAudio;
   /**
    * The branch whose head names the asset (`main` when absent). Host only.
    */
@@ -9167,10 +9202,14 @@ export interface ProxyParams {
  */
 export interface ProxyResult {
   /**
-   * The audio track; absent when the source has none, or none this build reads
-   * (`CODEC_UNAVAILABLE`, `UNSUPPORTED_CONTAINER`, `MEDIA_LIMIT`): the proxy is then video only.
+   * The audio track; absent when the source has none or its audio could not be read (then
+   * `audioSkipped` says why): the proxy is then video only.
    */
   audio?: ProxyAudio;
+  /**
+   * The source has an audio track the proxy does not carry, and why.
+   */
+  audioSkipped?: ProxyAudioSkipped;
   /**
    * The encoder's backend (`svt-av1`, `videotoolbox`, `mf-hw`, …) and its vendor class.
    */

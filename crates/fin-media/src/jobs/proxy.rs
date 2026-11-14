@@ -14,12 +14,14 @@
 //!   least every 0.25 s; `1080` a closed GOP with a keyframe at least every 0.5 s; no B-frames;
 //!   a software encoder (SVT-AV1) also keeps spec §7.1's closed GOP of at most 15 frames.
 //! - **Key** (Decision 11): the cache key of `{fingerprint, recipe (proxy-540 | proxy-1080),
-//!   params {codec}, renderVersion, decoderClass}`, computed by the host when it submits and
+//!   params {codec, audio}, renderVersion, decoderClass}` (`audio`: [`ProxySourceAudio`], 6C
+//!   Task 20 review), computed by the host when it submits and
 //!   again by the worker from the decoder it opened (`PLAN_MISMATCH {reason: cacheKey}` when
 //!   they differ).
 //! - **Audio** (recipe v2, 6C plan Task 20): the source's audio as Opus at 48 kHz in its
 //!   canonical layout, 128 kb/s stereo or 64 kb/s for a mono source ([`ProxyAudio`]), beside the
-//!   video in `proxy.mp4`; a source without audio this build reads gives a video-only proxy.
+//!   video in `proxy.mp4`; a source without audio, or whose audio cannot be read here, gives a
+//!   video-only proxy (`ProxyResult.audioSkipped` says why).
 //! - **Source**: a project asset (`asset`, through the job's `in/manifest.json`), or a library
 //!   file (`file`, the `proxy540` library stage of 5D: opened through `fin-library`'s opener
 //!   with the catalogue's raw chain and `Expect`). Exactly one of the two.
@@ -31,8 +33,9 @@ use serde_json::{Value, json};
 
 use super::invalid;
 use crate::backend::VendorClass;
+use crate::backend_audio::{AUDIO_BACKENDS, AudioBackendEntry};
 use crate::cache::{CacheKey, KeyInput, PROXY_540, PROXY_1080, Recipe};
-use crate::format::{AudioCodec, VideoCodec};
+use crate::format::{AudioCodec, ContainerKind, VideoCodec};
 use crate::info::Size;
 
 /// A proxy tier (spec §7.1).
@@ -162,6 +165,8 @@ pub struct ProxyParams {
     pub codec: ProxyCodec,
     /// The vendor class the host expects the original's decoder to have (part of the key).
     pub decoder_class: VendorClass,
+    /// What the host expects of the original's audio ([`source_audio`], part of the key).
+    pub audio: ProxySourceAudio,
     /// [`proxy_key`] of the fields above: where the host commits the entry. The worker writes
     /// `out/<key>/` and fails `PLAN_MISMATCH {reason: cacheKey}` when the decoder it opened
     /// gives another key.
@@ -192,9 +197,15 @@ pub struct ProxyParams {
 }
 
 impl ProxyParams {
-    /// The key input for a source decoded by a backend of `decoder_class`.
-    pub fn key_input(&self, decoder_class: VendorClass) -> KeyInput {
-        key_input(&self.fingerprint, self.tier, self.codec, decoder_class)
+    /// The key input for a source decoded by a backend of `decoder_class`, its audio `audio`.
+    pub fn key_input(&self, decoder_class: VendorClass, audio: ProxySourceAudio) -> KeyInput {
+        key_input(
+            &self.fingerprint,
+            self.tier,
+            self.codec,
+            decoder_class,
+            audio,
+        )
     }
 
     /// Exactly one source, a well-formed key (the checks serde cannot make).
@@ -217,17 +228,72 @@ impl ProxyParams {
     }
 }
 
-/// The key input of a proxy (Decision 11): the codec is the recipe's one parameter.
+/// What a proxy's key says of the source's audio (6C Task 20 review): none, one this build
+/// has no decoder for, or one a decoder of a class decodes. A later build (or a plugin) that
+/// gains the decoder changes the key, so a video-only entry made without it is not served
+/// again; a track that is decodable but fails to decode (corrupt, or a profile the decoder
+/// refuses) keys as decodable, since the file will not change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ProxySourceAudio {
+    /// The source has no audio track.
+    None,
+    /// It has one this build reads no audio of (its codec, or its container).
+    Unavailable,
+    /// It has one a backend of this class decodes.
+    Decoded(VendorClass),
+}
+
+/// The audio backend `fin-workers` opens for a proxy source's audio (`AudioReader` over
+/// `fin-container`, so MP4/MOV only; WebM/Matroska audio is not read): libopus for Opus, the
+/// first of [`AUDIO_BACKENDS`] for AAC, symphonia for MP3 (the codecs `open_audio_decoder` takes
+/// from an MP4 sample entry); `None` for anything else. The worker checks the backend it opens
+/// against it.
+pub fn audio_decoder_for_proxy(
+    container: ContainerKind,
+    codec: AudioCodec,
+) -> Option<&'static AudioBackendEntry> {
+    if !matches!(container, ContainerKind::Mp4 | ContainerKind::Mov) {
+        return None;
+    }
+    let by = |name: &str| {
+        AUDIO_BACKENDS
+            .iter()
+            .find(|b| b.name == name && b.decode.contains(&codec))
+    };
+    match codec {
+        AudioCodec::Opus => by("libopus"),
+        AudioCodec::Mp3 => by("symphonia"),
+        AudioCodec::Aac => AUDIO_BACKENDS.iter().find(|b| b.decode.contains(&codec)),
+        _ => None,
+    }
+}
+
+/// The key's [`ProxySourceAudio`] for a source in `container` whose audio track has `codec`
+/// (`None`: no audio track).
+pub fn source_audio(container: ContainerKind, codec: Option<AudioCodec>) -> ProxySourceAudio {
+    match codec {
+        None => ProxySourceAudio::None,
+        Some(c) => audio_decoder_for_proxy(container, c)
+            .map_or(ProxySourceAudio::Unavailable, |b| {
+                ProxySourceAudio::Decoded(b.class)
+            }),
+    }
+}
+
+/// The key input of a proxy (Decision 11): the codec and the source's audio are the recipe's
+/// parameters.
 pub fn key_input(
     fingerprint: &str,
     tier: ProxyTier,
     codec: ProxyCodec,
     decoder_class: VendorClass,
+    audio: ProxySourceAudio,
 ) -> KeyInput {
     KeyInput::new(
         fingerprint,
         tier.recipe(),
-        json!({ "codec": codec }),
+        json!({ "codec": codec, "audio": audio }),
         decoder_class,
     )
 }
@@ -238,8 +304,9 @@ pub fn proxy_key(
     tier: ProxyTier,
     codec: ProxyCodec,
     decoder_class: VendorClass,
+    audio: ProxySourceAudio,
 ) -> CacheKey {
-    CacheKey::compute(&key_input(fingerprint, tier, codec, decoder_class))
+    CacheKey::compute(&key_input(fingerprint, tier, codec, decoder_class, audio))
 }
 
 /// The decoder a capability report's list for `source` names first, by
@@ -268,20 +335,21 @@ pub(crate) fn no_decoder(source: VideoCodec) -> CoreError {
     .with_fix("see `fin media caps` for what this machine decodes; the codec plugin adds more")
 }
 
-/// The key a proxy of a `source`-coded original will have, with the decoder the report names
-/// first (the host's half of Decision 11); `CODEC_UNAVAILABLE {direction: decode}` when none
-/// decodes it.
+/// The key a proxy of a `source`-coded original whose audio is `audio` ([`source_audio`]) will
+/// have, with the decoder the report names first (the host's half of Decision 11);
+/// `CODEC_UNAVAILABLE {direction: decode}` when none decodes it.
 pub fn plan_key<S: AsRef<str>>(
     fingerprint: &str,
     tier: ProxyTier,
     codec: ProxyCodec,
     source: VideoCodec,
     backends: &[S],
+    audio: ProxySourceAudio,
 ) -> Result<(CacheKey, &'static crate::backend::BackendEntry), CoreError> {
     let Some(b) = decoder_for(source, backends) else {
         return Err(no_decoder(source));
     };
-    Ok((proxy_key(fingerprint, tier, codec, b.class), b))
+    Ok((proxy_key(fingerprint, tier, codec, b.class, audio), b))
 }
 
 /// Keyframe placement (Decision 8): `(frames between keyframes, all-intra)`. `rate` is the
@@ -319,12 +387,27 @@ pub struct ProxyFallback {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProxyAudio {
-    /// Always `opus`.
-    pub codec: AudioCodec,
+    pub codec: ProxyAudioCodec,
     /// Bits a second.
     pub bitrate: u32,
     /// The encoder's delay in samples (the edit list's media time, `dOps` pre-skip).
     pub priming: u32,
+}
+
+/// The codec of a proxy's audio (spec §7.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ProxyAudioCodec {
+    Opus,
+}
+
+/// Why a source's audio track is not in its proxy (6C Task 20 review): the decode's error code
+/// (`CODEC_UNAVAILABLE`, `UNSUPPORTED_CONTAINER`, `MEDIA_LIMIT`, `MEDIA_CORRUPT`,
+/// `DECODE_FAILED`). The mix reads `pcm48`, which reports the same failure as its own.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProxyAudioSkipped {
+    pub code: String,
 }
 
 impl ProxyAudio {
@@ -357,11 +440,15 @@ pub struct ProxyResult {
     pub tone_mapped: Option<ToneMapped>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fell_back: Vec<ProxyFallback>,
-    /// The audio track; absent when the source has none, or none this build reads
-    /// (`CODEC_UNAVAILABLE`, `UNSUPPORTED_CONTAINER`, `MEDIA_LIMIT`): the proxy is then video only.
+    /// The audio track; absent when the source has none or its audio could not be read (then
+    /// `audioSkipped` says why): the proxy is then video only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "ProxyAudio")]
     pub audio: Option<ProxyAudio>,
+    /// The source has an audio track the proxy does not carry, and why.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "ProxyAudioSkipped")]
+    pub audio_skipped: Option<ProxyAudioSkipped>,
 }
 
 /// One tier of `media.proxy.status`: its entry when the cache holds one, the job making it.

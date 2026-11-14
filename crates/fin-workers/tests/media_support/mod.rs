@@ -406,12 +406,20 @@ pub fn make_proxy(fx: &Fixture) -> ProxyEntry {
     use fin_media::backend::VendorClass;
     use fin_media::jobs::{ProxyCodec, ProxyParams, ProxyTier, proxy_key};
     let tier = ProxyTier::Preview;
-    let key = proxy_key("fp-av1", tier, ProxyCodec::Av1, VendorClass::Software).to_string();
+    let key = proxy_key(
+        "fp-av1",
+        tier,
+        ProxyCodec::Av1,
+        VendorClass::Software,
+        fin_media::jobs::ProxySourceAudio::None,
+    )
+    .to_string();
     let params = ProxyParams {
         fingerprint: "fp-av1".into(),
         tier,
         codec: ProxyCodec::Av1,
         decoder_class: VendorClass::Software,
+        audio: fin_media::jobs::ProxySourceAudio::None,
         key: key.clone(),
         asset: Some(fx.av1_id.clone()),
         file: None,

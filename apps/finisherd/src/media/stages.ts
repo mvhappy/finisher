@@ -15,6 +15,7 @@ import { type MediaCache, mediaProxyPlan, mediaVersions } from "@finisher/fin-no
 import { Effect } from "effect";
 import { MEDIA_PROXY, decodersOf, proxyCodec } from "../jobs/kinds/media.proxy.ts";
 import type { StageFile, StageSpec } from "../library/api.ts";
+import { sourceAudioOf } from "./proxy.ts";
 
 export const PROXY540_STAGE = "proxy540";
 export const PROXY540_RECIPE = "proxy-540";
@@ -42,12 +43,14 @@ function paramsOf(report: unknown, f: StageFile): ProxyParams {
   const video = videoOf(f);
   if (video === undefined) throw new Error("the file has no video track");
   const codec = proxyCodec(report);
-  const plan = mediaProxyPlan({ fingerprint: f.fp, tier: "540", codec, sourceCodec: video.codec, decoders: decodersOf(report, video.codec) });
+  const audio = sourceAudioOf(isObj(f.probe) ? f.probe.media : undefined);
+  const plan = mediaProxyPlan({ fingerprint: f.fp, tier: "540", codec, sourceCodec: video.codec, decoders: decodersOf(report, video.codec), ...(audio === undefined ? {} : { sourceAudio: audio }) });
   return {
     fingerprint: f.fp,
     tier: "540",
     codec,
     decoderClass: plan.decoderClass,
+    audio: plan.audio,
     key: plan.key,
     file: { library: f.library, root: f.root, rel: f.rel, expect: f.expect, hydrate: f.hydrate },
     ...(video.display === undefined ? {} : { display: video.display }),

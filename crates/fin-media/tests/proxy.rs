@@ -5,11 +5,14 @@ use fin_core::Rational;
 use fin_media::backend::VendorClass;
 use fin_media::cache::{CacheKey, PROXY_540, PROXY_1080};
 use fin_media::jobs::{
-    ProxyCodec, ProxyLibraryFile, ProxyParams, ProxyTier, gop, plan_key, proxy_key,
+    ProxyCodec, ProxyLibraryFile, ProxyParams, ProxySourceAudio, ProxyTier, gop, plan_key,
+    proxy_key,
 };
 use fin_media::table_bin::{TABLE_VERSION, decode, encode};
 use fin_media::{FrameEntry, SampleTable, Size, SyncPoint, VideoCodec, frame_at};
 use serde_json::json;
+
+const NONE: ProxySourceAudio = ProxySourceAudio::None;
 
 const S: ProxyTier = ProxyTier::Scrub;
 const P: ProxyTier = ProxyTier::Preview;
@@ -94,22 +97,22 @@ fn gop_keyframe_intervals() {
 
 #[test]
 fn the_key_is_the_cache_key_of_the_recipe_and_codec() {
-    let k = proxy_key("fp", S, ProxyCodec::Av1, VendorClass::Software);
+    let k = proxy_key("fp", S, ProxyCodec::Av1, VendorClass::Software, NONE);
     assert_eq!(k.as_str().len(), 64);
     // The tier is the recipe, the codec its one parameter, the decoder class in the key.
-    let input = fin_media::jobs::key_input("fp", S, ProxyCodec::Av1, VendorClass::Software);
+    let input = fin_media::jobs::key_input("fp", S, ProxyCodec::Av1, VendorClass::Software, NONE);
     assert_eq!(input.recipe, PROXY_540.name);
-    assert_eq!(input.params, json!({ "codec": "av1" }));
+    assert_eq!(input.params, json!({ "codec": "av1", "audio": "none" }));
     assert_eq!(CacheKey::compute(&input), k);
     assert_eq!(
-        fin_media::jobs::key_input("fp", P, ProxyCodec::Av1, VendorClass::Software).recipe,
+        fin_media::jobs::key_input("fp", P, ProxyCodec::Av1, VendorClass::Software, NONE).recipe,
         PROXY_1080.name
     );
     for other in [
-        proxy_key("fp2", S, ProxyCodec::Av1, VendorClass::Software),
-        proxy_key("fp", P, ProxyCodec::Av1, VendorClass::Software),
-        proxy_key("fp", S, ProxyCodec::H264, VendorClass::Software),
-        proxy_key("fp", S, ProxyCodec::Av1, VendorClass::Os),
+        proxy_key("fp2", S, ProxyCodec::Av1, VendorClass::Software, NONE),
+        proxy_key("fp", P, ProxyCodec::Av1, VendorClass::Software, NONE),
+        proxy_key("fp", S, ProxyCodec::H264, VendorClass::Software, NONE),
+        proxy_key("fp", S, ProxyCodec::Av1, VendorClass::Os, NONE),
     ] {
         assert_ne!(other, k);
     }
@@ -121,7 +124,8 @@ fn params() -> ProxyParams {
         "tier": "540",
         "codec": "av1",
         "decoderClass": "software",
-        "key": proxy_key("fp", S, ProxyCodec::Av1, VendorClass::Software).to_string(),
+        "audio": "none",
+        "key": proxy_key("fp", S, ProxyCodec::Av1, VendorClass::Software, NONE).to_string(),
         "asset": "a1",
     }))
     .unwrap()
@@ -246,12 +250,13 @@ fn the_host_plans_the_key_with_the_report_s_first_decoder() {
         ProxyCodec::Av1,
         VideoCodec::Av1,
         &["dav1d", "svt-av1"],
+        NONE,
     )
     .unwrap();
     assert_eq!((b.name, b.class), ("dav1d", VendorClass::Software));
     assert_eq!(
         k,
-        proxy_key("fp", S, ProxyCodec::Av1, VendorClass::Software)
+        proxy_key("fp", S, ProxyCodec::Av1, VendorClass::Software, NONE)
     );
     // An encoder listed first, or an unknown name, is skipped.
     let (_, b) = plan_key(
@@ -260,6 +265,7 @@ fn the_host_plans_the_key_with_the_report_s_first_decoder() {
         ProxyCodec::Av1,
         VideoCodec::Av1,
         &["svt-av1", "nope", "videotoolbox"],
+        NONE,
     )
     .unwrap();
     assert_eq!(b.class, VendorClass::Os);
@@ -269,9 +275,61 @@ fn the_host_plans_the_key_with_the_report_s_first_decoder() {
         ProxyCodec::Av1,
         VideoCodec::H264,
         &["dav1d", "svt-av1"],
+        NONE,
     )
     .unwrap_err();
     assert_eq!(e.code, "CODEC_UNAVAILABLE");
     assert_eq!(e.details["direction"], "decode");
     assert!(e.fix.is_some());
+}
+
+/// 6C Task 20 review S1: whether the proxy can carry the source's audio is in the key, so a
+/// build (or a plugin) that gains the decoder makes a new entry instead of serving a silent one.
+#[test]
+fn the_key_names_the_source_s_audio() {
+    use fin_media::AudioCodec;
+    use fin_media::format::ContainerKind::{Matroska, Mov, Mp4, Webm};
+    use fin_media::jobs::source_audio;
+    let sw = ProxySourceAudio::Decoded(VendorClass::Software);
+    assert_eq!(source_audio(Mp4, None), NONE);
+    assert_eq!(source_audio(Mp4, Some(AudioCodec::Opus)), sw);
+    assert_eq!(source_audio(Mov, Some(AudioCodec::Mp3)), sw);
+    // A codec nothing here decodes from MP4, and every WebM/Matroska audio track (not read).
+    for (c, a) in [
+        (Mp4, AudioCodec::Ac3),
+        (Mov, AudioCodec::Pcm),
+        (Webm, AudioCodec::Opus),
+        (Matroska, AudioCodec::Vorbis),
+    ] {
+        assert_eq!(
+            source_audio(c, Some(a)),
+            ProxySourceAudio::Unavailable,
+            "{c:?} {a:?}"
+        );
+    }
+    // AAC: symphonia on Linux; the OS decoders arrive with 6C Tasks 15-16.
+    let aac = source_audio(Mp4, Some(AudioCodec::Aac));
+    if cfg!(target_os = "linux") {
+        assert_eq!(aac, sw);
+    } else {
+        assert_eq!(aac, ProxySourceAudio::Unavailable);
+    }
+    // Every state is a different key.
+    let keys: Vec<_> = [
+        NONE,
+        ProxySourceAudio::Unavailable,
+        sw,
+        ProxySourceAudio::Decoded(VendorClass::Os),
+    ]
+    .map(|a| proxy_key("fp", S, ProxyCodec::Av1, VendorClass::Software, a))
+    .to_vec();
+    for (i, a) in keys.iter().enumerate() {
+        for b in &keys[i + 1..] {
+            assert_ne!(a, b);
+        }
+    }
+    assert_eq!(
+        fin_media::jobs::key_input("fp", S, ProxyCodec::Av1, VendorClass::Software, sw).params,
+        json!({ "codec": "av1", "audio": { "decoded": "software" } })
+    );
 }

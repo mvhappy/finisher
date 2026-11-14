@@ -24,7 +24,7 @@ use fin_media::jobs::ProxyFallback;
 use fin_media::{ColourTags, Rotation};
 use serde_json::json;
 
-use super::proxy_audio::AudioPackets;
+use super::proxy_audio::{AudioPackets, PacketReader};
 
 /// Where and how the frames are muxed.
 pub struct Track {
@@ -88,6 +88,7 @@ fn moov_reserve(frames: u64) -> u64 {
 /// The audio track being muxed beside the video: its packets and the next one due.
 struct AudioMux<'a> {
     a: &'a AudioPackets,
+    r: PacketReader<'a>,
     track: TrackRef,
     next: usize,
 }
@@ -114,14 +115,8 @@ impl AudioMux<'_> {
                 CoreError::new("ENCODE_FAILED", "the audio track's time overflows")
                     .with_details(json!({ "backend": "libopus" }))
             })?;
-            w.write(
-                self.track,
-                self.a.packet(self.next),
-                at,
-                at,
-                self.a.frame,
-                true,
-            )?;
+            let packet = self.r.next(self.next)?;
+            w.write(self.track, packet, at, at, self.a.frame, true)?;
             self.next += 1;
         }
         Ok(())
@@ -181,6 +176,7 @@ fn start<'a>(
     let audio = match audio {
         Some(a) => Some(AudioMux {
             a,
+            r: a.reader()?,
             track: w.add_audio(a.track.clone())?,
             next: 0,
         }),

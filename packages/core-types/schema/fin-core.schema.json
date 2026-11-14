@@ -15742,12 +15742,7 @@
           "type": "integer"
         },
         "codec": {
-          "allOf": [
-            {
-              "$ref": "#/$defs/AudioCodec"
-            }
-          ],
-          "description": "Always `opus`."
+          "$ref": "#/$defs/ProxyAudioCodec"
         },
         "priming": {
           "description": "The encoder's delay in samples (the edit list's media time, `dOps` pre-skip).",
@@ -15760,6 +15755,26 @@
         "codec",
         "bitrate",
         "priming"
+      ],
+      "type": "object"
+    },
+    "ProxyAudioCodec": {
+      "description": "The codec of a proxy's audio (spec §7.1).",
+      "enum": [
+        "opus"
+      ],
+      "type": "string"
+    },
+    "ProxyAudioSkipped": {
+      "additionalProperties": false,
+      "description": "Why a source's audio track is not in its proxy (6C Task 20 review): the decode's error code\n(`CODEC_UNAVAILABLE`, `UNSUPPORTED_CONTAINER`, `MEDIA_LIMIT`, `MEDIA_CORRUPT`,\n`DECODE_FAILED`). The mix reads `pcm48`, which reports the same failure as its own.",
+      "properties": {
+        "code": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code"
       ],
       "type": "object"
     },
@@ -15839,6 +15854,14 @@
           "description": "A project asset, through the job's `in/manifest.json` (the asset's fingerprint there\nmust equal `fingerprint`, else `ASSET_CHANGED`).",
           "type": "string"
         },
+        "audio": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/ProxySourceAudio"
+            }
+          ],
+          "description": "What the host expects of the original's audio ([`source_audio`], part of the key)."
+        },
         "branch": {
           "description": "The branch whose head names the asset (`main` when absent). Host only.",
           "type": "string"
@@ -15889,6 +15912,7 @@
         "tier",
         "codec",
         "decoderClass",
+        "audio",
         "key"
       ],
       "type": "object"
@@ -15903,7 +15927,15 @@
               "$ref": "#/$defs/ProxyAudio"
             }
           ],
-          "description": "The audio track; absent when the source has none, or none this build reads\n(`CODEC_UNAVAILABLE`, `UNSUPPORTED_CONTAINER`, `MEDIA_LIMIT`): the proxy is then video only."
+          "description": "The audio track; absent when the source has none or its audio could not be read (then\n`audioSkipped` says why): the proxy is then video only."
+        },
+        "audioSkipped": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/ProxyAudioSkipped"
+            }
+          ],
+          "description": "The source has an audio track the proxy does not carry, and why."
         },
         "backend": {
           "description": "The encoder's backend (`svt-av1`, `videotoolbox`, `mf-hw`, …) and its vendor class.",
@@ -15967,6 +15999,34 @@
         "size"
       ],
       "type": "object"
+    },
+    "ProxySourceAudio": {
+      "description": "What a proxy's key says of the source's audio (6C Task 20 review): none, one this build\nhas no decoder for, or one a decoder of a class decodes. A later build (or a plugin) that\ngains the decoder changes the key, so a video-only entry made without it is not served\nagain; a track that is decodable but fails to decode (corrupt, or a profile the decoder\nrefuses) keys as decodable, since the file will not change.",
+      "oneOf": [
+        {
+          "const": "none",
+          "description": "The source has no audio track.",
+          "type": "string"
+        },
+        {
+          "const": "unavailable",
+          "description": "It has one this build reads no audio of (its codec, or its container).",
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "description": "It has one a backend of this class decodes.",
+          "properties": {
+            "decoded": {
+              "$ref": "#/$defs/VendorClass"
+            }
+          },
+          "required": [
+            "decoded"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "ProxyStatus": {
       "additionalProperties": false,

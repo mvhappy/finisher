@@ -20,7 +20,7 @@ import { mediaCapabilities } from "../src/media/caps.ts";
 import { BATCH_MEMORY, BATCH_MEMORY_LARGE } from "../src/media/memory.ts";
 import { MEDIA_CAPABILITIES } from "../src/jobs/kinds/media.capabilities.ts";
 import type { MediaCacheService } from "../src/media/cache.ts";
-import { MEDIA_SYSTEM_OWNER, makeProxyService, type ProxyServiceDeps, proxyUnavailable } from "../src/media/proxy.ts";
+import { MEDIA_SYSTEM_OWNER, makeProxyService, type ProxyServiceDeps, proxyUnavailable, sourceAudioOf } from "../src/media/proxy.ts";
 import { mediaWiring } from "../src/media/wiring.ts";
 import { makeProjectRegistry } from "../src/projects.ts";
 import { PROXY540_STAGE, proxy540Stage } from "../src/media/stages.ts";
@@ -66,7 +66,7 @@ function keyOf(fp: string, tier: "540" | "1080" = "540", codec: "av1" | "h264" =
 }
 
 function params(over: { [K in keyof ProxyParams]?: ProxyParams[K] | undefined } = {}): ProxyParams {
-  const p = { fingerprint: "fp-a1", tier: "540", codec: "av1", decoderClass: "software", key: keyOf("fp-a1"), asset: "a1", ...over } as Record<string, unknown>;
+  const p = { fingerprint: "fp-a1", tier: "540", codec: "av1", decoderClass: "software", audio: "none", key: keyOf("fp-a1"), asset: "a1", ...over } as Record<string, unknown>;
   for (const k of Object.keys(p)) if (p[k] === undefined) delete p[k];
   return p as unknown as ProxyParams;
 }
@@ -114,6 +114,25 @@ describe("the kind", () => {
     expect(validateJobParams(MEDIA_PROXY, 1, params({ key: "x" }))).toMatchObject({ ok: false });
     expect(validateJobParams(MEDIA_PROXY, 1, { ...params(), path: "/etc/passwd" })).toMatchObject({ ok: false });
     expect(validateJobParams(MEDIA_PROXY, 1, { ...params(), tier: "720" })).toMatchObject({ ok: false });
+  });
+
+  // 6C Task 20 review (S1): what this build reads of the source's audio is in the key, so an entry
+  // made without a decoder is not served once one exists.
+  test("the key names the source's audio: none, unavailable or the decoder's class", () => {
+    const plan = (sourceAudio?: { container: string; codec: string }) =>
+      mediaProxyPlan({ fingerprint: "fp", tier: "540", codec: "av1", sourceCodec: "av1", decoders: ["dav1d"], ...(sourceAudio === undefined ? {} : { sourceAudio }) });
+    const none = plan();
+    const opus = plan({ container: "mp4", codec: "opus" });
+    const webm = plan({ container: "webm", codec: "opus" });
+    const ac3 = plan({ container: "mov", codec: "ac3" });
+    expect([none.audio, opus.audio, webm.audio, ac3.audio]).toEqual(["none", { decoded: "software" }, "unavailable", "unavailable"]);
+    expect(new Set([none.key, opus.key, webm.key]).size).toBe(3);
+    expect(ac3.key).toBe(webm.key);
+    expect(sourceAudioOf({ container: "mp4", audio: { codec: "aac" } })).toEqual({ container: "mp4", codec: "aac" });
+    expect(sourceAudioOf({ container: "mp4" })).toBeUndefined();
+    // The params carry it; a params without one is refused.
+    expect(validateJobParams(MEDIA_PROXY, 1, params({ audio: { decoded: "software" } }))).toMatchObject({ ok: true });
+    expect(validateJobParams(MEDIA_PROXY, 1, params({ audio: undefined }))).toMatchObject({ ok: false });
   });
 
   test("the key is planned with the report's decoder; a codec nothing decodes is CODEC_UNAVAILABLE", () => {
@@ -314,7 +333,7 @@ describe("the proxy540 stage", () => {
     expect(s.appliesTo({ ...stageFile(video), kind: "image" })).toBe(false);
     expect(s.appliesTo(stageFile({ media: { video: { codec: "h264" } } }))).toBe(false);
     const p = s.params([stageFile(video)], { library: "l1", pools: {} as never }) as ProxyParams;
-    expect(p).toMatchObject({ fingerprint: "fp-lib", tier: "540", codec: "av1", decoderClass: "software", key: keyOf("fp-lib"), display: { width: 160, height: 90 } });
+    expect(p).toMatchObject({ fingerprint: "fp-lib", tier: "540", codec: "av1", decoderClass: "software", audio: "none", key: keyOf("fp-lib"), display: { width: 160, height: 90 } });
     expect(p.file).toMatchObject({ library: "l1", root: dirname(media), hydrate: false });
     expect(p.asset).toBeUndefined();
   });

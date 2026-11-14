@@ -5,67 +5,111 @@
 //! through [`open_audio_encoder`] under `EncodePurpose::Proxy` at
 //! [`ProxyAudio::STEREO_BITRATE`] or [`ProxyAudio::MONO_BITRATE`]. The whole track is encoded
 //! before the video, because the muxer takes its presented length when the track is added
-//! (Decision 22: `presented = EncodedLength.valid`, media time = the encoder's priming); the
-//! packets are held in one buffer (16 KB a second at 128 kb/s) and muxed beside the video by
-//! time (`encode_pipeline`), again from the first one when the video encode restarts on another
-//! encoder.
+//! (Decision 22: `presented = EncodedLength.valid`, media time = the encoder's priming). The
+//! packets go to a scratch file in the job's `out/` (beside the entry's directory, never in
+//! it: 5C empties `out/` before each attempt and removes the job directory after the job), so
+//! only their sizes are held in memory (4 bytes a 20 ms packet); `encode_pipeline` reads them
+//! back in order beside the video, again from the first one when the video encode restarts.
 //!
-//! A source whose audio this build cannot read (`CODEC_UNAVAILABLE`: a codec without a decoder
-//! here, or a layout it cannot map; `UNSUPPORTED_CONTAINER`; `MEDIA_LIMIT`) gives a video-only
-//! proxy, so its preview keeps its frames; any other failure (a corrupt track) is the item's.
+//! The decoder opened must be of the class the key names (`ProxySourceAudio::Decoded`, else
+//! `PLAN_MISMATCH {reason: cacheKey}`). A decode that fails (`CODEC_UNAVAILABLE`: a profile or
+//! layout the decoder refuses; `UNSUPPORTED_CONTAINER`; `MEDIA_LIMIT`; `MEDIA_CORRUPT`;
+//! `DECODE_FAILED`) gives a video-only proxy that says why ([`Outcome::Skipped`]): the preview
+//! keeps its frames, and the mix reads `pcm48`, which reports the failure as its own.
 
 use std::fs::File;
+use std::io::{BufReader, BufWriter, Read, Write};
+use std::path::{Path, PathBuf};
 
 use fin_codecs::audio::{AudioEncoder, AudioEncoderConfig, open_audio_encoder};
 use fin_container::AudioTrackConfig;
 use fin_core::CoreError;
 use fin_media::AudioCodec;
-use fin_media::backend::EncodePurpose;
-use fin_media::jobs::{PcmLayout, PcmRecipe, ProxyAudio};
+use fin_media::backend::{EncodePurpose, VendorClass};
+use fin_media::jobs::{PcmLayout, PcmRecipe, ProxyAudio, ProxyAudioCodec};
+use fin_shm::JobDir;
 use serde_json::json;
 
 use super::audio_src::DecodedSource;
+use super::inputs;
+use super::proxy::io_error;
 
 /// The proxy's rate (spec §7.1: 48 kHz).
 const RATE: u32 = 48_000;
 
-/// The encoded track: its muxer configuration and its packets, in order.
+/// The encoded track: its muxer configuration and its packets, in order, in `path`.
 #[derive(Debug)]
 pub struct AudioPackets {
     pub track: AudioTrackConfig,
     /// Samples each packet carries (its duration in the track's 48 kHz timescale).
     pub frame: u32,
     pub result: ProxyAudio,
-    data: Vec<u8>,
-    /// Where each packet ends in `data`.
-    ends: Vec<usize>,
+    path: PathBuf,
+    job: JobDir,
+    /// Each packet's size, in order.
+    sizes: Vec<u32>,
 }
 
 impl AudioPackets {
     pub fn len(&self) -> usize {
-        self.ends.len()
+        self.sizes.len()
     }
 
-    /// Packet `i`'s bytes.
-    pub fn packet(&self, i: usize) -> &[u8] {
-        let start = if i == 0 { 0 } else { self.ends[i - 1] };
-        &self.data[start..self.ends[i]]
+    /// The packets from the first, read back in order.
+    pub fn reader(&self) -> Result<PacketReader<'_>, CoreError> {
+        let bytes = self.sizes.iter().map(|s| *s as u64).sum();
+        let f =
+            fin_shm::checked_open(&self.path, bytes).map_err(|e| inputs::relative(&self.job, e))?;
+        Ok(PacketReader {
+            a: self,
+            r: BufReader::with_capacity(1 << 16, f),
+            buf: Vec::new(),
+        })
     }
 
-    fn take(&mut self, enc: &mut dyn AudioEncoder) -> Result<(), CoreError> {
-        while let Some(p) = enc.receive()? {
-            self.data.extend_from_slice(&p.data);
-            self.ends.push(self.data.len());
-        }
-        Ok(())
+    /// Removes the scratch file (best effort: 5C removes the job directory anyway).
+    pub fn remove(self) {
+        let _ = std::fs::remove_file(&self.path);
     }
 }
 
-/// The codes of an audio track this build cannot read (module docs).
-fn unreadable(e: &CoreError) -> bool {
+/// [`AudioPackets`] read back one packet at a time.
+pub struct PacketReader<'a> {
+    a: &'a AudioPackets,
+    r: BufReader<File>,
+    buf: Vec<u8>,
+}
+
+impl PacketReader<'_> {
+    /// Packet `i`, which must be the one after the last read (`i` from 0).
+    pub fn next(&mut self, i: usize) -> Result<&[u8], CoreError> {
+        self.buf.resize(self.a.sizes[i] as usize, 0);
+        self.r
+            .read_exact(&mut self.buf)
+            .map_err(|e| inputs::relative(&self.a.job, io_error(&self.a.path, e)))?;
+        Ok(&self.buf)
+    }
+}
+
+/// What became of the source's audio.
+#[derive(Debug)]
+pub enum Outcome {
+    Track(AudioPackets),
+    /// Not decoded: the decode's error code (module docs).
+    Skipped(String),
+    /// A track with no samples.
+    Empty,
+}
+
+/// The codes of a decode that failed (module docs).
+fn skippable(e: &CoreError) -> bool {
     matches!(
         e.code.as_str(),
-        "CODEC_UNAVAILABLE" | "UNSUPPORTED_CONTAINER" | "MEDIA_LIMIT"
+        "CODEC_UNAVAILABLE"
+            | "UNSUPPORTED_CONTAINER"
+            | "MEDIA_LIMIT"
+            | "MEDIA_CORRUPT"
+            | "DECODE_FAILED"
     )
 }
 
@@ -73,23 +117,40 @@ fn encode_failed(message: String, details: serde_json::Value) -> CoreError {
     CoreError::new("ENCODE_FAILED", message).with_details(details)
 }
 
-/// `file`'s audio as the proxy's Opus track; `None` for a track this build cannot read or one
-/// with no samples. `between` runs before each decoded chunk (cancel).
-pub fn encode(
-    file: File,
-    mut between: impl FnMut() -> Result<(), CoreError>,
-) -> Result<Option<AudioPackets>, CoreError> {
-    match encode_all(file, &mut between) {
-        Err(e) if unreadable(&e) => Ok(None),
-        other => other,
+/// A decode's failure as `Err(code)`, anything else (I/O, cancel) as the error it is.
+fn decode<T>(r: Result<T, CoreError>) -> Result<Result<T, String>, CoreError> {
+    match r {
+        Ok(v) => Ok(Ok(v)),
+        Err(e) if skippable(&e) => Ok(Err(e.code)),
+        Err(e) => Err(e),
     }
 }
 
-fn encode_all(
+/// `file`'s audio as the proxy's Opus track, its packets in `scratch` (a new file in `job`'s
+/// `out/`, removed again when the audio is skipped); its decoder must be of `class`.
+/// `between(frames)` runs before each decoded chunk with the 48 kHz frames done so far
+/// (progress, cancel).
+pub fn encode(
     file: File,
-    between: &mut dyn FnMut() -> Result<(), CoreError>,
-) -> Result<Option<AudioPackets>, CoreError> {
-    let mut src = DecodedSource::open(file, PcmRecipe::Pcm48)?;
+    class: VendorClass,
+    job: &JobDir,
+    scratch: &Path,
+    mut between: impl FnMut(u64) -> Result<(), CoreError>,
+) -> Result<Outcome, CoreError> {
+    let mut src = match decode(DecodedSource::open(file, PcmRecipe::Pcm48))? {
+        Ok(s) => s,
+        Err(code) => return Ok(Outcome::Skipped(code)),
+    };
+    if src.decoder_class() != class {
+        return Err(CoreError::new(
+            "PLAN_MISMATCH",
+            "the proxy's cache key does not match the audio decoder this worker opened",
+        )
+        .with_details(json!({
+            "reason": "cacheKey", "audioDecoder": src.backend(),
+            "audioClass": src.decoder_class(), "expected": class,
+        })));
+    }
     let (channels, bitrate) = match src.feed_layout() {
         PcmLayout::Mono => (1u16, ProxyAudio::MONO_BITRATE),
         PcmLayout::Stereo => (2, ProxyAudio::STEREO_BITRATE),
@@ -100,42 +161,32 @@ fn encode_all(
         channels,
         bitrate,
     };
-    // The encoder is opened before the first decode: a refusal here is the encoder's, which
-    // `encode` must not mistake for an unreadable source.
     let mut enc = open_audio_encoder(&cfg, EncodePurpose::Proxy)
         .map_err(|e| encode_failed(e.message, json!({ "backend": "libopus", "cause": e.code })))?;
-    let mut out = AudioPackets {
-        track: AudioTrackConfig {
-            config: enc.config(),
-            sample_rate: RATE,
-            channels,
-            priming: 0,
-            presented: None,
-        },
-        frame: enc.frame_size(),
-        result: ProxyAudio {
-            codec: AudioCodec::Opus,
-            bitrate,
-            priming: 0,
-        },
-        data: Vec::new(),
-        ends: Vec::new(),
+    let out = fin_shm::create_output(scratch).map_err(|e| inputs::relative(job, e))?;
+    let mut w = Spill {
+        w: BufWriter::with_capacity(1 << 16, out),
+        path: scratch,
+        job,
+        sizes: Vec::new(),
     };
-    let mut sent = 0u64;
-    while let Some(pcm) = {
-        between()?;
-        src.next_interleaved()?
-    } {
-        enc.send(&pcm, sent as i64)?;
-        sent += (pcm.len() / channels as usize) as u64;
-        out.take(&mut *enc)?;
-    }
-    if sent == 0 {
-        return Ok(None);
-    }
+    let r = w.pump(&mut src, &mut *enc, channels, &mut between);
+    let sent = match r {
+        Ok(Ok(sent)) if sent > 0 => sent,
+        other => {
+            drop(w);
+            let _ = std::fs::remove_file(scratch);
+            return match other? {
+                Ok(_) => Ok(Outcome::Empty),
+                Err(code) => Ok(Outcome::Skipped(code)),
+            };
+        }
+    };
     let len = enc.finish()?;
-    out.take(&mut *enc)?;
-    let decoded = out.len() as u64 * out.frame as u64;
+    w.take(&mut *enc)?;
+    let sizes = w.finish()?;
+    let frame = enc.frame_size();
+    let decoded = sizes.len() as u64 * frame as u64;
     if len.valid != sent
         || decoded != len.priming as u64 + len.valid + len.padding as u64
         || len.priming != enc.priming()
@@ -147,17 +198,86 @@ fn encode_all(
                 len.priming,
                 len.valid,
                 len.padding,
-                out.len()
+                sizes.len()
             ),
             json!({ "backend": "libopus" }),
         ));
     }
-    // The config is read again after the stream: `dOps` carries the encoder's pre-skip.
-    out.track.config = enc.config();
-    out.track.priming = len.priming;
-    out.track.presented = Some(len.valid);
-    out.result.priming = len.priming;
-    Ok(Some(out))
+    Ok(Outcome::Track(AudioPackets {
+        // Read after the stream: `dOps` carries the encoder's pre-skip.
+        track: AudioTrackConfig {
+            config: enc.config(),
+            sample_rate: RATE,
+            channels,
+            priming: len.priming,
+            presented: Some(len.valid),
+        },
+        frame,
+        result: ProxyAudio {
+            codec: ProxyAudioCodec::Opus,
+            bitrate,
+            priming: len.priming,
+        },
+        path: scratch.to_path_buf(),
+        job: job.clone(),
+        sizes,
+    }))
+}
+
+/// The scratch file being written.
+struct Spill<'a> {
+    w: BufWriter<File>,
+    path: &'a Path,
+    job: &'a JobDir,
+    sizes: Vec<u32>,
+}
+
+impl Spill<'_> {
+    fn io(&self, e: impl std::fmt::Display) -> CoreError {
+        inputs::relative(self.job, io_error(self.path, e))
+    }
+
+    /// Decodes and encodes every frame: the frames sent, or the decode's failure code.
+    fn pump(
+        &mut self,
+        src: &mut DecodedSource,
+        enc: &mut dyn AudioEncoder,
+        channels: u16,
+        between: &mut dyn FnMut(u64) -> Result<(), CoreError>,
+    ) -> Result<Result<u64, String>, CoreError> {
+        let mut sent = 0u64;
+        loop {
+            between(sent)?;
+            let pcm = match decode(src.next_interleaved())? {
+                Ok(Some(pcm)) => pcm,
+                Ok(None) => return Ok(Ok(sent)),
+                Err(code) => return Ok(Err(code)),
+            };
+            enc.send(&pcm, sent as i64)?;
+            sent += (pcm.len() / channels as usize) as u64;
+            self.take(enc)?;
+        }
+    }
+
+    fn take(&mut self, enc: &mut dyn AudioEncoder) -> Result<(), CoreError> {
+        while let Some(p) = enc.receive()? {
+            let size = u32::try_from(p.data.len())
+                .map_err(|_| encode_failed("a packet past 4 GiB".into(), json!({})))?;
+            self.w.write_all(&p.data).map_err(|e| self.io(e))?;
+            self.sizes.push(size);
+        }
+        Ok(())
+    }
+
+    fn finish(self) -> Result<Vec<u32>, CoreError> {
+        let f = self
+            .w
+            .into_inner()
+            .map_err(|e| inputs::relative(self.job, io_error(self.path, e.error())))?;
+        f.sync_all()
+            .map_err(|e| inputs::relative(self.job, io_error(self.path, e)))?;
+        Ok(self.sizes)
+    }
 }
 
 #[cfg(test)]

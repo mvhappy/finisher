@@ -456,12 +456,20 @@ fn crash_keeps_done_items() {
 /// Makes the `1080` proxy of `spec` and returns its job (the entry is `out/<key>/`).
 fn made_proxy(c: &Clip) -> (Job, String) {
     let tier = ProxyTier::Preview;
-    let key = proxy_key(FP, tier, ProxyCodec::Av1, VendorClass::Software).to_string();
+    let key = proxy_key(
+        FP,
+        tier,
+        ProxyCodec::Av1,
+        VendorClass::Software,
+        fin_media::jobs::ProxySourceAudio::None,
+    )
+    .to_string();
     let p = ProxyParams {
         fingerprint: FP.into(),
         tier,
         codec: ProxyCodec::Av1,
         decoder_class: VendorClass::Software,
+        audio: fin_media::jobs::ProxySourceAudio::None,
         key: key.clone(),
         asset: Some("a1".into()),
         file: None,

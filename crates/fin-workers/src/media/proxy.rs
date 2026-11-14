@@ -39,8 +39,8 @@ use fin_library::{Expect, OpenError, RawRel, open_for_read};
 use fin_media::backend::{EncodePurpose, backend};
 use fin_media::cache::{EntryEncoder, EntryFile, EntryMeta, META_FILE};
 use fin_media::jobs::{
-    MANIFEST_VERSION, ManifestAsset, ProxyCodec, ProxyParams, ProxyResult, RenderManifest, gop,
-    proxy_key,
+    MANIFEST_VERSION, ManifestAsset, ProxyAudioSkipped, ProxyCodec, ProxyParams, ProxyResult,
+    ProxySourceAudio, RenderManifest, gop, proxy_key, source_audio,
 };
 use fin_media::table_bin::{self, TABLE_FILE};
 use fin_media::{ColourTags, MediaInfo, VideoTrackInfo};
@@ -235,12 +235,20 @@ fn make(p: &ProxyParams, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<ProxyR
     let decoder_class = backend(decoder)
         .map(|b| b.class)
         .ok_or_else(|| CoreError::new("INTERNAL", format!("{decoder} is not a known backend")))?;
-    let key = proxy_key(&p.fingerprint, p.tier, p.codec, decoder_class);
+    // What this build reads of the audio is in the key too (Task 20 review), from the file.
+    let audio_key = source_audio(
+        reader.info().container,
+        reader.info().audio.as_ref().map(|a| a.codec),
+    );
+    let key = proxy_key(&p.fingerprint, p.tier, p.codec, decoder_class, audio_key);
     if key.as_str() != p.key {
         return Err(item(
             "PLAN_MISMATCH",
             "the proxy's cache key does not match the decoder this worker opened".into(),
-            json!({ "reason": "cacheKey", "expected": p.key, "decoderClass": decoder_class }),
+            json!({
+                "reason": "cacheKey", "expected": p.key, "decoderClass": decoder_class,
+                "audio": audio_key,
+            }),
         ));
     }
     let info: MediaInfo = reader.info().clone();
@@ -262,15 +270,18 @@ fn make(p: &ProxyParams, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<ProxyR
             json!({ "reason": "noFrames" }),
         ));
     }
-    let audio = match info.audio {
-        Some(_) => {
+    let (audio, audio_skipped) = match audio_key {
+        ProxySourceAudio::None => (None, None),
+        ProxySourceAudio::Unavailable => (None, Some("CODEC_UNAVAILABLE".to_string())),
+        ProxySourceAudio::Decoded(class) => {
             let file = open_source(p, ctx, &dir, warm)?;
-            proxy_audio::encode(file, || match ctx.cancelled() {
-                Some(_) => Err(CoreError::new("JOB_CANCELLED", "the proxy was cancelled")),
-                None => Ok(()),
-            })?
+            let scratch = dir.output().join(format!("{key}.audio"));
+            match proxy_audio::encode(file, class, &dir, &scratch, audio_progress(ctx, frames))? {
+                proxy_audio::Outcome::Track(a) => (Some(a), None),
+                proxy_audio::Outcome::Skipped(code) => (None, Some(code)),
+                proxy_audio::Outcome::Empty => (None, None),
+            }
         }
-        None => None,
     };
     let size = p.tier.fit(video.coded);
     let (timescale, tick) = encode_pipeline::timing(video.nominal_rate)?;
@@ -336,7 +347,7 @@ fn make(p: &ProxyParams, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<ProxyR
         entry_file(&dir, &out, PROXY_FILE)?,
         entry_file(&dir, &out, TABLE_FILE)?,
     ];
-    let input = p.key_input(decoder_class);
+    let input = p.key_input(decoder_class, audio_key);
     let meta = EntryMeta {
         key: key.to_string(),
         fingerprint: input.fingerprint,
@@ -370,8 +381,36 @@ fn make(p: &ProxyParams, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<ProxyR
         size,
         tone_mapped,
         fell_back: encoded.fell_back,
-        audio: audio.map(|a| a.result),
+        audio: audio.map(|a| {
+            let r = a.result.clone();
+            a.remove();
+            r
+        }),
+        audio_skipped: audio_skipped.map(|code| ProxyAudioSkipped { code }),
     })
+}
+
+/// The audio pass's `between`: cancel, and a `progress` of phase `encodeAudio` at its start and
+/// at most once a second, so a long source's audio is not taken for a stall. It counts no frame
+/// (`done` 0 of the video's `frames`), so the job's progress stays monotonic.
+fn audio_progress<'a>(
+    ctx: &'a mut JobCtx<'_>,
+    frames: u64,
+) -> impl FnMut(u64) -> Result<(), CoreError> + 'a {
+    let mut last: Option<std::time::Instant> = None;
+    move |_| {
+        if ctx.cancelled().is_some() {
+            return Err(CoreError::new("JOB_CANCELLED", "the proxy was cancelled"));
+        }
+        if last.is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(1)) {
+            last = Some(std::time::Instant::now());
+            let mut pr = fin_jobs::Progress::new(0.0, ProgressUnit::Frames);
+            pr.total = Some(frames as f64);
+            pr.phase = Some("encodeAudio".into());
+            ctx.progress(pr);
+        }
+        Ok(())
+    }
 }
 
 /// Decision 9 (spec §10.1): Dolby Vision profile 5 has no backward-compatible base layer, so

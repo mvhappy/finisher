@@ -24,7 +24,7 @@ use fin_media::cache::{EntryMeta, META_FILE};
 use fin_media::colour::{ChromaSiting, Matrix, Primaries, Range, Transfer};
 use fin_media::jobs::{
     MANIFEST_VERSION, ManifestAsset, ManifestFonts, OriginalFile, ProxyCodec, ProxyLibraryFile,
-    ProxyParams, ProxyResult, ProxyTier, RenderManifest, ToneMapped, proxy_key,
+    ProxyParams, ProxyResult, ProxySourceAudio, ProxyTier, RenderManifest, ToneMapped, proxy_key,
 };
 use fin_media::table_bin::{self, TABLE_FILE};
 use fin_media::testing::read_id_y;
@@ -81,12 +81,22 @@ fn job_for(fp: &str, path: &Path) -> Job {
 }
 
 fn params(fp: &str, tier: ProxyTier) -> ProxyParams {
+    params_with(fp, tier, NO_AUDIO)
+}
+
+const NO_AUDIO: ProxySourceAudio = ProxySourceAudio::None;
+/// Opus (libopus) and, on Linux, AAC (symphonia): decoded by a `software` backend.
+const SOFTWARE_AUDIO: ProxySourceAudio = ProxySourceAudio::Decoded(VendorClass::Software);
+
+/// The params of a source whose audio the host planned as `audio`.
+fn params_with(fp: &str, tier: ProxyTier, audio: ProxySourceAudio) -> ProxyParams {
     ProxyParams {
         fingerprint: fp.into(),
         tier,
         codec: ProxyCodec::Av1,
         decoder_class: VendorClass::Software,
-        key: proxy_key(fp, tier, ProxyCodec::Av1, VendorClass::Software).to_string(),
+        audio,
+        key: proxy_key(fp, tier, ProxyCodec::Av1, VendorClass::Software, audio).to_string(),
         asset: Some("a1".into()),
         file: None,
         project_id: None,
@@ -356,7 +366,14 @@ fn cache_key_mismatch_is_plan_mismatch() {
     // The host expected an OS decoder; dav1d (software) decodes it here.
     let mut p = params("fp", ProxyTier::Scrub);
     p.decoder_class = VendorClass::Os;
-    p.key = proxy_key("fp", ProxyTier::Scrub, ProxyCodec::Av1, VendorClass::Os).to_string();
+    p.key = proxy_key(
+        "fp",
+        ProxyTier::Scrub,
+        ProxyCodec::Av1,
+        VendorClass::Os,
+        NO_AUDIO,
+    )
+    .to_string();
     assert_eq!(outcome(&run(&job, &p), "fp").unwrap_err(), "PLAN_MISMATCH");
     // A key that is not the params' at all.
     let mut p = params("fp", ProxyTier::Scrub);
@@ -365,6 +382,7 @@ fn cache_key_mismatch_is_plan_mismatch() {
         ProxyTier::Scrub,
         ProxyCodec::Av1,
         VendorClass::Software,
+        NO_AUDIO,
     )
     .to_string();
     assert_eq!(outcome(&run(&job, &p), "fp").unwrap_err(), "PLAN_MISMATCH");
@@ -387,6 +405,7 @@ fn h264_without_a_hardware_encoder_is_codec_unavailable() {
         ProxyTier::Scrub,
         ProxyCodec::H264,
         VendorClass::Software,
+        NO_AUDIO,
     )
     .to_string();
     assert_eq!(
@@ -538,20 +557,33 @@ fn a_source_without_frames_is_media_corrupt() {
 // Proxy recipe v2 (6C plan Task 20; spec §7.1): Opus audio inside the proxy.
 
 use fin_audio::testing::analyse::rms_dbfs;
-use fin_audio::testing::signals::{sine, tone_burst};
+use fin_audio::testing::signals::{sweep, tone_burst};
 use fin_codecs::audio::{AudioEncoderConfig, AudioLimits, AudioReader, open_audio_encoder};
 use fin_container::{AudioTrackConfig, CodecConfig, Mp4Options, Mp4Writer, VideoTrackConfig};
 use fin_media::AudioCodec;
 use fin_media::backend::EncodePurpose;
 use fin_media::cache::{KeyInput, PROXY_540, PROXY_1080};
-use fin_media::jobs::ProxyAudio;
+use fin_media::jobs::{ProxyAudio, ProxyAudioCodec, ProxyAudioSkipped};
 
 /// The audio of a test clip: interleaved `f32` at 48 kHz, its channel count, and the codec
-/// it is stored in (`Other` packets are not audio: no decoder reads them).
+/// it is stored in (`Other` packets are not audio: no decoder reads them). `corrupt` replaces
+/// every packet after the first few with bytes no decoder accepts.
 struct AudioSpec {
     pcm: Vec<f32>,
     channels: u16,
     codec: AudioCodec,
+    corrupt: bool,
+}
+
+impl AudioSpec {
+    fn new(pcm: Vec<f32>, channels: u16, codec: AudioCodec) -> AudioSpec {
+        AudioSpec {
+            pcm,
+            channels,
+            codec,
+            corrupt: false,
+        }
+    }
 }
 
 /// `pcm` encoded with this build's encoder for `codec` (a test fixture), as an MP4 audio
@@ -581,6 +613,12 @@ fn encoded_audio(a: &AudioSpec) -> (AudioTrackConfig, u32, Vec<Vec<u8>>) {
     let mut packets = Vec::new();
     while let Some(p) = enc.receive().unwrap() {
         packets.push(p.data);
+    }
+    if a.corrupt {
+        // A TOC byte of code 3 with a frame count of 0: refused by libopus.
+        for p in packets.iter_mut().skip(3) {
+            *p = vec![0xFF, 0x00];
+        }
     }
     let track = AudioTrackConfig {
         config: enc.config(),
@@ -647,13 +685,35 @@ fn decoded_audio(path: &Path) -> (Vec<f32>, usize) {
     (out, ch)
 }
 
-/// `n` frames of a 440 Hz sine at −12 dBFS on `channels` identical channels.
+/// `n` frames of a 60 Hz–12 kHz sweep at −12 dBFS (no period: a lag has one best match) on
+/// `channels` identical channels.
 fn tone(n: usize, channels: u16) -> Vec<f32> {
-    let s = sine(440.0, -12.0, (n + 48) as f64 / 48_000.0, 48_000);
+    let s = sweep(60.0, 12_000.0, (n + 48) as f64 / 48_000.0, 48_000);
     s[..n]
         .iter()
-        .flat_map(|x| std::iter::repeat_n(*x, channels as usize))
+        .flat_map(|x| std::iter::repeat_n(*x * 0.25, channels as usize))
         .collect()
+}
+
+/// The lag in `-max..=max` at which `got` (channel 0 of `gch`) best matches `want` (channel 0
+/// of `wch`): normalised cross-correlation over the middle of the signal.
+fn best_lag(got: &[f32], gch: usize, want: &[f32], wch: usize, max: i64) -> i64 {
+    let g: Vec<f64> = got.iter().step_by(gch).map(|x| *x as f64).collect();
+    let w: Vec<f64> = want.iter().step_by(wch).map(|x| *x as f64).collect();
+    let (from, to) = (max as usize * 2, g.len().min(w.len()) - max as usize * 2);
+    let score = |lag: i64| {
+        let (mut dot, mut gg, mut ww) = (0.0, 0.0, 0.0);
+        for i in from..to {
+            let (a, b) = (g[(i as i64 + lag) as usize], w[i]);
+            dot += a * b;
+            gg += a * a;
+            ww += b * b;
+        }
+        dot / (gg * ww).sqrt()
+    };
+    (-max..=max)
+        .max_by(|a, b| score(*a).total_cmp(&score(*b)))
+        .unwrap()
 }
 
 #[test]
@@ -673,14 +733,11 @@ fn proxy_v2_has_opus_audio() {
     for (name, codec, channels, n) in cases {
         let c = av_clip(
             &spec(20, Size::new(320, 180)),
-            &AudioSpec {
-                pcm: tone(n, channels),
-                channels,
-                codec,
-            },
+            &AudioSpec::new(tone(n, channels), channels, codec),
         );
         let job = job_for("fp", &c.path);
-        let r = outcome(&run(&job, &params("fp", ProxyTier::Scrub)), "fp").expect(name);
+        let p = params_with("fp", ProxyTier::Scrub, SOFTWARE_AUDIO);
+        let r = outcome(&run(&job, &p), "fp").expect(name);
         let path = entry(&job, &r.key).join(PROXY_FILE);
         // The video is untouched by the audio track: proxy frame i shows original frame i.
         assert_eq!(ids(&path), ids(&c.path), "{name}");
@@ -697,13 +754,16 @@ fn proxy_v2_has_opus_audio() {
         assert_eq!(
             r.audio,
             Some(ProxyAudio {
-                codec: AudioCodec::Opus,
+                codec: ProxyAudioCodec::Opus,
                 bitrate,
                 priming: info.priming,
             }),
             "{name}"
         );
-        // Exactly the source's samples after the priming (± 0), and its level within 0.3 dB.
+        assert_eq!(r.audio_skipped, None, "{name}");
+        // Exactly the source's samples after the priming (± 0), its level within 0.3 dB, and
+        // aligned to the sample (the best-matching lag is 0: a priming off by a few samples
+        // moves it).
         let (want, wch) = decoded_audio(&c.path);
         let (got, gch) = decoded_audio(&path);
         assert_eq!((gch, wch), (channels as usize, channels as usize), "{name}");
@@ -715,9 +775,21 @@ fn proxy_v2_has_opus_audio() {
         );
         let (a, b) = (rms_dbfs(&got), rms_dbfs(&want));
         assert!((a - b).abs() <= 0.3, "{name}: {a:.3} dBFS vs {b:.3} dBFS");
+        assert_eq!(best_lag(&got, gch, &want, wch, 96), 0, "{name}: lag");
         let m = meta(&job, &r.key);
         m.check().unwrap();
         assert_eq!(m.recipe_version, 2, "{name}");
+        assert_eq!(
+            m.params["audio"],
+            json!({ "decoded": "software" }),
+            "{name}"
+        );
+        // Nothing but the entry is left in `out/` (the packets' scratch file is gone).
+        let left: Vec<_> = std::fs::read_dir(job.out())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(left, [std::ffi::OsString::from(&r.key)], "{name}");
     }
 }
 
@@ -727,25 +799,115 @@ fn proxy_without_audio_stays_video_only() {
         return;
     }
     let (_c, job, r) = made(&spec(6, Size::new(320, 180)), ProxyTier::Scrub);
-    assert_eq!(r.audio, None);
+    assert_eq!((r.audio, r.audio_skipped), (None, None));
     let path = entry(&job, &r.key).join(PROXY_FILE);
     assert!(demux(&path).info().audio.is_none());
-    // An audio track nothing here decodes (AC-3) also gives a video-only proxy: the preview
-    // keeps its frames.
+    assert_eq!(meta(&job, &r.key).params["audio"], json!("none"));
+    // An audio track nothing here decodes (AC-3) also gives a video-only proxy, which says
+    // why; the key names the track as unavailable, so a build that decodes it makes another.
     let c = av_clip(
         &spec(6, Size::new(320, 180)),
-        &AudioSpec {
-            pcm: tone(9_600, 2),
-            channels: 2,
-            codec: AudioCodec::Other,
-        },
+        &AudioSpec::new(tone(9_600, 2), 2, AudioCodec::Other),
     );
     let job = job_for("fp", &c.path);
-    let r = outcome(&run(&job, &params("fp", ProxyTier::Scrub)), "fp").unwrap();
+    let p = params_with("fp", ProxyTier::Scrub, ProxySourceAudio::Unavailable);
+    let r = outcome(&run(&job, &p), "fp").unwrap();
     assert_eq!(r.audio, None);
+    assert_eq!(
+        r.audio_skipped,
+        Some(ProxyAudioSkipped {
+            code: "CODEC_UNAVAILABLE".into()
+        })
+    );
     let path = entry(&job, &r.key).join(PROXY_FILE);
     assert!(demux(&path).info().audio.is_none());
     assert_eq!(ids(&path), ids(&c.path));
+}
+
+/// Review of Task 20 (O1): a corrupt audio track does not cost the preview its frames: the proxy
+/// is video only and says why (the mix reads `pcm48`, which fails on its own); the key still
+/// names the track as decodable.
+#[test]
+fn corrupt_audio_gives_a_video_only_proxy() {
+    if !gpu_or_skip("corrupt_audio_gives_a_video_only_proxy") {
+        return;
+    }
+    let c = av_clip(
+        &spec(6, Size::new(320, 180)),
+        &AudioSpec {
+            corrupt: true,
+            ..AudioSpec::new(tone(48_000, 2), 2, AudioCodec::Opus)
+        },
+    );
+    let job = job_for("fp", &c.path);
+    let r = outcome(
+        &run(&job, &params_with("fp", ProxyTier::Scrub, SOFTWARE_AUDIO)),
+        "fp",
+    )
+    .expect("a video-only proxy");
+    assert_eq!(r.audio, None);
+    let code = r.audio_skipped.expect("audioSkipped").code;
+    assert!(
+        ["DECODE_FAILED", "MEDIA_CORRUPT"].contains(&code.as_str()),
+        "{code}"
+    );
+    let path = entry(&job, &r.key).join(PROXY_FILE);
+    assert!(demux(&path).info().audio.is_none());
+    assert_eq!(ids(&path), ids(&c.path));
+    let left = std::fs::read_dir(job.out()).unwrap().count();
+    assert_eq!(left, 1, "no scratch file left behind");
+}
+
+/// Review of Task 20 (S1): the worker recomputes the audio half of the key from the file and
+/// refuses a plan that said otherwise, before anything is written.
+#[test]
+fn an_audio_plan_mismatch_is_refused() {
+    let c = av_clip(
+        &spec(2, Size::new(320, 180)),
+        &AudioSpec::new(tone(4_800, 2), 2, AudioCodec::Opus),
+    );
+    let job = job_for("fp", &c.path);
+    for planned in [NO_AUDIO, ProxySourceAudio::Unavailable] {
+        let p = params_with("fp", ProxyTier::Scrub, planned);
+        assert_eq!(
+            outcome(&run(&job, &p), "fp").unwrap_err(),
+            "PLAN_MISMATCH",
+            "{planned:?}"
+        );
+    }
+    // A video-only source planned as having audio.
+    let v = clip(&spec(2, Size::new(320, 180)));
+    let job2 = job_for("fp", &v.path);
+    let p = params_with("fp", ProxyTier::Scrub, SOFTWARE_AUDIO);
+    assert_eq!(outcome(&run(&job2, &p), "fp").unwrap_err(), "PLAN_MISMATCH");
+    for j in [&job, &job2] {
+        assert_eq!(std::fs::read_dir(j.out()).unwrap().count(), 0);
+    }
+}
+
+/// Review of Task 20 (S2a): the audio pass, which runs before the first frame, reports progress
+/// (phase `encodeAudio`) so a long source is not stalled; the stream stays monotonic.
+#[test]
+fn the_audio_pass_reports_progress() {
+    if !gpu_or_skip("the_audio_pass_reports_progress") {
+        return;
+    }
+    let c = av_clip(
+        &spec(12, Size::new(320, 180)),
+        &AudioSpec::new(tone(24_000, 2), 2, AudioCodec::Opus),
+    );
+    let job = job_for("fp", &c.path);
+    let run = run(&job, &params_with("fp", ProxyTier::Scrub, SOFTWARE_AUDIO));
+    outcome(&run, "fp").unwrap();
+    let phases: Vec<_> = run.phases.iter().map(|p| p.as_deref()).collect();
+    let first_encode = phases.iter().position(|p| *p == Some("encode")).unwrap();
+    assert!(
+        phases[..first_encode].contains(&Some("encodeAudio")),
+        "{phases:?}"
+    );
+    let p = run.progress();
+    assert!(p.windows(2).all(|w| w[0] <= w[1]), "{p:?}");
+    assert_eq!(p.last().copied(), Some(12.0));
 }
 
 #[test]
@@ -753,9 +915,14 @@ fn proxy_v1_keys_invalidated() {
     // Recipe v2 carries audio, so a v1 (video-only) entry of the same source is another key.
     assert_eq!((PROXY_540.version, PROXY_1080.version), (2, 2));
     for tier in ProxyTier::ALL {
-        let v2 = proxy_key("fp", tier, ProxyCodec::Av1, VendorClass::Software);
-        let mut v1: KeyInput =
-            fin_media::jobs::key_input("fp", tier, ProxyCodec::Av1, VendorClass::Software);
+        let v2 = proxy_key("fp", tier, ProxyCodec::Av1, VendorClass::Software, NO_AUDIO);
+        let mut v1: KeyInput = fin_media::jobs::key_input(
+            "fp",
+            tier,
+            ProxyCodec::Av1,
+            VendorClass::Software,
+            NO_AUDIO,
+        );
         assert_eq!(v1.recipe_version, 2, "{tier:?}");
         v1.recipe_version = 1;
         assert_ne!(
@@ -772,27 +939,28 @@ fn proxy_audio_starts_with_video() {
         return;
     }
     // A beep at frame 12's time (0.4 s at 30 fps) for 0.1 s, in 1 s of silence.
-    let (flash, rate) = (12u32, 30.0);
-    let burst = tone_burst(1_000.0, -6.0, flash as f64 / rate, 0.1, 1.0, 48_000);
+    let flash = 12u32;
+    let burst = tone_burst(1_000.0, -6.0, flash as f64 / 30.0, 0.1, 1.0, 48_000);
     let pcm: Vec<f32> = burst.iter().flat_map(|x| [*x, *x]).collect();
     let c = av_clip(
         &spec(30, Size::new(320, 180)),
-        &AudioSpec {
-            pcm,
-            channels: 2,
-            codec: AudioCodec::Opus,
-        },
+        &AudioSpec::new(pcm, 2, AudioCodec::Opus),
     );
     let job = job_for("fp", &c.path);
-    let r = outcome(&run(&job, &params("fp", ProxyTier::Scrub)), "fp").unwrap();
+    let p = params_with("fp", ProxyTier::Scrub, SOFTWARE_AUDIO);
+    let r = outcome(&run(&job, &p), "fp").unwrap();
     let path = entry(&job, &r.key).join(PROXY_FILE);
-    // The proxy frame showing the flash frame's id, at the proxy's CFR rate.
+    // The proxy frame showing the flash frame's id, at its presentation time in the proxy
+    // (the track's edited table, in its timescale).
     let at = ids(&path)
         .iter()
         .position(|id| *id == Some(flash))
-        .expect("the flash frame") as f64;
-    let video_s = at / rate;
-    // The beep's onset: the first sample above half its amplitude.
+        .expect("the flash frame");
+    let d = demux(&path);
+    let table = &d.video().unwrap().table;
+    let video_s = table.frames()[at].pts as f64 / table.timescale() as f64;
+    // The beep's onset: the first sample above half its amplitude, the audio's presented
+    // sample 0 being movie time 0 (the edit's media time is the priming).
     let (pcm, ch) = decoded_audio(&path);
     let half = 0.5 * fin_audio::testing::signals::db_to_amp(-6.0) as f32;
     let onset = pcm

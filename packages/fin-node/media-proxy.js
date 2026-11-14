@@ -3,5 +3,7 @@ import { native, sync } from "./native.js";
 
 /** A proxy's cache key before its job is submitted; see `media-proxy.d.ts`. */
 export function mediaProxyPlan(request) {
-  return JSON.parse(sync(() => native.mediaProxyPlan(JSON.stringify(request))));
+  // Absent optional fields are left out (the request is parsed strictly).
+  const req = Object.fromEntries(Object.entries(request).filter(([, v]) => v !== undefined));
+  return JSON.parse(sync(() => native.mediaProxyPlan(JSON.stringify(req))));
 }
