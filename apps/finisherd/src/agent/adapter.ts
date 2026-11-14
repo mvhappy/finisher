@@ -101,8 +101,12 @@ export interface UserInput {
 }
 
 export type RuntimeAnswer =
-  /** `message`: the server's reason for a deny, for the provider to show its model (Claude Code's `deny.message`). */
-  | { readonly kind: "approval"; readonly allow: boolean; readonly message?: string }
+  /**
+   * `message`: the server's reason for a deny, for the provider to show its model (Claude Code's
+   * `deny.message`). `callId`: the runtime's id of the call an allow decided, when known (an
+   * adapter that runs the call itself gives it as `FIN_CALL`: 7D Task 13's brokered shell).
+   */
+  | { readonly kind: "approval"; readonly allow: boolean; readonly message?: string; readonly callId?: string }
   | { readonly kind: "userInput"; readonly text: string }
   /** The result of a tool the runtime ran for the adapter (the built-in loop's tools, the fake's). */
   | { readonly kind: "toolResult"; readonly ok: boolean; readonly output: unknown };

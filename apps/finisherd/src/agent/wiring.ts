@@ -53,7 +53,7 @@ import { buildHooks, type HookServeOptions, type HooksWiring } from "../hooks/wi
 import { LayeredRules } from "./rules.ts";
 import { RuleStore } from "./rule-store.ts";
 import type { AclBroker } from "../sandbox/broker.ts";
-import { ClaudeCodeAdapter } from "./claude/adapter.ts";
+import { BROKERED_SHELL_TEST_ENV, ClaudeCodeAdapter } from "./claude/adapter.ts";
 import { claudeProviderInfo } from "./claude/detect.ts";
 import { remainingIn } from "./claude/usage.ts";
 import { type ClaudeAccess, ClaudeModelCache, claudeAccess, withClaudePricing } from "./claude/models.ts";
@@ -316,7 +316,7 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
     // Claude Code (plan 7D Task 7): always registered, nothing run at boot; planning decides live
     // (detected and `agents.claudeCode.enabled`), and each open checks the setting again.
     const claude = claudeWiring(() => Effect.runPromise(claudeInfo()), serverData);
-    adapters.set("claudeCode", ClaudeCodeAdapter({ sandbox: sandboxDeps, sessions: core.store, nodes: (id) => allNodes(core.store, id), models: claude.cache, ids: core.ids, remaining: remainingIn(() => core.store.ledger()), chargePlanMoney: () => claudeCodeSettings(serverData).chargePlanMoney === true, ...(settings.retentionDays === undefined ? {} : { retentionDays: settings.retentionDays }), log: (m, x) => log(`${m} ${JSON.stringify(x)}`) }));
+    adapters.set("claudeCode", ClaudeCodeAdapter({ sandbox: sandboxDeps, sessions: core.store, nodes: (id) => allNodes(core.store, id), models: claude.cache, ids: core.ids, remaining: remainingIn(() => core.store.ledger()), chargePlanMoney: () => claudeCodeSettings(serverData).chargePlanMoney === true, ...(fakeAllowed() && process.env[BROKERED_SHELL_TEST_ENV] === "1" ? { brokeredShell: true } : {}), ...(settings.retentionDays === undefined ? {} : { retentionDays: settings.retentionDays }), log: (m, x) => log(`${m} ${JSON.stringify(x)}`) }));
     const rolePrompt = (role: string) => (roles.get(role) ?? roles.get("editor"))!.prompt.text;
     const builtinEnv = builtinEnvironment({ finPath, server: d.endpoint, projectDirOf: d.registry.dirOf, rolePrompt });
     const environment: SessionEnvironment = {

@@ -14,6 +14,7 @@ mod ask;
 mod bash;
 mod lines;
 mod mcp;
+mod mcp_call;
 mod results;
 mod resume;
 
@@ -469,8 +470,13 @@ impl Runner {
         }
         if let Some(ask) = &s.ask {
             let (outcome, tool_use_id) = self.ask(ask);
-            if ask.bash && matches!(outcome, Outcome::Allowed | Outcome::Denied) {
-                self.bash(ask, &tool_use_id, matches!(outcome, Outcome::Allowed));
+            if (ask.bash || ask.mcp) && matches!(outcome, Outcome::Allowed | Outcome::Denied) {
+                let allowed = matches!(outcome, Outcome::Allowed);
+                if ask.mcp {
+                    self.mcp_call(ask, &tool_use_id, allowed);
+                } else {
+                    self.bash(ask, &tool_use_id, allowed);
+                }
             }
             match outcome {
                 Outcome::Interrupted => return,
