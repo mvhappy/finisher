@@ -587,3 +587,60 @@ fn ogg_opus_pre_skip_counts_against_the_budget() {
     let e = read_with(ogg_opus(&mono_dops(65_535), &audio), &limits).unwrap_err();
     assert_eq!(e.code, "MEDIA_LIMIT", "{e:?}");
 }
+
+/// One Ogg page of stream 42 with its CRC.
+fn opus_page(seq: u32, flags: u8, granule: i64, lacing: &[u8], body: &[u8]) -> Vec<u8> {
+    let mut p = b"OggS".to_vec();
+    p.extend([0, flags]);
+    p.extend(granule.to_le_bytes());
+    p.extend(42u32.to_le_bytes());
+    p.extend(seq.to_le_bytes());
+    p.extend([0; 4]);
+    p.push(lacing.len() as u8);
+    p.extend(lacing);
+    p.extend(body);
+    recrc(&mut p);
+    p
+}
+
+/// The headers, then a 258-byte 960-frame packet (config 31, code 3, one frame, 253 bytes of
+/// padding) split over pages `a` (its first 255 bytes, granule −1) and `b` (the last 3, with
+/// `flags`, granule 48,960), then a 960-frame packet on the last page `c` (granule 49,920).
+fn spanning(
+    a: u32,
+    b: u32,
+    c: u32,
+    flags: u8,
+) -> Result<(Option<u64>, usize), fin_core::CoreError> {
+    let head = ogg::opus_head(&mono_dops(0));
+    let mut tags = b"OpusTags".to_vec();
+    tags.extend([0; 8]);
+    let mut file = opus_page(0, 2, 0, &[head.len() as u8], &head);
+    file.extend(opus_page(1, 0, 0, &[16], &tags));
+    let mut packet = vec![0xFB, 0x41, 253, 0xFF, 0xFE];
+    packet.extend([0; 253]);
+    file.extend(opus_page(a, 0, -1, &[255], &packet[..255]));
+    file.extend(opus_page(b, flags, 48_960, &[3], &packet[255..]));
+    file.extend(opus_page(c, 4, 49_920, &[3], &celt_20ms()));
+    read_with(file, &AudioLimits::default())
+}
+
+#[test]
+fn ogg_opus_packet_spanning_pages() {
+    // The packet's TOC and frame count are on the earlier page; it ends on the next one.
+    assert_eq!(spanning(2, 3, 4, 1).unwrap(), (Some(1920), 1920));
+    // A gap drops the open packet (and its tail, an orphan), as symphonia's reader does: the
+    // stream starts on the last page.
+    assert_eq!(spanning(2, 4, 5, 1).unwrap(), (Some(960), 960));
+}
+
+#[test]
+fn ogg_opus_repeated_or_wrapped_sequence_is_corrupt() {
+    // A repeated sequence number, and one that wraps past `u32::MAX`, are refused rather than
+    // guessed at (a real encoder writes neither).
+    for (a, b, c) in [(2, 2, 3), (u32::MAX, 0, 1)] {
+        let e = spanning(a, b, c, 1).unwrap_err();
+        assert_eq!(e.code, "MEDIA_CORRUPT", "{a} {b}: {e:?}");
+        assert!(e.message.contains("sequence"), "{e:?}");
+    }
+}
