@@ -22,7 +22,7 @@ export interface InstallTreeOptions {
   readonly home?: string;
   /** The temp roots (default the OS's and `os.tmpdir()`). */
   readonly tmp?: readonly string[];
-  /** Resolves links (default `realpathSync`; a path it cannot resolve is taken as given). */
+  /** Resolves links (default `realpathSync`; a binary it cannot resolve is granted as the one file). */
   readonly realpath?: (p: string) => string;
 }
 
@@ -41,16 +41,28 @@ export function installTreeRead(binary: string, platform: NodeJS.Platform = proc
   try {
     real = p.normalize(resolve(binary));
   } catch {
-    real = p.normalize(binary);
+    // Unresolved: never promote to a directory (review of Task 14).
+    return [p.normalize(binary)];
   }
   const dir = p.dirname(real);
   const layout = VERSION.test(p.basename(real)) && fold(p.basename(dir)) === "versions" && fold(p.basename(p.dirname(dir))) === "claude";
-  // `a` is `b` or one of its ancestors.
+  // `a` is `b` or one of its ancestors. Folded on macOS too (its default volumes ignore case),
+  // which only makes the guard stricter.
+  const guardFold = (s: string) => (platform === "win32" || platform === "darwin" ? s.toLowerCase() : s);
   const holds = (a: string, b: string) => {
-    const [x, y] = [fold(p.normalize(a)), fold(p.normalize(b))];
+    const [x, y] = [guardFold(p.normalize(a)), guardFold(p.normalize(b))];
     return x === y || y.startsWith(x.endsWith(p.sep) ? x : x + p.sep);
   };
-  const guarded = [o.home ?? homedir(), ...(o.tmp ?? tempRoots(platform))].filter((g) => g !== "" && p.isAbsolute(g));
+  // Each guarded root as given and resolved: a temp root or home that is a link must not hide
+  // that the layout's directory holds it (review of Task 14: `TMPDIR=/alias` → `…/versions`).
+  const given = [o.home ?? homedir(), ...(o.tmp ?? tempRoots(platform))].filter((g) => g !== "" && p.isAbsolute(g));
+  const guarded = given.flatMap((g) => {
+    try {
+      return [g, p.normalize(resolve(g))];
+    } catch {
+      return [g];
+    }
+  });
   const broad = p.parse(dir).root === dir || guarded.some((g) => holds(dir, g));
   return [layout && !broad ? dir : real];
 }

@@ -338,7 +338,7 @@ describe("the install tree and the list", () => {
     expect(installTreeRead(real)).not.toContain(dirname(link));
     // The one place a path of the install could hide: the list. It names none (Rust test
     // `the_list_never_names_the_install_tree` holds the data; this holds the wiring's output).
-    expect(installTreeRead("C:\\claude\\versions\\2.1.321.exe", "win32")).toEqual(["C:\\claude\\versions"]);
+    expect(installTreeRead("C:\\claude\\versions\\2.1.321.exe", "win32", { realpath: (q) => q })).toEqual(["C:\\claude\\versions"]);
   });
 
   test("the_escape_cases_cover_the_matrix", () => {

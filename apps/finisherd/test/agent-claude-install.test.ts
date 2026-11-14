@@ -66,6 +66,25 @@ describe.skipIf(WIN)("installTreeRead on a Unix install", () => {
     expect(installTreeRead("/tmp/claude", "linux", { home: "/h", realpath: same })).toEqual(["/tmp/claude"]);
   });
 
+  test("a guarded root that is a link is compared resolved (review: TMPDIR alias)", () => {
+    const links: Record<string, string> = { "/alias": "/opt/claude/versions", "/alias/2.1.321": "/opt/claude/versions/2.1.321" };
+    const realpath = (q: string) => links[q] ?? q;
+    expect(installTreeRead("/alias/2.1.321", "linux", { home: "/h", tmp: ["/alias"], realpath })).toEqual(["/opt/claude/versions/2.1.321"]);
+    expect(installTreeRead("/alias/2.1.321", "linux", { home: "/alias", tmp: [], realpath })).toEqual(["/opt/claude/versions/2.1.321"]);
+  });
+
+  test("an unresolvable native-layout path is granted as the file, never its directory", () => {
+    const gone = () => {
+      throw new Error("ENOENT");
+    };
+    expect(installTreeRead("/opt/claude/versions/2.1.321", "linux", { home: "/h", tmp: [], realpath: gone })).toEqual(["/opt/claude/versions/2.1.321"]);
+    expect(installTreeRead("claude/versions/2.1.321", "linux", { home: "/h", tmp: [], realpath: gone })).toEqual(["claude/versions/2.1.321"]);
+  });
+
+  test("macOS compares the guard without case", () => {
+    expect(installTreeRead("/Users/Me/claude/versions/2.1.321", "darwin", { home: "/users/me/claude/versions", tmp: [], realpath: same })).toEqual(["/Users/Me/claude/versions/2.1.321"]);
+  });
+
   test("a path that cannot be resolved is taken as given", () => {
     expect(installTreeRead(join(tmp, "missing", "claude"), "linux", { home })).toEqual([join(tmp, "missing", "claude")]);
   });
