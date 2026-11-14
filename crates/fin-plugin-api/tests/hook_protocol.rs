@@ -75,6 +75,12 @@ fn event_names_are_pascal_case_and_complete() {
                 .to_owned()
         })
         .collect();
+    // `name()` and `from_name()` agree with serde (manifests and permissions use them).
+    for (e, n) in HookEvent::ALL.iter().zip(&names) {
+        assert_eq!(e.name(), n);
+        assert_eq!(HookEvent::from_name(n), Some(*e));
+    }
+    assert_eq!(HookEvent::from_name("PreOp"), None);
     assert_eq!(
         names,
         [

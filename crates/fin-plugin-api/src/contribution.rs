@@ -6,8 +6,9 @@ use schemars::JsonSchema;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 
-/// The host API this build implements: 1.1 consumes `commands` (8B Decision 14).
-pub const HOST_API: (u64, u64, u64) = (1, 1, 0);
+/// The host API this build implements: 1.1 consumes `commands` (8B Decision 14), 1.2 `hooks`
+/// (7F Decision 20).
+pub const HOST_API: (u64, u64, u64) = (1, 2, 0);
 
 pub fn host_api() -> Version {
     Version::new(HOST_API.0, HOST_API.1, HOST_API.2)
@@ -130,8 +131,8 @@ impl ContributionKind {
 }
 
 /// The kinds a host implementing `host_api` consumes. Host API 1.0: font catalogs and
-/// caption styles (8A); 1.1 adds commands (8B). A newly consumed kind is listed from the
-/// minor that adds it. `hooks` stays unconsumable until 7F's hook engine (8B Decision 20).
+/// caption styles (8A); 1.1 adds commands (8B); 1.2 adds hooks (7F). A newly consumed kind is
+/// listed from the minor that adds it.
 pub fn consumable(host_api: &Version) -> &'static [ContributionKind] {
     const V1_0: &[ContributionKind] = &[
         ContributionKind::FontCatalogs,
@@ -142,9 +143,16 @@ pub fn consumable(host_api: &Version) -> &'static [ContributionKind] {
         ContributionKind::CaptionStyles,
         ContributionKind::Commands,
     ];
+    const V1_2: &[ContributionKind] = &[
+        ContributionKind::FontCatalogs,
+        ContributionKind::CaptionStyles,
+        ContributionKind::Commands,
+        ContributionKind::Hooks,
+    ];
     match (host_api.major, host_api.minor) {
         (1, 0) => V1_0,
-        (1, _) => V1_1,
+        (1, 1) => V1_1,
+        (1, _) => V1_2,
         _ => &[],
     }
 }

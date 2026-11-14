@@ -13,6 +13,8 @@
 //!   method host API 1.1 lacks, or with params that do not decode is a finding;
 //! - **logs:** no `log` message holds a path or the run's canary secret (the fake API's
 //!   cookie), and no stderr line holds the secret.
+//!
+//! Hooks the manifest declares are ignored here (the `hook` profile runs them).
 
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hasher};
@@ -25,7 +27,7 @@ use serde_json::{Value, json};
 
 use super::judge::{Judge, finding};
 use crate::calls::Calls;
-use crate::fake_host::{Ended, FakeHost, Job};
+use crate::fake_host::{Ended, FakeHost, Job, JobBody};
 use crate::fake_https::FakeApi;
 use crate::fixtures::{Snapshot, outside_args, sample_args};
 use crate::plugin::{Plugin, absolute};
@@ -48,24 +50,28 @@ struct Cmd {
     report: CommandReport,
 }
 
-/// The run's processes and what they leave behind.
-struct Runner<'a> {
-    host: FakeHost<'a>,
+/// The run's processes and what they leave behind (shared with the `hook` profile).
+pub(super) struct Runner<'a> {
+    pub(super) host: FakeHost<'a>,
     judge: Judge<'a>,
-    findings: Vec<Finding>,
+    pub(super) findings: Vec<Finding>,
     stderr: Vec<String>,
-    warm: Option<PluginProcess>,
+    pub(super) warm: Option<PluginProcess>,
+    /// The run's private directories, gone with the runner.
+    _root: tempfile::TempDir,
+    secret: String,
+    known_paths: Vec<String>,
 }
 
 impl Runner<'_> {
     /// Keeps a process's stderr and kills it.
-    fn retire(&mut self, mut p: PluginProcess) {
+    pub(super) fn retire(&mut self, mut p: PluginProcess) {
         p.kill();
         self.stderr.extend(p.stderr_lines());
     }
 
     /// A new process that said a good `hello`; a finding (and `None`) otherwise.
-    fn start(&mut self, warm: bool, command: Option<&str>) -> Option<PluginProcess> {
+    pub(super) fn start(&mut self, warm: bool, command: Option<&str>) -> Option<PluginProcess> {
         let mut p = match self.host.spawn(warm) {
             Ok(p) => p,
             Err(e) => {
@@ -122,9 +128,11 @@ impl Runner<'_> {
         };
         let job = Job {
             command: &cmd.name,
-            schema: &cmd.schema,
+            body: JobBody::Command {
+                schema: &cmd.schema,
+                args,
+            },
             submitted,
-            args,
             timeout: Duration::from_secs(cmd.timeout_s.into()),
             phase,
             cancel: phase == "cancel",
@@ -174,9 +182,11 @@ impl Runner<'_> {
         };
         let job = Job {
             command: &cmd.name,
-            schema: &cmd.schema,
+            body: JobBody::Command {
+                schema: &cmd.schema,
+                args,
+            },
             submitted,
-            args,
             timeout: Duration::from_secs(cmd.timeout_s.into()),
             phase: "cold",
             cancel: false,
@@ -211,69 +221,83 @@ fn io(op: &str, e: std::io::Error) -> HarnessError {
     HarnessError::new("IO_ERROR", format!("{op} the run's directories: {e}")).with("op", op)
 }
 
+impl<'a> Runner<'a> {
+    /// The run's private directories, the fake API for the manifest's origins, and the fake
+    /// host serving the fixture.
+    pub(super) fn new(
+        plugin: &'a Plugin,
+        snapshot: &'a Snapshot,
+    ) -> Result<Runner<'a>, HarnessError> {
+        let m = &plugin.manifest;
+        // The run's private directories, gone when it ends.
+        let root = tempfile::Builder::new()
+            .prefix("fin-plugin-test-")
+            .tempdir()
+            .map_err(|e| io("create", e))?;
+        std::fs::create_dir(root.path().join("tmp")).map_err(|e| io("create", e))?;
+        let tmp = absolute(&root.path().join("tmp"))?;
+        let data = match m.permissions.iter().find_map(|p| match p {
+            Permission::Fs {
+                scope: FsScope::PluginData,
+                access,
+            } => Some(*access),
+            _ => None,
+        }) {
+            Some(access) => {
+                std::fs::create_dir(root.path().join("data")).map_err(|e| io("create", e))?;
+                Some((
+                    absolute(&root.path().join("data"))?,
+                    access == FsAccess::ReadWrite,
+                ))
+            }
+            None => None,
+        };
+        let dirs = RunDirs { tmp, data };
+        let secret = canary();
+        let hosts: Vec<String> = m
+            .permissions
+            .iter()
+            .flat_map(|p| match p {
+                Permission::Net { origins } => origins.iter().map(|o| o.0.clone()).collect(),
+                _ => Vec::new(),
+            })
+            .filter_map(|o| crate::calls::parse_https(&o).ok().map(|t| t.host))
+            .collect();
+        let api = if hosts.is_empty() {
+            None
+        } else {
+            Some(FakeApi::start(&hosts, &secret).map_err(|e| {
+                HarnessError::new(
+                    "IO_ERROR",
+                    format!("the fake HTTPS API does not start: {e}"),
+                )
+                .with("op", "fakeApi")
+            })?)
+        };
+        let calls = Calls::new(m.permissions.clone(), snapshot.clone(), api);
+        let mut known_paths = vec![
+            plugin.dir.display().to_string(),
+            dirs.tmp.display().to_string(),
+        ];
+        if let Some((d, _)) = &dirs.data {
+            known_paths.push(d.display().to_string());
+        }
+        Ok(Runner {
+            host: FakeHost::new(plugin, dirs, calls),
+            judge: Judge { plugin, snapshot },
+            findings: Vec::new(),
+            stderr: Vec::new(),
+            warm: None,
+            _root: root,
+            secret,
+            known_paths,
+        })
+    }
+}
+
 pub fn run(plugin: &Plugin, snapshot: &Snapshot) -> Result<Report, HarnessError> {
     let m = &plugin.manifest;
-    // The run's private directories, gone when it ends.
-    let root = tempfile::Builder::new()
-        .prefix("fin-plugin-test-")
-        .tempdir()
-        .map_err(|e| io("create", e))?;
-    std::fs::create_dir(root.path().join("tmp")).map_err(|e| io("create", e))?;
-    let tmp = absolute(&root.path().join("tmp"))?;
-    let data = match m.permissions.iter().find_map(|p| match p {
-        Permission::Fs {
-            scope: FsScope::PluginData,
-            access,
-        } => Some(*access),
-        _ => None,
-    }) {
-        Some(access) => {
-            std::fs::create_dir(root.path().join("data")).map_err(|e| io("create", e))?;
-            Some((
-                absolute(&root.path().join("data"))?,
-                access == FsAccess::ReadWrite,
-            ))
-        }
-        None => None,
-    };
-    let dirs = RunDirs { tmp, data };
-    let secret = canary();
-    let hosts: Vec<String> = m
-        .permissions
-        .iter()
-        .flat_map(|p| match p {
-            Permission::Net { origins } => origins.iter().map(|o| o.0.clone()).collect(),
-            _ => Vec::new(),
-        })
-        .filter_map(|o| crate::calls::parse_https(&o).ok().map(|t| t.host))
-        .collect();
-    let api = if hosts.is_empty() {
-        None
-    } else {
-        Some(FakeApi::start(&hosts, &secret).map_err(|e| {
-            HarnessError::new(
-                "IO_ERROR",
-                format!("the fake HTTPS API does not start: {e}"),
-            )
-            .with("op", "fakeApi")
-        })?)
-    };
-    let calls = Calls::new(m.permissions.clone(), snapshot.clone(), api);
-    let mut known_paths = vec![
-        plugin.dir.display().to_string(),
-        dirs.tmp.display().to_string(),
-    ];
-    if let Some((d, _)) = &dirs.data {
-        known_paths.push(d.display().to_string());
-    }
-    let mut runner = Runner {
-        host: FakeHost::new(plugin, dirs, calls),
-        judge: Judge { plugin, snapshot },
-        findings: Vec::new(),
-        stderr: Vec::new(),
-        warm: None,
-    };
-
+    let mut runner = Runner::new(plugin, snapshot)?;
     let mut cmds = Vec::new();
     for c in &m.contributes.commands {
         let timeout_s = c.timeout_s.unwrap_or(DEFAULT_COMMAND_TIMEOUT_S);
@@ -329,19 +353,7 @@ pub fn run(plugin: &Plugin, snapshot: &Snapshot) -> Result<Report, HarnessError>
             }
         }
     }
-    if let Some(mut p) = runner.warm.take() {
-        if let Err(m) = FakeHost::shutdown(&mut p) {
-            runner.findings.push(finding(
-                "protocol",
-                "PLUGIN_PROTOCOL",
-                None,
-                Some("warm"),
-                m,
-                json!({ "reason": "shutdown" }),
-            ));
-        }
-        runner.retire(p);
-    }
+    runner.shut_warm();
     for cmd in &mut cmds {
         let passed = cmd
             .report
@@ -373,36 +385,7 @@ pub fn run(plugin: &Plugin, snapshot: &Snapshot) -> Result<Report, HarnessError>
         }
     }
 
-    let secrets = [secret];
-    for line in &runner.host.calls.logs {
-        if let Some(reason) = scan::leak(&line.msg, &secrets, &known_paths) {
-            runner.findings.push(finding(
-                "log",
-                "LOG_LEAK",
-                Some(&line.command),
-                Some(line.phase),
-                format!("a log message holds a {reason}"),
-                json!({ "reason": reason, "level": line.level }),
-            ));
-        }
-    }
-    if runner
-        .stderr
-        .iter()
-        .any(|l| scan::leak(l, &secrets, &[]) == Some("secret"))
-    {
-        runner.findings.push(finding(
-            "log",
-            "LOG_LEAK",
-            None,
-            None,
-            "a stderr line holds a secret",
-            json!({ "reason": "secret", "stream": "stderr" }),
-        ));
-    }
-
-    let mut findings = std::mem::take(&mut runner.findings);
-    findings.append(&mut runner.host.violations);
+    let findings = runner.scan_logs();
     Ok(Report {
         ok: findings.is_empty(),
         profile: "command",
@@ -410,7 +393,62 @@ pub fn run(plugin: &Plugin, snapshot: &Snapshot) -> Result<Report, HarnessError>
         runtime: plugin.program.runtime(),
         fixture: json!({ "source": snapshot.source, "rev": snapshot.rev }),
         commands: cmds.into_iter().map(|c| c.report).collect(),
+        hooks: Vec::new(),
         calls: std::mem::take(&mut runner.host.records),
         findings,
     })
+}
+
+impl Runner<'_> {
+    /// Ends the warm process as the host does (`shutdown`), a finding if it does not exit 0.
+    pub(super) fn shut_warm(&mut self) {
+        if let Some(mut p) = self.warm.take() {
+            if let Err(m) = FakeHost::shutdown(&mut p) {
+                self.findings.push(finding(
+                    "protocol",
+                    "PLUGIN_PROTOCOL",
+                    None,
+                    Some("warm"),
+                    m,
+                    json!({ "reason": "shutdown" }),
+                ));
+            }
+            self.retire(p);
+        }
+    }
+
+    /// Log and stderr leaks as findings, then every finding of the run.
+    pub(super) fn scan_logs(&mut self) -> Vec<Finding> {
+        let secrets = [self.secret.clone()];
+        for line in &self.host.calls.logs {
+            if let Some(reason) = scan::leak(&line.msg, &secrets, &self.known_paths) {
+                self.findings.push(finding(
+                    "log",
+                    "LOG_LEAK",
+                    Some(&line.command),
+                    Some(line.phase),
+                    format!("a log message holds a {reason}"),
+                    json!({ "reason": reason, "level": line.level }),
+                ));
+            }
+        }
+        if self
+            .stderr
+            .iter()
+            .any(|l| scan::leak(l, &secrets, &[]) == Some("secret"))
+        {
+            self.findings.push(finding(
+                "log",
+                "LOG_LEAK",
+                None,
+                None,
+                "a stderr line holds a secret",
+                json!({ "reason": "secret", "stream": "stderr" }),
+            ));
+        }
+
+        let mut findings = std::mem::take(&mut self.findings);
+        findings.append(&mut self.host.violations);
+        findings
+    }
 }

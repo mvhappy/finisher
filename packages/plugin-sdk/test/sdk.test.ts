@@ -6,13 +6,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
 import { build as buildExample } from "../../../examples/plugins/ts-tools/build.mjs";
-import { CANCEL_GRACE_MS, ENVELOPE_VERSION, MAX_LINE_BYTES, SDK_MINOR } from "../src/index.ts";
+import { CANCEL_GRACE_MS, ENVELOPE_VERSION, MAX_LINE_BYTES, type PluginDefinition, SDK_MINOR, toHookOut } from "../src/index.ts";
 import { bundle } from "../tools/bundle.mjs";
-import { commandJob, context, FakeHost } from "./fake-host.ts";
+import { commandJob, context, FakeHost, hookJob } from "./fake-host.ts";
 
 let tmp: string;
 let pkg: string;
 let probe: string;
+let hooked: string;
 let example: string;
 const hosts: FakeHost[] = [];
 
@@ -23,6 +24,8 @@ beforeAll(() => {
   pkg = join(tmp, "pkg");
   probe = join(pkg, "dist", "probe.mjs");
   bundle({ entry: join(import.meta.dirname, "fixtures", "probe-plugin.ts"), outfile: probe });
+  hooked = join(pkg, "dist", "hooked.mjs");
+  bundle({ entry: join(import.meta.dirname, "fixtures", "hook-plugin.ts"), outfile: hooked });
   example = buildExample();
 });
 
@@ -451,5 +454,93 @@ describe("the ts-tools example", () => {
     expect(await h.run(commandJob("fetch-title", { url: "https://api.example.org/" }))).toMatchObject({ t: "result", value: { kind: "data", value: { status: 200, title: "Example Domain" } } });
     expect(h.callsOf("net.fetch")[0]?.params).toEqual({ request: { method: "GET", url: "https://api.example.org/", headers: [{ name: "accept", value: "text/html" }] } });
     expect(h.problems).toEqual([]);
+  });
+});
+
+describe("hook handlers (7F Task 9)", () => {
+  const request = (event: string, payload: unknown) => ({
+    event,
+    v: 1,
+    session: { id: "s1", role: "editor", mode: "plan", harness: "builtin" },
+    project: { id: "p1", dir: "/projects/p1" },
+    payload,
+  });
+
+  test("hello_announces_hook_kind_only_with_hooks", async () => {
+    const plain = host(probe, "--warm");
+    expect((await plain.next()) as unknown).toMatchObject({ t: "hello", kinds: [{ kind: "plugin.command", version: 1 }] });
+    const h = host(hooked, "--warm");
+    expect((await h.next()) as unknown).toMatchObject({
+      t: "hello",
+      kinds: [
+        { kind: "plugin.command", version: 1 },
+        { kind: "plugin.hook", version: 1 },
+      ],
+    });
+    // A plugin without hooks refuses a hook job as a wrong kind.
+    const out = await plain.run(hookJob("guard", request("PreCommand", {})));
+    expect(out).toMatchObject({ t: "error", error: { code: "PLUGIN_PROTOCOL", details: { reason: "kind", kind: "plugin.hook" } } });
+    // Its commands still run.
+    expect(await h.run(commandJob("seen"))).toMatchObject({ t: "result", value: { kind: "data", value: [] } });
+  });
+
+  test("hook_handler_round_trip", async () => {
+    const cold = host(hooked);
+    const job = hookJob("guard", request("PreCommand", { command: "history.delete" }));
+    expect(await cold.run(job)).toMatchObject({ t: "result", job: job.id, value: { reply: "block", reason: "no deletes in p1" } });
+    expect(await cold.exited).toBe(0);
+    const h = host(hooked, "--warm");
+    expect(await h.run(hookJob("guard", request("PreCommand", { command: "history.list" })))).toMatchObject({ t: "result", value: { reply: "allow" } });
+    // No answer is allow; a host call works inside a hook.
+    expect(await h.run(hookJob("quiet", request("JobDone", {})))).toMatchObject({ t: "result", value: { reply: "allow" } });
+    h.calls["project.view"] = () => ({ text: "timeline: 2 items" });
+    expect(await h.run(hookJob("view", request("PreCommand", {})))).toMatchObject({ t: "result", value: { reply: "context", text: "timeline: 2 items" } });
+    // A server-scoped request (no session, no project) reaches the handler.
+    const bare = { event: "JobDone", v: 1, payload: { jobId: "j9" } };
+    expect(await h.run(hookJob("audit", bare))).toMatchObject({ t: "result", value: { reply: "context", text: "JobDone v1 by @test/probe" } });
+    // Params that are no hook run are a protocol error.
+    const bad = { ...hookJob("guard", request("PreCommand", {})), params: { handler: 1 } };
+    expect(await h.run(bad as never)).toMatchObject({ t: "error", error: { code: "PLUGIN_PROTOCOL", details: { reason: "params" } } });
+    expect(h.problems).toEqual([]);
+  });
+
+  test("two_handlers_on_one_event_dispatch_by_name", async () => {
+    const h = host(hooked, "--warm");
+    const req = request("PreCommand", { command: "history.delete" });
+    expect(await h.run(hookJob("audit", req))).toMatchObject({ t: "result", value: { reply: "context", text: "PreCommand v1 by @test/probe" } });
+    expect(await h.run(hookJob("guard", req))).toMatchObject({ t: "result", value: { reply: "block", reason: "no deletes in p1" } });
+    expect(await h.run(hookJob("greet", request("SessionStart", {})))).toMatchObject({ t: "result", value: { reply: "context", text: "hello s1" } });
+    expect(await h.run(commandJob("seen"))).toMatchObject({ t: "result", value: { kind: "data", value: ["audit", "guard", "greet"] } });
+  });
+
+  test("unknown_handler_is_plugin_error", async () => {
+    const h = host(hooked, "--warm");
+    for (const name of ["nobody", "constructor", "__proto__"]) {
+      const out = await h.run(hookJob(name, request("PreCommand", {})));
+      expect(out).toMatchObject({ t: "error", error: { code: "PLUGIN_PROTOCOL", details: { reason: "unknownHook", handler: name } } });
+    }
+  });
+
+  test("modify_reply_cannot_be_returned", async () => {
+    // The types: a hook answers allow, block or context, never modify (spec §9.1).
+    const def: PluginDefinition = {
+      hooks: {
+        // @ts-expect-error a `modify` reply is not a HookReply
+        typed: () => ({ reply: "modify", payload: {} }),
+      },
+    };
+    expect(Object.keys(def.hooks ?? {})).toEqual(["typed"]);
+    // At run time, an untyped one is refused, as is a known reply with an unknown field.
+    expect(() => toHookOut({ reply: "modify", payload: {} } as never)).toThrow(/neither allow, block nor context/);
+    expect(() => toHookOut({ reply: "block" } as never)).toThrow();
+    expect(() => toHookOut({ reply: "context", text: 1 } as never)).toThrow();
+    expect(() => toHookOut({ reply: "allow", extra: 1 } as never)).toThrow();
+    expect(toHookOut(undefined)).toEqual({ reply: "allow" });
+    expect(toHookOut({ reply: "block", reason: "r" })).toEqual({ reply: "block", reason: "r" });
+    const h = host(hooked, "--warm");
+    for (const name of ["untyped", "extra"]) {
+      const out = await h.run(hookJob(name, request("PreCommand", {})));
+      expect(out).toMatchObject({ t: "error", error: { code: "PLUGIN_PROTOCOL", details: { reason: "badReply" } } });
+    }
   });
 });

@@ -94,6 +94,9 @@ fn content_kind(m: &Manifest, out: &mut Vec<Invalid>) {
     if !m.contributes.commands.is_empty() {
         refuse("/contributes/commands", "contentCommands", "commands");
     }
+    if m.contributes.hooks.as_ref().is_some_and(|h| !h.is_empty()) {
+        refuse("/contributes/hooks", "contentHooks", "hooks");
+    }
     if m.contributes.is_empty() {
         out.push(Invalid::manifest(
             "/contributes",

@@ -45,8 +45,11 @@ import { splitVia, storeDirOf } from "./program.ts";
 import type { JobRights, Permission, PluginContext } from "@finisher/core-types";
 import { type Invoker, rightsFor } from "./rights.ts";
 
-/** The host API a code plugin must accept to be enabled (sp8b Decision 14). */
-export const PLUGIN_HOST_API = "1.1.0";
+/**
+ * The host API a code plugin must accept to be enabled (sp8b Decision 14): 1.2 consumes hooks
+ * (7F Decision 20), in step with `fin_plugin_api::HOST_API`.
+ */
+export const PLUGIN_HOST_API = "1.2.0";
 
 /** What the lifecycle asks of the plugin processes. */
 export interface PluginHostHooks {

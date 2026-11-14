@@ -48,8 +48,8 @@ const b64 = (s: string): Buffer => Buffer.from(s, "base64");
 export class Host {
   /** The job's context (`start.job.extra`): host API, plugin, grants, dirs, locale, limits. */
   readonly context: PluginContext;
-  /** The command run: `command`, `args`, `project`, `branch` and the pinned `rev`. */
-  readonly run: CommandRun;
+  /** The command run: `command`, `args`, `project`, `branch` and the pinned `rev`; none in a hook job. */
+  readonly run: CommandRun | undefined;
   /**
    * Fires when the host cancels the job, when the process is shutting down, and also when the
    * job ends normally (its handler settled): work still holding it should stop then too.
@@ -57,7 +57,7 @@ export class Host {
   readonly signal: AbortSignal;
   readonly #call: CallFn;
 
-  constructor(context: PluginContext, run: CommandRun, signal: AbortSignal, call: CallFn) {
+  constructor(context: PluginContext, run: CommandRun | undefined, signal: AbortSignal, call: CallFn) {
     this.context = context;
     this.run = run;
     this.signal = signal;
@@ -71,7 +71,8 @@ export class Host {
   }
 
   /**
-   * The project at the job's pinned `rev` (`project:read`): every page fetched and joined.
+   * The project at the job's pinned `rev` (`project:read`; a hook job pins none: the first
+   * page's): every page fetched and joined.
    * `PLUGIN_PROTOCOL {reason, page, expected, got}` when a page names another index
    * (`snapshotPage`), the page count is 0 or changes (`snapshotPages`) or a page is of another
    * `rev` (`snapshotRev`).
@@ -80,10 +81,11 @@ export class Host {
     const first = (await this.#call("project.snapshot", {})) as ProjectSnapshotPage;
     const pages = first.pages;
     if (!Number.isInteger(pages) || pages < 1) throw protocolError("a snapshot has no pages", { reason: "snapshotPages", page: 0, expected: 1, got: pages });
+    const rev = this.run?.rev ?? first.rev;
     const parts: Buffer[] = [];
     for (let page = 0; page < pages; page++) {
       const p = page === 0 ? first : ((await this.#call("project.snapshot", { page })) as ProjectSnapshotPage);
-      if (p.rev !== this.run.rev) throw protocolError("a snapshot page is of another revision", { reason: "snapshotRev", page, expected: this.run.rev, got: p.rev });
+      if (p.rev !== rev) throw protocolError("a snapshot page is of another revision", { reason: "snapshotRev", page, expected: rev, got: p.rev });
       if (p.page !== page) throw protocolError("a snapshot page is out of order", { reason: "snapshotPage", page, expected: page, got: p.page });
       if (p.pages !== pages) throw protocolError("a snapshot's page count changed", { reason: "snapshotPages", page, expected: pages, got: p.pages });
       parts.push(b64(p.bytesB64));
