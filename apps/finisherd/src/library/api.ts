@@ -63,8 +63,8 @@ export interface StageSpec {
   readonly priority?: Priority;
   /** Jobs queued or running per library, default 2. */
   readonly maxInFlight?: number;
-  /** A cache hit in the owner's index: the row is `done` without a job. */
-  readonly isDone?: (fp: string) => Effect.Effect<boolean>;
+  /** A cache hit in the owner's index: the row is `done` without a job. `file` is the row's file. */
+  readonly isDone?: (fp: string, file?: StageFile) => Effect.Effect<boolean>;
 }
 
 /** Where a file is (`Libraries.locate`, Decision 45). */

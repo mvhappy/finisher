@@ -16001,7 +16001,7 @@
       "type": "object"
     },
     "ProxySourceAudio": {
-      "description": "What a proxy's key says of the source's audio (6C Task 20 review): none, one this build\nhas no decoder for, or one a decoder of a class decodes. A later build (or a plugin) that\ngains the decoder changes the key, so a video-only entry made without it is not served\nagain; a track that is decodable but fails to decode (corrupt, or a profile the decoder\nrefuses) keys as decodable, since the file will not change.",
+      "description": "What a proxy's key says of the source's audio (6C Task 20 review): none, one this build\nhas no decoder for, or one a decoder of a class decodes. It is read from this build's static\ntables ([`audio_decoder_for_proxy`] over [`AUDIO_BACKENDS`]), not from what the machine can do\nat run time. So a **build** whose tables gain a decoder for the codec or container (AAC on\nmacOS and Windows with 6C Tasks 15–16; WebM audio) changes the key, and a video-only entry\nmade without it is made again. What does **not** change the key: a decoder the tables list\nbut the machine lacks or refuses at run time (Media Foundation's AAC on Windows N without the\nMedia Feature Pack; a profile such as HE-AAC that the listed decoder refuses), and a corrupt\ntrack. Those key as decodable, their proxy is video only (`audioSkipped`), and a plugin or\nfeature pack installed later does not refresh it. Keying on the capability report's audio\ndecode rows instead is 6C Task 17's.",
       "oneOf": [
         {
           "const": "none",

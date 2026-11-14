@@ -40,7 +40,7 @@ use fin_media::backend::{EncodePurpose, backend};
 use fin_media::cache::{EntryEncoder, EntryFile, EntryMeta, META_FILE};
 use fin_media::jobs::{
     MANIFEST_VERSION, ManifestAsset, ProxyAudioSkipped, ProxyCodec, ProxyParams, ProxyResult,
-    ProxySourceAudio, RenderManifest, gop, proxy_key, source_audio,
+    ProxySourceAudio, RenderManifest, audio_unavailable_code, gop, proxy_key, source_audio,
 };
 use fin_media::table_bin::{self, TABLE_FILE};
 use fin_media::{ColourTags, MediaInfo, VideoTrackInfo};
@@ -272,7 +272,9 @@ fn make(p: &ProxyParams, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<ProxyR
     }
     let (audio, audio_skipped) = match audio_key {
         ProxySourceAudio::None => (None, None),
-        ProxySourceAudio::Unavailable => (None, Some("CODEC_UNAVAILABLE".to_string())),
+        ProxySourceAudio::Unavailable => {
+            (None, Some(audio_unavailable_code(info.container).into()))
+        }
         ProxySourceAudio::Decoded(class) => {
             let file = open_source(p, ctx, &dir, warm)?;
             let scratch = dir.output().join(format!("{key}.audio"));
@@ -397,13 +399,12 @@ fn audio_progress<'a>(
     ctx: &'a mut JobCtx<'_>,
     frames: u64,
 ) -> impl FnMut(u64) -> Result<(), CoreError> + 'a {
-    let mut last: Option<std::time::Instant> = None;
+    let mut every = proxy_audio::Throttle::new(std::time::Duration::from_secs(1));
     move |_| {
         if ctx.cancelled().is_some() {
             return Err(CoreError::new("JOB_CANCELLED", "the proxy was cancelled"));
         }
-        if last.is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(1)) {
-            last = Some(std::time::Instant::now());
+        if every.due(std::time::Instant::now()) {
             let mut pr = fin_jobs::Progress::new(0.0, ProgressUnit::Frames);
             pr.total = Some(frames as f64);
             pr.phase = Some("encodeAudio".into());

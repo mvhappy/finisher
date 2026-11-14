@@ -314,6 +314,12 @@ fn the_key_names_the_source_s_audio() {
     } else {
         assert_eq!(aac, ProxySourceAudio::Unavailable);
     }
+    // Why an unavailable track is left out: its container, or its codec.
+    use fin_media::jobs::audio_unavailable_code;
+    assert_eq!(audio_unavailable_code(Webm), "UNSUPPORTED_CONTAINER");
+    assert_eq!(audio_unavailable_code(Matroska), "UNSUPPORTED_CONTAINER");
+    assert_eq!(audio_unavailable_code(Mp4), "CODEC_UNAVAILABLE");
+    assert_eq!(audio_unavailable_code(Mov), "CODEC_UNAVAILABLE");
     // Every state is a different key.
     let keys: Vec<_> = [
         NONE,

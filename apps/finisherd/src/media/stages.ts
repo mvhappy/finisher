@@ -6,8 +6,9 @@
 //   here decodes are skipped.
 // - `version`: `<recipe version>.<RENDER_VERSION>`, so a new recipe or render version makes
 //   every proxy again (their keys change too).
-// - `isDone`: the cache holds a `proxy-540` entry of the fingerprint made at this build's recipe
-//   and render versions (adopted entries included); an older one is made again.
+// - `isDone`: the cache holds the entry of the key the stage would plan for the file now
+//   (adopted entries included): another recipe or render version, decoder class or source audio
+//   (6C Task 20) is made again.
 // - `params`: the file as the catalogue knows it (raw chain and `Expect`), the codec of
 //   Decision 5 and the key planned from the report (`mediaProxyPlan`).
 import type { ProxyParams } from "@finisher/core-types";
@@ -77,12 +78,15 @@ export function proxy540Stage(deps: MediaStageDeps): StageSpec {
       }
     },
     params: (files) => paramsOf(deps.report(), files[0]!),
-    isDone: (fp) =>
+    // Done only when the cache holds the entry the stage would plan now: its key names the recipe
+    // and render versions, the decoder's class and the source's audio (6C Task 20), so an entry
+    // made while the audio was unavailable (or by another decoder) is made again.
+    isDone: (fp, file) =>
       Effect.promise(async () => {
         const cache = deps.cache();
-        if (cache === undefined) return false;
+        if (cache === undefined || file === undefined || file.fp !== fp) return false;
         try {
-          return (await cache.entriesFor({ fingerprint: fp })).some((e) => e.recipe === PROXY540_RECIPE && e.recipeVersion === recipeVersion && e.renderVersion === v.renderVersion);
+          return (await cache.lookup(paramsOf(deps.report(), file).key)) !== null;
         } catch {
           return false;
         }

@@ -229,10 +229,16 @@ impl ProxyParams {
 }
 
 /// What a proxy's key says of the source's audio (6C Task 20 review): none, one this build
-/// has no decoder for, or one a decoder of a class decodes. A later build (or a plugin) that
-/// gains the decoder changes the key, so a video-only entry made without it is not served
-/// again; a track that is decodable but fails to decode (corrupt, or a profile the decoder
-/// refuses) keys as decodable, since the file will not change.
+/// has no decoder for, or one a decoder of a class decodes. It is read from this build's static
+/// tables ([`audio_decoder_for_proxy`] over [`AUDIO_BACKENDS`]), not from what the machine can do
+/// at run time. So a **build** whose tables gain a decoder for the codec or container (AAC on
+/// macOS and Windows with 6C Tasks 15–16; WebM audio) changes the key, and a video-only entry
+/// made without it is made again. What does **not** change the key: a decoder the tables list
+/// but the machine lacks or refuses at run time (Media Foundation's AAC on Windows N without the
+/// Media Feature Pack; a profile such as HE-AAC that the listed decoder refuses), and a corrupt
+/// track. Those key as decodable, their proxy is video only (`audioSkipped`), and a plugin or
+/// feature pack installed later does not refresh it. Keying on the capability report's audio
+/// decode rows instead is 6C Task 17's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum ProxySourceAudio {
@@ -266,6 +272,16 @@ pub fn audio_decoder_for_proxy(
         AudioCodec::Mp3 => by("symphonia"),
         AudioCodec::Aac => AUDIO_BACKENDS.iter().find(|b| b.decode.contains(&codec)),
         _ => None,
+    }
+}
+
+/// The `audioSkipped` code of a source whose audio the key names [`ProxySourceAudio::Unavailable`]:
+/// `UNSUPPORTED_CONTAINER` when its container's audio is not read here (WebM, Matroska), else
+/// `CODEC_UNAVAILABLE` (no decoder for the codec).
+pub fn audio_unavailable_code(container: ContainerKind) -> &'static str {
+    match container {
+        ContainerKind::Mp4 | ContainerKind::Mov => "CODEC_UNAVAILABLE",
+        ContainerKind::Webm | ContainerKind::Matroska => "UNSUPPORTED_CONTAINER",
     }
 }
 

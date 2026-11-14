@@ -290,3 +290,18 @@ fn muxed_beside_the_frames_by_time_also_after_a_restart() {
         );
     }
 }
+
+/// Review of Task 20 (re-check): the audio pass's progress is due at its start, then at most once
+/// a second, however often it is asked (a fake clock).
+#[test]
+fn audio_progress_is_due_at_most_once_a_second() {
+    let t0 = std::time::Instant::now();
+    let ms = |n: u64| t0 + std::time::Duration::from_millis(n);
+    let mut t = Throttle::new(std::time::Duration::from_secs(1));
+    let asked = [
+        0, 10, 300, 999, 1000, 1001, 1500, 1999, 2100, 2101, 2200, 5000,
+    ];
+    let due: Vec<u64> = asked.into_iter().filter(|n| t.due(ms(*n))).collect();
+    assert_eq!(due, [0, 1000, 2100, 5000]);
+    assert!(due.windows(2).all(|w| w[1] - w[0] >= 1000));
+}

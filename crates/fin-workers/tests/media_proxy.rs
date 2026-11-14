@@ -973,3 +973,77 @@ fn proxy_audio_starts_with_video() {
         "audio at {audio_s:.5} s, video at {video_s:.5} s"
     );
 }
+
+/// A pattern clip in WebM (AV1, 30 fps) with an Opus audio track beside it: this build reads no
+/// WebM audio, so the proxy key names it unavailable.
+fn webm_av_clip(spec: &ClipSpec) -> Clip {
+    use fin_codecs::fixture::{encode_all, fixture_config};
+    use fin_codecs::{RawFrame, open_encoder};
+    use fin_container::testing::webm_writer::{Block, Options, Track, write};
+    let mut enc = open_encoder(
+        &fixture_config(spec, fin_media::VideoCodec::Av1),
+        &ProbeResult::software_only(),
+    )
+    .unwrap();
+    let packets = encode_all(&mut enc, spec.frames, |i| {
+        let p = fin_media::testing::pattern(i, spec.size.width, spec.size.height, spec.seed);
+        RawFrame::i420(spec.size, p.y, p.u, p.v)
+    })
+    .unwrap();
+    let CodecConfig::Av1 { av1c } = enc.config().unwrap() else {
+        panic!("not an av1C")
+    };
+    // OpusHead: version 1, 2 channels, pre-skip 312, 48 kHz, gain 0, mapping family 0.
+    let mut head = b"OpusHead".to_vec();
+    head.extend_from_slice(&[1, 2, 0x38, 0x01, 0x80, 0xBB, 0, 0, 0, 0, 0]);
+    let mut blocks: Vec<Block> = packets
+        .iter()
+        .map(|pk| Block::simple(1, (pk.pts * 1000 + 15) / 30, pk.keyframe, pk.data.clone()))
+        .collect();
+    blocks.extend((0..10).map(|i| Block::simple(2, i * 20, true, vec![0xFC, 0xFF, 0xFE])));
+    blocks.sort_by_key(|b| b.ts);
+    let (w, h) = (spec.size.width as u64, spec.size.height as u64);
+    let bytes = write(
+        &Options::default(),
+        &[
+            Track {
+                private: Some(av1c),
+                ..Track::video(1, "V_AV1", w, h)
+            },
+            Track {
+                private: Some(head),
+                ..Track::audio(2, "A_OPUS", 48_000.0, 2)
+            },
+        ],
+        &blocks,
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let path = std::fs::canonicalize(dir.path()).unwrap().join("clip.webm");
+    std::fs::write(&path, bytes).unwrap();
+    Clip { _dir: dir, path }
+}
+
+/// Review of Task 20 (re-check): audio left out for its container says so
+/// (`UNSUPPORTED_CONTAINER`), not as a codec this build lacks.
+#[test]
+fn webm_audio_is_skipped_for_its_container() {
+    if !gpu_or_skip("webm_audio_is_skipped_for_its_container") {
+        return;
+    }
+    let c = webm_av_clip(&spec(6, Size::new(320, 180)));
+    assert!(
+        demux(&c.path).info().audio.is_some(),
+        "the fixture has audio"
+    );
+    let job = job_for("fp", &c.path);
+    let p = params_with("fp", ProxyTier::Scrub, ProxySourceAudio::Unavailable);
+    let r = outcome(&run(&job, &p), "fp").unwrap();
+    assert_eq!(r.audio, None);
+    assert_eq!(
+        r.audio_skipped,
+        Some(ProxyAudioSkipped {
+            code: "UNSUPPORTED_CONTAINER".into()
+        })
+    );
+    assert_eq!(ids(&entry(&job, &r.key).join(PROXY_FILE)), ids(&c.path));
+}

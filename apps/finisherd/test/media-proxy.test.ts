@@ -553,27 +553,52 @@ function canonical(v: unknown): string {
 }
 
 describe("the proxy540 stage's isDone", () => {
-  test("an entry made at an older render version is not done", async () => {
+  /** Commits a `proxy-540` entry of `fp-lib` whose key input has `params` at those versions; its key. */
+  const committer = (sd: string, cache: MediaCache) => async (renderVersion: number, recipeVersion: number, params: unknown) => {
+    const input = { fingerprint: "fp-lib", recipe: "proxy-540", recipeVersion, params, renderVersion, decoderClass: "software" };
+    const key = blake3Hex(Buffer.from(canonical(input)));
+    const out = join(sd, "jobs", key.slice(0, 12), "out");
+    mkdirSync(join(out, key), { recursive: true });
+    writeFileSync(join(out, key, "proxy.mp4"), "mp4");
+    const files = [{ name: "proxy.mp4", bytes: 3, blake3: blake3Hex(Buffer.from("mp4")) }];
+    writeFileSync(join(out, key, "meta.json"), JSON.stringify({ key, ...input, files, createdAt: 1 }));
+    await cache.commit(out, key, []);
+    return key;
+  };
+  // Lazily: the clip is made before the tests run.
+  const opusFile = () => stageFile({ media: { container: "mp4", video: { codec: "av1" }, audio: { codec: "opus" } } });
+
+  test("an entry made at an older render or recipe version is not done", async () => {
     const sd = realpathSync(mkdtempSync(join(work, "stale-")));
     const cache = await MediaCache.open(sd);
+    const commit = committer(sd, cache);
     const v = mediaVersions();
-    const commit = async (renderVersion: number, recipeVersion: number) => {
-      const input = { fingerprint: "fp-stale", recipe: "proxy-540", recipeVersion, params: { tier: "540" }, renderVersion, decoderClass: "software" };
-      const key = blake3Hex(Buffer.from(canonical(input)));
-      const out = join(sd, "jobs", `r${renderVersion}-${recipeVersion}`, "out");
-      mkdirSync(join(out, key), { recursive: true });
-      writeFileSync(join(out, key, "proxy.mp4"), "mp4");
-      const files = [{ name: "proxy.mp4", bytes: 3, blake3: blake3Hex(Buffer.from("mp4")) }];
-      writeFileSync(join(out, key, "meta.json"), JSON.stringify({ key, ...input, files, createdAt: 1 }));
-      await cache.commit(out, key, []);
-    };
     const s = proxy540Stage({ report: () => V1, cache: () => cache });
     const recipe = v.recipes["proxy-540"]!;
-    await commit(v.renderVersion - 1, recipe);
-    await commit(v.renderVersion, recipe + 1);
-    expect(await Effect.runPromise(s.isDone!("fp-stale"))).toBe(false);
-    await commit(v.renderVersion, recipe);
-    expect(await Effect.runPromise(s.isDone!("fp-stale"))).toBe(true);
+    const params = { codec: "av1", audio: { decoded: "software" } };
+    await commit(v.renderVersion - 1, recipe, params);
+    await commit(v.renderVersion, recipe + 1, params);
+    expect(await Effect.runPromise(s.isDone!("fp-lib", opusFile()))).toBe(false);
+    const key = await commit(v.renderVersion, recipe, params);
+    expect(key).toBe((s.params([opusFile()], { library: "l1", pools: {} as never }) as ProxyParams).key);
+    expect(await Effect.runPromise(s.isDone!("fp-lib", opusFile()))).toBe(true);
+  });
+
+  // 6C Task 20 re-check: the entry must be the one the stage would plan now (its key), so a
+  // silent proxy made while the audio was unavailable is made again once it decodes.
+  test("an entry planned with other audio (or another decoder) is not done", async () => {
+    const sd = realpathSync(mkdtempSync(join(work, "audio-")));
+    const cache = await MediaCache.open(sd);
+    const commit = committer(sd, cache);
+    const v = mediaVersions();
+    const s = proxy540Stage({ report: () => V1, cache: () => cache });
+    const recipe = v.recipes["proxy-540"]!;
+    await commit(v.renderVersion, recipe, { codec: "av1", audio: "unavailable" });
+    expect(await Effect.runPromise(s.isDone!("fp-lib", opusFile()))).toBe(false);
+    await commit(v.renderVersion, recipe, { codec: "av1", audio: "none" });
+    expect(await Effect.runPromise(s.isDone!("fp-lib", opusFile()))).toBe(false);
+    await commit(v.renderVersion, recipe, { codec: "av1", audio: { decoded: "software" } });
+    expect(await Effect.runPromise(s.isDone!("fp-lib", opusFile()))).toBe(true);
   });
 
   test("a file without a video track throws without its name", () => {

@@ -91,6 +91,30 @@ impl PacketReader<'_> {
     }
 }
 
+/// When the audio pass's next progress report is due: at once, then at most once an `every`.
+pub struct Throttle {
+    every: std::time::Duration,
+    last: Option<std::time::Instant>,
+}
+
+impl Throttle {
+    pub fn new(every: std::time::Duration) -> Throttle {
+        Throttle { every, last: None }
+    }
+
+    /// Whether a report is due at `now` (and if so, counts it as sent).
+    pub fn due(&mut self, now: std::time::Instant) -> bool {
+        if self
+            .last
+            .is_some_and(|t| now.saturating_duration_since(t) < self.every)
+        {
+            return false;
+        }
+        self.last = Some(now);
+        true
+    }
+}
+
 /// What became of the source's audio.
 #[derive(Debug)]
 pub enum Outcome {
