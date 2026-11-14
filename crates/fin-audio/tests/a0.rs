@@ -578,7 +578,9 @@ fn plans_follow_their_projects() {
 /// Mixer throughput (spec §14, plan 6C Task 23 item 3): 16 stereo items, each with an EQ and a
 /// compressor, 10 s, must mix at ≥ [`PERF_MIN_X`]× real time in a release build on the
 /// reference machines (the median of [`PERF_RUNS`] renders, each with a fresh mixer, so one
-/// descheduled run does not decide). Ignored by default (a debug build and a shared CI runner
+/// descheduled run does not decide). It measures the mixer alone, as the spec row does: the
+/// sources are the test `MemSource` (buffers reused, one copy per read), and gain, pan and effect
+/// parameters are constant, so automated items and the worker's decoded sources cost more. Ignored by default (a debug build and a shared CI runner
 /// are not the reference): `cargo test --release -p fin-audio --test a0 -- --ignored perf
 /// --nocapture`.
 #[test]

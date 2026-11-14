@@ -297,13 +297,18 @@ const LOG2_C: [f32; 5] = [
 /// [`exp2_poly`] is below 5e-6, i.e. below 5e-5 dB).
 const EXP2_C: [f32; 4] = [0.693_018_56, 0.241_445_51, 0.051_950_548, 0.013_581_248];
 
-/// `log2(x)` for a normal `x > 0` (the detectors' floors keep subnormals, zero and negatives
-/// out). Exponent and mantissa from the bits, the mantissa folded into `[√½, √2)` (exact),
+/// `log2(x)` for a normal, finite `x > 0`; the caller guarantees it (the detectors' floors keep
+/// subnormals, zero, negatives and NaN out). Outside that domain the answer is finite garbage, not
+/// libm's `±inf`/NaN (`log2_poly(0)` is −127, `log2_poly(inf)` is 128). Exponent and mantissa from the bits, the mantissa folded into `[√½, √2)` (exact),
 /// then `e + t·P(t)` with `t = m − 1` (exact) and [`LOG2_C`] by Horner. Only `+ − ×` and bit
 /// operations in a fixed order, no `mul_add`: the same bits on every target (plan 6C
 /// Determinism), and cheaper per frame than `libm::log10f` (6C Task 23 throughput).
 #[inline]
 pub fn log2_poly(x: f32) -> f32 {
+    debug_assert!(
+        x.is_normal() && x > 0.0,
+        "log2_poly({x}) outside its domain"
+    );
     let bits = x.to_bits();
     let mut e = ((bits >> 23) & 0xff) as i32 - 127;
     let mut m = f32::from_bits((bits & 0x007f_ffff) | 0x3f80_0000);
@@ -320,7 +325,8 @@ pub fn log2_poly(x: f32) -> f32 {
 }
 
 /// `2^y` (`y` clamped to `[−126, 127]`, so the result is a normal `f32`): `2^i` from the bits
-/// times `1 + f·P(f)` for `y = i + f`, `0 ≤ f < 1` (the split is exact), [`EXP2_C`] by Horner.
+/// times `1 + f·P(f)` for `y = i + f`, `0 ≤ f ≤ 1` ([`EXP2_C`] by Horner; `f` rounds to 1 for a
+/// tiny negative `y`, still within the bound). `amp(-inf)` is therefore 2^-126, not 0.
 /// `+ − ×` and bit operations only, in a fixed order (see [`log2_poly`]).
 #[inline]
 pub fn exp2_poly(y: f32) -> f32 {
