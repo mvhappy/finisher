@@ -109,16 +109,52 @@ describe("the account record", () => {
       expect(accounts.record(a, "claude.ai", { readAt })).toEqual({ hash: b.hash, changed: true });
       expect(accounts.pending(), String(readAt)).toBe(b.hash);
     }
-    // Read after it: back on the recorded account, nothing waits (and `at` is when it was read).
+    // Read after it: back on the recorded account, nothing waits (and `at` is when the answer came).
     now = T0 + 5_000;
     expect(accounts.record(a, "claude.ai", { readAt: T0 + 2_000 })).toEqual({ hash: a, changed: false });
-    expect(accounts.state()).toEqual({ v: 1, current: { hash: a, authMethod: "claude.ai", at: new Date(T0 + 2_000).toISOString() } });
-    // Another account read before the recorded one was seen is stale too: no change is made of it
-    // (the answer is the record's).
-    expect(accounts.record(b.hash, "claude.ai", { readAt: T0 + 1_500 })).toEqual({ hash: a, changed: false });
+    expect(accounts.state()).toEqual({ v: 1, current: { hash: a, authMethod: "claude.ai", at: new Date(T0 + 5_000).toISOString() } });
+    // Another account is never dropped as stale, however old the read: it waits (fail closed).
+    expect(accounts.record(b.hash, "claude.ai", { readAt: T0 + 1_500 })).toEqual({ hash: b.hash, changed: true });
+    expect(accounts.pending()).toBe(b.hash);
+  });
+
+  test("other_account_never_accepted_without_confirm: stale, after a confirm, or with the clock stepped back", () => {
+    const data = serverData();
+    const key = accountKey(data);
+    const C: AuthStatus = { signedIn: true, authMethod: "claude.ai", label: "c@example.com" };
+    let now = T0;
+    const accounts = new CliAccounts(data, { harness: "claudeCode", now: () => new Date(now) });
+    accounts.observe(A, key);
+    now = T0 + 2_000;
+    const b = accounts.observe(B, key).hash;
+    expect(accounts.confirm(b).confirmed).toBe(true);
+    // A cached answer of a third account asked before the confirm: a change waits (review R2).
+    const c = accounts.hashOf(C, key);
+    expect(accounts.record(c, "claude.ai", { readAt: T0 + 1_900 })).toEqual({ hash: c, changed: true });
+    expect(accounts.confirm(c).confirmed).toBe(true);
+    // The clock stepped back past the confirmed record: a fresh read of another account still waits (R3).
+    now = T0 - 60_000;
+    expect(accounts.record(b, "claude.ai", { readAt: now })).toEqual({ hash: b, changed: true });
+    expect(accounts.pending()).toBe(b);
+  });
+
+  test("switch_back_needs_a_read_begun_after_the_change_arrived", () => {
+    const data = serverData();
+    const key = accountKey(data);
+    let now = T0;
+    const accounts = new CliAccounts(data, { harness: "claudeCode", now: () => new Date(now) });
+    const a = accounts.observe(A, key).hash;
+    // B's read began at T0+1000; its answer arrived at T0+3000.
+    now = T0 + 3_000;
+    const b = accounts.hashOf(B, key);
+    expect(accounts.record(b, "claude.ai", { readAt: T0 + 1_000 })).toEqual({ hash: b, changed: true });
+    // A read of A begun at T0+2000 (after B's began, before B's answer came) is stale: B waits.
+    now = T0 + 4_000;
+    expect(accounts.record(a, "claude.ai", { readAt: T0 + 2_000 })).toEqual({ hash: b, changed: true });
+    expect(accounts.pending()).toBe(b);
+    // One begun after B's answer came clears it.
+    expect(accounts.record(a, "claude.ai", { readAt: T0 + 3_500 })).toEqual({ hash: a, changed: false });
     expect(accounts.pending()).toBeUndefined();
-    // Without `readAt` (read now), the rules are 7D's: a change waits.
-    expect(accounts.record(b.hash, "claude.ai")).toEqual({ hash: b.hash, changed: true });
   });
 
   test("method_only_is_codex_only: a Claude Code sign-in without a label still throws", () => {

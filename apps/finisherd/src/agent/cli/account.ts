@@ -289,8 +289,9 @@ export class CliAccounts {
     writePrivateFile(this.#path, `${JSON.stringify(s)}\n`);
   }
 
-  #seen(hash: string, authMethod: string | undefined, readAt?: number): Seen {
-    return { hash, ...(authMethod === undefined ? {} : { authMethod }), at: (readAt === undefined ? this.#now() : new Date(readAt)).toISOString() };
+  /** `at` is when the answer arrived (now), never when it was asked. */
+  #seen(hash: string, authMethod: string | undefined): Seen {
+    return { hash, ...(authMethod === undefined ? {} : { authMethod }), at: this.#now().toISOString() };
   }
 
   #expecting(s: AccountState): boolean {
@@ -305,36 +306,38 @@ export class CliAccounts {
   /**
    * `observe` of an account already hashed (detection keeps the hash, never the label).
    * `readAt` (epoch ms) is when the CLI was asked, for an answer that may be older than the
-   * record (a cached or in-flight read): an answer asked no later than the recorded account, or
-   * the waiting one, was seen is **stale** and changes nothing (a stale answer of the recorded
-   * account never clears a change waiting since; a stale other account is never made a change),
-   * and is answered with what the record says. Absent, the answer is now's. `at` is `readAt`.
+   * record (a cached or in-flight read). It only ever keeps a refusal: while a change waits, an
+   * answer asked no later than that change's answer arrived is **stale** and leaves it waiting
+   * (a stale read of the recorded account never clears it); an answer naming another account is
+   * never dropped, however old (it becomes, or stays, a waiting change: fail closed). An
+   * expectation (`expectNext`) is taken only by a read asked after it was set. `at` is always
+   * when the answer arrived.
    */
   record(hash: string, authMethod: string | undefined, o: { readonly readAt?: number } = {}): Observation {
     const s = this.state();
     const { readAt } = o;
     if (s.current === undefined) {
-      this.#write({ v: 1, current: this.#seen(hash, authMethod, readAt) });
+      this.#write({ v: 1, current: this.#seen(hash, authMethod) });
       return { hash, changed: false };
     }
-    const seenBy = (x: Seen | undefined) => readAt !== undefined && x !== undefined && readAt <= Date.parse(x.at);
-    if (seenBy(s.pending) || (s.current.hash !== hash && seenBy(s.current))) {
-      return s.pending === undefined ? { hash: s.current.hash, changed: false } : { hash: s.pending.hash, changed: true };
+    if (s.pending !== undefined && readAt !== undefined && readAt <= Date.parse(s.pending.at)) {
+      return { hash: s.pending.hash, changed: true };
     }
     const expect = this.#expecting(s) ? { expectUntil: s.expectUntil!, ...(s.expectBy === undefined ? {} : { expectBy: s.expectBy }) } : {};
     if (s.current.hash === hash) {
       // Back on the recorded account: nothing waits any more (an expectation still runs its time).
       if (s.pending !== undefined || s.current.authMethod !== authMethod || (s.expectUntil !== undefined && !this.#expecting(s))) {
-        this.#write({ v: 1, current: this.#seen(hash, authMethod, readAt), ...expect });
+        this.#write({ v: 1, current: this.#seen(hash, authMethod), ...expect });
       }
       return { hash, changed: false };
     }
-    if (this.#expecting(s)) {
-      this.#write({ v: 1, current: this.#seen(hash, authMethod, readAt) });
+    const askedAfterExpect = readAt === undefined || readAt > Date.parse(s.expectUntil ?? "") - EXPECT_TTL_MS;
+    if (this.#expecting(s) && askedAfterExpect) {
+      this.#write({ v: 1, current: this.#seen(hash, authMethod) });
       audits.get(keyOf(this.#serverData))?.(s.expectBy ?? { kind: "local", id: "server" }, { accountHash: hash, previousHash: s.current.hash }, this.#harness);
       return { hash, changed: false };
     }
-    if (s.pending?.hash !== hash || s.expectUntil !== undefined) this.#write({ v: 1, current: s.current, pending: this.#seen(hash, authMethod, readAt) });
+    if (s.pending?.hash !== hash || s.expectUntil !== undefined) this.#write({ v: 1, current: s.current, pending: this.#seen(hash, authMethod) });
     return { hash, changed: true };
   }
 
