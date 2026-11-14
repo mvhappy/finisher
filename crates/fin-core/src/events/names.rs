@@ -422,6 +422,8 @@ pub static TABLES: &[&NameTable] = &[
     &super::names_jobs::SIGNALS,
     &super::names_media::MEDIA_CODECS,
     &super::names_media::MEDIA_BACKENDS,
+    &super::names_media::MEDIA_PROFILES,
+    &super::names_media::MEDIA_AUDIO_CODECS,
     &BUNDLED_PLUGINS,
     &PLUGIN_ACTIONS,
     &PLUGIN_METHOD_FAMILIES,

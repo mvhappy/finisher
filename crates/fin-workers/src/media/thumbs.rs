@@ -18,8 +18,10 @@
 //!    (filmstrips) and `meta.json` are written; a run that leaves files to make writes neither.
 
 use std::path::PathBuf;
+use std::time::Instant;
 
 use fin_core::CoreError;
+use fin_core::events::payloads::{JobMedia, RenderPhase};
 use fin_jobs::worker::JobCtx;
 use fin_jobs::{JobError, StartJob};
 use fin_media::cache::{EntryFile, EntryMeta, META_FILE};
@@ -32,8 +34,10 @@ use fin_media::{Size, frame_at};
 use fin_shm::JobDir;
 use serde_json::{Value, json};
 
+use super::diag::{self, RunFacts};
 use super::pixels;
 use super::proxy::{Fail, entry_file, item, manifest_asset, now_ms, open_asset, write_file};
+use super::sources::micros_since;
 use super::thumbs_source::{Origin, Source};
 use super::{Warm, inputs, job_error, look, scale};
 
@@ -86,6 +90,14 @@ struct Maker<'a> {
     out: PathBuf,
     /// `--replay` never replaces an output.
     replace: bool,
+    /// Stage timings go to `render.stats` (diagnostics on).
+    diagnostics: bool,
+    /// The decoder ran on hardware (the first frame decoded says; `None`: nothing decoded).
+    decode_hw: Option<bool>,
+    /// The largest picture made.
+    largest: Option<(u32, u32)>,
+    /// The GPU API the scale runs on, once known.
+    gpu_api: Option<String>,
 }
 
 fn mismatch(reason: &str, details: Value) -> Fail {
@@ -136,6 +148,10 @@ fn make(
         dir: &dir,
         out,
         replace: !warm.replay,
+        diagnostics: ctx.diagnostics(),
+        decode_hw: None,
+        largest: None,
+        gpu_api: None,
     };
     let origin = m.src.origin;
     let mut made = 0u32;
@@ -147,6 +163,7 @@ fn make(
         let i: usize = id.parse().unwrap_or(usize::MAX);
         match m.item(i, warm) {
             Ok(v) => {
+                m.made(v.width, v.height);
                 ctx.item(
                     id,
                     Some(
@@ -159,25 +176,60 @@ fn make(
             }
             Err(Fail::Item(e)) => {
                 ctx.item_failed(id, e);
-                return Ok(run_of(made, origin, proxy_failed, false));
+                let media = m.media(made);
+                return Ok(run_of(made, origin, proxy_failed, false, media));
             }
             Err(f) => return Err(f),
         }
     }
     let complete = m.finish(warm)?;
-    Ok(run_of(made, origin, proxy_failed, complete))
+    let media = m.media(made);
+    Ok(run_of(made, origin, proxy_failed, complete, media))
 }
 
-fn run_of(made: u32, origin: Origin, proxy_failed: Option<String>, complete: bool) -> ThumbsRun {
+fn run_of(
+    made: u32,
+    origin: Origin,
+    proxy_failed: Option<String>,
+    complete: bool,
+    media: Option<JobMedia>,
+) -> ThumbsRun {
     ThumbsRun {
         made,
         source: origin.name().into(),
         proxy_failed,
+        media,
         complete,
     }
 }
 
 impl Maker<'_> {
+    /// Notes a picture made at `width` × `height`.
+    fn made(&mut self, width: u32, height: u32) {
+        let px = |s: (u32, u32)| u64::from(s.0) * u64::from(s.1);
+        if self.largest.is_none_or(|l| px(l) < px((width, height))) {
+            self.largest = Some((width, height));
+        }
+    }
+
+    /// `job.done`'s `media` object (6B-1 Task 19; diagnostics on): the stream decoded (the proxy
+    /// or the original) and the pictures made.
+    fn media(&self, made: u32) -> Option<JobMedia> {
+        let codec = self.src.reader.info().video.as_ref().map(|v| v.codec);
+        self.diagnostics.then(|| {
+            diag::run_media(&RunFacts {
+                decode: self
+                    .decode_hw
+                    .and(codec)
+                    .map(|c| (c, self.src.reader.backend().0)),
+                hw: self.decode_hw.unwrap_or(false),
+                largest: self.largest,
+                frames: made,
+                rt_factor_milli: 0,
+            })
+        })
+    }
+
     /// The upright size of a thumbnail or tile.
     fn shown(&self) -> Size {
         let d = self.src.video.display;
@@ -202,7 +254,14 @@ impl Maker<'_> {
         } else {
             shown
         };
+        let decoder = self.src.reader.backend().0;
+        let started = Instant::now();
         let f = self.src.reader.frame(index)?;
+        if self.diagnostics {
+            warm.render_stats
+                .record(RenderPhase::Decode, decoder, micros_since(started));
+        }
+        self.decode_hw.get_or_insert(f.hw);
         let colour = scale::colour_of(f, &self.src.ingest);
         if let Some(t) = scale::tone_mapped(&colour, &self.src.ingest) {
             self.src.tone_mapped = Some(t);
@@ -213,9 +272,15 @@ impl Maker<'_> {
             details: e.details,
             fix: None,
         })?;
+        let started = Instant::now();
         let rgba = g
             .compositor
             .scale_rgba8(&g.gpu, &scale::source_of(f, &self.src.ingest), target);
+        if self.diagnostics {
+            let api = self.gpu_api.get_or_insert_with(|| g.gpu.info().backend);
+            warm.render_stats
+                .record(RenderPhase::Composite, api, micros_since(started));
+        }
         let rgba = match rgba {
             Ok(r) => r,
             Err(e) => {

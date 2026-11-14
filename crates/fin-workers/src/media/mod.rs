@@ -25,6 +25,7 @@ use fin_jobs::{JobError, KindVersion, Retry, StartJob};
 use serde_json::Value;
 
 mod caps;
+mod caps_report;
 mod diag;
 mod encode_pipeline;
 #[cfg(feature = "test-hooks")]

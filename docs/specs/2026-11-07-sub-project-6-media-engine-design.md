@@ -687,6 +687,7 @@ Budgets are CI gates where CI hardware can measure them, and validation-task gat
   | `preview.stats` | 0 | reserved for sub-project 9: drops, A/V offset histogram, scrub latency |
   | `render.sample` | 0 | reserved, training only: a sampled output frame as a `frame` blob (arch §21.1: frames are always blobs; a later sub-project adds the source) |
 
+  - *As built (6B-1 Task 19):* `media.capabilities` is `kv` 2 (no upcaster): rows per codec, profile (`MEDIA_PROFILES`) and bit depth with each backend's class, direction and `hw`, guidance as closed codes (no text), audio rows, encoders with `intraOnly`, `intraFps`, `sessionLimit` and numeric adapter ids; `render.stats` has `encode` rows per encoder backend (proxies); `job.done.media` is also sent for `media.proxy`, `media.thumbs` and `media.probeDeep`.
 - **Never recorded:** file names or paths (a source is `{root, ext, hash}`), adapter and driver name strings (only the numeric ids above), decoder error strings that may hold paths (they are `scrubbed` and `content` like every error message), frames or audio outside `render.sample`.
 - Worker panics become `error.panic` through 5C's forwarding, as arch §21 "Crash reporting" says.
 

@@ -1,4 +1,4 @@
-//! `media.capabilities` v1 (plan 6A Task 13): what this machine decodes and encodes, the GPU a
+//! `media.capabilities` v1 (plan 6A Task 13; the journal's event is v2, 6B-1 Task 19): what this machine decodes and encodes, the GPU a
 //! render would use and the worker's versions. A warm worker answers from what it already
 //! holds: the codec table is fixed per build and the GPU is the one `media.look` opens (made
 //! here when no look ran yet, and kept for the next job). A machine with no adapter, not even
@@ -14,9 +14,9 @@ use fin_media::jobs::{
 };
 use serde_json::Value;
 
-use super::diag;
 use super::look::{adapter, gpu};
 use super::{Warm, job_error};
+use super::{caps_report, diag};
 
 fn support(s: Support) -> CapSupport {
     match s {
@@ -69,9 +69,11 @@ pub fn run(job: &StartJob, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<Valu
         },
     };
     // Once per server run in practice: the server caches the answer (Task 13). Built only
-    // when diagnostics are on.
+    // when diagnostics are on. The journal's kind is v2 (6B-1 Task 19), from the v2 report of the
+    // backends this worker has; the answer stays v1 until Task 8's probe answers v2.
     if ctx.diagnostics() {
-        let event = diag::capabilities_event(&result);
+        let report = caps_report::report(&warm.probe, result.gpu.clone(), sandbox());
+        let event = diag::capabilities_event(&report);
         ctx.diag(
             "media.capabilities",
             serde_json::to_value(event).expect("capabilities serialise"),

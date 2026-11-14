@@ -1,6 +1,7 @@
-//! The `media` family's diagnostics (spec §15, 6A plan Task 14): the `media` object of
-//! `job.done` (carried in `LookStats.media`, read by `finisherd` when the job ends), the
-//! `media.capabilities` event and `render.stats`. Everything here is built only when the
+//! The `media` family's diagnostics (spec §15, 6A plan Task 14, 6B-1 plan Task 19): the `media`
+//! object of `job.done` (carried in `LookStats.media`, and in the result's `media` for
+//! `media.proxy`, `media.thumbs` and `media.probeDeep`; read by `finisherd` when the job ends),
+//! the `media.capabilities` v2 event and `render.stats` (`encode` rows from proxies). Everything here is built only when the
 //! job's `start.diagnostics` is on; with it off, nothing is measured into a payload, nothing
 //! is built and nothing is sent.
 //!
@@ -12,14 +13,20 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use fin_codecs::Support;
 use fin_core::Rational;
+use fin_core::events::names_media::{MEDIA_AUDIO_CODECS, MEDIA_PROFILES};
 use fin_core::events::names_media::{MEDIA_BACKENDS, MEDIA_CODECS, backend_class};
 use fin_core::events::payloads::{
-    AdapterType, BackendEntry, CodecEntry, CopyPath, GpuEntry, Histogram, JobMedia,
-    MediaCapabilitiesEvent, RenderPhase, RenderStats, ResolutionBucket, Sandbox, SupportClass,
+    AdapterIds, AdapterType, AudioCodecEntry, BackendEntry, CodecDirection, CodecEntry, CopyPath,
+    EncoderEntry, GapCode as EventGuidance, GpuEntry, GuidanceBatch, GuidanceEntry, Histogram,
+    JobMedia, MediaCapabilitiesEvent, RenderPhase, RenderStats, ResolutionBucket, Sandbox,
+    SupportClass,
 };
 use fin_jobs::worker::JobCtx;
-use fin_media::VideoCodec;
-use fin_media::jobs::{CapSupport, GpuAdapter, LegacyMediaCapabilities, LookFrame, WorkerSandbox};
+use fin_media::jobs::{
+    Batch, CapBackend, CapLevel, Direction, GpuAdapter, Guidance, GuidanceCode, LookFrame,
+    MediaCapabilities, WorkerSandbox,
+};
+use fin_media::{AudioCodec, VideoCodec};
 
 /// A `render.stats` window: one minute.
 pub const WINDOW_MS: u64 = 60_000;
@@ -121,36 +128,70 @@ pub struct JobFacts<'a> {
     pub sources_reused: u32,
 }
 
-/// The `media` object of the look's `job.done`.
-pub fn job_media(f: &JobFacts<'_>) -> JobMedia {
-    let (codec, backend) = f
-        .decode
-        .map_or(("none", "none"), |(c, b)| (codec_name(c), b));
-    let largest = f
-        .frames
-        .iter()
-        .max_by_key(|fr| u64::from(fr.width) * u64::from(fr.height));
-    let frames = u32::try_from(f.frames.len()).unwrap_or(u32::MAX);
-    let rt_factor_milli = match f.rate {
-        Some(rate) if f.render_micros > 0 && rate.to_f64() > 0.0 => {
-            let media_s = f64::from(frames) / rate.to_f64();
-            let wall_s = f.render_micros as f64 / 1e6;
+/// Media seconds per wall second in thousandths: `frames` at `rate` over `micros`; `0` with no
+/// rate or no measurable time.
+pub fn rt_factor_milli(frames: u64, rate: Option<Rational>, micros: u64) -> u32 {
+    match rate {
+        Some(rate) if micros > 0 && rate.to_f64() > 0.0 => {
+            let media_s = frames as f64 / rate.to_f64();
+            let wall_s = micros as f64 / 1e6;
             (media_s / wall_s * 1000.0)
                 .round()
                 .clamp(0.0, f64::from(u32::MAX)) as u32
         }
         _ => 0,
-    };
+    }
+}
+
+/// The `media` object of the look's `job.done`.
+pub fn job_media(f: &JobFacts<'_>) -> JobMedia {
+    let largest = f
+        .frames
+        .iter()
+        .max_by_key(|fr| u64::from(fr.width) * u64::from(fr.height))
+        .map(|fr| (fr.width, fr.height));
+    let frames = u32::try_from(f.frames.len()).unwrap_or(u32::MAX);
+    JobMedia {
+        cache_hit: f.sources_reused > 0 && f.sources_opened == 0,
+        ..run_media(&RunFacts {
+            decode: f.decode,
+            hw: f.hw,
+            largest,
+            frames,
+            rt_factor_milli: rt_factor_milli(u64::from(frames), f.rate, f.render_micros),
+        })
+    }
+}
+
+/// What a cold media job (`media.proxy`, `media.thumbs`, `media.probeDeep`; 6B-1 Task 19) knows
+/// about itself.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RunFacts {
+    /// The stream decoded: its codec and the decoder's backend.
+    pub decode: Option<(VideoCodec, &'static str)>,
+    /// The decoder ran on hardware.
+    pub hw: bool,
+    /// The largest picture the job produced.
+    pub largest: Option<(u32, u32)>,
+    pub frames: u32,
+    pub rt_factor_milli: u32,
+}
+
+/// The `media` object of a cold job's `job.done`: no warm worker, so never a cache hit.
+pub fn run_media(f: &RunFacts) -> JobMedia {
+    let (codec, backend) = f
+        .decode
+        .map_or(("none", "none"), |(c, b)| (codec_name(c), b));
     JobMedia {
         codec: MEDIA_CODECS.get_or_other(codec),
         backend: MEDIA_BACKENDS.get_or_other(backend),
         hw: f.hw,
-        resolution: largest.map_or(ResolutionBucket::Sd, |fr| {
-            ResolutionBucket::of(fr.width, fr.height)
-        }),
-        frames,
-        rt_factor_milli,
-        cache_hit: f.sources_reused > 0 && f.sources_opened == 0,
+        resolution: f
+            .largest
+            .map_or(ResolutionBucket::Sd, |(w, h)| ResolutionBucket::of(w, h)),
+        frames: f.frames,
+        rt_factor_milli: f.rt_factor_milli,
+        cache_hit: false,
         copy_path: CopyPath::Copy,
     }
 }
@@ -161,12 +202,60 @@ pub fn decodes_in_hardware(caps: &fin_codecs::Capabilities, codec: VideoCodec) -
         .is_some_and(|c| c.decode == Support::Hardware)
 }
 
-fn support(s: CapSupport) -> SupportClass {
+fn support(s: CapLevel) -> SupportClass {
     match s {
-        CapSupport::Hardware => SupportClass::Hw,
-        CapSupport::Software => SupportClass::Sw,
-        CapSupport::None => SupportClass::None,
+        CapLevel::Hw => SupportClass::Hw,
+        CapLevel::Sw => SupportClass::Sw,
+        CapLevel::None => SupportClass::None,
     }
+}
+
+/// A name as its camel-case serde form (`Profile`, `AudioCodec`): the tables use the same.
+fn wire_name<T: serde::Serialize>(v: &T) -> String {
+    serde_json::to_value(v)
+        .ok()
+        .and_then(|v| v.as_str().map(String::from))
+        .unwrap_or_default()
+}
+
+fn backend_entry(b: &CapBackend) -> BackendEntry {
+    BackendEntry {
+        name: MEDIA_BACKENDS.get_or_other(&b.name),
+        // The journal's class is the name table's, so a name outside it is `other` throughout.
+        class: backend_class(&b.name),
+        direction: match b.direction {
+            Direction::Decode => CodecDirection::Decode,
+            Direction::Encode => CodecDirection::Encode,
+        },
+        hw: b.hw,
+    }
+}
+
+/// A gap's code and batch: the `fix` text is the answer's, never the journal's.
+fn guidance_entry(g: &Guidance) -> GuidanceEntry {
+    GuidanceEntry {
+        code: match g.code {
+            GuidanceCode::HevcExtensions => EventGuidance::HevcExtensions,
+            GuidanceCode::Av1Extension => EventGuidance::Av1Extension,
+            GuidanceCode::MediaFeaturePack => EventGuidance::MediaFeaturePack,
+            GuidanceCode::LtscStoreCodecs => EventGuidance::LtscStoreCodecs,
+            GuidanceCode::GpuDriver => EventGuidance::GpuDriver,
+            GuidanceCode::CodecPlugin => EventGuidance::CodecPlugin,
+            GuidanceCode::LaterBatch => EventGuidance::LaterBatch,
+        },
+        batch: g.batch.map(|b| match b {
+            Batch::B6b2 => GuidanceBatch::B6b2,
+            Batch::B6c => GuidanceBatch::B6c,
+            Batch::B6d => GuidanceBatch::B6d,
+            Batch::B6e => GuidanceBatch::B6e,
+            Batch::B6f => GuidanceBatch::B6f,
+            Batch::B6g => GuidanceBatch::B6g,
+        }),
+    }
+}
+
+fn audio_name(c: AudioCodec) -> String {
+    wire_name(&c)
 }
 
 /// The GPU as `media.capabilities` and `render.stats` name it: numeric ids, no name strings.
@@ -181,25 +270,53 @@ pub fn gpu_entry(a: &GpuAdapter) -> GpuEntry {
     }
 }
 
-/// The `media.capabilities` event for a capabilities answer.
-pub fn capabilities_event(caps: &LegacyMediaCapabilities) -> MediaCapabilitiesEvent {
+/// The `media.capabilities` v2 event for a v2 report: names through `fin-core`'s tables,
+/// guidance as codes, adapters as numeric ids; no free-form string of the report (an adapter's
+/// or MFT's name, a guidance text, the worker's version) reaches it.
+pub fn capabilities_event(caps: &MediaCapabilities) -> MediaCapabilitiesEvent {
     MediaCapabilitiesEvent {
         codecs: caps
             .codecs
-            .video
             .iter()
             .map(|c| CodecEntry {
                 codec: MEDIA_CODECS.get_or_other(codec_name(c.codec)),
+                profile: c
+                    .profile
+                    .map(|p| MEDIA_PROFILES.get_or_other(&wire_name(&p))),
+                bit_depth: c.bit_depth,
                 decode: support(c.decode),
                 encode: support(c.encode),
-                backends: c
-                    .backends
-                    .iter()
-                    .map(|b| BackendEntry {
-                        name: MEDIA_BACKENDS.get_or_other(b),
-                        class: backend_class(b),
-                    })
-                    .collect(),
+                backends: c.backends.iter().map(backend_entry).collect(),
+                guidance: c.guidance.iter().map(guidance_entry).collect(),
+            })
+            .collect(),
+        audio: caps
+            .audio
+            .iter()
+            .map(|a| AudioCodecEntry {
+                codec: MEDIA_AUDIO_CODECS.get_or_other(&audio_name(a.codec)),
+                decode: support(a.decode),
+                encode: support(a.encode),
+                backends: a.backends.iter().map(backend_entry).collect(),
+                guidance: a.guidance.iter().map(guidance_entry).collect(),
+            })
+            .collect(),
+        encoders: caps
+            .encoders
+            .iter()
+            .map(|e| EncoderEntry {
+                backend: MEDIA_BACKENDS.get_or_other(&e.backend),
+                class: backend_class(&e.backend),
+                codec: MEDIA_CODECS.get_or_other(codec_name(e.codec)),
+                hw: e.hw,
+                intra_only: e.intra_only,
+                intra_fps: e.intra_fps,
+                session_limit: e.session_limit,
+                adapter: e.adapter.map(|a| AdapterIds {
+                    vendor_id: a.vendor_id,
+                    device_id: a.device_id,
+                    driver_major: a.driver_major,
+                }),
             })
             .collect(),
         gpu: caps.gpu.as_ref().map(gpu_entry),
