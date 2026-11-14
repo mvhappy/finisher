@@ -80,8 +80,14 @@ pub const PCM16M: Recipe = Recipe {
     version: 1,
 };
 
+/// Waveform peaks, `peaks.bin` (6C plan Decision 19; `jobs::wave`).
+pub const WAVE: Recipe = Recipe {
+    name: "wave",
+    version: 1,
+};
+
 /// Every recipe this build makes.
-pub const RECIPES: &[Recipe] = &[PROXY_540, PROXY_1080, THUMBS, STRIP, PCM48, PCM16M];
+pub const RECIPES: &[Recipe] = &[PROXY_540, PROXY_1080, THUMBS, STRIP, PCM48, PCM16M, WAVE];
 
 /// The recipe of this build named `name`.
 pub fn recipe(name: &str) -> Option<Recipe> {

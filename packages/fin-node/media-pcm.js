@@ -7,3 +7,8 @@ export function mediaPcmPlan(request) {
   const req = Object.fromEntries(Object.entries(request).filter(([, v]) => v !== undefined));
   return JSON.parse(sync(() => native.mediaPcmPlan(JSON.stringify(req))));
 }
+
+/** A waveform's cache key before its job is submitted; see `media-pcm.d.ts`. */
+export function mediaWavePlan(request) {
+  return JSON.parse(sync(() => native.mediaWavePlan(JSON.stringify(request))));
+}

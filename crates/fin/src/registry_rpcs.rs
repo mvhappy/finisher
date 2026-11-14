@@ -229,6 +229,11 @@ pub const ROWS: &[Row] = &[
         rpc!("media.pcm"),
         &["projectId", "branch", "asset", "recipe"]
     ),
+    row!(
+        "media.wave",
+        rpc!("media.waveform"),
+        &["projectId", "branch", "asset"]
+    ),
     row!("fonts.ls", rpc!("fonts.catalog"), NONE),
     row!(
         "fonts.fetch",

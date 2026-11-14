@@ -54,7 +54,8 @@ fn recipes_are_named_and_versioned() {
             "thumbs",
             "strip",
             "pcm48",
-            "pcm16m"
+            "pcm16m",
+            "wave"
         ]
     );
     assert_eq!(recipe("proxy-540"), Some(PROXY_540));

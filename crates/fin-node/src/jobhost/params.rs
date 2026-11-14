@@ -5,6 +5,7 @@ use fin_jobs::KindParams;
 use fin_jobs::kinds::{find, schema_as, validate_as};
 use fin_media::jobs::{
     CapabilitiesParams, LookParams, PcmParams, ProbeDeepParams, ProxyParams, ThumbsParams,
+    WaveParams,
 };
 use napi_derive::napi;
 use serde_json::{Value, json};
@@ -76,7 +77,21 @@ static MEDIA: &[KindParams] = &[
         validate: validate_pcm,
         schema: schema_as::<PcmParams>,
     },
+    KindParams {
+        kind: "media.waveform",
+        version: 1,
+        validate: validate_wave,
+        schema: schema_as::<WaveParams>,
+    },
 ];
+
+/// `WaveParams`, then a named asset and well-formed keys (6C Task 19).
+fn validate_wave(params: &Value) -> Result<Value, Vec<String>> {
+    let filled = validate_as::<WaveParams>(params)?;
+    let p: WaveParams = serde_json::from_value(filled.clone()).map_err(|e| vec![e.to_string()])?;
+    p.check().map_err(|e| vec![e.message])?;
+    Ok(filled)
+}
 
 /// `PcmParams`, then one source, a well-formed key and a layout its recipe has (6C Task 18).
 fn validate_pcm(params: &Value) -> Result<Value, Vec<String>> {

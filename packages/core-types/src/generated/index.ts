@@ -2628,6 +2628,13 @@ export type ThumbsMode =
       };
     };
 /**
+ * Where the peaks were made from.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "WaveFrom".
+ */
+export type WaveFrom = "pcm48" | "decode";
+/**
  * What one worker serves.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -10299,6 +10306,62 @@ export interface ValidationReport {
   errors?: Invalid[];
   manifest?: Manifest;
   ok: boolean;
+}
+/**
+ * `media.waveform` v1: the peaks of the asset whose content is `fingerprint`, which the cache
+ * knows as `key`. A batch kind of one item, the fingerprint.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "WaveParams".
+ */
+export interface WaveParams {
+  /**
+   * A project asset, through the job's `in/manifest.json`.
+   */
+  asset: string;
+  /**
+   * The branch whose head names the asset (`main` when absent). Host only.
+   */
+  branch?: string;
+  /**
+   * The vendor class the host expects the source's decoder to have (part of the key).
+   */
+  decoderClass: VendorClass;
+  fingerprint: string;
+  /**
+   * [`wave_key`] of the fields above: the worker writes `out/<key>/`.
+   */
+  key: string;
+  /**
+   * The source's `pcm48` entry the host found (its directory is in `in/pcm.json`).
+   */
+  pcmKey?: string;
+  /**
+   * The project that asked (host only).
+   */
+  projectId?: string;
+}
+/**
+ * What `media.waveform` v1 answers for its item (the fingerprint).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "WaveResult".
+ */
+export interface WaveResult {
+  /**
+   * `peaks.bin`'s size.
+   */
+  bytes: number;
+  /**
+   * Frames of the 48 kHz signal the peaks cover.
+   */
+  frames: number;
+  from: WaveFrom;
+  key: string;
+  /**
+   * Levels in `peaks.bin` (5).
+   */
+  levels: number;
 }
 /**
  * A media worker (spec §8.10; sp6 §3.5; plan 7C Decisions 8 and 19).
