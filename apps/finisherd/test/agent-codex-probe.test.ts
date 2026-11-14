@@ -29,7 +29,7 @@ import {
   probeLaunch,
   readCodexProbeCache,
 } from "../src/agent/codex/probe.ts";
-import { checkConfig, checkInstance, checkLists, checkRequirements, checkThread, expectedConfig } from "../src/agent/codex/probe-check.ts";
+import { checkConfig, checkInstance, checkLists, checkRequirements, checkThread, expectedConfig, recheckSkills } from "../src/agent/codex/probe-check.ts";
 import { ALLOWED_METHODS, type CodexRpc, codexRpc, type ServerNotification } from "../src/agent/codex/rpc.ts";
 import { openHostSandbox, type SandboxedChild, type SessionSandbox, type SessionSandboxDeps } from "../src/agent/sandbox.ts";
 import type { SandboxStatus } from "../src/sandbox/status.ts";
@@ -200,7 +200,7 @@ const PLANTED = {
 describe("the probe", () => {
   withFake("probe_is_free", async () => {
     const { binary, observed: obs } = install();
-    const r = await run(probeCodex("h1", probeDeps(binary)));
+    const r = await run(probeCodex(probeDeps(binary)));
     expect(r).toMatchObject({ version: PIN, sandbox: "read-only", approval: "on-request" });
     expect(r.initPending).toBeUndefined();
     expect(r.models.length).toBeGreaterThan(0);
@@ -243,7 +243,7 @@ describe("the probe", () => {
     mkdirSync(join(data(), "providers", "codex", "home"), { recursive: true });
     writeFileSync(join(data(), "providers", "codex", "home", "auth.json"), JSON.stringify({ account: { email: "x@example.com" } }));
     const { binary, observed: obs } = install();
-    const r = await run(probeCodex("h1", probeDeps(binary)));
+    const r = await run(probeCodex(probeDeps(binary)));
     expect(r.initPending).toBeUndefined();
     const [p] = observed(obs);
     expect(p!.envNames).toContain("CODEX_HOME");
@@ -260,7 +260,7 @@ describe("the probe", () => {
 
   withFake("probe_signed_in_by_other_means_defers", async () => {
     const { binary, observed: obs } = install({ signedInElsewhere: true });
-    const r = await run(probeCodex("h1", probeDeps(binary)));
+    const r = await run(probeCodex(probeDeps(binary)));
     expect(r).toEqual({ version: PIN, sandbox: "read-only", approval: "on-request", models: [], initPending: true });
     const [p] = observed(obs);
     // Nothing after account/read: no model list, no thread, no turn.
@@ -268,39 +268,47 @@ describe("the probe", () => {
     expect(methods(p!)).not.toContain("thread/start");
     const text = readFileSync(codexProbeCachePath(data()), "utf8");
     expect(text).not.toMatch(/person@example\.com|chatgpt|plus|account/i);
-    // The first real instance completes it (its own check passes; its models replace none).
+    // The first real instance completes it (its own check passes). Its models are the signed-in
+    // account's (Decision 10: per account, Task 9's cache), so the probe keeps its own.
     const { facts, plan } = await factsOf(binary);
-    const key: ProbeKey = { version: PIN, flagsHash: "h1", os: OS };
-    const done = await run(completeProbe(data(), key, facts, plan, [{ id: "gpt-x", displayName: "X", isDefault: true }]));
+    const key: ProbeKey = { version: PIN, flagsHash: codexProbeFlagsHash(OS), os: OS };
+    const done = await run(completeProbe(data(), key, facts, plan));
     expect(done.initPending).toBeUndefined();
-    expect(done.models).toEqual([{ id: "gpt-x", displayName: "X", isDefault: true }]);
-    expect((await readCodexProbeCache(data()))[0]!.result.initPending).toBeUndefined();
+    expect(done.models).toEqual([]);
+    expect((await readCodexProbeCache(data()))[0]!.result).toEqual({ version: PIN, sandbox: "read-only", approval: "on-request", models: [] });
     // A failing instance does not complete it.
-    await run(probeCodex("h2", probeDeps(binary)));
+    rmSync(codexProbeCachePath(data()));
+    await run(probeCodex(probeDeps(binary)));
     const bad = clone(facts) as { thread: { instructionSources: string[] } } & InstanceFacts;
     bad.thread.instructionSources = ["/x/AGENTS.md"];
-    expect(await failure(completeProbe(data(), { ...key, flagsHash: "h2" }, bad, plan, []))).toMatchObject({ code: "PROVIDER_VERSION", missing: "isolation" });
-    expect((await readCodexProbeCache(data())).find((e) => e.flagsHash === "h2")!.result.initPending).toBe(true);
+    expect(await failure(completeProbe(data(), key, bad, plan))).toMatchObject({ code: "PROVIDER_VERSION", missing: "isolation" });
+    expect((await readCodexProbeCache(data()))[0]!.result.initPending).toBe(true);
   });
 
   withFake("probe_cached_per_version_flags_os", async () => {
     const { binary, observed: obs } = install();
-    const first = await run(probeCodex("h1", probeDeps(binary)));
-    expect(await run(probeCodex("h1", probeDeps(binary)))).toEqual(first);
+    const first = await run(probeCodex(probeDeps(binary)));
+    expect(await run(probeCodex(probeDeps(binary)))).toEqual(first);
     expect(observed(obs)).toHaveLength(1);
-    await run(probeCodex("h2", probeDeps(binary)));
+    // The entry is keyed by the hash of the launch actually probed.
+    const path = codexProbeCachePath(data());
+    expect((await readCodexProbeCache(data())).map((e) => e.flagsHash)).toEqual([codexProbeFlagsHash(OS)]);
+    // An entry for other flags is not this build's.
+    const other = JSON.parse(readFileSync(path, "utf8")) as { entries: { flagsHash: string }[] };
+    other.entries[0]!.flagsHash = "0000000000000000";
+    writeFileSync(path, JSON.stringify(other));
+    await run(probeCodex(probeDeps(binary)));
     expect(observed(obs)).toHaveLength(2);
     if (!WIN) {
-      await run(probeCodex("h1", probeDeps(binary, { os: OS === "darwin" ? "linux" : "darwin" })));
+      await run(probeCodex(probeDeps(binary, { os: OS === "darwin" ? "linux" : "darwin" })));
       expect(observed(obs)).toHaveLength(3);
     }
     // Another pinned version's entry is not this one's.
-    const path = codexProbeCachePath(data());
     const file = JSON.parse(readFileSync(path, "utf8")) as { entries: { version: string; flagsHash: string; os: string }[] };
     for (const e of file.entries) e.version = "0.166.0";
     writeFileSync(path, JSON.stringify(file));
     const before = observed(obs).length;
-    await run(probeCodex("h1", probeDeps(binary)));
+    await run(probeCodex(probeDeps(binary)));
     expect(observed(obs)).toHaveLength(before + 1);
     // No account data, 0600, no temp file left, an excess key invalidates the file.
     const text = readFileSync(path, "utf8");
@@ -330,6 +338,8 @@ describe("the probe", () => {
       expect(flagsHashOf({ ...l, startParams: { ...l.startParams, sandbox: "danger-full-access" } })).not.toBe(h);
       expect(flagsHashOf({ ...l, startParams: { ...l.startParams, dynamicTools: [] } })).not.toBe(h);
     });
+    // The build's hash is the hash of the launch the probe runs.
+    await withBox(sandboxDeps(), async (box) => expect(flagsHashOf(probeLaunch(box, OS, binary))).toBe(codexProbeFlagsHash(OS)));
     // The build's hash is stable and per OS-independent flags.
     expect(codexProbeFlagsHash("linux")).toBe(codexProbeFlagsHash("linux"));
     expect(codexProbeFlagsHash("linux")).toMatch(/^[0-9a-f]{16}$/);
@@ -338,7 +348,7 @@ describe("the probe", () => {
 
   withFake("version_other_than_pin_refused", async () => {
     const { binary, observed: obs } = install({}, "0.168.0");
-    expect(await failure(probeCodex("h1", probeDeps(binary)))).toMatchObject({ code: "PROVIDER_VERSION", version: "0.168.0", pinned: PIN });
+    expect(await failure(probeCodex(probeDeps(binary)))).toMatchObject({ code: "PROVIDER_VERSION", version: "0.168.0", pinned: PIN });
     // Stopped at initialize; nothing cached.
     expect(methods(observed(obs)[0]!)).toEqual(["initialize"]);
     expect(await readCodexProbeCache(data())).toEqual([]);
@@ -346,7 +356,7 @@ describe("the probe", () => {
 
   withFake("no_dynamic_tools_refused", async () => {
     const { binary } = install({ refuseDynamicTools: true });
-    expect(await failure(probeCodex("h1", probeDeps(binary)))).toMatchObject({ code: "PROVIDER_VERSION", missing: "dynamicTools" });
+    expect(await failure(probeCodex(probeDeps(binary)))).toMatchObject({ code: "PROVIDER_VERSION", missing: "dynamicTools" });
     expect(await readCodexProbeCache(data())).toEqual([]);
   });
 });
@@ -450,7 +460,7 @@ describe("config/read", () => {
 describe("requirements, lists, thread", () => {
   withFake("managed_requirement_refused", async () => {
     const { binary } = install({ requirements: { allowedApprovalPolicies: ["never"] } });
-    expect(await failure(probeCodex("h1", probeDeps(binary)))).toMatchObject({ code: "PROVIDER_VERSION", missing: "managedConfig", item: "allowedApprovalPolicies" });
+    expect(await failure(probeCodex(probeDeps(binary)))).toMatchObject({ code: "PROVIDER_VERSION", missing: "managedConfig", item: "allowedApprovalPolicies" });
     const { plan } = await factsOf(install().binary);
     const req = (requirements: unknown) => verdictOf(checkRequirements({ requirements }, plan));
     expect(req(null)).toBeNull();
@@ -508,7 +518,7 @@ describe("requirements, lists, thread", () => {
       ["mcpServers", "mcpServer:s"],
     ] as const) {
       const fake = install({ [k]: PLANTED[k] });
-      expect(await failure(probeCodex(`h-${k}`, probeDeps(fake.binary))), k).toMatchObject({ code: "PROVIDER_VERSION", missing: "isolation", item });
+      expect(await failure(probeCodex(probeDeps(fake.binary))), k).toMatchObject({ code: "PROVIDER_VERSION", missing: "isolation", item });
     }
     // A marketplace with no plugin, and more MCP servers than one page, also refuse.
     const base = (await factsOf(binary)).facts;
@@ -649,14 +659,99 @@ describe("the instance gate, mid-instance", () => {
   });
 });
 
+describe("review fixes", () => {
+  withFake("config_keys_cover_argv", async () => {
+    // Every `-c` key the launch passes is one the check reads (the `set` table on its own).
+    const { binary } = install();
+    await withBox(sandboxDeps(), async (box) => {
+      const plan = probeLaunch(box, OS, binary);
+      const keys = plan.argv.flatMap((a, i) => (plan.argv[i - 1] === "-c" ? [a.slice(0, a.indexOf("="))] : [])).filter((k) => k !== "shell_environment_policy.set");
+      expect(keys.length).toBe(11);
+      expect(new Set(expectedConfig(plan).map(([k]) => k))).toEqual(new Set(keys));
+    });
+  });
+
+  withFake("instance_codex_home_mismatch_refused", async () => {
+    const { binary } = install();
+    const { facts, plan } = await factsOf(binary);
+    expect(checkInstance(facts, plan)).toBeNull();
+    // The instance runs on another CODEX_HOME than the session's own.
+    expect(verdictOf(checkInstance({ ...facts, codexHome: "/elsewhere/provider" }, plan))).toMatchObject({ code: "PROVIDER_VERSION", missing: "isolation", item: "codexHome" });
+    expect(verdictOf(checkInstance({ ...facts, initialize: { ...facts.initialize, codexHome: "/elsewhere/provider" } }, plan))).toMatchObject({ missing: "isolation", item: "codexHome" });
+  });
+
+  withFake("skills_recheck_before_turn", async () => {
+    // A skill planted in the workspace mid-instance raises no `skills/changed` on the real pin;
+    // `recheckSkills` (`skills/list {forceReload}`) before a turn sees it.
+    const { binary, observed: obs } = install();
+    const got = await withBox(sandboxDeps(), async (box) => {
+      const plan = probeLaunch(box, OS, binary);
+      const i = await spawnInstance(box, plan);
+      try {
+        const facts = await collectFacts(i, plan);
+        expect(checkInstance(facts, plan)).toBeNull();
+        const cwds = [plan.startParams.cwd!];
+        await run(recheckSkills(i.rpc, cwds));
+        mkdirSync(join(box.workspace, ".agents", "skills", "x"), { recursive: true });
+        writeFileSync(join(box.workspace, ".agents", "skills", "x", "SKILL.md"), SKILL);
+        return await failure(recheckSkills(i.rpc, cwds));
+      } finally {
+        i.child.kill("SIGKILL");
+      }
+    });
+    expect(got).toMatchObject({ code: "PROVIDER_VERSION", missing: "isolation", item: "skill:x" });
+    const lists = observed(obs)[0]!.received.filter((r) => r.method === "skills/list");
+    expect(lists.at(-1)!.params).toMatchObject({ forceReload: true });
+  });
+
+  withFake("config_read_nits", async () => {
+    const { binary } = install();
+    const { facts, plan } = await factsOf(binary);
+    const home = facts.codexHome;
+    type Raw = { config: { features: Record<string, unknown> }; origins: Record<string, unknown>; layers: Record<string, unknown>[] };
+    // A feature Finisher did not name that is not off: any value but false/{enabled: false}/unset.
+    for (const v of [true, "x", 1, { enabled: true }, {}, { enabled: null }]) {
+      const r = clone(facts.config) as Raw;
+      r.config.features.brand_new = v;
+      expect(verdictOf(checkConfig(r, plan, home)), JSON.stringify(v)).toMatchObject({ missing: "isolation", item: "feature:brand_new" });
+    }
+    for (const v of [false, { enabled: false }, null]) {
+      const r = clone(facts.config) as Raw;
+      r.config.features.brand_new = v;
+      expect(checkConfig(r, plan, home), JSON.stringify(v)).toBeNull();
+    }
+    // A key outside Decision 4 whose origin is a file.
+    const o = clone(facts.config) as Raw;
+    o.origins.model = { name: { type: "user", file: join(home, "config.toml") }, version: "x" };
+    expect(verdictOf(checkConfig(o, plan, home))).toMatchObject({ missing: "isolation", item: "configOrigin:model" });
+    // A layer with an empty `disabledReason` is not disabled.
+    const l = clone(facts.config) as Raw;
+    l.layers.push({ name: { type: "project", dotCodexFolder: "/w/.codex" }, version: "v", config: { model: "x" }, disabledReason: "" });
+    expect(verdictOf(checkConfig(l, plan, home))).toMatchObject({ item: "configLayer:project" });
+  });
+
+  test.skipIf(WIN)("probe_times_out", async () => {
+    // A binary that never answers: the probe gives up, kills it and caches nothing.
+    const dir = mkdtempSync(join(tmp, "mute-"));
+    const binary = join(dir, "codex");
+    writeFileSync(binary, "#!/bin/sh\nexec sleep 30\n", { mode: 0o755 });
+    const t0 = Date.now();
+    expect(await failure(probeCodex({ sandbox: sandboxDeps(), binary, timeoutMs: 500 }))).toMatchObject({ code: "PROVIDER_VERSION", missing: "answer", timeoutMs: 500 });
+    expect(Date.now() - t0).toBeLessThan(10_000);
+    expect(await readCodexProbeCache(data())).toEqual([]);
+  });
+});
+
 // ---- the real binary ----
 
 describe("the pinned binary", () => {
-  test.skipIf(!existsSync(REAL))(
+  // Skipped without the cached binary, unless FIN_REQUIRE_SERVER=1 (then a missing binary fails).
+  test.skipIf(!existsSync(REAL) && !REQUIRE_FAKE)(
     "real_binary_passes_predicate",
     async () => {
       // Unsigned: a throwaway host home, no auth.json, the parent environment PATH and LANG only.
-      const r = await run(probeCodex("real", { sandbox: sandboxDeps(), binary: REAL, timeoutMs: 60_000 }));
+      expect(existsSync(REAL), `the pinned binary at ${REAL} (pnpm codex:pin)`).toBe(true);
+      const r = await run(probeCodex({ sandbox: sandboxDeps(), binary: REAL, timeoutMs: 60_000 }));
       expect(r).toMatchObject({ version: PIN, sandbox: "read-only", approval: "on-request" });
       expect(r.initPending).toBeUndefined();
       expect(r.models.length).toBeGreaterThan(0);

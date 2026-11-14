@@ -221,12 +221,13 @@ async function within<A>(child: SandboxedChild, ms: number, work: Promise<A>): P
 }
 
 /** One probe instance in `box`: hygiene, spawn, the exchange, then the group killed. */
-async function runInstance(box: SessionSandbox, deps: CodexProbeDeps): Promise<CodexProbeResult> {
+async function runInstance(box: SessionSandbox, deps: CodexProbeDeps, flagsHash: string): Promise<CodexProbeResult> {
   const os = deps.os ?? process.platform;
   const codexHome = box.env.CODEX_HOME;
   if (codexHome === undefined) throw finError("SANDBOX_ENV", "the probe sandbox has no CODEX_HOME", { name: "CODEX_HOME" });
   await providerDirClean({ provider: codexHome });
   const launch = probeLaunch(box, os, deps.binary);
+  if (flagsHashOf(launch) !== flagsHash) throw finError("INTERNAL", "the probed Codex launch is not the one its cache key names", { flagsHash });
   const binary = launch.argv[0]!;
   const child = await run(box.spawn(launch.argv, { cwd: box.workspace, stdio: "pipe", env: launch.env, extraRead: [binary] }));
   child.stderr.resume();
@@ -242,13 +243,14 @@ async function runInstance(box: SessionSandbox, deps: CodexProbeDeps): Promise<C
 }
 
 /**
- * The capability probe (Decision 8): the cached result for `(pinned version, flagsHash, OS)`, else
+ * The capability probe (Decision 8): the cached result for `(pinned version, codexProbeFlagsHash(os), OS)`, else
  * a probe run and cached. `PROVIDER_VERSION {missing}` when the binary lacks what Finisher needs
  * or loads what it did not name; `{version, pinned}` for another version than the pin.
  */
-export function probeCodex(flagsHash: string, deps: CodexProbeDeps): Effect.Effect<CodexProbeResult, FinError> {
+export function probeCodex(deps: CodexProbeDeps): Effect.Effect<CodexProbeResult, FinError> {
   const os = deps.os ?? process.platform;
-  const key: ProbeKey = { version: codexPinFacts().version, flagsHash, os };
+  // The key is this build's probe launch's hash; `runInstance` checks the launch it runs has it.
+  const key: ProbeKey = { version: codexPinFacts().version, flagsHash: codexProbeFlagsHash(os), os };
   const serverData = deps.sandbox.serverData;
   const attempt = <A>(f: () => Promise<A>) => Effect.tryPromise({ try: f, catch: toFinError });
   return Effect.gen(function* () {
@@ -257,7 +259,7 @@ export function probeCodex(flagsHash: string, deps: CodexProbeDeps): Effect.Effe
     const result = yield* Effect.scoped(
       Effect.gen(function* () {
         const box = yield* openHostSandbox("probe", "codex", deps.sandbox);
-        return yield* attempt(() => runInstance(box, deps));
+        return yield* attempt(() => runInstance(box, deps, key.flagsHash));
       }),
     );
     yield* attempt(() => writeCodexProbeCache(serverData, key, result));
@@ -267,10 +269,13 @@ export function probeCodex(flagsHash: string, deps: CodexProbeDeps): Effect.Effe
 
 /**
  * Completes a probe left `initPending` from the first real instance: `checkInstance` on its facts
- * against its plan, then the entry loses the mark and takes the instance's models (Decision 10:
- * an account may list others). A complete probe is returned as cached; a missing one is `INTERNAL`.
+ * against its plan, then the entry loses the mark. The entry keeps the probe's own (signed-out)
+ * models: the instance's `model/list` is the signed-in account's, which Decision 10 keys per
+ * `(version, account hash)` in the model cache (Task 9's `codex/models.ts`), never here; the
+ * caller hands the instance's models there. A complete probe is returned as cached; a missing one
+ * is `INTERNAL`.
  */
-export function completeProbe(serverData: string, key: ProbeKey, facts: InstanceFacts, plan: CodexLaunch, models: CodexProbe["models"]): Effect.Effect<CodexProbeResult, FinError> {
+export function completeProbe(serverData: string, key: ProbeKey, facts: InstanceFacts, plan: CodexLaunch): Effect.Effect<CodexProbeResult, FinError> {
   return Effect.tryPromise({
     try: async () => {
       const entry = (await readCodexProbeCache(serverData)).find((e) => sameKey(e, key));
@@ -278,7 +283,7 @@ export function completeProbe(serverData: string, key: ProbeKey, facts: Instance
       ok(checkInstance(facts, plan));
       if (entry.result.initPending !== true) return entry.result as CodexProbeResult;
       const { initPending: _, ...rest } = entry.result;
-      const result: CodexProbeResult = { ...rest, models };
+      const result: CodexProbeResult = rest;
       await writeCodexProbeCache(serverData, key, result);
       return result;
     },
