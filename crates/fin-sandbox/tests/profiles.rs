@@ -593,7 +593,7 @@ fn plugin_matches_sp8_16_1() {
 
 fn hook_input() -> HookInput {
     HookInput {
-        project_dir: abs("projects/p"),
+        project_dir: Some(abs("projects/p")),
         hook_file: abs("projects/p/.finisher/hooks/check.sh"),
         toolchains: vec![abs("usr/bin")],
         tmp: abs("data/hooks/h1/tmp"),
@@ -646,6 +646,34 @@ fn hook_net_none_unless_declared() {
             ..hook_input()
         }),
         "tmp",
+    );
+}
+
+#[test]
+fn hook_without_a_project_reads_no_project() {
+    // A server-scoped event (7F Task 7 review): no project folder, the hook's own file and the
+    // temp as ever; a project path given anyway is still checked.
+    let p = hook(&HookInput {
+        project_dir: None,
+        hook_file: abs("home/u/hooks/check.sh"),
+        ..hook_input()
+    })
+    .unwrap();
+    assert!(!p.readable(&abs("projects/p/sources/a.mov")));
+    assert!(p.readable(&abs("home/u/hooks/check.sh")));
+    assert!(p.writable(&abs("data/hooks/h1/tmp/x")));
+    let json = serde_json::to_value(HookInput {
+        project_dir: None,
+        ..hook_input()
+    })
+    .unwrap();
+    assert!(json.get("projectDir").is_none(), "{json}");
+    input_error(
+        hook(&HookInput {
+            project_dir: Some(abs("data/p")),
+            ..hook_input()
+        }),
+        "projectDir",
     );
 }
 

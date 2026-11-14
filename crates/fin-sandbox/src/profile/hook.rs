@@ -1,5 +1,5 @@
-//! The `hook` profile (spec §8.10; plan 7C Decision 7): the project read-only, the hook's own
-//! file, its toolchain and a private temp. No network and no credential unless the hook
+//! The `hook` profile (spec §8.10; plan 7C Decision 7): the project read-only (none for a
+//! server-scoped event), the hook's own file, its toolchain and a private temp. No network and no credential unless the hook
 //! declares `fin`; then only `fin`'s endpoint (Linux: the agent listener's port; macOS:
 //! `fin.sock`; Windows: the pipe), never IP egress.
 
@@ -13,8 +13,10 @@ pub fn hook(i: &HookInput) -> Result<SandboxPolicy, PolicyError> {
 }
 
 pub fn hook_on(os: Os, i: &HookInput) -> Result<SandboxPolicy, PolicyError> {
+    if let Some(p) = &i.project_dir {
+        path("projectDir", p)?;
+    }
     for (field, p) in [
-        ("projectDir", &i.project_dir),
         ("hookFile", &i.hook_file),
         ("tmp", &i.tmp),
         ("serverData", &i.server_data),
@@ -26,7 +28,7 @@ pub fn hook_on(os: Os, i: &HookInput) -> Result<SandboxPolicy, PolicyError> {
 
     let mut deny = vec![i.server_data.clone()];
     deny.extend(sensitive_home(os, &i.home));
-    not_under("projectDir", [&i.project_dir], &deny)?;
+    not_under("projectDir", &i.project_dir, &deny)?;
     not_under("toolchains", &i.toolchains, &deny)?;
     // The hook file, the temp and the credential may sit in server data (holes), never in a
     // sensitive home path.
@@ -34,7 +36,7 @@ pub fn hook_on(os: Os, i: &HookInput) -> Result<SandboxPolicy, PolicyError> {
     not_under("tmp", [&i.tmp], &deny[1..])?;
 
     let mut read = i.toolchains.clone();
-    read.push(i.project_dir.clone());
+    read.extend(i.project_dir.iter().cloned());
     read.push(i.hook_file.clone());
     let (net, unix_sockets) = match &i.fin {
         None => (Net::None, vec![]),

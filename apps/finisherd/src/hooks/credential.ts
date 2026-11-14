@@ -55,7 +55,7 @@ export interface HookCredentialPort {
   /** The credential file of `h` in `projectId`: minted on first use, else renewed. */
   forRun(h: ConfiguredHook, projectId: string): string;
   /** Whether `p` is a hook credential held now (the recursion guard). */
-  isHook(p: Pick<Principal, "kind" | "id">): boolean;
+  isHook(p: { readonly kind: string; readonly id: string }): boolean;
   /** Ends the credentials whose hook a resolution (of `projectId`, or of the server layers alone) no longer holds as it was. */
   retain(projectId: string | undefined, hooks: readonly ConfiguredHook[]): void;
 }
@@ -153,7 +153,7 @@ export class HookCredentials implements HookCredentialPort {
     return path;
   }
 
-  isHook(p: Pick<Principal, "kind" | "id">): boolean {
+  isHook(p: { readonly kind: string; readonly id: string }): boolean {
     if (p.kind !== "agent") return false;
     // Held now, or any the hooks' maker minted (one this server forgot, a leftover): one map lookup each.
     return this.#ids.has(p.id) || this.#d.credentials.get(p.id)?.createdBy === HOOK_CREDENTIAL_MAKER;

@@ -118,7 +118,7 @@ impl Setup {
 
     fn hook(&mut self, timeout_ms: Option<u64>) -> LaunchRequest {
         let i = HookInput {
-            project_dir: self.t.p("p"),
+            project_dir: Some(self.t.p("p")),
             hook_file: self.t.p("p/hooks/check.cmd"),
             toolchains: vec![self.t.p("tools")],
             tmp: self.t.p("data/hooks/h1"),
@@ -128,8 +128,9 @@ impl Setup {
             timeout_ms,
         };
         self.apply(&grants::hook(&i).unwrap());
-        self.containers
-            .push(capability::project_container(&i.project_dir));
+        self.containers.push(capability::project_container(
+            i.project_dir.as_ref().unwrap(),
+        ));
         LaunchRequest::Hook(i)
     }
 
@@ -248,7 +249,7 @@ fn hook_token_has_no_network_capability() {
         unreachable!()
     };
     let view = capability::project_view(
-        &i.project_dir,
+        i.project_dir.as_ref().unwrap(),
         &fin_sandbox::profile::hook(i).unwrap().deny_read,
     );
     let want = [

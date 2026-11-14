@@ -71,3 +71,10 @@ export async function resendPrompt(store: AgentStore, s: Session, given: string 
   if (given !== undefined) throw finError("INVALID_REQUEST", "a resume takes a prompt or resendReturned, not both", { field: "resendReturned", reason: "promptAndResend" }, "drop one of them");
   return returnedSteers(store, s);
 }
+
+/** A resume's prompt for `by` (`resumeDenied` first): read in the resume's turn, before its `UserPrompt` hook (7F). */
+export async function resumePrompt(store: AgentStore, s: Session, by: Principal, given: string | undefined, resendReturned: boolean): Promise<string | undefined> {
+  const denied = resumeDenied(s, by);
+  if (denied !== null) throw denied;
+  return resendPrompt(store, s, given, resendReturned);
+}

@@ -125,7 +125,7 @@ impl Tree {
 
     fn hook(&self, fin: Option<HookFin>) -> LaunchRequest {
         LaunchRequest::Hook(HookInput {
-            project_dir: self.p("p"),
+            project_dir: Some(self.p("p")),
             hook_file: self.p("p/hooks/check.sh"),
             toolchains: Tree::toolchains(),
             tmp: self.p("hook-tmp"),
