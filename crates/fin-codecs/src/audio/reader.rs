@@ -326,7 +326,12 @@ impl AudioReader {
                 None => 0,
             };
             let skip = info.priming as u64;
-            declared = declared.map(|n| n.saturating_sub(offset.saturating_add(skip)));
+            let first = offset.saturating_add(skip);
+            // A last granule before the pre-skip ends is invalid (RFC 7845 §4.5).
+            if declared.is_some_and(|n| n < first) {
+                return Err(corrupt("the Ogg Opus stream ends before its pre-skip"));
+            }
+            declared = declared.map(|n| n - first);
             check_bounds(&info, declared, limits)?;
             let config = AudioConfig::Symphonia(SymphoniaParams(params.clone()));
             let dec = open_audio_decoder(&info, &config)?;

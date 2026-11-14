@@ -64,8 +64,10 @@ fn read_exact_at<R: Read + Seek>(r: &mut R, at: u64, buf: &mut [u8]) -> Result<b
 pub(crate) fn start<R: Read + Seek>(r: &mut R, len: u64) -> Result<Option<OpusStart>, CoreError> {
     let mut serial = None;
     // The current packet's index in the stream (0 is `OpusHead`, 1 `OpusTags`), its first
-    // bytes and how many of them were read.
+    // bytes and how many of them were read; whether a packet is open across pages (its start
+    // was seen, its end not yet), and the last page's sequence number.
     let (mut index, mut head, mut have) = (0u64, [0u8; 2], 0usize);
+    let (mut open, mut last_seq) = (false, None::<u32>);
     let mut at = 0u64;
     while at < len {
         let mut h = [0u8; 27];
@@ -75,6 +77,7 @@ pub(crate) fn start<R: Read + Seek>(r: &mut R, len: u64) -> Result<Option<OpusSt
         let flags = h[5];
         let granule = i64::from_le_bytes(h[6..14].try_into().expect("8 bytes"));
         let page_serial = u32::from_le_bytes(h[14..18].try_into().expect("4 bytes"));
+        let seq = u32::from_le_bytes(h[18..22].try_into().expect("4 bytes"));
         let mut lacing = vec![0u8; h[26] as usize];
         if !read_exact_at(r, at + 27, &mut lacing)? {
             return Err(corrupt("is cut inside a page header", at));
@@ -95,9 +98,23 @@ pub(crate) fn start<R: Read + Seek>(r: &mut R, len: u64) -> Result<Option<OpusSt
             at = next;
             continue;
         }
+        // As symphonia's reader does (RFC 7845 §3): a gap in the page sequence or a page that
+        // does not continue drops the open packet; a continuation with no open packet starts
+        // with an orphaned fragment, skipped up to its end and never counted.
+        if last_seq.is_some_and(|s| seq != s.wrapping_add(1)) || flags & 1 == 0 {
+            open = false;
+            have = 0;
+        }
+        last_seq = Some(seq);
+        let mut orphan = flags & 1 != 0 && !open;
         let (mut off, mut samples, mut ended) = (body, 0u64, false);
         for &l in &lacing {
             let l = l as u64;
+            if orphan {
+                off += l;
+                orphan = l == 255;
+                continue;
+            }
             if index >= 2 && have < 2 {
                 let n = (2 - have).min(l as usize);
                 if !read_exact_at(r, off, &mut head[have..have + n])? {
@@ -118,7 +135,15 @@ pub(crate) fn start<R: Read + Seek>(r: &mut R, len: u64) -> Result<Option<OpusSt
                 }
                 index += 1;
                 have = 0;
+                open = false;
+            } else {
+                open = true;
             }
+        }
+        if orphan {
+            // The fragment runs past this page: symphonia ignores the page, and so does the
+            // next one's continuation (no packet is open).
+            open = false;
         }
         if ended {
             let Ok(granule) = u64::try_from(granule) else {

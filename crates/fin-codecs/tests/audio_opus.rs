@@ -516,3 +516,74 @@ fn ogg_opus_nonzero_start_granule() {
     let got = read_with(ogg_opus(&mono_dops(100), &audio), &AudioLimits::default()).unwrap();
     assert_eq!(got, (Some(1820), 1820));
 }
+
+/// Rewrites an Ogg page's CRC after an edit.
+fn recrc(page: &mut [u8]) {
+    page[22..26].fill(0);
+    let mut c = 0u32;
+    for &b in page.iter() {
+        c ^= (b as u32) << 24;
+        for _ in 0..8 {
+            c = if c & 0x8000_0000 != 0 {
+                (c << 1) ^ 0x04C1_1DB7
+            } else {
+                c << 1
+            };
+        }
+    }
+    page[22..26].copy_from_slice(&c.to_le_bytes());
+}
+
+#[test]
+fn ogg_opus_orphaned_continuation_is_skipped() {
+    // The headers, then a continuation page (sequence 2) whose first segment is the tail of a
+    // packet that is not in the file (`[0xE3, 0]`, which would be a forbidden code 3 packet),
+    // then a whole 960-frame packet ending at granule 48,960; the last page ends at 49,920.
+    let dops = mono_dops(0);
+    let mut tags = b"OpusTags".to_vec();
+    tags.extend_from_slice(&[0; 8]);
+    let mut file = ogg::ogg(42, &[(ogg::opus_head(&dops), 0), (tags, 0)]);
+    let tags_page = file.len() - (27 + 1 + 16);
+    file[tags_page + 5] = 0;
+    recrc(&mut file[tags_page..]);
+    let mut page = ogg::ogg(42, &[(vec![0xE3, 0, 0xF8, 0xFF, 0xFE], 48_960)]);
+    page[5] = 1;
+    page[18..22].copy_from_slice(&2u32.to_le_bytes());
+    page[26] = 2;
+    page[27] = 2;
+    page.insert(28, 3);
+    recrc(&mut page);
+    file.extend(page);
+    let mut end = ogg::ogg(42, &[(celt_20ms(), 49_920)]);
+    end[5] = 4;
+    end[18..22].copy_from_slice(&3u32.to_le_bytes());
+    recrc(&mut end);
+    file.extend(end);
+    let got = read_with(file, &AudioLimits::default()).unwrap();
+    assert_eq!(got, (Some(1920), 1920));
+}
+
+#[test]
+fn ogg_opus_end_before_the_pre_skip_is_corrupt() {
+    // Pre-skip 100, one 960-frame packet, and the last granule 50: RFC 7845 §4.5 rejects it.
+    let e = read_with(
+        ogg_opus(&mono_dops(100), &[(celt_20ms(), 50)]),
+        &AudioLimits::default(),
+    )
+    .unwrap_err();
+    assert_eq!(e.code, "MEDIA_CORRUPT", "{e:?}");
+}
+
+#[test]
+fn ogg_opus_pre_skip_counts_against_the_budget() {
+    // A valid stream: pre-skip 65,535 and 70 packets of 960 frames (67,200 decoded, 1,665
+    // presented) under a one-second budget (48,000 frames): the pre-skip is decoded, so it
+    // counts.
+    let audio: Vec<_> = (0..70).map(|i| (celt_20ms(), (i + 1) * 960)).collect();
+    let limits = AudioLimits {
+        max_seconds: 1,
+        ..AudioLimits::default()
+    };
+    let e = read_with(ogg_opus(&mono_dops(65_535), &audio), &limits).unwrap_err();
+    assert_eq!(e.code, "MEDIA_LIMIT", "{e:?}");
+}
