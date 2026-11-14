@@ -32,7 +32,7 @@ use fin_core::CoreError;
 use fin_media::AudioTrackInfo;
 use fin_media::backend::VendorClass;
 use fin_media::cache::{CacheKey, EntryMeta, META_FILE};
-use fin_media::jobs::{PcmEntry, PcmLayout, PcmRecipe};
+use fin_media::jobs::{MAX_PCM_SECONDS, PcmEntry, PcmLayout, PcmRecipe};
 use serde_json::json;
 
 /// The most `meta.json` a worker reads for a PCM entry (its chunk list is long for long sources).
@@ -74,7 +74,13 @@ impl DecodedSource {
     /// `file`'s first audio track as the `recipe` feed; the reader's own errors
     /// (`UNSUPPORTED_CONTAINER`, `MEDIA_CORRUPT`, `CODEC_UNAVAILABLE`, `MEDIA_LIMIT`).
     pub fn open(file: File, recipe: PcmRecipe) -> Result<DecodedSource, CoreError> {
-        let reader = AudioReader::open(file, &AudioLimits::default())?;
+        // At most the longest feed the cache can list (refused from a declared length here,
+        // before anything is decoded; bounded while decoding otherwise).
+        let limits = AudioLimits {
+            max_seconds: MAX_PCM_SECONDS,
+            ..AudioLimits::default()
+        };
+        let reader = AudioReader::open(file, &limits)?;
         let info = reader.info().clone();
         let layout = recipe.layout(info.channels);
         let resamplers = (0..layout.channels())

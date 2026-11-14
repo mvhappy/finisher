@@ -3,6 +3,7 @@ import { native, sync } from "./native.js";
 
 /** A PCM feed's cache key before its job is submitted; see `media-pcm.d.ts`. */
 export function mediaPcmPlan(request) {
-  const { sourceCodec, ...rest } = request;
-  return JSON.parse(sync(() => native.mediaPcmPlan(JSON.stringify(sourceCodec === undefined ? rest : request))));
+  // Absent optional fields are left out (the request is parsed strictly).
+  const req = Object.fromEntries(Object.entries(request).filter(([, v]) => v !== undefined));
+  return JSON.parse(sync(() => native.mediaPcmPlan(JSON.stringify(req))));
 }

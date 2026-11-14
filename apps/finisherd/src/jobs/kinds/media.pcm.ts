@@ -6,8 +6,10 @@
 //   (`asset`: `prepare` writes the one-asset manifest and fails `ASSET_CHANGED` when the
 //   fingerprint moved) or a library file (`file`), as `media.proxy`'s.
 // - Priority `background`, `qos: background`, pool `cpu`; memory `batch`'s `min(4 GiB, 25 %)`.
-// - Identity (`dedupe`): the cache key. `rememberPoison`: an item that crashes the worker stays
-//   failed until its key changes (a new fingerprint, `AUDIO_VERSION` or decoder class).
+// - Identity (`dedupe`): the cache key. `crashRestarts`: a worker crash mid-decode is retried from
+//   sample 0 (an attempt spent), and only a crash of the last attempt poisons the source, which
+//   `rememberPoison` then keeps until its key changes (a new fingerprint, `AUDIO_VERSION` or
+//   decoder class); a crash after the item was answered commits it (the entry was complete).
 // - **Retries restart from sample 0** (Decision 23): not resumable, no checkpoint; 5C empties
 //   `out/` before every attempt, and a `finisherd` restart interrupts the job (`JOB_INTERRUPTED`),
 //   so the next ask runs a new one from the start. Nothing is indexed until `onSucceeded`.
@@ -85,6 +87,7 @@ export function mediaPcmKind(deps: PcmKindDeps): KindSpec<PcmParams, unknown> {
     batch: { items: (p) => [p.fingerprint], restrict: (p) => p },
     dedupe: pcmDedupe,
     rememberPoison: true,
+    crashRestarts: true,
     memory: BATCH_MEMORY,
     files: (p) => [...(p.asset == null ? [] : [{ name: "in/manifest.json", mode: "read" as const }]), { name: "out/", mode: "write" as const }],
     prepare: (ctx) =>

@@ -186,15 +186,15 @@ fn reference(path: &Path, recipe: PcmRecipe) -> Vec<f32> {
 
 #[test]
 fn pcm48_chunks_and_meta() {
-    // 10 s at 48 kHz stereo: 3 × 131,072 frames + 86,784.
-    let s = source(480_000, 48_000, 2);
+    // 50 s at 48 kHz stereo: 2 × 1,048,576 frames + 302,848.
+    let s = source(2_400_000, 48_000, 2);
     let job = job_for("fp", Some(&s.path));
     let p = params("fp", PcmRecipe::Pcm48, PcmLayout::Stereo);
     let r = outcome(&run(&job, &p), "fp").unwrap();
     assert_eq!(r.key, p.key);
     assert_eq!(
         (r.frames, r.chunks, r.layout),
-        (480_000, 4, PcmLayout::Stereo)
+        (2_400_000, 3, PcmLayout::Stereo)
     );
     assert_eq!((r.source_rate, r.source_channels), (48_000, 2));
     assert_eq!(
@@ -209,7 +209,7 @@ fn pcm48_chunks_and_meta() {
         json!({ "audioVersion": fin_audio::AUDIO_VERSION, "rate": 48000, "layout": "stereo" })
     );
     let sizes: Vec<u64> = m.files.iter().map(|f| f.bytes).collect();
-    assert_eq!(sizes, [1 << 20, 1 << 20, 1 << 20, 86_784 * 8]);
+    assert_eq!(sizes, [8 << 20, 8 << 20, 302_848 * 8]);
     assert_eq!(r.bytes, sizes.iter().sum::<u64>());
     for (i, f) in m.files.iter().enumerate() {
         assert_eq!(f.name, chunk_name(i));
@@ -222,7 +222,7 @@ fn pcm48_chunks_and_meta() {
         .map(|e| e.unwrap().file_name().into_string().unwrap())
         .collect();
     names.sort();
-    assert_eq!(names.len(), 5);
+    assert_eq!(names.len(), 4);
     assert!(fin_media::jobs::PcmEntry::of(&m).is_ok());
 }
 
@@ -240,7 +240,7 @@ fn pcm48_equals_decoded_source() {
 
 #[test]
 fn pcm16m_is_mono_16k() {
-    // 20 s at 44.1 kHz stereo → 320,000 frames at 16 kHz: 262,144 + 57,856.
+    // 20 s at 44.1 kHz stereo → 320,000 frames at 16 kHz, one (short) chunk.
     let s = source(882_000, 44_100, 2);
     let job = job_for("fp", Some(&s.path));
     let p = params("fp", PcmRecipe::Pcm16m, PcmLayout::Mono);
@@ -248,11 +248,11 @@ fn pcm16m_is_mono_16k() {
     assert_eq!(r.frames, resampled_len(882_000, 44_100, 16_000));
     assert_eq!(
         (r.frames, r.chunks, r.layout),
-        (320_000, 2, PcmLayout::Mono)
+        (320_000, 1, PcmLayout::Mono)
     );
     let m = meta(&job, &p.key);
     assert_eq!(m.params["rate"], 16_000);
-    assert_eq!(m.files[0].bytes, 262_144 * 4);
+    assert_eq!(m.files[0].bytes, 320_000 * 4);
     assert_eq!(
         samples(&job, &p.key, &m),
         reference(&s.path, PcmRecipe::Pcm16m)
@@ -261,18 +261,19 @@ fn pcm16m_is_mono_16k() {
 
 #[test]
 fn mono_source_stays_one_channel() {
-    let s = source(480_000, 48_000, 1);
+    // 50 s mono: 2,097,152 frames + 302,848.
+    let s = source(2_400_000, 48_000, 1);
     let job = job_for("fp", Some(&s.path));
     let p = params("fp", PcmRecipe::Pcm48, PcmLayout::Mono);
     let r = outcome(&run(&job, &p), "fp").unwrap();
     assert_eq!(
         (r.layout, r.frames, r.chunks),
-        (PcmLayout::Mono, 480_000, 2)
+        (PcmLayout::Mono, 2_400_000, 2)
     );
     let m = meta(&job, &p.key);
     assert_eq!(m.params["layout"], "mono");
-    assert_eq!(m.files[0].bytes, 262_144 * 4);
-    assert_eq!(m.files[1].bytes, (480_000 - 262_144) * 4);
+    assert_eq!(m.files[0].bytes, 2_097_152 * 4);
+    assert_eq!(m.files[1].bytes, (2_400_000 - 2_097_152) * 4);
     // Identity rate, one channel: the decoded samples, never upmixed.
     assert_eq!(
         samples(&job, &p.key, &m),
@@ -300,7 +301,8 @@ fn key_mismatch_writes_nothing() {
 
 #[test]
 fn worker_death_retry_is_byte_identical() {
-    let s = source(480_000, 48_000, 2);
+    // 50 s stereo: three chunks, so the worker dies with one still to write.
+    let s = source(2_400_000, 48_000, 2);
     let p = params("fp", PcmRecipe::Pcm48, PcmLayout::Stereo);
     // An uninterrupted run.
     let clean = job_for("fp", Some(&s.path));
@@ -390,4 +392,36 @@ fn library_file_through_the_catalogue() {
         outcome(&run(&Job::new(), &q), "fp").unwrap_err(),
         "FILE_CHANGED"
     );
+}
+
+#[test]
+fn longer_than_the_limit_is_refused_before_decoding() {
+    use fin_codecs::audio::testing::flac;
+    // A FLAC whose STREAMINFO declares 25 h at 8 kHz (one second of data follows): MEDIA_LIMIT
+    // from the declared length, before anything is decoded or written.
+    let pcm = vec![0.0f32; 8_000];
+    let mut b = b"fLaC".to_vec();
+    b.push(0x80);
+    b.extend_from_slice(&34u32.to_be_bytes()[1..]);
+    b.extend_from_slice(&flac::streaminfo(1, 8_000, 16, 4096, 25 * 3600 * 8_000));
+    for f in flac::frames(&pcm, 1, 16, 4096) {
+        b.extend_from_slice(&f);
+    }
+    let s = source(1, 8_000, 1);
+    let path = s.path.with_extension("flac");
+    std::fs::write(&path, &b).unwrap();
+    let job = job_for("fp", Some(&path));
+    let p = params("fp", PcmRecipe::Pcm48, PcmLayout::Mono);
+    assert_eq!(outcome(&run(&job, &p), "fp").unwrap_err(), "MEDIA_LIMIT");
+    assert_eq!(std::fs::read_dir(job.out()).unwrap().count(), 0);
+}
+
+#[test]
+fn meta_json_is_compact() {
+    let s = source(48_000, 48_000, 2);
+    let job = job_for("fp", Some(&s.path));
+    let p = params("fp", PcmRecipe::Pcm48, PcmLayout::Stereo);
+    outcome(&run(&job, &p), "fp").unwrap();
+    let text = std::fs::read(job.out().join(&p.key).join(META_FILE)).unwrap();
+    assert!(!text.contains(&b'\n'), "meta.json is pretty-printed");
 }

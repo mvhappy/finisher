@@ -5,8 +5,9 @@
 //! - **Recipes** (Decision 7): `pcm48` v1, 48 kHz `f32` in the source's canonical layout (one
 //!   channel for a mono source, else two: a mono source keeps its pan law), the mixer's input;
 //!   `pcm16m` v1, 16 kHz `f32` mono (the canonical form folded), sub-project 8's analysis feed.
-//! - **Chunks**: `chunk-NNNNNN.f32`, interleaved little-endian, 1 MiB each ([`CHUNK_BYTES`]:
-//!   131,072 stereo or 262,144 mono frames), the last one short; an entry lists them in order.
+//! - **Chunks**: `chunk-NNNNNN.f32`, interleaved little-endian, 8 MiB each ([`CHUNK_BYTES`]:
+//!   1,048,576 stereo or 2,097,152 mono frames), the last one short; an entry lists them in
+//!   order (**plan vs code**: Decision 7 said 1 MiB, which a 24 h source's file list outgrows).
 //!   The entry's frame count is the sum of its chunks ([`PcmEntry::of`]).
 //! - **Key** (Decision 7): `{fingerprint, recipe, recipeVersion, params {audioVersion, rate,
 //!   layout}, renderVersion, decoderClass}`. `audioVersion` ([`crate::AUDIO_VERSION`]) moves
@@ -37,12 +38,37 @@ use crate::backend_audio::{AUDIO_BACKENDS, AudioBackendEntry, audio_backend};
 use crate::cache::{CacheKey, EntryMeta, KeyInput, PCM16M, PCM48, Recipe};
 use crate::format::AudioCodec;
 
-/// The size of every chunk but the last.
-pub const CHUNK_BYTES: u64 = 1 << 20;
+/// The size of every chunk but the last: 8 MiB, so the longest feed ([`MAX_PCM_SECONDS`] of
+/// 48 kHz stereo, 3,956 chunks) lists well under the cache's `MAX_ENTRY_FILES` and its compact
+/// `meta.json` well under `MAX_META_BYTES` (a test keeps half of each to spare).
+pub const CHUNK_BYTES: u64 = 8 << 20;
 /// The mixer's rate.
 pub const PCM48_RATE: u32 = 48_000;
 /// The analysis feed's rate.
 pub const PCM16M_RATE: u32 = 16_000;
+
+/// The longest source a feed is made of: `AudioReader`'s bound (24 h).
+pub const MAX_PCM_SECONDS: u64 = 24 * 3600;
+
+/// `MEDIA_LIMIT {limit: maxSeconds}` for a source longer than [`MAX_PCM_SECONDS`] (the host
+/// refuses it from the probed duration, before any job; the worker's `AudioReader` from the
+/// declared length, before decoding).
+pub fn check_pcm_duration(duration: fin_core::Rational) -> Result<(), CoreError> {
+    let max = MAX_PCM_SECONDS as i128;
+    if i128::from(duration.num()) > max * i128::from(duration.den()) {
+        return Err(CoreError::new(
+            "MEDIA_LIMIT",
+            format!("the source is longer than {MAX_PCM_SECONDS} s, the longest PCM feed"),
+        )
+        .with_details(json!({
+            "limit": "maxSeconds",
+            "value": duration.num() / duration.den().max(1),
+            "max": MAX_PCM_SECONDS,
+        }))
+        .with_fix("split the audio into parts of at most 24 hours"));
+    }
+    Ok(())
+}
 
 /// `chunk-NNNNNN.f32`, the name of chunk `i`.
 pub fn chunk_name(i: usize) -> String {
