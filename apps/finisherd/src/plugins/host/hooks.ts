@@ -22,14 +22,16 @@
 //   the manifest's `timeoutS` counted from the submit (a `timeout` failure), or when the server
 //   stops. Its host calls pin no branch: `project.snapshot`/`project.view` are refused (the
 //   handler has the event's payload; least privilege), `log` and a granted `net` work.
-// - **The answer** is decoded and size-checked as a command hook's (`checkReply`: no `modify`);
+// - **The answer** is size-checked as a command hook's stdout (at most 64 KiB of JSON as sent,
+//   before control characters are stripped: `tooLarge`), then decoded and checked as its reply
+//   (`checkReply`: no `modify`);
 //   a job error is a failure under Decision 3 by its code, never its text: `PLUGIN_TIMEOUT` a
 //   `timeout`, `PLUGIN_CRASHED` an `exit`, the plugin's own answers (`PLUGIN_PROTOCOL
 //   {unknownHook | badReply}`, its own error) `invalid`, anything else (not runnable, refused,
 //   cancelled) `unavailable`.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { type FinError, HOOK_CLASSES, type HookEvent, type JobView } from "@finisher/contracts";
+import { type FinError, HOOK_CLASSES, HOOK_LIMITS, type HookEvent, type JobView } from "@finisher/contracts";
 import type { HookContribution, HookRequest, JobRights, Permission } from "@finisher/core-types";
 import { Effect } from "effect";
 import type { JobEngine } from "../../jobs/api.ts";
@@ -164,6 +166,9 @@ export function makePluginHooks(d: PluginHooksDeps): PluginHooks {
       }
       const done = ended.success[0];
       if (done?.state === "succeeded") {
+        // The reply as sent, before decoding and stripping: a command hook's stdout cap.
+        const bytes = Buffer.byteLength(JSON.stringify(done.result ?? null) ?? "");
+        if (bytes > HOOK_LIMITS.stdoutBytes) return failure("tooLarge", `a reply over ${HOOK_LIMITS.stdoutBytes} bytes`, true);
         const r = checkReply(done.result);
         return "kind" in r ? { ...r, started: true } : r;
       }

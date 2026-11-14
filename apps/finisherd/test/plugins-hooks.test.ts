@@ -79,7 +79,7 @@ interface ProbeSpec {
   readonly handlers?: Record<string, unknown>;
 }
 
-const storeDir = () => join(serverData, "plugins", "store", PLUGIN, "1.0.0-t");
+const storeDir = (plugin = PLUGIN) => join(serverData, "plugins", "store", plugin, "1.0.0-t");
 
 
 function withTables<A>(f: (t: PluginTables) => A): A {
@@ -91,20 +91,20 @@ function withTables<A>(f: (t: PluginTables) => A): A {
   }
 }
 
-const setGrants = (grants: readonly Permission[]) => withTables((t) => t.setGrants(PLUGIN, "1.0.0", grants.map((g) => JSON.stringify(g)), "console:console", 0));
-const setHandlers = (handlers: Record<string, unknown>) => writeFileSync(join(storeDir(), "hooks.json"), JSON.stringify({ handlers }));
+const setGrants = (grants: readonly Permission[], plugin = PLUGIN) => withTables((t) => t.setGrants(plugin, "1.0.0", grants.map((g) => JSON.stringify(g)), "console:console", 0));
+const setHandlers = (handlers: Record<string, unknown>, plugin = PLUGIN) => writeFileSync(join(storeDir(plugin), "hooks.json"), JSON.stringify({ handlers }));
 
-/** Installs the probe in the running server's store and control.db, enabled, with `spec`'s hooks and grants. */
-function installProbe(spec: ProbeSpec): void {
-  const full = storeDir();
+/** Installs the probe as `plugin` in the running server's store and control.db, enabled, with `spec`'s hooks and grants. */
+function installProbe(spec: ProbeSpec, plugin = PLUGIN): void {
+  const full = storeDir(plugin);
   mkdirSync(dirname(full), { recursive: true });
   cpSync(PROBE, full, { recursive: true });
   const manifest = JSON.parse(readFileSync(join(full, "finisher-plugin.json"), "utf8")) as Record<string, unknown>;
   const events = [...new Set(spec.hooks.map((h) => h.event))];
-  writeFileSync(join(full, "finisher-plugin.json"), JSON.stringify({ ...manifest, hostApi: "^1.2", permissions: [{ perm: "project:read" }, observe(...events)], contributes: { hooks: spec.hooks } }));
-  setHandlers(spec.handlers ?? {});
-  withTables((t) => t.addPlugin({ id: PLUGIN, version: "1.0.0", source: "registry", treeHash: "t", dir: `store/${PLUGIN}/1.0.0-t`, kind: "code", enabled: true, state: "active", installedBy: "console:console", installedAt: 0 }));
-  setGrants(spec.grants);
+  writeFileSync(join(full, "finisher-plugin.json"), JSON.stringify({ ...manifest, id: plugin, hostApi: "^1.2", permissions: [{ perm: "project:read" }, observe(...events)], contributes: { hooks: spec.hooks } }));
+  setHandlers(spec.handlers ?? {}, plugin);
+  withTables((t) => t.addPlugin({ id: plugin, version: "1.0.0", source: "registry", treeHash: "t", dir: `store/${plugin}/1.0.0-t`, kind: "code", enabled: true, state: "active", installedBy: "console:console", installedAt: 0 }));
+  setGrants(spec.grants, plugin);
 }
 
 let n = 0;
@@ -118,11 +118,11 @@ interface Booted {
 }
 
 /** A server whose user layer holds `userHooks`, the probe installed, a project with an asset on `main`. */
-async function boot(probe: ProbeSpec, userHooks: unknown[] = []): Promise<Booted> {
+async function boot(probe: ProbeSpec, userHooks: unknown[] = [], plugin = PLUGIN): Promise<Booted> {
   writeFileSync(join(serverData, "settings.json"), JSON.stringify({ hooks: userHooks }));
   server = new AgentServer(serverData, { timers: false, fakeScripts: [WORKING], hooks: { status: DIRECT } });
   await server.start();
-  installProbe(probe);
+  installProbe(probe, plugin);
   const local = await server.local();
   srvLocal = local;
   const projectId = ok<{ projectId: string }>(await local.call("project.create", { dir: join(tmp, "P"), name: "P", rate: "30" })).projectId;
@@ -265,6 +265,36 @@ describe("receiving events (Decision 20)", () => {
     expect(text.indexOf("from the user")).toBeGreaterThanOrEqual(0);
   });
 
+  test("plugin_order_is_plugin_id_then_manifest_order: two plugins, a block stops every later handler", async () => {
+    const ctx = (text: string) => ({ reply: { reply: "context", text } });
+    // `@test/zeta` is installed first, `@test/alpha` second; each lists its handlers out of alphabetical order.
+    const b = await boot({
+      hooks: [{ event: "PreCommand", handler: "y-first" }, { event: "PreCommand", handler: "a-block" }, { event: "PreCommand", handler: "c-after" }],
+      grants: [observe("PreCommand")],
+      handlers: { "y-first": ctx("zeta y"), "a-block": { reply: { reply: "block", reason: "zeta says no" } }, "c-after": ctx("zeta c") },
+    }, [], "@test/zeta");
+    installProbe({ hooks: [{ event: "PreCommand", handler: "m-first" }, { event: "PreCommand", handler: "b-second" }], grants: [observe("PreCommand")], handlers: { "m-first": ctx("alpha m"), "b-second": ctx("alpha b") } }, "@test/alpha");
+    const { session, a } = await started(b);
+    const root = session.rootBranch!;
+    const e = await edit(a, b.projectId, root);
+    expect(code(e)).toBe("HOOK_BLOCKED");
+    expect(details(e)).toMatchObject({ hook: "plugin:@test/zeta/a-block", layer: "plugin" });
+    const ran = async () => (await hookJobs(b)).map((j) => `${(j.via as { plugin: string }).plugin.split("@1")[0]}/${(j.params as { handler: string }).handler}`);
+    // By plugin id, then manifest order; nothing after the block is submitted.
+    expect(await ran()).toEqual(["@test/alpha/m-first", "@test/alpha/b-second", "@test/zeta/y-first", "@test/zeta/a-block"]);
+    // Allowed now: every context, in the same order.
+    setHandlers({ "y-first": ctx("zeta y"), "a-block": ctx("zeta a"), "c-after": ctx("zeta c") }, "@test/zeta");
+    ok(await edit(a, b.projectId, root));
+    expect((await ran()).slice(4)).toEqual(["@test/alpha/m-first", "@test/alpha/b-second", "@test/zeta/y-first", "@test/zeta/a-block", "@test/zeta/c-after"]);
+    const steered = await until(() => nodes(session.id).find((x) => x.kind === "userMessage" && payloadOf(x).trigger === "hook"), "the steer");
+    const names = ["plugin:@test/alpha/m-first", "plugin:@test/alpha/b-second", "plugin:@test/zeta/y-first", "plugin:@test/zeta/a-block", "plugin:@test/zeta/c-after"];
+    expect(payloadOf(steered)).toMatchObject({ hookContext: { event: "PreCommand", hooks: names } });
+    const text = String(payloadOf(steered).text);
+    const at = ["alpha m", "alpha b", "zeta y", "zeta a", "zeta c"].map((t) => text.indexOf(t));
+    expect(at.every((x) => x >= 0)).toBe(true);
+    expect([...at].sort((x, y) => x - y)).toEqual(at);
+  });
+
   test("disabled_plugin_hooks_stop_at_once: disabling the plugin stops its handlers at the next event", async () => {
     const b = await boot({ hooks: [{ event: "PreCommand", handler: "guard" }], grants: [observe("PreCommand")], handlers: { guard: { reply: { reply: "block", reason: "frozen" } } } });
     const { session, a } = await started(b);
@@ -281,6 +311,24 @@ describe("receiving events (Decision 20)", () => {
 });
 
 describe("no modify (Decision 19)", () => {
+  test("oversized_reply_is_too_large: a reply over 64 KiB as sent fails before control characters are stripped; PreCommand passes, PreMerge blocks", { timeout: 30_000 }, async () => {
+    // 72 KB of JSON (`\u0000` is six bytes escaped) whose reason is four bytes once stripped.
+    const big = { reply: { reply: "block", reason: `${"\u0000".repeat(12_000)}stop` } };
+    const b = await boot({ hooks: [{ event: "PreCommand", handler: "loud" }, { event: "PreMerge", handler: "loud-merge" }], grants: [observe("PreCommand", "PreMerge")], handlers: { loud: big, "loud-merge": big } });
+    expect(Buffer.byteLength(JSON.stringify(big.reply))).toBeGreaterThan(65_536);
+    const { session, a } = await started(b);
+    const root = session.rootBranch!;
+    const before = await head(b.local, b.projectId, root);
+    ok(await edit(a, b.projectId, root));
+    expect(await head(b.local, b.projectId, root)).toBe(before + 1);
+    await until(() => hookNotices(session.id).find((h) => h.failed !== undefined), "the failed notice");
+    expect(hookNotices(session.id)).toContainEqual(expect.objectContaining({ event: "PreCommand", id: name("loud"), failed: "tooLarge" }));
+    const e = await merge(b);
+    expect(code(e)).toBe("HOOK_BLOCKED");
+    expect(details(e)).toMatchObject({ hook: name("loud-merge"), reason: "failed" });
+    expect(stats().PreMerge).toMatchObject({ failures: 1 });
+  });
+
   test("modify_reply_is_a_failure: a modify answer fails; PreCommand passes with a failed notice, PreMerge blocks", { timeout: 30_000 }, async () => {
     const modify = { reply: { reply: "modify", payload: { rewritten: true } } };
     const b = await boot({ hooks: [{ event: "PreCommand", handler: "rewrite" }, { event: "PreMerge", handler: "gate" }], grants: [observe("PreCommand", "PreMerge")], handlers: { rewrite: modify, gate: modify } });
