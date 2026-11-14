@@ -6,10 +6,14 @@
 
 mod argv;
 mod config;
+mod config_check;
 mod observed;
+mod params;
+mod patch_fs;
 mod runner;
 mod script;
 mod threads;
+mod toml_doc;
 mod toml_value;
 
 /// Runs the fake with the arguments after `argv[0]`; returns the process exit code.

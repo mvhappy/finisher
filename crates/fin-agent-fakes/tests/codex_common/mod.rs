@@ -116,7 +116,15 @@ pub fn command(dir: &Dir, script: Option<&Value>, args: &[&str], envs: &[(&str, 
 
 /// Runs the fake to completion with no stdin; returns (exit code, stdout, stderr).
 pub fn run_to_end(dir: &Dir, args: &[&str]) -> (Option<i32>, String, String) {
-    let o = command(dir, None, args, &[])
+    run_to_end_with(dir, None, args)
+}
+
+pub fn run_to_end_with(
+    dir: &Dir,
+    script: Option<&Value>,
+    args: &[&str],
+) -> (Option<i32>, String, String) {
+    let o = command(dir, script, args, &[])
         .stdin(Stdio::null())
         .output()
         .unwrap();
@@ -138,7 +146,6 @@ pub struct Client {
     pub log: Vec<(Value, Option<String>)>,
     /// Methods whose notifications are deliberately outside the schema.
     pub unvalidated: Vec<String>,
-    pub validate_on_drop: bool,
 }
 
 impl Client {
@@ -155,10 +162,28 @@ impl Client {
         Client::spawn(command(dir, script.as_ref(), args, envs))
     }
 
-    pub fn spawn(mut cmd: Command) -> Client {
-        cmd.stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
+    pub fn spawn(cmd: Command) -> Client {
+        Client::spawn_logging(cmd, None)
+    }
+
+    /// As `start_with`, with the fake's stderr appended to `<dir>/stderr.log`.
+    pub fn start_logged(dir: &Dir, script: Option<Value>, args: &[&str]) -> Client {
+        let log = dir.path("stderr.log");
+        Client::spawn_logging(command(dir, script.as_ref(), args, &[]), Some(log))
+    }
+
+    fn spawn_logging(mut cmd: Command, stderr: Option<PathBuf>) -> Client {
+        let err = match stderr {
+            Some(p) => Stdio::from(
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(p)
+                    .unwrap(),
+            ),
+            None => Stdio::null(),
+        };
+        cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(err);
         let mut tries = 0;
         let mut child = loop {
             match cmd.spawn() {
@@ -189,7 +214,6 @@ impl Client {
             next_id: 0,
             log: vec![],
             unvalidated: vec![],
-            validate_on_drop: true,
         }
     }
 
@@ -227,14 +251,38 @@ impl Client {
 
     fn pull_within(&mut self, wait: Duration) -> Option<Value> {
         let l = self.rx.recv_timeout(wait).ok()?;
-        let v: Value = serde_json::from_str(&l).unwrap_or_else(|_| panic!("not JSON: {l}"));
+        Some(self.record(&l))
+    }
+
+    /// Logs a line the fake wrote (with the method of the request a response answers).
+    fn record(&mut self, l: &str) -> Value {
+        let v: Value = serde_json::from_str(l).unwrap_or_else(|_| panic!("not JSON: {l}"));
         let m = v
             .get("id")
             .and_then(Value::as_i64)
             .filter(|_| v.get("method").is_none())
             .and_then(|i| self.methods.get(&i).cloned());
         self.log.push((v.clone(), m));
-        Some(v)
+        v
+    }
+
+    /// Everything the fake wrote that no test read yet (it has exited or been killed). A last
+    /// line cut short is dropped only when `killed` (a kill can land mid-write).
+    fn drain(&mut self, killed: bool) {
+        let mut rest = vec![];
+        while let Ok(l) = self.rx.recv_timeout(Duration::from_millis(500)) {
+            rest.push(l);
+        }
+        if killed
+            && rest
+                .last()
+                .is_some_and(|l| serde_json::from_str::<Value>(l).is_err())
+        {
+            rest.pop();
+        }
+        for l in rest {
+            self.record(&l);
+        }
     }
 
     /// The next line the fake wrote (queued ones first).
@@ -363,10 +411,7 @@ impl Client {
     pub fn finish(mut self) -> ExitStatus {
         self.stdin.take();
         let st = self.child.wait().unwrap();
-        while let Ok(l) = self.rx.recv_timeout(Duration::from_millis(200)) {
-            let v: Value = serde_json::from_str(&l).unwrap();
-            self.log.push((v, None));
-        }
+        self.drain(false);
         st
     }
 
@@ -391,10 +436,24 @@ impl Client {
 }
 
 impl Drop for Client {
+    /// Every line the fake wrote is validated, including the ones no test read (drained here
+    /// after the process is gone, so a crash's last lines are checked too).
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        if self.validate_on_drop && !std::thread::panicking() {
+        // EOF first: the fake exits between two lines. Killed only if it does not.
+        self.stdin.take();
+        let end = std::time::Instant::now() + Duration::from_secs(5);
+        let mut killed = false;
+        while !matches!(self.child.try_wait(), Ok(Some(_))) {
+            if std::time::Instant::now() >= end {
+                let _ = self.child.kill();
+                let _ = self.child.wait();
+                killed = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        if !std::thread::panicking() {
+            self.drain(killed);
             self.validate();
         }
     }

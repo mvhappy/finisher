@@ -4,12 +4,19 @@
 use serde_json::{Map, Number, Value};
 
 pub fn parse(raw: &str) -> Value {
-    let chars: Vec<char> = raw.trim().chars().collect();
-    let mut p = P { c: &chars, i: 0 };
-    match p.value() {
-        Some(v) if p.at_end() => v,
+    match parse_prefix(raw.trim()) {
+        Some((v, used)) if raw.trim().chars().skip(used).all(char::is_whitespace) => v,
         _ => Value::String(raw.trim().to_string()),
     }
+}
+
+/// A TOML value at the start of `raw`, and how many characters it took (for `toml_doc`, where
+/// a comment or the end of the line follows it).
+pub fn parse_prefix(raw: &str) -> Option<(Value, usize)> {
+    let chars: Vec<char> = raw.chars().collect();
+    let mut p = P { c: &chars, i: 0 };
+    let v = p.value()?;
+    Some((v, p.i))
 }
 
 struct P<'a> {
@@ -22,10 +29,6 @@ impl P<'_> {
         while self.c.get(self.i).is_some_and(|c| c.is_whitespace()) {
             self.i += 1;
         }
-    }
-    fn at_end(&mut self) -> bool {
-        self.ws();
-        self.i >= self.c.len()
     }
     fn eat(&mut self, ch: char) -> bool {
         self.ws();

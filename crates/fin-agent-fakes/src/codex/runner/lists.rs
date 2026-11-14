@@ -1,12 +1,62 @@
 //! The lists the real binary builds from files it probes: skills under the workspace's
-//! `.agents/skills` (and every parent), `$HOME/.agents/skills` and `$CODEX_HOME/skills`; hooks
-//! from `$CODEX_HOME/hooks.json`; the instruction sources `thread/start` reports.
+//! `.agents/skills` (and each parent up to the project root), `$HOME/.agents/skills`,
+//! `$CODEX_HOME/skills` and the bundled `system` skills; hooks from `$CODEX_HOME/hooks.json`;
+//! the MCP servers of the effective config; the instruction sources `thread/start` reports.
 
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
 use super::Fake;
+
+/// The five `system` skills 0.167.0 bundles (from its `skills/list`), paths under
+/// `$CODEX_HOME`.
+const BUNDLED: &str = include_str!("../data/bundled_skills.json");
+
+/// What 0.167.0 said of a server that did not speak MCP (`command = "ls"`); the fake runs none.
+pub const MCP_FAILED: &str = "MCP startup failed: handshaking with MCP server failed: connection closed: initialize response: connection closed: initialize response";
+
+fn bundled(home: &Path) -> Vec<Value> {
+    let text = BUNDLED.replace("$CODEX_HOME", &home.to_string_lossy());
+    serde_json::from_str(&text).expect("data/bundled_skills.json")
+}
+
+/// Writes the bundled skills under `$CODEX_HOME/skills/.system/`, as 0.167.0 does at start
+/// unless `skills.bundled.enabled = false` (so provider hygiene sees them).
+/// UNOBSERVED(7E Task 0 Step 3): whether it writes them at start or at the first request that
+/// needs them, and their full contents (the fake writes the front matter only).
+pub(super) fn install_bundled_skills(home: &Path) {
+    let root = home.join("skills/.system");
+    for s in bundled(home) {
+        let Some(path) = s["path"].as_str() else {
+            continue;
+        };
+        let p = PathBuf::from(path);
+        if let Some(d) = p.parent()
+            && std::fs::create_dir_all(d).is_ok()
+        {
+            let text = format!(
+                "---\nname: {}\ndescription: {}\n---\n",
+                s["name"].as_str().unwrap_or(""),
+                s["description"].as_str().unwrap_or("")
+            );
+            let _ = std::fs::write(&p, text);
+        }
+    }
+    let _ = std::fs::write(root.join(".codex-system-skills.marker"), "");
+}
+
+/// `PreToolUse` → `pre_tool_use` (the hook key's form of the event).
+fn snake(event: &str) -> String {
+    let mut out = String::new();
+    for (i, c) in event.chars().enumerate() {
+        if c.is_uppercase() && i > 0 {
+            out.push('_');
+        }
+        out.extend(c.to_lowercase());
+    }
+    out
+}
 
 fn cwd_of(p: &Value) -> PathBuf {
     p.as_str()
@@ -74,15 +124,22 @@ impl Fake {
             .iter()
             .map(|cwd| {
                 let (mut seen, mut skills) = (vec![], vec![]);
-                // The workspace and every parent: the project root marker is not honoured, as
-                // the real binary probes up to `/`.
+                // The workspace and each parent, up to the project root (a directory holding a
+                // `project_root_markers` entry, `.git` by default), else up to `/`.
+                let markers = self.eff.root_markers();
                 for dir in cwd.ancestors() {
                     skills_in(&dir.join(".agents/skills"), "repo", &mut seen, &mut skills);
+                    if markers.iter().any(|m| dir.join(m).exists()) {
+                        break;
+                    }
                 }
                 if let Some(h) = home_dir() {
                     skills_in(&h.join(".agents/skills"), "user", &mut seen, &mut skills);
                 }
                 skills_in(&self.home.join("skills"), "user", &mut seen, &mut skills);
+                if self.eff.bundled_skills() {
+                    skills.extend(bundled(&self.home));
+                }
                 json!({"cwd": cwd, "skills": skills, "errors": []})
             })
             .collect();
@@ -110,7 +167,7 @@ impl Fake {
                 for (gi, g) in groups.as_array().into_iter().flatten().enumerate() {
                     for (hi, h) in g["hooks"].as_array().into_iter().flatten().enumerate() {
                         let command = h["command"].as_str().unwrap_or("");
-                        hooks.push(json!({"key": format!("{}:{name}:{gi}:{hi}", file.display()),
+                        hooks.push(json!({"key": format!("{}:{}:{gi}:{hi}", file.display(), snake(event)),
                             "eventName": name, "handlerType": "command", "command": command,
                             "async": false, "matcher": g["matcher"], "timeoutSec": h["timeout"].as_u64().unwrap_or(600),
                             "statusMessage": null, "sourcePath": file, "source": "user", "pluginId": null,
@@ -126,6 +183,23 @@ impl Fake {
             .map(|c| json!({"cwd": c, "hooks": hooks, "warnings": [], "errors": []}))
             .collect();
         json!({"data": data})
+    }
+
+    /// `mcpServerStatus/list`: each server of the effective config; an enabled one failed to
+    /// start (the fake runs none). UNOBSERVED(7E Task 0 Step 3): a server that starts.
+    pub(super) fn mcp_status(&self) -> Value {
+        let data: Vec<Value> = self
+            .eff
+            .mcp_servers()
+            .into_iter()
+            .map(|(name, s)| {
+                let err = if s["enabled"] == false { Value::Null } else { json!(MCP_FAILED) };
+                json!({"name": name, "runtimeStatus": null, "pluginId": null, "httpOrigin": null,
+                    "serverInfo": null, "serverCapabilities": null, "toolListMeta": null, "tools": {},
+                    "toolsError": err, "resources": [], "resourceTemplates": [], "authStatus": "unsupported"})
+            })
+            .collect();
+        json!({"data": data, "nextCursor": null})
     }
 
     /// `$CODEX_HOME/AGENTS.md` (or its override) always; the workspace's while

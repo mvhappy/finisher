@@ -1,6 +1,8 @@
 //! The fake's own configuration (sidecar file and variables), and Codex's: the features the pin
-//! knows (the committed `features.txt`), the `-c` keys `--strict-config` accepts, and the
-//! `config/read` answer built from the flags the process was started with.
+//! knows (the committed `features.txt`), the start-up checks of `-c` values (`config_check`),
+//! and the `config/read` answer: the `sessionFlags` layer (`-c`, `--enable`, `--disable`) over
+//! the `user` layer (`$CODEX_HOME/config.toml`) over the bundled defaults. Layers merge table by
+//! table, as 0.167.0 does: `-c mcp_servers={}` does not remove a user's server.
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -11,13 +13,12 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use super::argv::Argv;
-use super::toml_value;
+use super::config_check::{self, TABLE_FEATURES};
+use super::{toml_doc, toml_value};
 
 pub const PIN: &str = "0.167.0";
 const FEATURES_TXT: &str = include_str!("../../../../vendor/codex/0.167.0/features.txt");
 const BASE_CONFIG: &str = include_str!("data/config.json");
-/// Keys the CLI accepts under `--strict-config` that `config/read` does not show.
-const EXTRA_KEYS: &[&str] = &["skills.include_instructions", "skills.config"];
 
 /// `<directory of the executable>/fake-codex.json`: `{"script", "observed", "version"}`.
 #[derive(Debug, Default, Deserialize)]
@@ -100,47 +101,63 @@ fn base_config() -> Value {
     c
 }
 
-/// Whether `-c a.b.c` names a key the CLI knows: every segment must exist in the config shape
-/// until a place whose own shape is open (null, a scalar, an array, an empty table).
-fn key_known(base: &Value, path: &[&str]) -> bool {
-    if EXTRA_KEYS.contains(&path.join(".").as_str()) {
-        return true;
-    }
-    let mut node = base;
-    for seg in path {
-        match node {
-            Value::Object(m) if m.is_empty() => return true,
-            Value::Object(m) => match m.get(*seg) {
-                Some(n) => node = n,
-                None => return false,
-            },
-            _ => return true,
-        }
-    }
-    true
+fn known_feature(f: &str) -> bool {
+    features().iter().any(|k| k.name == f)
 }
 
-/// The start-up checks of the CLI: an unknown feature always exits 1, an unknown `-c` key only
-/// under `--strict-config`.
-pub fn validate(a: &Argv) -> Result<(), String> {
-    let known = |f: &str| features().iter().any(|k| k.name == f);
+/// The start-up checks of the CLI, as 0.167.0 makes them: an unknown feature always exits 1; a
+/// wrongly typed `-c` value always exits 1 (`Error: <serde message>\nin `<key>``); an unknown
+/// `-c` key, or an unknown key of `$CODEX_HOME/config.toml`, only under `--strict-config`.
+pub fn validate(a: &Argv, home: &Path) -> Result<(), String> {
     for f in a.enable.iter().chain(&a.disable) {
-        if !known(f) {
+        if !known_feature(f) {
             return Err(format!("Unknown feature flag: {f}"));
         }
     }
+    let base = base_config();
     if a.strict {
-        let base = base_config();
         for (k, _) in &a.config {
             let path: Vec<&str> = k.split('.').collect();
-            if !key_known(&base, &path) {
+            if let Some(f) = config_check::unknown_field(&path, &base, known_feature) {
                 return Err(format!(
-                    "unknown configuration field `{k}` in -c/--config override"
+                    "unknown configuration field `{f}` in -c/--config override"
+                ));
+            }
+        }
+    }
+    if let Err((msg, path)) = config_check::check_layer(&flags_layer(a)) {
+        return Err(format!("{msg}\nin `{path}`"));
+    }
+    let file = home.join("config.toml");
+    if a.strict
+        && let Ok(text) = std::fs::read_to_string(&file)
+        && let Ok(doc) = toml_doc::parse(&text)
+    {
+        for (k, line, col) in &doc.keys {
+            let path: Vec<&str> = k.split('.').collect();
+            if let Some(f) = config_check::unknown_field(&path, &base, known_feature) {
+                return Err(format!(
+                    "{}:{line}:{col}: unknown configuration field `{f}`",
+                    file.display()
                 ));
             }
         }
     }
     Ok(())
+}
+
+/// `$CODEX_HOME/config.toml` as a layer, and the file's text (for its version hash).
+/// UNOBSERVED(7E Task 0 Step 3): a file that is not TOML, or holds a wrongly typed value, does
+/// not stop 0.167.0's start (seen); the fake then reads it as an empty layer, where the real
+/// one may keep the good keys and send a `configWarning`.
+fn user_layer(home: &Path) -> (Value, String) {
+    let Ok(text) = std::fs::read_to_string(home.join("config.toml")) else {
+        return (json!({}), String::new());
+    };
+    match toml_doc::parse(&text) {
+        Ok(doc) if config_check::check_layer(&doc.value).is_ok() => (doc.value, text),
+        _ => (json!({}), text),
+    }
 }
 
 fn set_path(root: &mut Value, path: &[&str], v: Value) {
@@ -207,6 +224,22 @@ fn digest(s: &str) -> String {
     out
 }
 
+/// Defaults 0.167.0 fills into each `mcp_servers` entry of the effective config.
+fn server_defaults(config: &mut Value) {
+    let Some(servers) = config["mcp_servers"].as_object_mut() else {
+        return;
+    };
+    for s in servers.values_mut() {
+        let Some(m) = s.as_object_mut() else { continue };
+        if m.contains_key("command") {
+            m.entry("args").or_insert(json!([]));
+        }
+        m.entry("environment_id").or_insert(json!("local"));
+        m.entry("enabled").or_insert(json!(true));
+        m.entry("tool_timeout_sec").or_insert(Value::Null);
+    }
+}
+
 fn leaves(prefix: &str, v: &Value, out: &mut Vec<String>) {
     match v {
         Value::Object(m) => m.iter().for_each(|(k, x)| {
@@ -228,19 +261,56 @@ fn leaves(prefix: &str, v: &Value, out: &mut Vec<String>) {
 pub struct Effective {
     pub config: Value,
     flags: Value,
+    user: Value,
+    user_text: String,
     home: PathBuf,
 }
 
 impl Effective {
     pub fn new(a: &Argv, home: &Path) -> Effective {
         let flags = flags_layer(a);
+        let (user, user_text) = user_layer(home);
         let mut config = base_config();
+        merge(&mut config, &user);
         merge(&mut config, &flags);
+        server_defaults(&mut config);
         Effective {
             config,
             flags,
+            user,
+            user_text,
             home: home.to_path_buf(),
         }
+    }
+
+    /// An effective value as a string (`approval_policy`, `sandbox_mode`, ...).
+    pub fn str(&self, key: &str) -> Option<String> {
+        self.config[key].as_str().map(str::to_string)
+    }
+
+    /// Bundled (`system`) skills: on unless `skills.bundled.enabled = false`.
+    pub fn bundled_skills(&self) -> bool {
+        self.config["skills"]["bundled"]["enabled"] != false
+    }
+
+    /// The directory names that end skills discovery upward (`project_root_markers`).
+    pub fn root_markers(&self) -> Vec<String> {
+        self.config["project_root_markers"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|m| m.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_else(|| vec![".git".into()])
+    }
+
+    /// `mcp_servers` of the effective config, by name.
+    pub fn mcp_servers(&self) -> Vec<(String, Value)> {
+        self.config["mcp_servers"]
+            .as_object()
+            .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+            .unwrap_or_default()
     }
 
     pub fn feature(&self, name: &str) -> bool {
@@ -251,14 +321,26 @@ impl Effective {
     pub fn read(&self, include_layers: bool) -> Value {
         let has_flags = self.flags.as_object().is_some_and(|m| !m.is_empty());
         let user_file = self.home.join("config.toml");
-        let user_hash = digest(&std::fs::read_to_string(&user_file).unwrap_or_default());
+        let user_name = json!({"type": "user", "file": user_file, "profile": null});
+        let user_hash = digest(&self.user_text);
         let mut origins = Map::new();
+        let mut keys = vec![];
+        leaves("", &self.user, &mut keys);
+        for k in keys {
+            origins.insert(k, json!({"name": user_name, "version": user_hash}));
+        }
         let mut layers = vec![];
         if has_flags {
             let version = digest(&self.flags.to_string());
             let mut keys = vec![];
             leaves("", &self.flags, &mut keys);
             for k in keys {
+                // A table-shaped feature's origin names its `enabled` key (0.167.0, `--disable
+                // sleep_tool`). UNOBSERVED(7E Task 0 Step 3): the same for `-c features.X=false`.
+                let k = match k.strip_prefix("features.") {
+                    Some(f) if TABLE_FEATURES.contains(&f) => format!("{k}.enabled"),
+                    _ => k,
+                };
                 origins.insert(
                     k,
                     json!({"name": {"type": "sessionFlags"}, "version": version}),
@@ -268,7 +350,7 @@ impl Effective {
                 json!({"name": {"type": "sessionFlags"}, "version": version, "config": self.flags}),
             );
         }
-        layers.push(json!({"name": {"type": "user", "file": user_file, "profile": null}, "version": user_hash, "config": {}}));
+        layers.push(json!({"name": user_name, "version": user_hash, "config": self.user}));
         layers.push(json!({"name": {"type": "system", "file": "/etc/codex/config.toml"}, "version": digest(""), "config": {}}));
         json!({"config": self.config, "origins": origins, "layers": if include_layers { Value::Array(layers) } else { Value::Null }})
     }

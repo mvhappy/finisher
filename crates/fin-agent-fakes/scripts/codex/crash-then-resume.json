@@ -1,0 +1,6 @@
+{
+  "turns": [
+    { "steps": [{ "say": "partial" }, { "crash": { "signal": "KILL" } }] },
+    { "steps": [{ "say": "resumed: turn 1" }] }
+  ]
+}
