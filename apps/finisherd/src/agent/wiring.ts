@@ -66,7 +66,7 @@ import { remainingIn } from "./claude/usage.ts";
 import { type ClaudeAccess, ClaudeModelCache, claudeAccess, withClaudePricing } from "./claude/models.ts";
 import { type SessionSandboxDeps, sessionSandboxes } from "./sandbox.ts";
 import { launcherServer } from "./sandbox-input.ts";
-import { claudeCodeSettings, readAgentSettings, resolveFinPath } from "./settings.ts";
+import { claudeCodeSettings, codexSettings, readAgentSettings, resolveFinPath } from "./settings.ts";
 import type { AgentStore } from "./store.ts";
 import { reviewPort } from "./review-link.ts";
 import type { ProjectRegistryShape } from "../projects.ts";
@@ -241,9 +241,9 @@ export function claudeWiring(info: () => Promise<ProviderInfo>, serverData: stri
  * `model/list` there), what the planner may know of it (absent unless detected and enabled, the
  * models of the detected version and account, with the account's method) and `openai` pricing.
  */
-export function codexWiring(info: () => Promise<ProviderInfo>, serverData: string): { cache: CodexModelCache; planning: () => Promise<CodexAccess>; pricing: (base: Pricing) => Pricing } {
+export function codexWiring(info: () => Promise<ProviderInfo>, serverData: string, chargePlanMoney: () => boolean = () => codexSettings(serverData).chargePlanMoney === true): { cache: CodexModelCache; planning: () => Promise<CodexAccess>; pricing: (base: Pricing) => Pricing } {
   const cache = new CodexModelCache(serverData);
-  return { cache, planning: async () => codexAccess(await info(), cache), pricing: withCodexPricing };
+  return { cache, planning: async () => codexAccess(await info(), cache, chargePlanMoney()), pricing: withCodexPricing };
 }
 
 export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntimeParts, never, Scope.Scope> =>

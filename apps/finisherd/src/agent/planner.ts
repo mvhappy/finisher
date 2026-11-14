@@ -156,18 +156,26 @@ async function codexModel(deps: PlannerDeps, named: string | undefined): Promise
     throw finError("PROVIDER_VERSION", `Codex${version === undefined ? "" : ` ${version}`} is not the version this Finisher bundles`, { harness: "codex", ...(version === undefined ? {} : { version }) }, "reinstall Finisher to restore the bundled Codex");
   }
   if ("accountChanged" in access) throw accountChanged(access.accountChanged.accountHash, "codex");
+  if ("refused" in access) throw finError(access.refused.code as never, access.refused.message, { harness: "codex" }, access.refused.fix);
+  if ("signedOut" in access) {
+    throw finError("PROVIDER_AUTH", "Codex is not signed in (or its account could not be read), so no session can start", { harness: "codex", reason: "signedOut" }, "sign in with the commands `finisherd provider signin codex` prints");
+  }
   const { models, authMethod } = access;
-  if (authMethod !== undefined && authMethod !== "chatgpt" && authMethod !== "apiKey") throw unsupportedAccount(authMethod);
-  const model = named ?? codexListDefault(models);
+  if (authMethod === undefined) throw finError("PROVIDER_AUTH", "Codex's account type is unknown", { harness: "codex", reason: "signedOut" }, "sign in with the commands `finisherd provider signin codex` prints");
+  if (authMethod !== "chatgpt" && authMethod !== "apiKey") throw unsupportedAccount(authMethod);
+  const asked = named ?? codexListDefault(models);
+  // The `model` turn/start takes: an entry's `id` plans as its `model`.
+  const model = asked === undefined ? undefined : (models.find((m) => m.id === asked || m.alias === asked)?.id ?? asked);
   if (model === undefined || model === "" || (models.length > 0 && !codexModelListed(models, model))) {
     throw finError(
       "MODEL_UNKNOWN",
       model === undefined ? "no model was named and the role has no default" : `${model} is not a model the bundled Codex offers this account`,
-      { harness: "codex", ...(model === undefined ? {} : { model }), reason: model === undefined ? "noDefault" : "notOffered" },
+      { harness: "codex", ...(model === undefined ? {} : { model: asked }), reason: model === undefined ? "noDefault" : "notOffered" },
       models.length === 0 ? "name a model with --model" : `use one of: ${models.map((m) => m.id).join(", ")}`,
     );
   }
-  if (authMethod === "apiKey") {
+  // Anything but a plan is charged by token price, and a plan whose money the owner charges needs one.
+  if (authMethod !== "chatgpt" || access.chargePlanMoney === true) {
     await deps.refreshListing?.();
     if (deps.catalogue.describe("openai", model).price === undefined) throw pricingUnknown("openai", model);
   }

@@ -17,7 +17,7 @@ import { finError } from "../../errors.ts";
 import type { Catalogue, Usage } from "../catalogue/catalogue.ts";
 import type { CliModel } from "../catalogue/cli-models.ts";
 import type { Pricing } from "../runtime-deps.ts";
-import { readCodexProbeCache } from "./probe.ts";
+import { codexProbeFlagsHash, readCodexProbeCache } from "./probe.ts";
 
 export class CodexModelCache {
   readonly #serverData: string;
@@ -50,7 +50,8 @@ export class CodexModelCache {
       const newest = [...this.#instances.values()].filter((i) => i.version === version).at(-1);
       if (newest !== undefined) return newest.models;
     }
-    const seed = (await readCodexProbeCache(this.#serverData)).filter((e) => e.version === version && e.os === this.#os).at(-1);
+    const hash = codexProbeFlagsHash(this.#os);
+    const seed = (await readCodexProbeCache(this.#serverData)).filter((e) => e.version === version && e.flagsHash === hash && e.os === this.#os).at(-1);
     return seed?.result.models ?? [];
   }
 }
@@ -66,7 +67,9 @@ export const codexListDefault = (models: readonly CliModel[]): string | undefine
  * account's method, a version that is not the pin, or an account change waiting for a person.
  */
 export type CodexAccess =
-  | { readonly models: readonly CliModel[]; readonly authMethod?: string; readonly planType?: string }
+  | { readonly models: readonly CliModel[]; readonly authMethod?: string; readonly planType?: string; readonly chargePlanMoney?: boolean }
+  | { readonly refused: { readonly code: string; readonly message: string; readonly fix?: string } }
+  | { readonly signedOut: { readonly signedIn: boolean | null } }
   | { readonly versionMismatch: { readonly version?: string } }
   | { readonly accountChanged: { readonly accountHash?: string } }
   | undefined;
@@ -76,14 +79,20 @@ export const codexHarnessAvailable = (info: Pick<ProviderInfo, "detected" | "ena
 
 /**
  * Planning's view of `info`: absent unless detected and enabled; a version other than the pin
- * and an unconfirmed account change (`PROVIDER_ACCOUNT_CHANGED`) stop new sessions; else the
+ * and an unconfirmed account change (`PROVIDER_ACCOUNT_CHANGED`) stop new sessions, as does any
+ * detection problem and anything but a signed-in account of a known method; else the
  * models for its version and account, with the account's method.
  */
-export async function codexAccess(info: Pick<ProviderInfo, "detected" | "enabled" | "version" | "accountHash" | "authMethod" | "planType" | "problem">, cache: CodexModelCache): Promise<CodexAccess> {
+export async function codexAccess(info: Pick<ProviderInfo, "detected" | "enabled" | "signedIn" | "version" | "accountHash" | "authMethod" | "planType" | "problem">, cache: CodexModelCache, chargePlanMoney = false): Promise<CodexAccess> {
   if (!codexHarnessAvailable(info)) return undefined;
   if (info.problem?.code === "PROVIDER_VERSION") return { versionMismatch: info.version === undefined ? {} : { version: info.version } };
   if (info.problem?.code === "PROVIDER_ACCOUNT_CHANGED") return { accountChanged: info.accountHash === undefined ? {} : { accountHash: info.accountHash } };
+  // Any other detection problem (noAccountLabel, unsupportedAccount, a protocol error) refuses.
+  if (info.problem !== undefined) return { refused: info.problem };
+  // Without a signed-in account of a known method no price check could be made: never plan.
+  if (info.signedIn !== true || info.authMethod === undefined) return { signedOut: { signedIn: info.signedIn ?? null } };
   return {
+    ...(chargePlanMoney ? { chargePlanMoney: true } : {}),
     models: info.version === undefined ? [] : await cache.models(info.version, info.accountHash),
     ...(info.authMethod === undefined ? {} : { authMethod: info.authMethod }),
     ...(info.planType === undefined ? {} : { planType: info.planType }),
@@ -125,6 +134,7 @@ export function codexUsageCost(
   if (account.authMethod === "apiKey") return {};
   if (account.authMethod !== "chatgpt") throw unsupportedAccount(String(account.authMethod));
   const shown = catalogue.projectedMicros("openai", model, tokens);
-  if (account.chargePlanMoney) return shown === null ? {} : { costMicros: shown, costBasis: "reported" };
+  // Never a usage without a basis for a plan account: with no price there is no money to charge.
+  if (account.chargePlanMoney && shown !== null) return { costMicros: shown, costBasis: "reported" };
   return { costBasis: "subscription", ...(shown === null ? {} : { costMicros: shown }) };
 }

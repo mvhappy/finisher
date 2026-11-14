@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { BUNDLED_CATALOGUE, Catalogue, ZERO_USAGE } from "../src/agent/catalogue/catalogue.ts";
 import { type CliModel, discoverCodexModels, parseCodexModelPage } from "../src/agent/catalogue/cli-models.ts";
 import { type CodexAccess, CodexModelCache, codexAccess, codexUsageCost, withCodexPricing } from "../src/agent/codex/models.ts";
-import { codexProbeCachePath } from "../src/agent/codex/probe.ts";
+import { codexProbeCachePath, codexProbeFlagsHash } from "../src/agent/codex/probe.ts";
 import { sessionPlanner } from "../src/agent/planner.ts";
 import { BUNDLED_ROLES, type Role } from "../src/agent/roles.ts";
 import { cataloguePricing, type StartRequest } from "../src/agent/runtime-deps.ts";
@@ -66,11 +66,11 @@ const withDefault = (model: string | undefined): ReadonlyMap<string, Role> =>
   new Map([...BUNDLED_ROLES].map(([k, r]) => [k, { ...r, models: { ...r.models, ...(model === undefined ? { codex: undefined } : { codex: model }) } } as Role]));
 
 /** The probe's cache file as `probeCodex` leaves it. */
-function seedProbe(version: string, models: CliModel[]): void {
+function seedProbe(version: string, models: CliModel[], over: { os?: NodeJS.Platform; flagsHash?: string } = {}): void {
   const file = codexProbeCachePath(dir);
   mkdirSync(dirname(file), { recursive: true });
   const result = { version, sandbox: "read-only", approval: "on-request", models };
-  writeFileSync(file, JSON.stringify({ entries: [{ version, flagsHash: "0123456789abcdef", os: process.platform, result }] }));
+  writeFileSync(file, JSON.stringify({ entries: [{ version, flagsHash: over.flagsHash ?? codexProbeFlagsHash(over.os ?? process.platform), os: over.os ?? process.platform, result }] }));
 }
 
 describe("models from the app-server", () => {
@@ -106,7 +106,7 @@ describe("models from the app-server", () => {
   });
 
   test("models_from_model_list: the planner sees the detected version's and account's list", async () => {
-    const info = (over: Partial<ProviderInfo>): ProviderInfo => ({ harness: "codex", detected: true, enabled: true, version: "9.9.9", accountHash: "aaaaaaaa", authMethod: "chatgpt", capabilities: {}, ...over }) as never;
+    const info = (over: Partial<ProviderInfo>): ProviderInfo => ({ harness: "codex", detected: true, enabled: true, signedIn: true, version: "9.9.9", accountHash: "aaaaaaaa", authMethod: "chatgpt", capabilities: {}, ...over }) as never;
     const w = codexWiring(async () => info({}), dir);
     w.cache.recordInstanceModels("9.9.9", "aaaaaaaa", [{ id: "synth-a", displayName: "A", isDefault: true }]);
     w.cache.recordInstanceModels("9.9.9", "bbbbbbbb", [{ id: "synth-b", displayName: "B", isDefault: true }]);
@@ -124,9 +124,11 @@ describe("models from the app-server", () => {
 
   test("unknown_model_refused: MODEL_UNKNOWN {harness: codex}; a listed model or id is accepted", async () => {
     const p = planner({ access: access() });
-    for (const model of ["synth-a", "synth-b-2026", "synth-slug", "synth-c"]) {
+    for (const model of ["synth-a", "synth-b-2026", "synth-c"]) {
       expect(await p.plan(start({ model }), PEOPLE)).toMatchObject({ harness: "codex", provider: "openai", model, weights: "closed" });
     }
+    // The entry's `id` plans as the `model` turn/start takes (pricing, journal and the session use that).
+    expect(await p.plan(start({ model: "synth-slug" }), PEOPLE)).toMatchObject({ model: "synth-b-2026" });
     for (const model of ["synth-hidden", "synth-missing", "openai/synth-a", ""]) {
       expect(await failure(p.plan(start({ model }), PEOPLE))).toMatchObject({ code: "MODEL_UNKNOWN", details: { harness: "codex", model, reason: "notOffered" } });
     }
@@ -146,7 +148,7 @@ describe("models from the app-server", () => {
     for (const role of BUNDLED_ROLES.values()) expect(role.models.codex).toBeUndefined();
     expect(await planner({ access: access() }).plan(start(), PEOPLE)).toMatchObject({ harness: "codex", provider: "openai", model: "synth-a" });
     // An explicit model beats both.
-    expect(await p.plan(start({ model: "synth-slug" }), PEOPLE)).toMatchObject({ model: "synth-slug" });
+    expect(await p.plan(start({ model: "synth-slug" }), PEOPLE)).toMatchObject({ model: "synth-b-2026" });
     // A role default the account does not offer is refused, not replaced.
     expect(await failure(planner({ access: access(), roles: withDefault("synth-gone") }).plan(start(), PEOPLE))).toMatchObject({ code: "MODEL_UNKNOWN", details: { model: "synth-gone" } });
     // No default flagged and none named.
@@ -165,7 +167,8 @@ describe("the account decides the cost", () => {
     expect(codexUsageCost(cat, { authMethod: "chatgpt", chargePlanMoney: false }, "synth-c", tokens)).toEqual({ costBasis: "subscription" });
     // The owner chose to charge plan money: reported money, no subscription basis.
     expect(codexUsageCost(cat, { authMethod: "chatgpt", chargePlanMoney: true }, "synth-a", tokens)).toEqual({ costMicros: shown, costBasis: "reported" });
-    expect(codexUsageCost(cat, { authMethod: "chatgpt", chargePlanMoney: true }, "synth-c", tokens)).toEqual({});
+    // Never a usage without a basis for a plan account (the planner refuses this start under chargePlanMoney).
+    expect(codexUsageCost(cat, { authMethod: "chatgpt", chargePlanMoney: true }, "synth-c", tokens)).toEqual({ costBasis: "subscription" });
     // And the runtime's price for the same tokens is the shown figure.
     expect(withCodexPricing(cataloguePricing(cat)).price({ provider: "openai", model: "synth-a" } as never, tokens, shown)).toEqual({ micros: shown, basis: "reported" });
   });
@@ -194,8 +197,10 @@ describe("the account decides the cost", () => {
     const key = { authMethod: "apiKey" };
     expect(await planner({ access: access(key) }).plan(start({ model: "synth-a" }), PEOPLE)).toMatchObject({ model: "synth-a" });
     for (const model of ["synth-c", "synth-slug", "synth-b-2026"]) {
-      expect(await failure(planner({ access: access(key) }).plan(start({ model }), PEOPLE))).toMatchObject({ code: "PRICING_UNKNOWN", details: { provider: "openai", model } });
+      expect(await failure(planner({ access: access(key) }).plan(start({ model }), PEOPLE))).toMatchObject({ code: "PRICING_UNKNOWN", details: { provider: "openai", model: model === "synth-slug" ? "synth-b-2026" : model } });
     }
+    // An owner price on the canonical id covers the alias too.
+    expect(await planner({ access: access(key), extra: [{ id: "openai/synth-b-2026", window: 1000, price: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } }] }).plan(start({ model: "synth-slug" }), PEOPLE)).toMatchObject({ model: "synth-b-2026" });
     const priced = [{ id: "openai/synth-c", window: 100_000, price: { input: 1_000_000, output: 2_000_000, cacheRead: 0, cacheWrite: 0 } }];
     expect(await planner({ access: access(key), extra: priced }).plan(start({ model: "synth-c" }), PEOPLE)).toMatchObject({ model: "synth-c" });
     // An agents.models entry without a price does not help.
@@ -206,13 +211,67 @@ describe("the account decides the cost", () => {
   });
 });
 
+describe("review fixes", () => {
+  const info = (over: Partial<ProviderInfo>): ProviderInfo => ({ harness: "codex", detected: true, enabled: true, signedIn: true, version: "9.9.9", accountHash: "aaaaaaaa", authMethod: "apiKey", capabilities: {}, ...over }) as never;
+  const viaInfo = (i: ProviderInfo, chargePlanMoney = false) => {
+    const w = codexWiring(async () => i, dir, () => chargePlanMoney);
+    w.cache.recordInstanceModels("9.9.9", "aaaaaaaa", LIST);
+    return planner({ access: w.planning });
+  };
+
+  test("signed_out_or_unknown_account_is_refused: no price check can be skipped by an unset authMethod", async () => {
+    for (const over of [{ signedIn: false, authMethod: undefined }, { signedIn: null, authMethod: undefined }, { signedIn: true, authMethod: undefined }]) {
+      const e = await failure(viaInfo(info(over as never)).plan(start({ model: "synth-c" }), PEOPLE));
+      expect(e).toMatchObject({ code: "PROVIDER_AUTH", details: { harness: "codex", reason: "signedOut" } });
+    }
+    // The planner itself fails closed on an access without a method.
+    expect(await failure(planner({ access: access({}) }).plan(start({ model: "synth-c" }), PEOPLE))).toMatchObject({ code: "PROVIDER_AUTH" });
+  });
+
+  test("detection_problem_refuses: any other detection problem stops new sessions", async () => {
+    for (const code of ["PROVIDER_AUTH", "PROVIDER_PROTOCOL", "PROVIDER_UNAVAILABLE"]) {
+      const e = await failure(viaInfo(info({ authMethod: "chatgpt", problem: { code, message: "x", fix: "y" } } as never)).plan(start({ model: "synth-a" }), PEOPLE));
+      expect(e).toMatchObject({ code, details: { harness: "codex" } });
+    }
+  });
+
+  test("api_key_check_runs_for_anything_but_a_plan", async () => {
+    expect(await failure(planner({ access: access({ authMethod: "chatgpt" }) }).plan(start({ model: "synth-c" }), PEOPLE))).toBeUndefined();
+    expect(await failure(viaInfo(info({})).plan(start({ model: "synth-c" }), PEOPLE))).toMatchObject({ code: "PRICING_UNKNOWN" });
+  });
+
+  test("charge_plan_money_unpriced_is_pricing_unknown: refused at start; priced or unset still plans", async () => {
+    expect(await failure(viaInfo(info({ authMethod: "chatgpt" }), true).plan(start({ model: "synth-c" }), PEOPLE))).toMatchObject({ code: "PRICING_UNKNOWN", details: { provider: "openai", model: "synth-c" } });
+    expect(await viaInfo(info({ authMethod: "chatgpt" }), true).plan(start({ model: "synth-a" }), PEOPLE)).toMatchObject({ model: "synth-a" });
+    expect(await viaInfo(info({ authMethod: "chatgpt" }), false).plan(start({ model: "synth-c" }), PEOPLE)).toMatchObject({ model: "synth-c" });
+  });
+
+  test("probe_seed_needs_the_flags_hash_and_the_os", async () => {
+    const one = [{ id: "synth-unsigned", displayName: "U", isDefault: true }];
+    seedProbe("9.9.9", one, { flagsHash: "ffffffffffffffff" });
+    expect(await new CodexModelCache(dir).models("9.9.9")).toEqual([]);
+    seedProbe("9.9.9", one, { os: "win32" });
+    expect(await new CodexModelCache(dir).models("9.9.9")).toEqual([]);
+    expect((await new CodexModelCache(dir, "win32").models("9.9.9")).map((m) => m.id)).toEqual(["synth-unsigned"]);
+    seedProbe("9.9.9", one);
+    expect((await new CodexModelCache(dir).models("9.9.9")).map((m) => m.id)).toEqual(["synth-unsigned"]);
+  });
+
+  test("owner_price_beats_the_listing, and the listing prices when the owner's entry has none", () => {
+    const owner = { id: "openai/synth-a", window: 1000, price: { input: 5_000_000, output: 0, cacheRead: 0, cacheWrite: 0 } };
+    expect(catalogue([owner]).describe("openai", "synth-a")).toMatchObject({ source: "settings", price: { input: 5_000_000 } });
+    expect(catalogue([{ id: "openai/synth-a", window: 1000 }]).describe("openai", "synth-a")).toMatchObject({ source: "settings", price: { input: 2_000_000 } });
+    expect(catalogue().describe("openai", "synth-a")).toMatchObject({ source: "openrouter", price: { input: 2_000_000 } });
+  });
+});
+
 describe("the harness is present only when registered", () => {
   test("planner_refuses_codex_until_registered: no adapter is HARNESS_UNKNOWN, with or without models", async () => {
     expect(await failure(planner({ harnesses: ["builtin"], access: access() }).plan(start(), PEOPLE))).toMatchObject({ code: "HARNESS_UNKNOWN", details: { harness: "codex" } });
     expect(await failure(planner({ access: async () => undefined }).plan(start(), PEOPLE))).toMatchObject({ code: "HARNESS_UNKNOWN", details: { harness: "codex" } });
     expect(await failure(planner().plan(start(), PEOPLE))).toMatchObject({ code: "HARNESS_UNKNOWN" });
     // The wiring registers no Codex adapter before Task 10: the same answer through it.
-    const w = codexWiring(async () => ({ harness: "codex", detected: true, enabled: true, version: "9.9.9", capabilities: {} }) as never, dir);
+    const w = codexWiring(async () => ({ harness: "codex", detected: true, enabled: true, signedIn: true, authMethod: "chatgpt", version: "9.9.9", capabilities: {} }) as never, dir);
     expect(await failure(planner({ harnesses: ["builtin", "claudeCode"], access: w.planning }).plan(start(), PEOPLE))).toMatchObject({ code: "HARNESS_UNKNOWN" });
   });
 });
