@@ -7,16 +7,22 @@ import { assertEqual } from "./lib.mjs";
 
 /**
  * Whether 6B-1 Task 19 (`media.capabilities` v2 with its guidance codes, the `job.done.media`
- * object of `media.proxy` and `media.thumbs`) is on this branch, with Task 8's capability probe
- * under it. Turn it on in the commit that merges them: the scenario then asserts
- * `task19Diagnostics` and `h264Guidance` instead of noting what it skipped.
+ * object of `media.proxy` and `media.thumbs`) is on this branch: the scenario asserts
+ * `task19Diagnostics`.
  */
-export const TASK19 = false;
+export const TASK19 = true;
+
+/**
+ * Whether 6B-1 Task 8's capability probe answers the v2 report (guidance on its rows and on a
+ * `CODEC_UNAVAILABLE` refusal). Task 19 journals v2 but the job still answers v1, so
+ * `h264Guidance` waits on this. Turn it on in the commit that merges Task 8.
+ */
+export const TASK8 = false;
 
 /**
  * The Linux H.264 guidance (plan Global Constraints: `CODEC_UNAVAILABLE` until 6B-2, with
  * guidance): the report's H.264 row and the refusal both carry `laterBatch` for 6B-2. Today no
- * code emits a guidance line (the worker answers the v1 report), so this waits on `TASK19`.
+ * code puts a guidance line in the answer (the worker answers the v1 report), so this waits on `TASK8`.
  */
 export function h264Guidance(row, refusal) {
   const later = (lines) => lines.some((g) => g.code === "laterBatch" && g.batch === "6B-2");
@@ -189,12 +195,13 @@ export function task19Diagnostics(entries, { platform = process.platform, proxyF
     const h264 = v2.codecs.filter((c) => c.codec === "h264").flatMap((c) => c.guidance ?? []);
     if (!h264.some((g) => g.code === "laterBatch" && g.batch === "6B-2")) throw new Error(`the journal's H.264 row has no laterBatch 6B-2 guidance: ${JSON.stringify(h264)}`);
   }
-  const shape = (m, what) => {
+  // `rtFactorMilli` is 0 for thumbnails, which play nothing through (Task 19's `JobMedia`).
+  const shape = (m, what, played = true) => {
     if (!isObj(m)) throw new Error(`${what}: no media object`);
     for (const [k, t] of [["codec", "string"], ["backend", "string"], ["hw", "boolean"], ["resolution", "string"], ["frames", "number"], ["rtFactorMilli", "number"], ["cacheHit", "boolean"], ["copyPath", "string"]]) {
       if (typeof m[k] !== t) throw new Error(`${what}: media.${k} is ${JSON.stringify(m[k])}, not a ${t}`);
     }
-    if (!Number.isInteger(m.rtFactorMilli) || m.rtFactorMilli <= 0) throw new Error(`${what}: media.rtFactorMilli ${m.rtFactorMilli}`);
+    if (!Number.isInteger(m.rtFactorMilli) || m.rtFactorMilli < (played ? 1 : 0)) throw new Error(`${what}: media.rtFactorMilli ${m.rtFactorMilli}`);
   };
   const proxies = jobDone(entries, "media.proxy").filter((e) => e.payload.outcome === "succeeded");
   for (const e of proxies) shape(e.payload.media, `media.proxy job.done ${e.payload.job ?? ""}`);
@@ -205,6 +212,6 @@ export function task19Diagnostics(entries, { platform = process.platform, proxyF
   for (const e of proxies) {
     if (e.payload.media.cacheHit !== false) throw new Error("a media.proxy job that ran reports a cache hit");
   }
-  for (const e of jobDone(entries, "media.thumbs").filter((x) => x.payload.outcome === "succeeded")) shape(e.payload.media, "media.thumbs job.done");
+  for (const e of jobDone(entries, "media.thumbs").filter((x) => x.payload.outcome === "succeeded")) shape(e.payload.media, "media.thumbs job.done", false);
   assertEqual(proxies.every((e) => ["av1", "h264"].includes(e.payload.media.codec)), true, "media.proxy job.done codecs");
 }

@@ -20,7 +20,7 @@ import { basename, join } from "node:path";
 import { ROOT, assertEqual, consoleLibraryAdd, consoleRpc, errorCode, fin, finRaw, live, log, removeTmp, scenarioTmp, socketCall, startServer, stopServer, storedEntries, waitFor } from "./lib.mjs";
 import { AT } from "./look.mjs";
 import { nearestFrame, placeFlat, placeRotated, readFrameId, readPng, vfrPts } from "./look-lib.mjs";
-import { TASK19, h264Guidance, h264Mode, h264Row, httpGet, presentDiagnostics, task19Diagnostics, writeH264Stub } from "./proxy-lib.mjs";
+import { TASK19, TASK8, h264Guidance, h264Mode, h264Row, httpGet, presentDiagnostics, task19Diagnostics, writeH264Stub } from "./proxy-lib.mjs";
 
 const step = (n, text) => log(`step ${n}: ${text}`);
 
@@ -122,8 +122,8 @@ export async function run() {
       const r = finRaw(sd, project, ["media", "proxy", asset["h.mp4"], "--tier", "540"]);
       assertEqual([r.status, errorCode(r.text)], [5, "CODEC_UNAVAILABLE"], "the H.264 proxy on Linux");
       assertEqual(r.json.error.details, { codec: "h264", direction: "decode" }, "CODEC_UNAVAILABLE details");
-      if (TASK19) h264Guidance(h264Row(caps), r.json);
-      else log("NOTE: laterBatch 6B-2 guidance on the H.264 row and refusal waits on 6B-1 Tasks 8 and 19 (h264Guidance, TASK19 in proxy-lib.mjs)");
+      if (TASK8) h264Guidance(h264Row(caps), r.json);
+      else log("NOTE: laterBatch 6B-2 guidance on the H.264 row and refusal waits on 6B-1 Task 8 (h264Guidance, TASK8 in proxy-lib.mjs)");
     }
 
     step(4, `fin look --at ${AT.join(",")}: through the proxies, the frame ids and plans of --originals`);
