@@ -471,6 +471,9 @@ export const HandlersLive = FinRpcs.toLayer(
           "media.thumbs",
           mediaProxy?.thumbs === undefined ? Effect.fail(finError("SERVER_UNAVAILABLE", "thumbnails are not served here", { feature: "mediaThumbs" })) : mediaProxy.thumbs.request(ownerOf(options), req),
         ),
+      // 6C Task 18: an asset's pcm48 or pcm16m feed.
+      "media.pcm": (req, options) =>
+        guard("media.pcm", mediaProxy?.pcm === undefined ? Effect.fail(finError("SERVER_UNAVAILABLE", "PCM feeds are not served here", { feature: "mediaPcm" })) : mediaProxy.pcm.request(ownerOf(options), req)),
       "asset.reprobe": (req, options) =>
         guard(
           "asset.reprobe",

@@ -66,6 +66,7 @@ export const SAMPLE_PAYLOADS: { readonly [T in FinRpcTag]: Record<string, unknow
   "media.proxy": { projectId: P, asset: "a1" },
   "media.proxy.status": { projectId: P, asset: "a1" },
   "media.thumbs": { projectId: P, asset: "a1", at: ["0"] },
+  "media.pcm": { projectId: P, asset: "a1" },
   "media.url": { key: "0".repeat(64), file: "proxy.mp4" },
   "asset.reprobe": { ...W, asset: "a1", branch: "main", deep: true },
   "jobs.submit": { kind: "test.echo", params: { value: 1 } },

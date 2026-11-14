@@ -69,8 +69,19 @@ pub const STRIP: Recipe = Recipe {
     version: 1,
 };
 
+/// 48 kHz `f32` in the source's canonical layout (6C plan Decision 7; `jobs::pcm`).
+pub const PCM48: Recipe = Recipe {
+    name: "pcm48",
+    version: 1,
+};
+/// 16 kHz `f32` mono, the analysis feed (6C plan Decision 7; `jobs::pcm`).
+pub const PCM16M: Recipe = Recipe {
+    name: "pcm16m",
+    version: 1,
+};
+
 /// Every recipe this build makes.
-pub const RECIPES: &[Recipe] = &[PROXY_540, PROXY_1080, THUMBS, STRIP];
+pub const RECIPES: &[Recipe] = &[PROXY_540, PROXY_1080, THUMBS, STRIP, PCM48, PCM16M];
 
 /// The recipe of this build named `name`.
 pub fn recipe(name: &str) -> Option<Recipe> {

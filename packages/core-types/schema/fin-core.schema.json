@@ -13128,6 +13128,164 @@
       ],
       "description": "A parameter value: finite numbers round-trip bit for bit through stored JSON (serde_json's\n`float_roundtrip`). Times, rationals, colours (`#rrggbb[aa]`) and enum values are text; an\nasset reference is `{\"asset\": id}`, so every id a value carries is found without the\nregistry (plan 4C Decision 24)."
     },
+    "PcmDecoder": {
+      "additionalProperties": false,
+      "description": "The backend that decoded the source, and its class.",
+      "properties": {
+        "backend": {
+          "type": "string"
+        },
+        "class": {
+          "$ref": "#/$defs/VendorClass"
+        }
+      },
+      "required": [
+        "backend",
+        "class"
+      ],
+      "type": "object"
+    },
+    "PcmLayout": {
+      "description": "A feed's channels: one, or two interleaved `L R`.",
+      "enum": [
+        "mono",
+        "stereo"
+      ],
+      "type": "string"
+    },
+    "PcmParams": {
+      "additionalProperties": false,
+      "description": "`media.pcm` v1: the `recipe` feed of the source whose content is `fingerprint`, which the\ncache knows as `key`. A batch kind of one item, the fingerprint.",
+      "properties": {
+        "asset": {
+          "description": "A project asset, through the job's `in/manifest.json`.",
+          "type": "string"
+        },
+        "branch": {
+          "description": "The branch whose head names the asset (`main` when absent). Host only.",
+          "type": "string"
+        },
+        "decoderClass": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/VendorClass"
+            }
+          ],
+          "description": "The vendor class the host expects the source's decoder to have (part of the key)."
+        },
+        "file": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/ProxyLibraryFile"
+            }
+          ],
+          "description": "A library file (the `pcm16m` stage)."
+        },
+        "fingerprint": {
+          "type": "string"
+        },
+        "key": {
+          "description": "[`pcm_key`] of the fields above: the worker writes `out/<key>/`.",
+          "type": "string"
+        },
+        "layout": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/PcmLayout"
+            }
+          ],
+          "description": "The layout the host planned (part of the key)."
+        },
+        "projectId": {
+          "description": "The project that asked (host only, as `ProxyParams`).",
+          "type": "string"
+        },
+        "recipe": {
+          "$ref": "#/$defs/PcmRecipe"
+        }
+      },
+      "required": [
+        "fingerprint",
+        "recipe",
+        "layout",
+        "decoderClass",
+        "key"
+      ],
+      "type": "object"
+    },
+    "PcmRecipe": {
+      "description": "Which PCM feed (Decision 7).",
+      "oneOf": [
+        {
+          "const": "pcm48",
+          "description": "48 kHz in the canonical layout: the mixer's input.",
+          "type": "string"
+        },
+        {
+          "const": "pcm16m",
+          "description": "16 kHz mono: the analysis feed.",
+          "type": "string"
+        }
+      ]
+    },
+    "PcmResult": {
+      "additionalProperties": false,
+      "description": "What `media.pcm` v1 answers for its item (the fingerprint).",
+      "properties": {
+        "bytes": {
+          "description": "The entry's bytes (its chunks, `meta.json` not included).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "chunks": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "decoder": {
+          "$ref": "#/$defs/PcmDecoder"
+        },
+        "frames": {
+          "description": "Frames at the feed's rate.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "key": {
+          "type": "string"
+        },
+        "layout": {
+          "$ref": "#/$defs/PcmLayout"
+        },
+        "recipe": {
+          "$ref": "#/$defs/PcmRecipe"
+        },
+        "sourceChannels": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sourceRate": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "key",
+        "recipe",
+        "layout",
+        "frames",
+        "chunks",
+        "decoder",
+        "sourceRate",
+        "sourceChannels",
+        "bytes"
+      ],
+      "type": "object"
+    },
     "PendingCompaction": {
       "description": "One manifest as status shows it.",
       "properties": {

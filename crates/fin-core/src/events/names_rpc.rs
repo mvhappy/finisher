@@ -14,7 +14,8 @@ use super::names::NameTable;
 /// `agent.account.confirm` (7D Task 11), 5B's pairing, device, environment and
 /// `settings.write` RPCs, the review RPCs with `history.drop`
 /// (5E Task 4), `history.log` (review batch L), 6B-1's `media.cache.status|gc`,
-/// `asset.reprobe`, `media.proxy`, `media.proxy.status`, `media.thumbs` and `media.url`, and
+/// `asset.reprobe`, `media.proxy`, `media.proxy.status`, `media.thumbs` and `media.url`, 6C's
+/// `media.pcm`, and
 /// `agent.hooks.list` (7F Task 2).
 pub static RPC_METHODS: NameTable = NameTable::new(
     "RPC_METHODS",
@@ -125,6 +126,7 @@ pub static RPC_METHODS: NameTable = NameTable::new(
         "media.cache.status",
         "media.capabilities",
         "media.look",
+        "media.pcm",
         "media.probeDeep",
         "media.proxy",
         "media.proxy.status",

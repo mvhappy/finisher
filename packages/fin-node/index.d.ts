@@ -472,8 +472,8 @@ export interface MediaProxyPlanRequest {
  */
 export declare function mediaProxyPlan(request: MediaProxyPlanRequest): { key: string; decoder: string; decoderClass: "os" | "gpu" | "software" | "plugin" };
 
-/** 6B-1 Task 14: this build's `RENDER_VERSION` and its cache recipes' versions (`proxy-540`: 1, …). */
-export declare function mediaVersions(): { renderVersion: number; recipes: Record<string, number> };
+/** 6B-1 Task 14: this build's `RENDER_VERSION`, `AUDIO_VERSION` (6C) and its cache recipes' versions (`proxy-540`: 1, …). */
+export declare function mediaVersions(): { renderVersion: number; audioVersion: number; recipes: Record<string, number> };
 
 /**
  * Probes a media file (MP4/MOV/M4A/WAV), image (PNG/JPEG/WebP), SVG, dotLottie, font
@@ -546,6 +546,8 @@ export * from "./library.js";
 export * from "./media-cache.js";
 // Thumbnail and filmstrip plans (`media-thumbs.js`, 6B-1 Task 15).
 export * from "./media-thumbs.js";
+// PCM feed plans (`media-pcm.js`, 6C Task 18).
+export * from "./media-pcm.js";
 // The native Windows pipe listener (`pipe.js`).
 export * from "./pipe.js";
 // The vault and the identity key (`vault.js`, 5B).

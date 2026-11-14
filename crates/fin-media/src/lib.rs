@@ -25,6 +25,7 @@ pub use info::{
     Rotation, Size, VideoTrackInfo, display_size,
 };
 pub use sample::{FrameAt, FrameEntry, SampleTable, SyncPoint, decode_start, frame_at};
+pub use version::AUDIO_VERSION;
 pub use version::RENDER_VERSION;
 
 use fin_core::CoreError;

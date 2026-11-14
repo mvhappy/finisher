@@ -1,7 +1,8 @@
 // The `media.*` RPCs of `FinRpcs`, spread into it (`rpc.ts`) so that file stays small; their
-// rules are in `scopes.ts`, their payloads in `media.ts`.
+// rules are in `scopes.ts`, their payloads in `media.ts` (6C's audio ones in `audio.ts`).
 import { Rpc } from "effect/rpc";
 import { Schema } from "effect";
+import { MediaPcmPayload, MediaPcmSuccess } from "./audio.ts";
 import { FinError } from "./errors.ts";
 import { AssetReprobePayload, AssetReprobeSuccess, MediaCacheGcPayload, MediaCacheGcSuccess, MediaCacheStatusSuccess, MediaCapabilitiesSuccess, MediaLookPayload, MediaLookSuccess, MediaProbeDeepPayload, MediaProbeDeepSuccess, MediaProxyPayload, MediaProxyStatusPayload, MediaProxyStatusSuccess, MediaProxySuccess, MediaThumbsPayload, MediaThumbsSuccess, MediaUrlPayload, MediaUrlSuccess } from "./media.ts";
 
@@ -23,4 +24,6 @@ export const MEDIA_RPCS = [
   Rpc.make("media.proxy.status", { payload: MediaProxyStatusPayload, success: MediaProxyStatusSuccess, error: FinError }),
   /** 6B-1 Task 15: thumbnails at source times, or the filmstrip, of a video asset. */
   Rpc.make("media.thumbs", { payload: MediaThumbsPayload, success: MediaThumbsSuccess, error: FinError }),
+  /** 6C Task 18: an asset's `pcm48` or `pcm16m` feed (payloads in `audio.ts`). */
+  Rpc.make("media.pcm", { payload: MediaPcmPayload, success: MediaPcmSuccess, error: FinError }),
 ] as const;

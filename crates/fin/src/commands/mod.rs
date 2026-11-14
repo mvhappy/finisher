@@ -31,6 +31,7 @@ pub mod look;
 pub mod marker;
 pub mod media;
 pub mod media_caps;
+pub mod media_pcm;
 pub mod media_probe;
 pub mod media_proxy;
 pub mod media_thumbs;
