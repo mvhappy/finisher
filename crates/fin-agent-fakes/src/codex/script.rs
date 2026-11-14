@@ -12,8 +12,20 @@ pub struct Script {
     pub account: Option<Value>,
     /// Replaces the bundled `model/list` catalogue.
     pub models: Option<Vec<Value>>,
+    /// `account/read` reports the account without an `auth.json` (a sign-in Finisher did not
+    /// link: a managed `CODEX_API_KEY`, a keyring), for the probe's deferral.
+    pub signed_in_elsewhere: bool,
     /// The `requirements` of `configRequirements/read` (default `null`).
     pub requirements: Option<Value>,
+    /// What `plugin/installed` lists as `marketplaces`, `app/installed` as `apps` and
+    /// `mcpServerStatus/list` as `data` (each default `[]`): planted, as a managed or leaked
+    /// configuration would make them, for the probe's isolation tests.
+    pub plugins: Option<Value>,
+    pub apps: Option<Value>,
+    pub mcp_servers: Option<Value>,
+    /// A pin without dynamic tools: `thread/start` with `dynamicTools` answers `-32600
+    /// "Invalid request: unknown field `dynamicTools`"`.
+    pub refuse_dynamic_tools: bool,
     pub steer: Steer,
     pub on_interrupt: OnInterrupt,
     /// Whether `thread/resume` brings back the thread's dynamic tools (Task 0 Step 3 decides it

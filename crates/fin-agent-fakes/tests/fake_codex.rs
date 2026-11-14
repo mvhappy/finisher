@@ -369,6 +369,54 @@ fn fake_lists_planted_skills_and_hooks() {
     );
 }
 
+/// What the probe's isolation tests plant: one installed plugin, one app, one MCP server.
+fn planted_lists() -> Value {
+    json!({
+        "plugins": [{"name": "m", "plugins": [{"id": "p@m", "name": "p", "enabled": true,
+            "installed": true, "authPolicy": "ON_USE", "installPolicy": "AVAILABLE",
+            "source": {"type": "remote"}}]}],
+        "apps": [{"id": "a", "enabled": true, "callable": true}],
+        "mcpServers": [{"name": "s", "authStatus": "unsupported", "tools": {},
+            "resources": [], "resourceTemplates": []}],
+    })
+}
+
+#[test]
+fn fake_plants_plugins_apps_mcp_and_refuses_dynamic_tools() {
+    let dir = Dir::new("planted");
+    let mut c = Client::start(&dir, Some(planted_lists()));
+    c.initialize();
+    assert_eq!(
+        c.call("plugin/installed", json!({}))["marketplaces"][0]["plugins"][0]["id"],
+        "p@m"
+    );
+    assert_eq!(c.call("app/installed", json!({}))["apps"][0]["id"], "a");
+    assert_eq!(
+        c.call("mcpServerStatus/list", json!({}))["data"][0]["name"],
+        "s"
+    );
+    drop(c);
+    let mut c = Client::start(&dir, Some(json!({"refuseDynamicTools": true})));
+    c.initialize();
+    let p = json!({"cwd": dir.work(), "dynamicTools": [Client::shell_tool()]});
+    let e = c.call_err("thread/start", p);
+    assert_eq!(
+        e["message"],
+        "Invalid request: unknown field `dynamicTools`"
+    );
+    // Without the field the thread starts.
+    assert!(c.start_thread(&dir, json!({}))["thread"]["id"].is_string());
+    drop(c);
+    // Signed in by other means: an account with no auth.json.
+    let mut c = Client::start(&dir, Some(json!({"signedInElsewhere": true})));
+    c.initialize();
+    assert_eq!(
+        c.call("account/read", json!({}))["account"]["type"],
+        "chatgpt"
+    );
+    assert!(!dir.home().join("auth.json").exists());
+}
+
 #[test]
 fn fake_account_and_models_read() {
     let dir = Dir::new("account");

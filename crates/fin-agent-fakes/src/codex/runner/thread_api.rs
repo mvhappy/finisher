@@ -77,6 +77,9 @@ impl Fake {
 
     pub(super) fn thread_start(&mut self, p: &Value) -> Reply {
         let tools = p["dynamicTools"].as_array().cloned().unwrap_or_default();
+        if self.script.refuse_dynamic_tools && !p["dynamicTools"].is_null() {
+            return Err(rpc("Invalid request: unknown field `dynamicTools`"));
+        }
         if !tools.is_empty() && !self.experimental {
             return Err(rpc(
                 "thread/start.dynamicTools requires experimentalApi capability",
