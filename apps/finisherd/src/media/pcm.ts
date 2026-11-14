@@ -29,7 +29,7 @@ import type { JobEngine } from "../jobs/api.ts";
 import { MEDIA_PCM } from "../jobs/kinds/media.pcm.ts";
 import type { StageFile, StageSpec } from "../library/api.ts";
 import type { ProjectRegistryShape } from "../projects.ts";
-import { isMaking, systemJobs } from "./join.ts";
+import { isMaking, isSuperseded, joinedView, systemJobs } from "./join.ts";
 import { CONTENT_FAILURES, MEDIA_SYSTEM_OWNER, scrubPath } from "./proxy.ts";
 
 /** How long `media.pcm` waits for its job. */
@@ -60,7 +60,7 @@ export interface PcmAnswer {
 
 export interface PcmServiceDeps {
   readonly registry: Pick<ProjectRegistryShape, "ensure" | "snapshot" | "resolveBranch" | "dirOf">;
-  readonly engine: Pick<JobEngine, "submit" | "wait" | "get">;
+  readonly engine: Pick<JobEngine, "submit" | "wait" | "get" | "failQueued">;
   readonly cache: () => MediaCache | undefined;
   /** fin-node's `probe` (JSON); tests replace it. */
   readonly probe?: (path: string) => Promise<string>;
@@ -221,11 +221,14 @@ export function makePcmService(deps: PcmServiceDeps): PcmService {
         inCache: Effect.map(hit(p.key, req.projectId), (m) => m !== undefined),
       });
       if (isMaking(joined)) return { ...base, state: "making" };
-      if (joined !== undefined) {
-        const result = resultOf(joined, p.fingerprint);
+      const ready = joinedView(joined);
+      if (ready !== undefined) {
+        const result = resultOf(ready, p.fingerprint);
         return { ...base, state: "ready", ...(result === undefined ? {} : { result }) };
       }
       const job = yield* submit(owner, p, "normal");
+      // The first use's job was taken over: its waveform follows the caller's.
+      if (isSuperseded(joined)) deps.afterPcm48?.(p, job.id);
       if (req.wait === false) return { ...base, state: "making", job: job.id };
       const [done] = yield* deps.engine.wait([job.id], { timeoutMs: PCM_WAIT_MS }).pipe(
         Effect.mapError((e) => (e.code === "WAIT_TIMEOUT" ? finError(e.code, e.message, { ...(e.details as object), job: job.id }, "the feed is still being made: fin job wait <job>") : e)),

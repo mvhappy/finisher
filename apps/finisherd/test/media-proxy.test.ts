@@ -403,6 +403,7 @@ describe("first use", () => {
         },
         wait: () => Effect.die(0),
         get: () => Effect.die(0),
+        failQueued: () => Effect.die(0),
       },
       capabilities: () => Effect.succeed(V1),
       cache: () => undefined,
@@ -465,6 +466,12 @@ function fakeService(over: { submit?: (n: number) => JobView; capabilities?: Pro
         }),
       wait: (ids) => Effect.sync(() => ids.map((id) => (over.onWait?.(id), views.get(id)!))),
       get: (id) => Effect.sync(() => views.get(id)!),
+      failQueued: (id, error) =>
+        Effect.sync(() => {
+          const v = views.get(id)!;
+          if (v.state === "queued") views.set(id, { ...v, state: "failed", error: { code: error.code, message: error.message, details: {} } } as JobView);
+          return views.get(id)!;
+        }),
     },
     capabilities: over.capabilities ?? (() => Effect.succeed(V1)),
     cache: () => over.cache,
@@ -638,19 +645,38 @@ describe("the proxy540 stage's isDone", () => {
 });
 
 describe("a request while the first use makes the proxy", () => {
-  test("media.proxy and ensure join the background job: no job of the caller's", async () => {
+  test("media.proxy and ensure join a running background job: no job of the caller's", async () => {
     const key = keyOf("fp-a1", "1080");
     const held = new Set<string>();
     const cache = { lookup: async (k: string) => (held.has(k) ? ({ key: k } as unknown) : null), serve: async () => undefined } as unknown as MediaCache;
     // The background job commits its proxy and succeeds while a request waits for it.
     const done = (id: string) => (held.add(key), views.set(id, { id, state: "succeeded", result: { items: { "fp-a1": { key } } } } as unknown as JobView));
-    const { proxies, submitted, views } = fakeService({ cache, onWait: done });
+    const { proxies, submitted, views } = fakeService({ cache, onWait: done, submit: (n) => ({ id: `j${n}`, state: "running" }) as JobView });
     await proxies.used("p1", ["a1"]);
     expect(submitted.map((s) => s.owner)).toEqual([MEDIA_SYSTEM_OWNER]);
-    // A consumer is told the first-use job is making it.
-    expect(await fail(proxies.ensure(OWNER, { projectId: "p1", asset: "a1" }))).toMatchObject({ code: "PROXY_UNAVAILABLE", details: { job: "j1" } });
+    // A consumer is told the proxy is being made, naming no job (the server's own, which it cannot see).
+    const e = await fail(proxies.ensure(OWNER, { projectId: "p1", asset: "a1" }));
+    expect(e).toMatchObject({ code: "PROXY_UNAVAILABLE", details: { asset: "a1", tier: "1080" } });
+    expect(e.details).not.toHaveProperty("job");
+    expect(e.fix).not.toContain("<job>");
     expect(await run(proxies.request(OWNER, { projectId: "p1", asset: "a1", tier: "1080", wait: false }))).toEqual({ asset: "a1", tier: "1080", codec: "av1", key, state: "making" });
     expect(await run(proxies.request(OWNER, { projectId: "p1", asset: "a1", tier: "1080" }))).toEqual({ asset: "a1", tier: "1080", codec: "av1", key, state: "ready", result: { key } });
     expect(submitted).toHaveLength(1);
+  });
+});
+
+describe("a request while a first-use proxy is still queued", () => {
+  test("takes it over: the caller's job runs at normal priority, for media.proxy and ensure", async () => {
+    const { proxies, submitted, views } = fakeService();
+    await proxies.used("p1", ["a1"]);
+    expect(views.get("j1")!.state).toBe("queued");
+    expect(await fail(proxies.ensure(OWNER, { projectId: "p1", asset: "a1" }))).toMatchObject({ code: "PROXY_UNAVAILABLE", details: { job: "j2" } });
+    expect(views.get("j1")!.state).toBe("failed");
+    expect(submitted.map((s) => [s.owner, s.req.priority])).toEqual([[MEDIA_SYSTEM_OWNER, undefined], [OWNER, "normal"]]);
+
+    const other = fakeService();
+    await other.proxies.used("p1", ["a1"]);
+    expect(await run(other.proxies.request(OWNER, { projectId: "p1", asset: "a1", tier: "1080", wait: false }))).toMatchObject({ state: "making", job: "j2" });
+    expect(other.submitted.map((s) => [s.owner, s.req.priority])).toEqual([[MEDIA_SYSTEM_OWNER, undefined], [OWNER, "normal"]]);
   });
 });

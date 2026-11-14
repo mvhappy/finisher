@@ -16,7 +16,7 @@ import { attempt, finError } from "../errors.ts";
 import type { JobEngine } from "../jobs/api.ts";
 import { MEDIA_WAVEFORM } from "../jobs/kinds/media.waveform.ts";
 import type { ProjectRegistryShape } from "../projects.ts";
-import { isMaking, systemJobs } from "./join.ts";
+import { isMaking, joinedView, systemJobs } from "./join.ts";
 import { PCM_WAIT_MS, type PcmService, endedWithout, errorOf } from "./pcm.ts";
 import { MEDIA_SYSTEM_OWNER } from "./proxy.ts";
 
@@ -46,7 +46,7 @@ export interface WaveAnswer {
 export interface WaveServiceDeps {
   readonly registry: Pick<ProjectRegistryShape, "ensure" | "resolveBranch">;
   readonly pcm: Pick<PcmService, "planFeed">;
-  readonly engine: Pick<JobEngine, "submit" | "wait" | "get">;
+  readonly engine: Pick<JobEngine, "submit" | "wait" | "get" | "failQueued">;
   readonly cache: () => MediaCache | undefined;
   readonly log?: (message: string) => void;
   /** How long one wait for the `pcm48` job lasts before it is waited for again (default `WAVE_WAIT_MS`). */
@@ -108,8 +108,9 @@ export function makeWaveService(deps: WaveServiceDeps): WaveService {
       if (yield* hit(p.key, req.projectId)) return { ...base, state: "ready", cached: true };
       const joined = yield* system.join(p.key, { wait: req.wait !== false, timeoutMs: WAVE_WAIT_MS, fix: "the waveform is still being made: ask for it again", inCache: hit(p.key, req.projectId) });
       if (isMaking(joined)) return { ...base, state: "making" };
-      if (joined !== undefined) {
-        const result = resultOf(joined, p.fingerprint);
+      const ready = joinedView(joined);
+      if (ready !== undefined) {
+        const result = resultOf(ready, p.fingerprint);
         return { ...base, state: "ready", ...(result === undefined ? {} : { result }) };
       }
       const job = yield* submit(owner, p, "normal");

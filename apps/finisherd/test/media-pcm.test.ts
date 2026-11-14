@@ -12,7 +12,7 @@ import type { EntryMeta, PcmParams, PcmResult } from "@finisher/core-types";
 import { Engine, MediaCache, mediaPcmPlan, mediaVersions, validateJobParams } from "@finisher/fin-node";
 import { Effect, Exit, Scope } from "effect";
 import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
-import { toFinError } from "../src/errors.ts";
+import { finError, toFinError } from "../src/errors.ts";
 import { makeKindRegistry } from "../src/jobs/kinds.ts";
 import { MEDIA_CAPABILITIES } from "../src/jobs/kinds/media.capabilities.ts";
 import { registerMediaKinds } from "../src/jobs/kinds/media.look.ts";
@@ -20,7 +20,7 @@ import { MEDIA_PCM, mediaPcmKind, pcmDedupe } from "../src/jobs/kinds/media.pcm.
 import type { StageFile, StageSpec } from "../src/library/api.ts";
 import type { MediaCacheService } from "../src/media/cache.ts";
 import { BATCH_MEMORY } from "../src/media/memory.ts";
-import { PCM16M_STAGE, audioAssetsOf, makePcmService, pcm16mStage } from "../src/media/pcm.ts";
+import { PCM16M_STAGE, PCM_WAIT_MS, audioAssetsOf, makePcmService, pcm16mStage } from "../src/media/pcm.ts";
 import { MEDIA_SYSTEM_OWNER } from "../src/media/proxy.ts";
 import { mediaWiring } from "../src/media/wiring.ts";
 import { makeProjectRegistry } from "../src/projects.ts";
@@ -449,6 +449,8 @@ describe("a client request while the first use makes the feed", () => {
     await pcm.used(pid);
     const jobs = () => t.engine.list({}).jobs.filter((j) => j.kind === MEDIA_PCM);
     expect(jobs().map((j) => j.owner)).toEqual([MEDIA_SYSTEM_OWNER]);
+    // A running job is joined (a queued one would be taken over at normal priority).
+    await until(() => jobs()[0]!.state === "running", 60_000);
     const key = plan("test-slow-join").key;
     // Still being made by the server's own job: no job of the caller's is submitted.
     expect(await run(pcm.request(OWNER, { projectId: pid, asset, wait: false }))).toEqual({ asset, recipe: "pcm48", key, state: "making" });
@@ -460,17 +462,19 @@ describe("a client request while the first use makes the feed", () => {
   }, 180_000);
 
   /** A PCM service over fakes: asset `a1` on an audio track; the server's job's state is `state()` when looked up. */
-  function faked(onGet: (id: string) => JobView["state"]) {
+  function faked(onGet: (id: string) => JobView["state"], over: { failQueued?: (id: string) => JobView["state"]; waitTimesOut?: boolean } = {}) {
     const p = plan("fp-f");
     const held = new Set<string>();
     const states = new Map<string, JobView["state"]>();
-    const submitted: Array<{ owner: unknown; id: string }> = [];
+    const submitted: Array<{ owner: unknown; id: string; priority?: string }> = [];
+    const failedQueued: string[] = [];
+    const after: Array<[string, string | undefined]> = [];
     const view = (id: string): JobView => ({ id, state: states.get(id), result: { items: { "fp-f": { key: p.key, frames: 48_000 } } } }) as unknown as JobView;
     const engine = {
-      submit: (owner: unknown) =>
+      submit: (owner: unknown, req: { priority?: string }) =>
         Effect.sync(() => {
           const id = `j${submitted.length + 1}`;
-          submitted.push({ owner, id });
+          submitted.push({ owner, id, ...(req.priority === undefined ? {} : { priority: req.priority }) });
           states.set(id, "queued");
           return view(id);
         }),
@@ -481,11 +485,19 @@ describe("a client request while the first use makes the feed", () => {
           if (s === "succeeded") held.add(p.key);
           return view(id);
         }),
-      // The caller's own job succeeds once waited for.
-      wait: (ids: string[]) =>
+      // A queued or running job succeeds once waited for.
+      wait: (ids: string[], o: { timeoutMs: number }) =>
+        over.waitTimesOut === true
+          ? Effect.fail(finError("WAIT_TIMEOUT", `the jobs did not finish within ${o.timeoutMs} ms`, { jobs: ids, timeoutMs: o.timeoutMs }, "the jobs keep running"))
+          : Effect.sync(() => {
+              if (states.get(ids[0]!) === "queued" || states.get(ids[0]!) === "running") (states.set(ids[0]!, "succeeded"), held.add(p.key));
+              return [view(ids[0]!)];
+            }),
+      failQueued: (id: string) =>
         Effect.sync(() => {
-          if (states.get(ids[0]!) === "queued") (states.set(ids[0]!, "succeeded"), held.add(p.key));
-          return [view(ids[0]!)];
+          failedQueued.push(id);
+          states.set(id, over.failQueued?.(id) ?? "failed");
+          return view(id);
         }),
     };
     const cache = { lookup: async (k: string) => (held.has(k) ? ({ key: k } as unknown) : null), serve: async () => undefined } as unknown as MediaCache;
@@ -494,8 +506,8 @@ describe("a client request while the first use makes the feed", () => {
       timelines: [{ tracks: [{ kind: "audio", items: [{ id: "i1", asset: "a1" }] }] }],
     };
     const registry = { ensure: () => Effect.void, resolveBranch: (_: string, b: string) => Effect.succeed(b), snapshot: () => Effect.succeed({ rev: 1, project }), dirOf: () => undefined };
-    const pcm = makePcmService({ registry: registry as never, engine: engine as never, cache: () => cache, probe: async () => "{}" });
-    return { pcm, submitted, key: p.key };
+    const pcm = makePcmService({ registry: registry as never, engine: engine as never, cache: () => cache, probe: async () => "{}", afterPcm48: (q, job) => void after.push([q.key, job]) });
+    return { pcm, submitted, failedQueued, after, key: p.key };
   }
 
   test("the background job ending between the cache lookup and the join: succeeded is the entry", async () => {
@@ -510,5 +522,32 @@ describe("a client request while the first use makes the feed", () => {
     await f.pcm.used("p1");
     expect(await run(f.pcm.request(OWNER, { projectId: "p1", asset: "a1" }))).toMatchObject({ key: f.key, state: "ready", job: "j2" });
     expect(f.submitted.map((s) => s.owner)).toEqual([MEDIA_SYSTEM_OWNER, OWNER]);
+  });
+
+  test("a background job still queued is taken over: the caller's job runs at normal, and the waveform follows it", async () => {
+    const f = faked(() => "queued");
+    await f.pcm.used("p1");
+    expect(await run(f.pcm.request(OWNER, { projectId: "p1", asset: "a1" }))).toMatchObject({ key: f.key, state: "ready", job: "j2" });
+    expect(f.failedQueued).toEqual(["j1"]);
+    expect(f.submitted).toEqual([{ owner: MEDIA_SYSTEM_OWNER, id: "j1" }, { owner: OWNER, id: "j2", priority: "normal" }]);
+    expect(f.after).toEqual([[f.key, "j1"], [f.key, "j2"]]);
+  });
+
+  test("a queued background job that starts before it is taken over is joined", async () => {
+    const f = faked(() => "queued", { failQueued: () => "running" });
+    await f.pcm.used("p1");
+    expect(await run(f.pcm.request(OWNER, { projectId: "p1", asset: "a1" }))).toMatchObject({ key: f.key, state: "ready", result: { frames: 48_000 } });
+    expect(f.submitted.map((s) => s.owner)).toEqual([MEDIA_SYSTEM_OWNER]);
+    expect(f.after).toEqual([[f.key, "j1"]]);
+  });
+
+  test("a joined job that outlasts the wait: WAIT_TIMEOUT naming no job, ask again", async () => {
+    const f = faked(() => "running", { waitTimesOut: true });
+    await f.pcm.used("p1");
+    const e = await Effect.runPromise(Effect.flip(f.pcm.request(OWNER, { projectId: "p1", asset: "a1" })));
+    expect(e).toMatchObject({ code: "WAIT_TIMEOUT", details: { timeoutMs: PCM_WAIT_MS }, fix: "the feed is still being made: ask for it again" });
+    expect(e.details).not.toHaveProperty("job");
+    expect(e.details).not.toHaveProperty("jobs");
+    expect(f.submitted).toHaveLength(1);
   });
 });

@@ -292,27 +292,49 @@ describe("after the pcm48 commit", () => {
 });
 
 describe("a request while the background waveform is being made", () => {
-  test("joins that job: no job of the caller's", async () => {
+  /** A waveform service over fakes whose background job is `state` once submitted. */
+  function faked(state: "queued" | "running") {
     const pcmPlanned = { ...pcmPlan("fp-j"), fingerprint: "fp-j", asset: "a1", projectId: "p1", branch: "main" } as unknown as Parameters<ReturnType<typeof makeWaveService>["afterPcm48"]>[0];
     const w = wavePlan("fp-j");
     const held = new Set([pcmPlanned.key]);
     const states = new Map<string, string>();
-    const submitted: Array<{ owner: unknown; params: WaveParams }> = [];
+    const submitted: Array<{ owner: unknown; params: WaveParams; priority?: string }> = [];
+    const failedQueued: string[] = [];
     const view = (id: string) => ({ id, state: states.get(id), result: { items: { "fp-j": { key: w.key, levels: 5 } } } }) as unknown as JobView;
     const engine = {
-      submit: (owner: unknown, req: { params: WaveParams }) => Effect.sync(() => (submitted.push({ owner, params: req.params }), states.set(`w${submitted.length}`, "queued"), view(`w${submitted.length}`))),
+      submit: (owner: unknown, req: { params: WaveParams; priority?: string }) =>
+        Effect.sync(() => {
+          submitted.push({ owner, params: req.params, ...(req.priority === undefined ? {} : { priority: req.priority }) });
+          states.set(`w${submitted.length}`, submitted.length === 1 ? state : "queued");
+          return view(`w${submitted.length}`);
+        }),
       get: (id: string) => Effect.sync(() => view(id)),
-      // The background job commits its entry and succeeds while the request waits.
+      failQueued: (id: string) => Effect.sync(() => (failedQueued.push(id), states.get(id) === "queued" && states.set(id, "failed"), view(id))),
+      // The job waited for commits its entry and succeeds.
       wait: (ids: string[]) => Effect.sync(() => (states.set(ids[0]!, "succeeded"), held.add(w.key), [view(ids[0]!)])),
     };
     const cache = { lookup: async (k: string) => (held.has(k) ? ({ key: k } as unknown) : null), serve: async () => undefined } as unknown as MediaCache;
     const registry = { ensure: () => Effect.void, resolveBranch: (_: string, b: string) => Effect.succeed(b) };
     const wave = makeWaveService({ registry: registry as never, pcm: { planFeed: () => Effect.succeed(pcmPlanned as never) }, engine: engine as never, cache: () => cache });
+    return { wave, submitted, failedQueued, pcmPlanned, w };
+  }
+
+  test("joins a running job: no job of the caller's", async () => {
+    const { wave, submitted, pcmPlanned, w } = faked("running");
     wave.afterPcm48(pcmPlanned);
     await vi.waitFor(() => expect(submitted).toHaveLength(1), { timeout: 10_000 });
     expect(submitted[0]!.owner).toEqual({ kind: "system", id: "media" });
     expect(await run(wave.request(OWNER, { projectId: "p1", asset: "a1", wait: false }))).toEqual({ asset: "a1", key: w.key, levels: w.levels, state: "making" });
     expect(await run(wave.request(OWNER, { projectId: "p1", asset: "a1" }))).toMatchObject({ key: w.key, state: "ready", result: { levels: 5 } });
     expect(submitted).toHaveLength(1);
+  });
+
+  test("takes a queued one over: the caller's job runs at normal priority", async () => {
+    const { wave, submitted, failedQueued, pcmPlanned, w } = faked("queued");
+    wave.afterPcm48(pcmPlanned);
+    await vi.waitFor(() => expect(submitted).toHaveLength(1), { timeout: 10_000 });
+    expect(await run(wave.request(OWNER, { projectId: "p1", asset: "a1" }))).toMatchObject({ key: w.key, state: "ready", job: "w2" });
+    expect(failedQueued).toEqual(["w1"]);
+    expect(submitted.map((s) => [s.owner, s.priority])).toEqual([[{ kind: "system", id: "media" }, undefined], [OWNER, "normal"]]);
   });
 });

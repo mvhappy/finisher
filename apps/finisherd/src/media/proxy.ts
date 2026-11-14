@@ -32,7 +32,7 @@ import type { JobEngine } from "../jobs/api.ts";
 import { MEDIA_PROXY, decodersOf, proxyCodec } from "../jobs/kinds/media.proxy.ts";
 import type { ProjectRegistryShape } from "../projects.ts";
 import type { CapabilitiesCache } from "./caps.ts";
-import { isMaking, systemJobs } from "./join.ts";
+import { isMaking, joinedView, systemJobs } from "./join.ts";
 import type { PcmService } from "./pcm.ts";
 import type { ThumbsService } from "./thumbs.ts";
 import type { WaveService } from "./wave.ts";
@@ -71,7 +71,7 @@ export interface ProxyAnswer {
 
 export interface ProxyServiceDeps {
   readonly registry: Pick<ProjectRegistryShape, "ensure" | "snapshot" | "resolveBranch" | "dirOf">;
-  readonly engine: Pick<JobEngine, "submit" | "wait" | "get">;
+  readonly engine: Pick<JobEngine, "submit" | "wait" | "get" | "failQueued">;
   /** The cached `media.capabilities` answer (`media/caps.ts`). */
   readonly capabilities: (owner: JobOwner) => Effect.Effect<unknown, FinError>;
   readonly cache: () => MediaCache | undefined;
@@ -153,8 +153,10 @@ interface Planned {
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
 /** `PROXY_UNAVAILABLE`: the proxy is being made (exit 5). */
-export function proxyUnavailable(asset: string, tier: ProxyTier, job: string): FinError {
-  return finError("PROXY_UNAVAILABLE", `the ${tier} proxy of asset ${asset} is being made`, { asset, tier, job }, "wait for the job, then ask again (fin job wait <job>)");
+export function proxyUnavailable(asset: string, tier: ProxyTier, job?: string): FinError {
+  return job === undefined
+    ? finError("PROXY_UNAVAILABLE", `the ${tier} proxy of asset ${asset} is being made`, { asset, tier }, "the server is making it: ask again shortly")
+    : finError("PROXY_UNAVAILABLE", `the ${tier} proxy of asset ${asset} is being made`, { asset, tier, job }, "wait for the job, then ask again (fin job wait <job>)");
 }
 
 function errorOf(job: JobView): FinError {
@@ -352,8 +354,9 @@ export function makeProxyService(deps: ProxyServiceDeps): ProxyService {
       if ((yield* hit(planned.key, req.projectId)) !== undefined) return { ...base, state: "ready", cached: true };
       const joined = yield* system.join(planned.key, { wait: req.wait !== false, timeoutMs: PROXY_WAIT_MS, fix: "the proxy is still being made: fin media status <asset>", inCache: inCache(planned.key, req.projectId) });
       if (isMaking(joined)) return { ...base, state: "making" };
-      if (joined !== undefined) {
-        const result = resultOf(joined, src.fingerprint);
+      const ready = joinedView(joined);
+      if (ready !== undefined) {
+        const result = resultOf(ready, src.fingerprint);
         return { ...base, state: "ready", ...(result === undefined ? {} : { result }) };
       }
       const job = yield* submit(owner, planned, "normal");
@@ -410,11 +413,11 @@ export function makeProxyService(deps: ProxyServiceDeps): ProxyService {
       if (meta !== undefined) return meta;
       const known = yield* rememberedFailure(planned.key);
       if (known !== undefined) return yield* Effect.fail(known);
-      // The job making it: a first-use one (its id: `ensure` serves consumers in the server), else
+      // The job making it: a running first-use one (named by no id: the caller cannot see it), else
       // the caller's (dedupe answers the running one; an ended one fails with its error).
       const joined = yield* system.join(planned.key, { wait: false, timeoutMs: 0, fix: "", inCache: inCache(planned.key, req.projectId) });
-      if (isMaking(joined)) return yield* Effect.fail(proxyUnavailable(req.asset, tier, joined.making));
-      if (joined !== undefined) {
+      if (isMaking(joined)) return yield* Effect.fail(proxyUnavailable(req.asset, tier));
+      if (joinedView(joined) !== undefined) {
         const meta = yield* hit(planned.key, req.projectId);
         if (meta !== undefined) return meta;
       }

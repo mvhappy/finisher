@@ -8,7 +8,8 @@
 //!   exit 5). Answers `{asset, tier, codec, key, state, cached?, job?, result?}`: a cache hit at
 //!   once (`state: ready, cached: true`); otherwise the server waits up to 10 minutes for the job
 //!   (`result` is its `ProxyResult`), or with `--no-wait` answers `state: making` and the `job`.
-//!   A waiting call is a long call (as `fin job wait`): its own connection, timed at the server's
+//!   The `job` is absent when the server's own background job is making the proxy (ask again to
+//!   see it ready). A waiting call is a long call (as `fin job wait`): its own connection, timed at the server's
 //!   wait plus [`WAIT_SLACK`], outside the overall deadline.
 //! - `status`: `{asset, fingerprint, tiers: [{tier, state, key?, codec?, job?, code?}]}`, `state`
 //!   one of `ready`, `making`, `failed`, `none`.

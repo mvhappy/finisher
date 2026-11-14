@@ -4,8 +4,9 @@
 //! feed). `fin` links no media crate: it sends the request and prints the answer,
 //! `{asset, recipe, key, state, cached?, job?, result?}`: a cache hit at once (`state: ready,
 //! cached: true`); otherwise the server waits up to 10 minutes for the job (`result` is its
-//! `PcmResult`), or with `--no-wait` answers `state: making` and the `job`. A waiting call is a
-//! long call, as `fin media proxy`'s.
+//! `PcmResult`), or with `--no-wait` answers `state: making` and the `job`. The `job` is absent
+//! when the server's own background job is making the entry (ask again to see it ready). A
+//! waiting call is a long call, as `fin media proxy`'s.
 
 use std::time::Duration;
 

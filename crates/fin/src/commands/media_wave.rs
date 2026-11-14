@@ -5,7 +5,8 @@
 //! `levels` are the samples per peak of each level and `key` the cache entry; a cache hit answers
 //! at once (`state: ready, cached: true`); otherwise the server waits up to 10 minutes for the
 //! job (`result` is its `WaveResult`), or with `--no-wait` answers `state: making` and the `job`.
-//! A waiting call is a long call, as `fin media pcm`'s.
+//! The `job` is absent when the server's own background job is making the entry (ask again to
+//! see it ready). A waiting call is a long call, as `fin media pcm`'s.
 
 use std::time::Duration;
 
