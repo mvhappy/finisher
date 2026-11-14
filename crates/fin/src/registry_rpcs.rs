@@ -224,6 +224,11 @@ pub const ROWS: &[Row] = &[
             "tileHeight"
         ]
     ),
+    row!(
+        "media.pcm",
+        rpc!("media.pcm"),
+        &["projectId", "branch", "asset", "recipe"]
+    ),
     row!("fonts.ls", rpc!("fonts.catalog"), NONE),
     row!(
         "fonts.fetch",

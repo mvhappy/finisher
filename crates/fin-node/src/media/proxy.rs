@@ -63,8 +63,9 @@ pub fn media_proxy_plan(request_json: String) -> Result<String> {
     encode(&plan(&req).map_err(reject)?)
 }
 
-/// `{renderVersion, recipes: {<name>: <version>}}` JSON: this build's `RENDER_VERSION` and cache
-/// recipes (a library stage's version is made of them, 6B-1 Task 14).
+/// `{renderVersion, audioVersion, recipes: {<name>: <version>}}` JSON: this build's
+/// `RENDER_VERSION`, `AUDIO_VERSION` (6C Task 18) and cache recipes (a library stage's version is
+/// made of them, 6B-1 Task 14).
 #[napi(catch_unwind)]
 pub fn media_versions() -> Result<String> {
     let recipes: serde_json::Map<String, serde_json::Value> = fin_media::cache::RECIPES
@@ -73,6 +74,7 @@ pub fn media_versions() -> Result<String> {
         .collect();
     encode(&serde_json::json!({
         "renderVersion": fin_media::RENDER_VERSION,
+        "audioVersion": fin_media::AUDIO_VERSION,
         "recipes": recipes,
     }))
 }

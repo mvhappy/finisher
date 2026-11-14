@@ -46,7 +46,17 @@ fn meta(files: &[(&str, &[u8])]) -> EntryMeta {
 #[test]
 fn recipes_are_named_and_versioned() {
     let names: Vec<&str> = RECIPES.iter().map(|r| r.name).collect();
-    assert_eq!(names, ["proxy-540", "proxy-1080", "thumbs", "strip"]);
+    assert_eq!(
+        names,
+        [
+            "proxy-540",
+            "proxy-1080",
+            "thumbs",
+            "strip",
+            "pcm48",
+            "pcm16m"
+        ]
+    );
     assert_eq!(recipe("proxy-540"), Some(PROXY_540));
     assert_eq!(recipe("thumbs"), Some(THUMBS));
     assert_eq!(recipe("strip"), Some(STRIP));

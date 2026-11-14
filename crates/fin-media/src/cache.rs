@@ -69,8 +69,19 @@ pub const STRIP: Recipe = Recipe {
     version: 1,
 };
 
+/// 48 kHz `f32` in the source's canonical layout (6C plan Decision 7; `jobs::pcm`).
+pub const PCM48: Recipe = Recipe {
+    name: "pcm48",
+    version: 1,
+};
+/// 16 kHz `f32` mono, the analysis feed (6C plan Decision 7; `jobs::pcm`).
+pub const PCM16M: Recipe = Recipe {
+    name: "pcm16m",
+    version: 1,
+};
+
 /// Every recipe this build makes.
-pub const RECIPES: &[Recipe] = &[PROXY_540, PROXY_1080, THUMBS, STRIP];
+pub const RECIPES: &[Recipe] = &[PROXY_540, PROXY_1080, THUMBS, STRIP, PCM48, PCM16M];
 
 /// The recipe of this build named `name`.
 pub fn recipe(name: &str) -> Option<Recipe> {
@@ -216,6 +227,9 @@ pub struct EntryFile {
     /// BLAKE3 of the file, 64 lower-case hex digits.
     pub blake3: String,
 }
+
+/// The largest `meta.json` the cache reads (fin-node's `adopt::META_CAP`).
+pub const MAX_META_BYTES: u64 = 1 << 20;
 
 /// The most files one entry may list (a filmstrip of a long source has one sprite per 10 s).
 pub const MAX_ENTRY_FILES: usize = 10_000;

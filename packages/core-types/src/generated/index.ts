@@ -2421,6 +2421,20 @@ export type ParamType =
       type: "assetRef";
     };
 /**
+ * A feed's channels: one, or two interleaved `L R`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PcmLayout".
+ */
+export type PcmLayout = "mono" | "stereo";
+/**
+ * Which PCM feed (Decision 7).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PcmRecipe".
+ */
+export type PcmRecipe = "pcm48" | "pcm16m";
+/**
  * A cloud placeholder (Decision 12): catalogued from metadata only, never opened unless the
  * library has `hydrate`.
  *
@@ -8472,6 +8486,105 @@ export interface ParamSpec {
   unit?: string | null;
 }
 /**
+ * The backend that decoded the source, and its class.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PcmDecoder".
+ */
+export interface PcmDecoder {
+  backend: string;
+  class: VendorClass;
+}
+/**
+ * `media.pcm` v1: the `recipe` feed of the source whose content is `fingerprint`, which the
+ * cache knows as `key`. A batch kind of one item, the fingerprint.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PcmParams".
+ */
+export interface PcmParams {
+  /**
+   * A project asset, through the job's `in/manifest.json`.
+   */
+  asset?: string;
+  /**
+   * The branch whose head names the asset (`main` when absent). Host only.
+   */
+  branch?: string;
+  /**
+   * The vendor class the host expects the source's decoder to have (part of the key).
+   */
+  decoderClass: VendorClass;
+  /**
+   * A library file (the `pcm16m` stage).
+   */
+  file?: ProxyLibraryFile;
+  fingerprint: string;
+  /**
+   * [`pcm_key`] of the fields above: the worker writes `out/<key>/`.
+   */
+  key: string;
+  /**
+   * The layout the host planned (part of the key).
+   */
+  layout: PcmLayout;
+  /**
+   * The project that asked (host only, as `ProxyParams`).
+   */
+  projectId?: string;
+  recipe: PcmRecipe;
+}
+/**
+ * A library file the `proxy540` stage hands the worker (5D Decision 39): the library's
+ * canonical root, the file's raw chain below it and the `Expect` the opener checks, in
+ * `fin-library`'s wire forms (`RawRel`, `Expect`), which the worker decodes.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProxyLibraryFile".
+ */
+export interface ProxyLibraryFile {
+  /**
+   * `fin-library`'s `Expect`: `{size, mtimeNs, fileId?, dev?}`.
+   */
+  expect: unknown;
+  /**
+   * The library hydrates cloud-only files when read.
+   */
+  hydrate?: boolean;
+  library: string;
+  /**
+   * `fin-library`'s `RawRel`: `{components: [<base64>]}`.
+   */
+  rel: unknown;
+  /**
+   * The library's canonical root (absolute).
+   */
+  root: string;
+}
+/**
+ * What `media.pcm` v1 answers for its item (the fingerprint).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PcmResult".
+ */
+export interface PcmResult {
+  /**
+   * The entry's bytes (its chunks, `meta.json` not included).
+   */
+  bytes: number;
+  chunks: number;
+  decoder: PcmDecoder;
+  /**
+   * Frames at the feed's rate.
+   */
+  frames: number;
+  key: string;
+  layout: PcmLayout;
+  recipe: PcmRecipe;
+  sourceChannels: number;
+  sourceRate: number;
+}
+/**
  * One command as `plugin.commands` lists it.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -8977,33 +9090,6 @@ export interface ProxyFallback {
    */
   reason: string;
   to: string;
-}
-/**
- * A library file the `proxy540` stage hands the worker (5D Decision 39): the library's
- * canonical root, the file's raw chain below it and the `Expect` the opener checks, in
- * `fin-library`'s wire forms (`RawRel`, `Expect`), which the worker decodes.
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "ProxyLibraryFile".
- */
-export interface ProxyLibraryFile {
-  /**
-   * `fin-library`'s `Expect`: `{size, mtimeNs, fileId?, dev?}`.
-   */
-  expect: unknown;
-  /**
-   * The library hydrates cloud-only files when read.
-   */
-  hydrate?: boolean;
-  library: string;
-  /**
-   * `fin-library`'s `RawRel`: `{components: [<base64>]}`.
-   */
-  rel: unknown;
-  /**
-   * The library's canonical root (absolute).
-   */
-  root: string;
 }
 /**
  * `media.proxy` v1: a proxy of the source whose content is `fingerprint`, at `tier`, in

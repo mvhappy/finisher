@@ -118,6 +118,9 @@ fn main() {
         g.subschema_for::<fin_media::jobs::ThumbsPlan>();
         // The audio backend table (6C Task 12).
         g.subschema_for::<fin_media::backend_audio::AudioBackendEntry>();
+        // `media.pcm` (6C Task 18): params and an item's value.
+        g.subschema_for::<fin_media::jobs::PcmParams>();
+        g.subschema_for::<fin_media::jobs::PcmResult>();
         g.subschema_for::<fin_library::RawRel>();
         g.subschema_for::<fin_library::Expect>();
         g.subschema_for::<fin_library::ScanEntry>();

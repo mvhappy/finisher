@@ -14,6 +14,7 @@ export {
 export { kindNames, kindVersion, validatePrivacy } from "./events.js";
 export { MEDIA_READ_MAX, MediaCache } from "./media-cache.js";
 export { mediaThumbsPlan } from "./media-thumbs.js";
+export { mediaPcmPlan } from "./media-pcm.js";
 export { PipeServer } from "./pipe.js";
 export { decodePluginCall, permissionRisks, PluginCommandArgs, pluginCommandOutcome, pluginProjectView } from "./plugin-calls.js";
 export { checkServerDataLocal, serverId } from "./server-data.js";

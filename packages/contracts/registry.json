@@ -1618,6 +1618,23 @@
     },
     {
       "argKinds": {},
+      "group": "media",
+      "identity": [
+        "projectId",
+        "branch",
+        "asset",
+        "recipe"
+      ],
+      "name": "media.pcm",
+      "rpcs": [
+        {
+          "method": "media.pcm"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
       "group": "fonts",
       "identity": [],
       "name": "fonts.ls",

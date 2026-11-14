@@ -31,6 +31,7 @@ import type { JobEngine } from "../jobs/api.ts";
 import { MEDIA_PROXY, decodersOf, proxyCodec } from "../jobs/kinds/media.proxy.ts";
 import type { ProjectRegistryShape } from "../projects.ts";
 import type { CapabilitiesCache } from "./caps.ts";
+import type { PcmService } from "./pcm.ts";
 import type { ThumbsService } from "./thumbs.ts";
 
 /** How long `media.proxy` waits for its job. */
@@ -172,7 +173,7 @@ export const CONTENT_FAILURES: ReadonlySet<string> = new Set([
 const endedWithout = (job: JobView): boolean => !MAKING.has(job.state) && job.state !== "succeeded";
 
 /** The server's capability cache and proxy service, for the handlers (absent in handler tests built without them). */
-export class MediaProxyTag extends Context.Service<MediaProxyTag, { readonly capabilities: CapabilitiesCache; readonly proxies: ProxyService; readonly thumbs?: ThumbsService }>()("finisherd/MediaProxy") {}
+export class MediaProxyTag extends Context.Service<MediaProxyTag, { readonly capabilities: CapabilitiesCache; readonly proxies: ProxyService; readonly thumbs?: ThumbsService; readonly pcm?: PcmService }>()("finisherd/MediaProxy") {}
 
 /**
  * `e` with the absolute `path` of asset `asset`'s file kept out of it (Task 15's review): fin-node's
