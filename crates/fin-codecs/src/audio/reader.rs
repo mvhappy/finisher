@@ -28,7 +28,8 @@ use super::mp4;
 use super::registry::{open_audio_decoder, symphonia_decodes};
 use super::sniff::{Kind, mp3_exact, ogg_end, sniff, wave_layout};
 use super::symphonia::{BACKEND, SymphoniaDecoder, codec_of, error, guarded};
-use super::traits::{AudioConfig, AudioDecoder, DecodedAudio};
+use super::traits::{AudioConfig, AudioDecoder, DecodedAudio, SymphoniaParams};
+use super::trim::Trim;
 use crate::traits::BackendId;
 
 /// What a read may cost (spec §6.1 for the container; the audio bounds of Task 12).
@@ -97,34 +98,13 @@ enum Packets {
         track: u32,
         dec: SymphoniaDecoder,
     },
-}
-
-/// Drops `skip` frames from the start, then passes at most `left` frames (the presented
-/// length, when the container states it exactly) and drops the rest: padding is never held.
-#[derive(Debug, Default)]
-struct Trim {
-    skip: u64,
-    left: Option<u64>,
-}
-
-impl Trim {
-    fn push(&mut self, pcm: &[f32], channels: usize) -> Vec<f32> {
-        let frames = (pcm.len() / channels) as u64;
-        let drop = self.skip.min(frames);
-        self.skip -= drop;
-        let mut take = frames - drop;
-        if let Some(left) = &mut self.left {
-            take = take.min(*left);
-            *left -= take;
-        }
-        let from = drop as usize * channels;
-        pcm[from..from + take as usize * channels].to_vec()
-    }
-
-    /// Everything presented has been passed.
-    fn done(&self) -> bool {
-        self.left == Some(0)
-    }
+    /// One of symphonia's format readers feeding another backend (Ogg Opus to libopus): the
+    /// reader applies each packet's start and end trim (the last granule's cut) itself.
+    Trimmed {
+        format: Box<dyn FormatReader>,
+        track: u32,
+        dec: Box<dyn AudioDecoder>,
+    },
 }
 
 pub struct AudioReader {
@@ -327,24 +307,47 @@ impl AudioReader {
             priming: track.delay.unwrap_or(0),
             padding: track.padding.unwrap_or(0),
         };
-        let (id, declared) = (track.id, track.num_frames);
+        let (id, mut declared) = (track.id, track.num_frames);
         check_bounds(&info, declared, limits)?;
-        symphonia_decodes(info.codec)?;
-        let dec = SymphoniaDecoder::open(params)?;
+        let (packets, trim) = if codec == AudioCodec::Opus {
+            // libopus does not trim: the pre-skip goes here, the end with each packet's trim.
+            let config = AudioConfig::Symphonia(SymphoniaParams(params.clone()));
+            let dec = open_audio_decoder(&info, &config)?;
+            let skip = info.priming as u64;
+            // Ogg's stated length counts the pre-skip (the last granule position).
+            declared = declared.map(|n| n.saturating_sub(skip));
+            let p = Packets::Trimmed {
+                format,
+                track: id,
+                dec,
+            };
+            (
+                p,
+                Trim {
+                    skip,
+                    ..Trim::default()
+                },
+            )
+        } else {
+            symphonia_decodes(info.codec)?;
+            let dec = SymphoniaDecoder::open(params)?;
+            let p = Packets::Symphonia {
+                format,
+                track: id,
+                dec,
+            };
+            (p, Trim::default())
+        };
         Ok(AudioReader {
             layout: layout.filter(|l| l.channels() == info.channels as usize),
             info,
             kind,
-            packets: Packets::Symphonia {
-                format,
-                track: id,
-                dec,
-            },
+            packets,
             declared,
             exact: false,
             decoded: 0,
             max_frames: 0,
-            trim: Trim::default(),
+            trim,
             out: 0,
             ended: false,
         })
@@ -371,7 +374,7 @@ impl AudioReader {
     /// The backend that decodes (Decision 24's name).
     pub fn backend(&self) -> BackendId {
         match &self.packets {
-            Packets::Mp4 { dec, .. } => dec.backend(),
+            Packets::Mp4 { dec, .. } | Packets::Trimmed { dec, .. } => dec.backend(),
             Packets::Symphonia { .. } => BACKEND,
         }
     }
@@ -441,6 +444,29 @@ impl AudioReader {
                     dec.decode(&packet)?;
                     if let Some(d) = dec.receive()? {
                         return Ok(Some(d));
+                    }
+                }
+                Packets::Trimmed { format, track, dec } => {
+                    let packet = guarded("reading the container", || {
+                        format.next_packet().map_err(|e| error(e, true))
+                    })?;
+                    let Some(packet) = packet else {
+                        return Ok(None);
+                    };
+                    if packet.track_id != *track {
+                        continue;
+                    }
+                    dec.send(&packet.data, packet.pts.get())?;
+                    while let Some(mut d) = dec.receive()? {
+                        let n = d.layout.channels().max(1);
+                        let frames = d.interleaved.len() / n;
+                        let start = (packet.trim_start.get() as usize).min(frames);
+                        let end = frames - (packet.trim_end.get() as usize).min(frames - start);
+                        d.interleaved.truncate(end * n);
+                        d.interleaved.drain(..start * n);
+                        if !d.interleaved.is_empty() {
+                            return Ok(Some(d));
+                        }
                     }
                 }
             }
@@ -538,24 +564,4 @@ fn check_bounds(
         ));
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::Trim;
-
-    #[test]
-    fn trim_skips_priming_and_stops_at_the_presented_length() {
-        let mut t = Trim {
-            skip: 3,
-            left: Some(5),
-        };
-        let pcm: Vec<f32> = (0..10).map(|i| i as f32).collect();
-        // Mono: frames 0..10 in chunks of 4, 4, 2.
-        let mut out = t.push(&pcm[..4], 1);
-        out.extend(t.push(&pcm[4..8], 1));
-        out.extend(t.push(&pcm[8..], 1));
-        assert_eq!(out, vec![3.0, 4.0, 5.0, 6.0, 7.0]);
-        assert!(t.done());
-    }
 }

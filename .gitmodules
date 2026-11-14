@@ -6,3 +6,7 @@
 	path = third_party/dav1d
 	url = https://github.com/videolan/dav1d.git
 	shallow = true
+[submodule "third_party/opus"]
+	path = third_party/opus
+	url = https://github.com/xiph/opus.git
+	shallow = true

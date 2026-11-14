@@ -6,7 +6,8 @@ members = ["crates/*", "examples/plugins/rust-tools"]
 # (`scripts/check-test-hooks.mjs`). Build the harness alone: `cargo build -p fin-store-xhost`.
 # The codecs (`fin-codecs`, `fin-svt-sys`, `fin-dav1d-sys`) are members since 6A-2's media
 # worker links them: their SVT-AV1 and dav1d builds need cmake, nasm on x86_64 and the
-# `third_party/svt-av1` and `third_party/dav1d` submodules. `fin-codecs`' own fixtures:
+# `third_party/svt-av1`, `third_party/dav1d` and `third_party/opus` submodules (6C adds
+# `fin-opus-sys`, libopus built with cc). `fin-codecs`' own fixtures:
 # `cargo test -p fin-codecs --features testing`.
 # The plugin SDK, its harness and the example plugins (sub-project 8B) are members outside the
 # defaults, like `fin-plugin-cli`: plugin authors' tooling, not part of the app; `--workspace`
@@ -28,6 +29,7 @@ default-members = [
     "crates/fin-library",
     "crates/fin-media",
     "crates/fin-node",
+    "crates/fin-opus-sys",
     "crates/fin-plugin-api",
     "crates/fin-probe",
     "crates/fin-registry",

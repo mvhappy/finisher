@@ -471,6 +471,7 @@ fn audio_priming_edit_list_and_two_tracks() {
             sample_rate: 48_000,
             channels: 2,
             priming: 312,
+            presented: None,
         })
         .unwrap();
     for i in 0..60u32 {
@@ -495,11 +496,10 @@ fn audio_priming_edit_list_and_two_tracks() {
     assert_eq!(opus.dops.pre_skip, 312);
     let elst = audio.edts.as_ref().unwrap().elst.as_ref().unwrap();
     assert_eq!(elst.entries[0].media_time, Some(312));
-    // Movie timescale is the video's: 120 × 960 − 312 samples at 48 kHz in 1/30000 s.
-    assert_eq!(
-        elst.entries[0].segment_duration,
-        ((120 * 960 - 312) as u64 * 30_000 + 24_000) / 48_000
-    );
+    // With audio the movie timescale is lcm(48000, 30000) = 240000 (6C plan Decision 22), so
+    // 120 × 960 − 312 samples are exact.
+    assert_eq!(moov.mvhd.timescale, 240_000);
+    assert_eq!(elst.entries[0].segment_duration, (120 * 960 - 312) * 5);
     assert!(
         audio.mdia.minf.stbl.stss.is_none(),
         "all audio samples are sync samples"

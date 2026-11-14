@@ -12,6 +12,8 @@ use fin_media::{AudioCodec, AudioTrackInfo};
 use serde_json::json;
 use symphonia::core::codecs::audio::AudioCodecParameters;
 
+use super::opus::{LibOpus, OpusDecoder};
+use super::opus_head::OpusHeader;
 use super::symphonia::{SymphoniaDecoder, channels_for, id_of};
 use super::traits::{AudioConfig, AudioDecoder, AudioEncoder, AudioEncoderConfig};
 use crate::registry::unavailable;
@@ -31,7 +33,7 @@ pub(crate) trait AudioEncoderBackend: Send + Sync {
 }
 
 /// The audio encoders, in preference order (OS before software, as for video).
-static ENCODERS: &[&dyn AudioEncoderBackend] = &[];
+static ENCODERS: &[&dyn AudioEncoderBackend] = &[&LibOpus];
 
 pub(crate) fn codec_name(codec: AudioCodec) -> String {
     serde_json::to_value(codec)
@@ -57,13 +59,25 @@ pub(crate) fn symphonia_decodes(codec: AudioCodec) -> Result<(), CoreError> {
     }
 }
 
-/// A decoder for a track: symphonia for the codecs its table row lists (from symphonia's own
-/// parameters, or for MP3 in MP4 from the track's rate and channels); `CODEC_UNAVAILABLE`
-/// otherwise (AAC and Opus arrive with Tasks 13–16).
+/// A decoder for a track: libopus for Opus (from the MP4 `dOps` or the Ogg `OpusHead`);
+/// symphonia for the codecs its table row lists (from symphonia's own parameters, or for MP3
+/// in MP4 from the track's rate and channels); `CODEC_UNAVAILABLE` otherwise (AAC arrives
+/// with Tasks 14–16).
 pub fn open_audio_decoder(
     info: &AudioTrackInfo,
     config: &AudioConfig,
 ) -> Result<Box<dyn AudioDecoder>, CoreError> {
+    if info.codec == AudioCodec::Opus {
+        let header = match config {
+            AudioConfig::Record(CodecConfig::Opus { dops }) => OpusHeader::from_dops(dops)?,
+            AudioConfig::Symphonia(p) => match p.0.extra_data.as_deref() {
+                Some(head) => OpusHeader::from_opus_head(head)?,
+                None => return Err(needs_config(info.codec)),
+            },
+            AudioConfig::Record(_) => return Err(needs_config(info.codec)),
+        };
+        return Ok(Box::new(OpusDecoder::open(&header)?));
+    }
     symphonia_decodes(info.codec)?;
     match config {
         AudioConfig::Symphonia(p) => Ok(Box::new(SymphoniaDecoder::open(&p.0)?)),
@@ -199,10 +213,13 @@ mod tests {
     }
 
     #[test]
-    fn no_audio_encoder_is_built_yet() {
+    fn libopus_is_the_opus_encoder() {
         let e = open_audio_encoder(&cfg(AudioCodec::Opus), EncodePurpose::Proxy)
+            .expect("libopus encodes Opus");
+        assert_eq!(e.frame_size(), 960);
+        let e = open_audio_encoder(&cfg(AudioCodec::Mp3), EncodePurpose::Proxy)
             .err()
-            .expect("Task 13 adds libopus");
+            .expect("nothing encodes MP3");
         assert_eq!(e.code, "CODEC_UNAVAILABLE");
     }
 }

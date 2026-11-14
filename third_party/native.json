@@ -35,6 +35,19 @@
       "note": "the decoder library only (static, 8- and 16-bit, no tools), compiled by crates/fin-dav1d-sys/build.rs with cc (no meson): BSD-2-Clause (VideoLAN and dav1d authors, Two Orioles, Martin Storsjo, Janne Grunau, The rav1e contributors and others, all with the COPYING text), ISC (x264's x86inc.asm, %included by the x86_64 assembly); the hashed files carry those texts (THIRD_PARTY_NOTICES.md has them in full). crates/fin-dav1d-sys/csrc/dav1d_shim.c is Finisher's own (MIT)"
     },
     {
+      "name": "libopus",
+      "package": "fin-opus-sys",
+      "path": "third_party/opus",
+      "tag": "v1.6.1",
+      "commit": "22244de5a79bd1d6d623c32e72bf1954b56235be",
+      "license": "BSD-3-Clause",
+      "patents": "IETF-Opus-Royalty-Free",
+      "files": {
+        "COPYING": "db46786fe51dc83be258d8e8d7fdd761c309ade5884d1c962511a1b5886d7822"
+      },
+      "note": "the codec library only (float, static; celt_sources.mk CELT_SOURCES, silk_sources.mk SILK_SOURCES + SILK_SOURCES_FLOAT, opus_sources.mk OPUS_SOURCES + OPUS_SOURCES_FLOAT), compiled by crates/fin-opus-sys/build.rs with cc (no meson, cmake or autotools): no dnn/ or lpcnet sources (deep PLC, DRED and OSCE off), no SSE/AVX/NEON intrinsics or assembly files, no run-time CPU detection. BSD-3-Clause (Xiph.Org, Skype Limited, Octasic, Jean-Marc Valin, Timothy B. Terriberry, CSIRO, Gregory Maxwell, Mark Borgerding, Erik de Castro Lopo, Mozilla, Amazon; the COPYING text, which also points to the royalty-free IETF patent licences of Xiph.Org, Microsoft and Broadcom). crates/fin-opus-sys/shim/fin_opus_shim.c is Finisher's own (MIT)"
+    },
+    {
       "name": "SQLite",
       "package": "libsqlite3-sys",
       "version": "0.39",
@@ -83,6 +96,7 @@
   ],
   "patentLicences": [
     "AOMedia-Patent-License-1.0",
-    "WebM-Patent-Grant"
+    "WebM-Patent-Grant",
+    "IETF-Opus-Royalty-Free"
   ]
 }

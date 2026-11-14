@@ -2,7 +2,8 @@
 //! backend (dav1d decode, SVT-AV1 encode) in 6A, platform backends from 6B, backend choice
 //! under the encoder policy (`registry`), encoder sessions with `ENCODER_HUNG` (`hung`), the
 //! capability probe and `FrameReader` (random access by presentation index). Linked only by
-//! `fin-workers`. `unsafe` lives only in `av1/dav1d_ffi.rs` and `av1/svt_ffi.rs`.
+//! `fin-workers`. `unsafe` lives only in `av1/dav1d_ffi.rs`, `av1/svt_ffi.rs` and
+//! `audio/opus.rs`.
 
 pub mod audio;
 pub mod av1;
