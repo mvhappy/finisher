@@ -172,7 +172,7 @@
 //! failed to start), `app/installed` (empty), `experimentalFeature/list`, `account/read`
 //! (signed out without `$CODEX_HOME/auth.json`; signed in from `fake-account.json` beside it,
 //! else an `account` object in `auth.json`, else the script's `account`, else a ChatGPT Plus
-//! person), `model/list` (paged by `limit` and `cursor`; `invalid cursor: X`, `cursor N exceeds
+//! person; a ChatGPT `email` of `null` or `""` is answered as given), `model/list` (paged by `limit` and `cursor`; `invalid cursor: X`, `cursor N exceeds
 //! total models M`), `thread/start` (`instructionSources` lists `$CODEX_HOME/AGENTS.md` or its
 //! override, and the cwd's while `project_doc_max_bytes > 0`; unset settings come from the
 //! effective config; `dynamicTools` and `multiAgentMode` need the `experimentalApi` capability;
@@ -196,7 +196,9 @@
 //! `dynamicTools` is `-32600 unknown field`), "signedInElsewhere" (`account/read` signed in with
 //! no `auth.json`), "steer": "join"|"refuse",
 //! "onInterrupt": "completed"|"ignore"|"exit", "resumeRestoresDynamicTools" (default true),
-//! "revertFails", "turns": [{"steer"?, "onInterrupt"?, "steps": [...]}]}`. **The nth turn
+//! "revertFails", "accountRead": "crash"|"hang" (fake-only, for detection's failure paths:
+//! `account/read` is never answered; `crash` exits 1, `hang` keeps serving), "turns":
+//! [{"steer"?, "onInterrupt"?, "steps": [...]}]}`. **The nth turn
 //! started on a thread plays `turns[n]`**: the count is kept with the thread (and saved when the
 //! turn starts), so after a crash in turn 0 a resume in a new process plays turn 1; past the end
 //! (or with no script) a turn is a plain `"ok"` agent message. `observed` may be `@codex/<name>`

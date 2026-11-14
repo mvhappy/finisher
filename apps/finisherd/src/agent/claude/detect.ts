@@ -88,6 +88,10 @@ export interface ClaudeDetection {
   /** The signed-in account's keyed hash (`account.ts`); the label itself is never kept. */
   readonly accountHash?: string;
   readonly problem?: FinError;
+  /** When `auth status` was asked (epoch ms; absent when it was not asked). */
+  readonly readAt?: number;
+  /** This call's run asked it (else the answer is the cache's): only a fresh answer is recorded. */
+  readonly fresh?: boolean;
 }
 
 export interface ResolveInput {
@@ -262,6 +266,8 @@ interface AuthAnswer {
   readonly authMethod?: string;
   readonly accountHash?: string;
   readonly problem?: FinError;
+  readonly readAt?: number;
+  readonly fresh?: boolean;
 }
 
 /** `<server-data>/providers/claudeCode/home`: a path only, never opened here. */
@@ -330,6 +336,8 @@ function probe(deps: ClaudeDetectDeps, real: string, key: string | undefined, pl
       let version = key === undefined ? undefined : versions.get(key);
       const hit = authKey === undefined ? undefined : auths.get(authKey);
       let auth = hit !== undefined && now() - hit.at < AUTH_TTL_MS ? hit.answer : undefined;
+      // Only the callers of the run that asked see the answer fresh; the cache's copy is not.
+      let fresh = false;
       if (version === undefined || auth === undefined) {
         const box = yield* openHostSandbox("detect", HARNESS, deps.sandbox);
         if (version === undefined) {
@@ -342,9 +350,11 @@ function probe(deps: ClaudeDetectDeps, real: string, key: string | undefined, pl
         }
         if (compareVersions(version, CLAUDE_FLOOR) >= 0 && auth === undefined) {
           const home = box.env.CLAUDE_CONFIG_DIR === signInHome(deps.sandbox.serverData, platform);
+          const readAt = Date.now();
           const a = yield* Effect.result(run(box, real, ["auth", "status", "--json"], ms, platform).pipe(Effect.flatMap((r) => sync(() => authAnswer(deps.sandbox.serverData, r, home)))));
-          auth = a._tag === "Failure" ? { signedIn: null, problem: a.failure } : a.success;
+          auth = { ...(a._tag === "Failure" ? { signedIn: null, problem: a.failure } : a.success), readAt };
           if (authKey !== undefined && gen === generation) auths.set(authKey, { at: now(), answer: auth });
+          fresh = true;
         }
       }
       if (compareVersions(version, CLAUDE_FLOOR) < 0) {
@@ -352,7 +362,7 @@ function probe(deps: ClaudeDetectDeps, real: string, key: string | undefined, pl
           finError("PROVIDER_VERSION", `Claude Code ${version} is older than ${CLAUDE_FLOOR}, the oldest this Finisher supports`, { harness: HARNESS, version, floor: CLAUDE_FLOOR }, `update Claude Code to ${CLAUDE_FLOOR} or later`),
         );
       }
-      return { version, ...auth! };
+      return { version, ...auth!, ...(fresh ? { fresh } : {}) };
     }),
   );
 }
@@ -408,7 +418,7 @@ const problemOf = (e: FinError) => ({ code: e.code, message: e.message, ...(e.fi
 /**
  * Claude Code's line in `agent.providers`: what detection found, the floor, whether it is
  * signed in and how (one word), the account's keyed hash, and whether sessions may start on it.
- * Never a label or token (`account` stays unset). Each answer is recorded (`account.ts`): an
+ * Never a label or token (`account` stays unset). Each fresh answer is recorded (`account.ts`): an
  * account other than the recorded one, unconfirmed, is the problem `PROVIDER_ACCOUNT_CHANGED`,
  * which stops new sessions. Off (`agents.claudeCode.enabled`, the default): the CLI is looked
  * for but not run.
@@ -439,13 +449,17 @@ export function claudeProviderInfo(deps: ClaudeDetectDeps): Effect.Effect<Provid
         let problem = d.problem;
         let waiting: string | undefined;
         try {
-          const seen = d.accountHash === undefined ? undefined : accountsOf(deps.sandbox.serverData, "claudeCode").record(d.accountHash, d.authMethod);
-          waiting = seen?.changed === true ? seen.hash : accountsOf(deps.sandbox.serverData, "claudeCode").pending();
+          // Once, from the run that asked (a cached answer is not news), as of when it asked: an
+          // answer older than the record changes nothing (`CliAccounts.record`).
+          const record = accountsOf(deps.sandbox.serverData, "claudeCode");
+          const seen = d.accountHash === undefined || d.fresh !== true ? undefined : record.record(d.accountHash, d.authMethod, d.readAt === undefined ? {} : { readAt: d.readAt });
+          waiting = seen?.changed === true ? seen.hash : record.pending();
           if (waiting !== undefined) problem = accountChanged(waiting);
         } catch (e) {
           problem = e as FinError;
         }
-        const accountHash = d.accountHash ?? waiting;
+        // A waiting change is the account shown: the one `provider account confirm` takes.
+        const accountHash = waiting ?? d.accountHash;
         return {
           ...base,
           detected: true,

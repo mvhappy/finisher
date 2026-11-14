@@ -91,6 +91,33 @@ describe("the account record", () => {
     expect(claude.pending()).toBe(accountCheck(B, key, null).hash);
   });
 
+  test("stale_read_never_clears_pending_change: an answer read before the change was seen leaves it waiting", () => {
+    const data = serverData();
+    const key = accountKey(data);
+    let now = T0;
+    const accounts = new CliAccounts(data, { harness: "claudeCode", now: () => new Date(now) });
+    const a = accounts.observe(A, key).hash;
+    now = T0 + 1_000;
+    const b = accounts.observe(B, key);
+    expect(b.changed).toBe(true);
+    // The recorded account, read before (or as) the change was seen: stale, the change still waits
+    // (and the answer says so: a new session is refused).
+    for (const readAt of [T0 + 500, T0 + 1_000]) {
+      expect(accounts.record(a, "claude.ai", { readAt })).toEqual({ hash: b.hash, changed: true });
+      expect(accounts.pending(), String(readAt)).toBe(b.hash);
+    }
+    // Read after it: back on the recorded account, nothing waits (and `at` is when it was read).
+    now = T0 + 5_000;
+    expect(accounts.record(a, "claude.ai", { readAt: T0 + 2_000 })).toEqual({ hash: a, changed: false });
+    expect(accounts.state()).toEqual({ v: 1, current: { hash: a, authMethod: "claude.ai", at: new Date(T0 + 2_000).toISOString() } });
+    // Another account read before the recorded one was seen is stale too: no change is made of it
+    // (the answer is the record's).
+    expect(accounts.record(b.hash, "claude.ai", { readAt: T0 + 1_500 })).toEqual({ hash: a, changed: false });
+    expect(accounts.pending()).toBeUndefined();
+    // Without `readAt` (read now), the rules are 7D's: a change waits.
+    expect(accounts.record(b.hash, "claude.ai")).toEqual({ hash: b.hash, changed: true });
+  });
+
   test("method_only_is_codex_only: a Claude Code sign-in without a label still throws", () => {
     const data = serverData();
     const key = accountKey(data);

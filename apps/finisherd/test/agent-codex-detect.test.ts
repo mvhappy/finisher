@@ -1,6 +1,6 @@
 // Codex's detection, its `agent.providers` line and the sign-in commands (plan 7E Task 6,
 // Decisions 1, 8, 11, 20, 21; Owner Q7(a)). Everything runs `fake-codex` (no real CLI, no sign-in).
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,7 +10,9 @@ import { Effect, Exit, Schema } from "effect";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { AgentAdmin } from "../src/agent/admin.ts";
 import { ALLOWED_METHODS } from "../src/agent/codex/rpc.ts";
-import { CODEX_CAPABILITIES, type CodexDetectDeps, codexProviderInfo, detectCodex, invalidateCodexDetection, parseCodexVersion } from "../src/agent/codex/detect.ts";
+import { accountKey, accountsOf } from "../src/agent/cli/account.ts";
+import { AUTH_TTL_MS, accountAnswer, CODEX_CAPABILITIES, type CodexDetectDeps, codexProviderInfo, codexSigninCommands, codexSigninLines, detectCodex, invalidateCodexDetection, parseCodexVersion } from "../src/agent/codex/detect.ts";
+import { providerLine } from "../src/agent/console.ts";
 import { type PinDeps, pinnedCodexVersion } from "../src/agent/codex/pin.ts";
 import type { SessionSandboxDeps } from "../src/agent/sandbox.ts";
 import { readAgentSettings } from "../src/agent/settings.ts";
@@ -60,14 +62,15 @@ function signIn(d: SessionSandboxDeps, account?: Record<string, unknown>): void 
 }
 
 /** `fake-codex` as `<dir>/codex` with its sidecar; `observed` records what it received. */
-function installFake(name: string, o: { version?: string } = {}): { bin: string; observed: string } {
+function installFake(name: string, o: { version?: string; script?: Record<string, unknown> } = {}): { bin: string; observed: string } {
   const dir = join(tmp, name);
   mkdirSync(dir, { recursive: true });
   const bin = join(dir, WIN ? "codex.exe" : "codex");
   copyFileSync(FAKE, bin);
   chmodSync(bin, 0o755);
   const observed = join(dir, "observed.json");
-  writeFileSync(join(dir, "fake-codex.json"), JSON.stringify({ observed, version: o.version ?? PIN }));
+  if (o.script !== undefined) writeFileSync(join(dir, "script.json"), JSON.stringify(o.script));
+  writeFileSync(join(dir, "fake-codex.json"), JSON.stringify({ observed, version: o.version ?? PIN, ...(o.script === undefined ? {} : { script: "script.json" }) }));
   return { bin, observed };
 }
 
@@ -136,7 +139,7 @@ describe("detection", () => {
   test.skipIf(NO_FAKE)("signed_in_from_account_read", async () => {
     const { bin } = installFake("acct");
     const d = deps(bin);
-    // No auth.json: signed out, with the sign-in fix.
+    // No auth.json: signed out, and no problem (`signedIn: false` is the whole answer).
     const out = await Effect.runPromise(codexProviderInfo(d));
     expect(out).toMatchObject({ detected: true, version: PIN, supported: true, signedIn: false });
     expect(out.accountHash).toBeUndefined();
@@ -165,9 +168,13 @@ describe("detection", () => {
       const refused = await Effect.runPromise(codexProviderInfo(d));
       expect(refused, type).toMatchObject({ detected: true, problem: { code: "PROVIDER_AUTH" } });
       const e = await failure(detectCodex(d).pipe(Effect.flatMap((x) => (x.problem === undefined ? Effect.void : Effect.fail(x.problem)))));
-      expect(e.details).toMatchObject({ reason: "unsupportedAccount" });
+      expect(e.details).toMatchObject({ reason: "unsupportedAccount", authMethod: type });
       invalidateCodexDetection();
     }
+    // A type no pin names is "other", in the line and in the refusal's details alike.
+    const odd = accountAnswer(d.sandbox.serverData, { type: "evil type<x>" } as never);
+    expect(odd).toMatchObject({ signedIn: true, authMethod: "other", problem: { code: "PROVIDER_AUTH", details: { reason: "unsupportedAccount", authMethod: "other" } } });
+    expect(JSON.stringify(odd)).not.toContain("evil");
   });
 
   test.skipIf(NO_FAKE)("providers_never_carry_label_or_token", async () => {
@@ -203,6 +210,125 @@ describe("detection", () => {
     await Promise.all([1, 2, 3].map(() => Effect.runPromise(detectCodex(d))));
     await Effect.runPromise(detectCodex(d));
     expect(received(observed).filter((r) => r.method === "account/read")).toHaveLength(1);
+  });
+
+  test.skipIf(NO_FAKE)("chatgpt_without_label_fails_closed", async () => {
+    // A ChatGPT account whose `email` is null or empty is never identified: no hash, nothing recorded.
+    for (const email of [null, ""]) {
+      const { bin } = installFake(`nolabel-${email === null ? "null" : "empty"}`);
+      const d = deps(bin);
+      signIn(d.sandbox, { type: "chatgpt", email, planType: "plus" });
+      const found = await Effect.runPromise(detectCodex(d));
+      expect(found, String(email)).toMatchObject({ signedIn: true, authMethod: "chatgpt", problem: { code: "PROVIDER_ACCOUNT_CHANGED", details: { reason: "noAccountLabel" } } });
+      expect(found.accountHash).toBeUndefined();
+      const info = await Effect.runPromise(codexProviderInfo(d));
+      expect(info).toMatchObject({ signedIn: true, problem: { code: "PROVIDER_ACCOUNT_CHANGED" } });
+      expect(info.accountHash).toBeUndefined();
+      expect(existsSync(join(d.sandbox.serverData, "agents", "codex-account.json"))).toBe(false);
+      invalidateCodexDetection();
+    }
+  });
+
+  test.skipIf(NO_FAKE)("failed_account_read_is_not_signed_in", async () => {
+    // The fake's `accountRead: "crash"` exits after `initialize` without answering `account/read`.
+    const crash = installFake("crash", { script: { accountRead: "crash" } });
+    const d = deps(crash.bin);
+    signIn(d.sandbox, { type: "chatgpt", email: "a@example.invalid", planType: "plus" });
+    const crashed = await Effect.runPromise(detectCodex(d));
+    expect(crashed).toMatchObject({ version: PIN, signedIn: null, problem: { code: "PROVIDER_EXITED" } });
+    expect(crashed.accountHash).toBeUndefined();
+    const info = await Effect.runPromise(codexProviderInfo(d));
+    expect(info).toMatchObject({ detected: true, signedIn: null, problem: { code: "PROVIDER_EXITED" } });
+    expect(existsSync(join(d.sandbox.serverData, "agents", "codex-account.json"))).toBe(false);
+    invalidateCodexDetection();
+    // `accountRead: "hang"` never answers: the timeout kills the process.
+    const hang = installFake("hang", { script: { accountRead: "hang" } });
+    const h = deps(hang.bin, { timeoutMs: 500 });
+    signIn(h.sandbox, { type: "chatgpt", email: "a@example.invalid", planType: "plus" });
+    const started = Date.now();
+    const hung = await Effect.runPromise(detectCodex(h));
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(hung).toMatchObject({ signedIn: null, problem: { code: "PROVIDER_PROTOCOL", details: { reason: "timeout", step: "account/read" } } });
+    const runs = JSON.parse(readFileSync(hang.observed, "utf8")) as { pid: number; argv: string[]; exit?: unknown }[];
+    const server = runs.find((r) => r.argv.includes("app-server"))!;
+    // Killed, not exited: the fake records no exit of its own, and the process is gone.
+    expect(server.exit).toBeUndefined();
+    expect(() => process.kill(server.pid, 0)).toThrow();
+  });
+
+  test.skipIf(NO_FAKE)("detect_uses_isolating_flags", async () => {
+    // `accountRead: "hang"` holds the app-server open, so its CODEX_HOME can be looked at while it runs.
+    const { bin, observed } = installFake("iso", { script: { accountRead: "hang" } });
+    const d = deps(bin, { timeoutMs: 4_000 });
+    signIn(d.sandbox, { type: "chatgpt", email: "a@example.invalid", planType: "plus" });
+    const running = Effect.runPromise(detectCodex(d));
+    const reading = () => existsSync(observed) && received(observed).some((r) => r.method === "account/read");
+    for (let i = 0; i < 400 && !reading(); i++) await new Promise((r) => setTimeout(r, 20));
+    expect(reading()).toBe(true);
+    // The app-server's CODEX_HOME is the host sandbox's `provider/`, holding the `auth.json` link.
+    const homes: string[] = [];
+    const walk = (dir: string) => {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        if (e.name === "auth.json") homes.push(dir);
+        else if (e.isDirectory()) walk(join(dir, e.name));
+      }
+    };
+    walk(join(d.sandbox.serverData, "agents"));
+    expect(homes).toHaveLength(1);
+    expect(readdirSync(homes[0]!)).not.toContain("skills");
+    await running;
+    const runs = JSON.parse(readFileSync(observed, "utf8")) as { argv: string[]; flags: { strictConfig: boolean; config: Record<string, string>; disable: string[] } }[];
+    const server = runs.find((r) => r.argv.includes("app-server"))!;
+    expect(server.flags.strictConfig).toBe(true);
+    expect(server.flags.config).toMatchObject({
+      "skills.bundled.enabled": "false",
+      check_for_update_on_startup: "false",
+      "analytics.enabled": "false",
+      "history.persistence": '"none"',
+      cli_auth_credentials_store: '"file"',
+    });
+  });
+
+  test.skipIf(NO_FAKE)("stale_cache_never_clears_pending_change", async () => {
+    const { bin, observed } = installFake("stale");
+    let now = 1_000_000;
+    const d = deps(bin, { now: () => now });
+    signIn(d.sandbox, { type: "chatgpt", email: "a@example.invalid", planType: "plus" });
+    const first = await Effect.runPromise(codexProviderInfo(d));
+    expect(first.problem).toBeUndefined();
+    const data = d.sandbox.serverData;
+    const accounts = accountsOf(data, "codex");
+    const b = accounts.hashOf({ signedIn: true, authMethod: "chatgpt", label: "b@example.invalid" }, accountKey(data));
+    // An instance's own `account/read` saw another account: the change waits.
+    expect(accounts.record(b, "chatgpt").changed).toBe(true);
+    // Detection's cached answer (the earlier account, within AUTH_TTL_MS) leaves it waiting.
+    const cached = await Effect.runPromise(codexProviderInfo(d));
+    expect(received(observed).filter((r) => r.method === "account/read")).toHaveLength(1);
+    expect(cached.problem).toMatchObject({ code: "PROVIDER_ACCOUNT_CHANGED" });
+    expect(cached.accountHash).toBe(b);
+    expect(accounts.pending()).toBe(b);
+    // A fresh read, begun after the change was seen, that names the recorded account: nothing waits.
+    await new Promise((r) => setTimeout(r, 5));
+    now += AUTH_TTL_MS + 1;
+    const fresh = await Effect.runPromise(codexProviderInfo(d));
+    expect(received(observed).filter((r) => r.method === "account/read")).toHaveLength(2);
+    expect(fresh.problem).toBeUndefined();
+    expect(fresh.accountHash).toBe(first.accountHash);
+    expect(accounts.pending()).toBeUndefined();
+  });
+
+  test.skipIf(NO_FAKE)("providers_text_shows_plan_and_warnings", async () => {
+    const { bin } = installFake("text");
+    const d = deps(bin);
+    signIn(d.sandbox, { type: "apiKey" });
+    const key = providerLine(await Effect.runPromise(codexProviderInfo(d)));
+    expect(key[0]).toContain("signed in (apiKey)");
+    expect(key.slice(1)).toEqual([expect.stringMatching(/^ {2}warning: accountUnidentified: Codex is signed in with an API key/), expect.stringMatching(/^ {2}fix: sign in with a ChatGPT account/)]);
+    invalidateCodexDetection();
+    signIn(d.sandbox, { type: "chatgpt", email: "owner-text-7e@example.invalid", planType: "pro" });
+    const plan = providerLine(await Effect.runPromise(codexProviderInfo(d)));
+    expect(plan[0]).toContain("signed in (chatgpt, plan pro)");
+    expect(plan.join("\n")).not.toContain("example.invalid");
   });
 
   test("disabled_by_default", async () => {
@@ -268,14 +394,69 @@ describe("signin", () => {
     for (const name of [hostname(), userInfo().username]) if (name.length > 2) expect(rest, name).not.toContain(name);
   });
 
-  test("signin_refused_when_not_bundled", async () => {
+  test("signin_refused_when_not_bundled", () => {
     const data = join(tmp, "data2");
     mkdirSync(data, { mode: 0o700 });
-    process.env.FIN_RESOURCES_DIR = join(tmp, "nothing");
-    const errs: string[] = [];
-    const code = await runConsole(["provider", "signin", "codex", "--server-data", data], { output: { out: () => undefined, err: (s: string) => void errs.push(s) } });
-    // A development checkout may hold the dev cache's binary; either way nothing was run or made.
-    expect([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]).toContain(code);
+    // A pin that points at nothing: no test override, no resources, no dev cache.
+    let e: FinError | undefined;
+    try {
+      codexSigninLines(data, "login", { pin: pinDeps(undefined), settings: { enabled: true } });
+    } catch (x) {
+      e = x as FinError;
+    }
+    expect(e).toMatchObject({ code: "PROVIDER_UNAVAILABLE", details: { reason: "notBundled" } });
     expect(existsSync(join(data, "providers"))).toBe(false);
+  });
+
+  test("signin_commands_golden_unix", () => {
+    const i = { path: "/opt/it's fin/codex", serverData: "/srv/fin data", platform: "linux" as const };
+    const env = "env -u OPENAI_API_KEY -u CODEX_API_KEY -u CODEX_ACCESS_TOKEN -u OPENAI_BASE_URL -u OPENAI_ORG_ID -u OPENAI_PROJECT_ID";
+    const home = "'/srv/fin data/providers/codex/home'";
+    const run = `  ${env} CODEX_HOME=${home} '/opt/it'\\''s fin/codex' -c 'cli_auth_credentials_store="file"'`;
+    expect(codexSigninCommands("login", i)).toEqual([
+      "# Run in sh, bash or zsh on this server, as the account that runs finisherd.",
+      "# Sign in with a browser (a ChatGPT account, or an API key it offers):",
+      "(",
+      "  umask 077",
+      `  mkdir -p ${home}`,
+      `  chmod 700 ${home}`,
+      `${run} login`,
+      ")",
+      "# Or, on a headless server, with a device code:",
+      "(",
+      "  umask 077",
+      `  mkdir -p ${home}`,
+      `  chmod 700 ${home}`,
+      `${run} login --device-auth`,
+      ")",
+    ]);
+    expect(codexSigninCommands("logout", { ...i, enabled: false })).toEqual([
+      "# Run in sh, bash or zsh on this server, as the account that runs finisherd.",
+      "# Codex is off on this server: sessions start on it once agents.codex.enabled is true in settings.json.",
+      "(",
+      "  umask 077",
+      `${run} logout`,
+      ")",
+    ]);
+  });
+
+  test("signin_commands_powershell_quotes", () => {
+    // On any host: the printer's Windows form, with `'` and U+2019 in the paths (each doubled).
+    const login = codexSigninCommands("login", { path: "C:\\Users\\O'Neil\\codex.exe", serverData: "C:\\Fin\u2019s Data", platform: "win32" });
+    const home = "'C:\\Fin\u2019\u2019s Data\\providers\\codex\\home'";
+    const exe = "'C:\\Users\\O''Neil\\codex.exe'";
+    expect(login).toEqual([
+      "# Run in a new PowerShell window on this server, as the account that runs finisherd (it changes that window's environment).",
+      `New-Item -ItemType Directory -Force -Path ${home} | Out-Null`,
+      "Remove-Item Env:OPENAI_API_KEY, Env:CODEX_API_KEY, Env:CODEX_ACCESS_TOKEN, Env:OPENAI_BASE_URL, Env:OPENAI_ORG_ID, Env:OPENAI_PROJECT_ID -ErrorAction SilentlyContinue",
+      `$env:CODEX_HOME = ${home}`,
+      "# Sign in with a browser (a ChatGPT account, or an API key it offers):",
+      `& ${exe} -c 'cli_auth_credentials_store="file"' login`,
+      "# Or, on a headless server, with a device code:",
+      `& ${exe} -c 'cli_auth_credentials_store="file"' login --device-auth`,
+    ]);
+    const logout = codexSigninCommands("logout", { path: "C:\\Users\\O\u2019Neil\\codex.exe", serverData: "C:\\Data", platform: "win32" });
+    expect(logout).toContain("& 'C:\\Users\\O\u2019\u2019Neil\\codex.exe' -c 'cli_auth_credentials_store=\"file\"' logout");
+    expect(logout.join("\n")).not.toContain("New-Item");
   });
 });

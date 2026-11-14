@@ -6,7 +6,9 @@
 // - **The version**: `codex --version` must print `codex-cli <x.y.z>` within 10 s (anything else is
 //   `PROVIDER_PROTOCOL`) and equal the pin (`PROVIDER_VERSION {version, pinned}`).
 // - **Signed in**: a short app-server (`initialize`, `initialized`, `account/read`, then stdin
-//   closed), only through `rpc.ts`, so only `ALLOWED_METHODS`; `account/read` never carries
+//   closed) with the launch plan's isolating `-c` flags and `--disable`s (`launch.ts`
+//   `ISOLATING_CONFIG`: 0.167.0 otherwise writes `skills/.system/` under `CODEX_HOME` at start),
+//   only through `rpc.ts`, so only `ALLOWED_METHODS`; `account/read` never carries
 //   `refreshToken`. `chatgpt` is signed in (the plan type is shown; the e-mail only ever goes into
 //   the keyed hash of `cli/account.ts`), `apiKey` is signed in and recorded by its method alone
 //   with an `accountUnidentified` warning (Owner Q7(a)), no account is signed out, and `amazonBedrock`
@@ -26,6 +28,7 @@ import type { Capabilities } from "../adapter.ts";
 import { accountChanged, accountKey, accountProblem, accountsOf, type AuthStatus } from "../cli/account.ts";
 import { openHostSandbox, type SandboxedChild, type SessionSandbox, type SessionSandboxDeps } from "../sandbox.ts";
 import { type CodexSettings, codexSettings } from "../settings.ts";
+import { appServerArgs, disabledFeatures, ISOLATING_CONFIG, pinnedFeatures } from "./launch.ts";
 import { type PinDeps, codexBinary, defaultPinDeps } from "./pin.ts";
 import { codexRpc } from "./rpc.ts";
 import type { ResultOf } from "./rpc.ts";
@@ -66,6 +69,10 @@ export interface CodexDetection {
   readonly accountHash?: string;
   readonly warnings?: ProviderInfo["warnings"];
   readonly problem?: FinError;
+  /** When `account/read` was asked (epoch ms; absent when it was not asked). */
+  readonly readAt?: number;
+  /** This call's run asked it (else the answer is the cache's): only a fresh answer is recorded. */
+  readonly fresh?: boolean;
 }
 
 export interface CodexDetectDeps {
@@ -149,11 +156,14 @@ async function readAccount(child: SandboxedChild, ms: number): Promise<ResultOf<
   return exit.value;
 }
 
-const unsupported = (type: string) =>
+/** The account types 0.167.0 names (`Account`); anything else is `other`. */
+const ACCOUNT_TYPES: ReadonlySet<string> = new Set(["chatgpt", "apiKey", "amazonBedrock", "gcp"]);
+
+const unsupported = (authMethod: string) =>
   finError(
     "PROVIDER_AUTH",
     "Codex is signed in with an account type Finisher does not support (only a ChatGPT plan or an OpenAI API key)",
-    { harness: HARNESS, reason: "unsupportedAccount", authMethod: type },
+    { harness: HARNESS, reason: "unsupportedAccount", authMethod },
     "sign it in again with the commands `finisherd provider signin codex` prints",
   );
 
@@ -173,8 +183,11 @@ const UNIDENTIFIED = {
   fix: "sign in with a ChatGPT account to have account changes noticed",
 } as const;
 
-/** What the account read means; the e-mail goes into the keyed hash and no further. */
-function answerOf(serverData: string, a: Account | null | undefined): Omit<CodexDetection, "path" | "version" | "pinned"> {
+/**
+ * What the account read means; the e-mail goes into the keyed hash and no further. A ChatGPT
+ * account without one is never identified (`noAccountLabel`, no hash: fail closed).
+ */
+export function accountAnswer(serverData: string, a: Account | null | undefined): Omit<CodexDetection, "path" | "version" | "pinned"> {
   if (a === null || a === undefined) return { signedIn: false };
   const type = String((a as { type?: unknown }).type);
   if (type === "chatgpt") {
@@ -197,7 +210,8 @@ function answerOf(serverData: string, a: Account | null | undefined): Omit<Codex
       return { ...base, problem: e as FinError };
     }
   }
-  return { signedIn: true, authMethod: /^[A-Za-z]{1,24}$/.test(type) ? type : "other", problem: unsupported(type) };
+  const authMethod = ACCOUNT_TYPES.has(type) ? type : "other";
+  return { signedIn: true, authMethod, problem: unsupported(authMethod) };
 }
 
 // Detection runs on every `agent.providers` call, so its answers are kept: the version while the
@@ -209,7 +223,11 @@ const versions = new Map<string, string>();
 const accounts = new Map<string, { at: number; answer: Omit<Answer, "version"> }>();
 const flights = new Map<string, Promise<Exit.Exit<Answer, FinError>>>();
 
-/** Forgets what detection has kept (a settings change; a sign-in or sign-out finishing in this process; tests). */
+/**
+ * Forgets what detection has kept (tests). Nothing in the server needs it: `agents.codex` is
+ * read at each call and not part of the cache, and a sign-in or out is a person's command in
+ * another process (`provider signin|signout codex` only prints it), seen within `AUTH_TTL_MS`.
+ */
 export function invalidateCodexDetection(): void {
   generation++;
   versions.clear();
@@ -228,6 +246,8 @@ function probe(deps: CodexDetectDeps, real: string, key: string | undefined, pin
       let version = key === undefined ? undefined : versions.get(key);
       const hit = accountKeyOf === undefined ? undefined : accounts.get(accountKeyOf);
       let answer = hit !== undefined && now() - hit.at < AUTH_TTL_MS ? hit.answer : undefined;
+      // Only the callers of the run that asked see the answer fresh; the cache's copy is not.
+      let fresh = false;
       if (version === undefined || answer === undefined) {
         const box = yield* openHostSandbox("detect", HARNESS, deps.sandbox);
         if (version === undefined) {
@@ -237,21 +257,24 @@ function probe(deps: CodexDetectDeps, real: string, key: string | undefined, pin
           if (key !== undefined && gen === generation) versions.set(key, version);
         }
         if (version === pinned && answer === undefined) {
-          const argv = ["app-server", "--listen", "stdio://", "--strict-config", "-c", 'cli_auth_credentials_store="file"'];
+          const readAt = Date.now();
           const read = yield* Effect.result(
-            spawn(box, argv).pipe(
+            sync(() => appServerArgs(ISOLATING_CONFIG, disabledFeatures(pinnedFeatures(pinned)))).pipe(
+              Effect.flatMap((argv) => spawn(box, argv)),
               Effect.flatMap((child) => Effect.tryPromise({ try: () => readAccount(child, ms), catch: (e) => e as FinError })),
-              Effect.flatMap((r) => sync(() => answerOf(deps.sandbox.serverData, r.account))),
+              Effect.flatMap((r) => sync(() => accountAnswer(deps.sandbox.serverData, r.account))),
             ),
           );
-          answer = read._tag === "Failure" ? { signedIn: null, problem: read.failure } : read.success;
+          const got = read._tag === "Failure" ? { signedIn: null, problem: read.failure } : read.success;
+          answer = { ...got, readAt };
           if (accountKeyOf !== undefined && gen === generation) accounts.set(accountKeyOf, { at: now(), answer });
+          fresh = true;
         }
       }
       if (version !== pinned) {
         return yield* Effect.fail(finError("PROVIDER_VERSION", `Codex ${version} is not the pinned ${pinned}`, { harness: HARNESS, version, pinned }, reinstall));
       }
-      return { version, ...answer! };
+      return { version, ...answer!, ...(fresh ? { fresh } : {}) };
     }),
   );
 }
@@ -301,8 +324,8 @@ export function detectCodex(deps: CodexDetectDeps): Effect.Effect<CodexDetection
  * Codex's line in `agent.providers`: what detection found, the pin, whether it is signed in and
  * how (one word), the plan type, the account's keyed hash and whether sessions may start on it.
  * Never a label or token. Off (`agents.codex.enabled`, the default): the binary is looked for but
- * not run. Each answer is recorded (`cli/account.ts`): an account other than the recorded one,
- * unconfirmed, is the problem `PROVIDER_ACCOUNT_CHANGED`.
+ * not run. Each fresh answer is recorded (`cli/account.ts`; a cached one is not): an account
+ * other than the recorded one, unconfirmed, is the problem `PROVIDER_ACCOUNT_CHANGED`.
  */
 export function codexProviderInfo(deps: CodexDetectDeps): Effect.Effect<ProviderInfo> {
   return Effect.suspend(() => {
@@ -328,14 +351,18 @@ export function codexProviderInfo(deps: CodexDetectDeps): Effect.Effect<Provider
         let waiting: string | undefined;
         try {
           const record = accountsOf(deps.sandbox.serverData, HARNESS);
-          const seen = d.accountHash === undefined || d.problem?.code === "PROVIDER_AUTH" ? undefined : record.record(d.accountHash, d.authMethod);
+          // Recorded once, from the run that asked (a cached answer is not news), as of when it
+          // asked: an answer older than the record changes nothing (`CliAccounts.record`).
+          const seen =
+            d.accountHash === undefined || d.problem?.code === "PROVIDER_AUTH" || d.fresh !== true ? undefined : record.record(d.accountHash, d.authMethod, d.readAt === undefined ? {} : { readAt: d.readAt });
           waiting = seen?.changed === true ? seen.hash : record.pending();
           // An unsupported account is the more specific refusal: it stays.
           if (waiting !== undefined && d.problem?.code !== "PROVIDER_AUTH") problem = accountChanged(waiting, HARNESS);
         } catch (e) {
           problem = e as FinError;
         }
-        const accountHash = d.accountHash ?? waiting;
+        // A waiting change is the account shown: the one `provider account confirm` takes.
+        const accountHash = waiting ?? d.accountHash;
         return {
           ...base,
           detected: true,
