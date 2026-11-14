@@ -19,5 +19,11 @@ pub fn scale_level(src: Size, out: Size) -> f64 {
     libm::log2(1.0 / s).max(0.0)
 }
 
+/// An 8-bit code of an R′G′B′ (or alpha) value: clamped to 0…1, scaled to 255, rounded half to
+/// even (the CPU reference and the GPU readback of thumbnails agree on it).
+pub fn code8(c: f32) -> u8 {
+    (c.clamp(0.0, 1.0) * 255.0).round_ties_even() as u8
+}
+
 #[cfg(not(target_os = "wasi"))]
 pub(crate) mod gpu;

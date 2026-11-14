@@ -1,0 +1,762 @@
+{
+  "plan": {
+    "from": "0",
+    "items": [
+      {
+        "asset": "a1",
+        "from": "0",
+        "gain": [
+          {
+            "db": [
+              0.0,
+              0.0
+            ],
+            "from": "0",
+            "interp": {
+              "type": "hold"
+            },
+            "to": "2",
+            "u": [
+              0.0,
+              1.0
+            ]
+          }
+        ],
+        "item": "c1",
+        "pan": [
+          {
+            "from": "0",
+            "interp": {
+              "type": "hold"
+            },
+            "pan": [
+              0.0,
+              0.0
+            ],
+            "to": "2",
+            "u": [
+              0.0,
+              1.0
+            ]
+          }
+        ],
+        "sourceFrom": "0",
+        "speed": "1/2",
+        "to": "2",
+        "track": "t1"
+      },
+      {
+        "asset": "a2",
+        "from": "2",
+        "gain": [
+          {
+            "db": [
+              0.0,
+              0.0
+            ],
+            "from": "2",
+            "interp": {
+              "type": "hold"
+            },
+            "shapes": [
+              {
+                "curve": "linear",
+                "kind": "fadeIn",
+                "p": [
+                  0.0,
+                  1.0
+                ]
+              }
+            ],
+            "to": "9/4",
+            "u": [
+              0.0,
+              1.0
+            ]
+          },
+          {
+            "db": [
+              0.0,
+              0.0
+            ],
+            "from": "9/4",
+            "interp": {
+              "type": "hold"
+            },
+            "to": "4",
+            "u": [
+              0.0,
+              1.0
+            ]
+          }
+        ],
+        "item": "c2",
+        "pan": [
+          {
+            "from": "2",
+            "interp": {
+              "type": "hold"
+            },
+            "pan": [
+              0.0,
+              0.0
+            ],
+            "to": "4",
+            "u": [
+              0.0,
+              1.0
+            ]
+          }
+        ],
+        "sourceFrom": "1",
+        "speed": "3/2",
+        "to": "4",
+        "track": "t1"
+      },
+      {
+        "asset": "a1",
+        "effects": [
+          {
+            "id": "fx1",
+            "kind": "eq",
+            "numbers": {
+              "band1Freq": [
+                {
+                  "from": "4",
+                  "interp": {
+                    "type": "hold"
+                  },
+                  "to": "6",
+                  "u": [
+                    0.0,
+                    1.0
+                  ],
+                  "v": [
+                    60.0,
+                    60.0
+                  ]
+                }
+              ],
+              "band1Gain": [
+                {
+                  "from": "4",
+                  "interp": {
+                    "type": "hold"
+                  },
+                  "to": "6",
+                  "u": [
+                    0.0,
+                    1.0
+                  ],
+                  "v": [
+                    0.0,
+                    0.0
+                  ]
+                }
+              ],
+              "band1Q": [
+                {
+                  "from": "4",
+                  "interp": {
+                    "type": "hold"
+                  },
+                  "to": "6",
+                  "u": [
+                    0.0,
+                    1.0
+                  ],
+                  "v": [
+                    0.707,
+                    0.707
+                  ]
+                }
+              ],
+              "band2Freq": [
+                {
+                  "from": "4",
+                  "interp": {
+                    "type": "hold"
+                  },
+                  "to": "6",
+                  "u": [
+                    0.0,
+                    1.0
+                  ],
+                  "v": [
+                    160.0,
+                    160.0
+                  ]
+                }
+              ],
+              "band2Gain": [
+                {
+                  "from": "4",
+                  "interp": {
+                    "type": "hold"
+                  },
+                  "to": "6",
+                  "u": [
+                    0.0,
+                    1.0
+                  ],
+                  "v": [
+                    4.0,
+                    4.0
+                  ]
+                }
+              ],
+              "band2Q": [
+                {
+                  "from": "4",
+                  "interp": {
+                    "type": "hold"
+                  },
+                  "to": "6",
+                  "u": [
+                    0.0,
+                    1.0
+                  ],
+                  "v": [
+                    0.707,
+                    0.707
+                  ]
+                }
+              ],
+              "band3Freq": [
+                {
+                  "from": "4",
+                  "interp": {
+                    "type": "hold"
+                  },
+                  "to": "6",
+                  "u": [
+                    0.0,
+                    1.0
+                  ],
+                  "v": [
+                    315.0,
+                    315.0
+                  ]
+                }
+              ],
+              "band3Gain": [
+                {
+                  "from": "4",
+                  "interp": {
+                    "type": "hold"
+                  },
+                  "to": "6",
+                  "u": [
+                    0.0,
+                    1.0
+                  ],
+                  "v": [
+                    0.0,
+                    0.0
+                  ]
+                }
+              ],
+              "band3Q": [
+                {
+                  "from": "4",
+                  "interp": {
+                    "type": "hold"
+                  },
+                  "to": "6",
+                  "u": [
+                    0.0,
+                    1.0
+                  ],
+                  "v": [
+                    0.707,
+                    0.707
+                  ]
+                }
+              ],
+              "band4Freq": [
+                {
+                  "from": "4",
+                  "interp": {
+                    "type": "hold"
+                  },
+                  "to": "6",
+                  "u": [
+                    0.0,
+                    1.0
+                  ],
+                  "v": [
+                    630.0,
+                    630.0
+                  ]
+                }
+              ],
+              "band4Gain": [
+                {
+                  "from": "4",
+                  "interp": {
+                    "type": "hold"
+                  },
+                  "to": "6",
+                  "u": [
+                    0.0,
+                    1.0
+                  ],
+                  "v": [
+                    -6.0,
+                    -6.0
+                  ]
+                }
+              ],
+              "band4Q": [
+                {
+                  "from": "4",
+                  "interp": {
+                    "type": "hold"
+                  },
+                  "to": "6",
+                  "u": [
+                    0.0,
+                    1.0
+                  ],
+                  "v": [
+                    2.0,
+                    2.0
+                  ]
+                }
+              ],
+              "band5Freq": [
+                {
+                  "from": "4",
+                  "interp": {
+                    "type": "hold"
+                  },
+                  "to": "6",
+                  "u": [
+                    0.0,
+                    1.0
+                  ],
+                  "v": [
+                    1250.0,
+                    1250.0
+                  ]
+                }
+              ],
+              "band5Gain": [
+                {
+                  "from": "4",
+                  "interp": {
+                    "type": "hold"
+                  },
+                  "to": "6",
+                  "u": [
+                    0.0,
+                    1.0
+                  ],
+                  "v": [
+                    0.0,
+                    0.0
+                  ]
+                }
+              ],
+              "band5Q": [
+                {
+                  "from": "4",
+                  "interp": {
+                    "type": "hold"
+                  },
+                  "to": "6",
+                  "u": [
+                    0.0,
+                    1.0
+                  ],
+                  "v": [
+                    0.707,
+                    0.707
+                  ]
+                }
+              ],
+              "band6Freq": [
+                {
+                  "from": "4",
+                  "interp": {
+                    "type": "hold"
+                  },
+                  "to": "6",
+                  "u": [
+                    0.0,
+                    1.0
+                  ],
+                  "v": [
+                    2500.0,
+                    2500.0
+                  ]
+                }
+              ],
+              "band6Gain": [
+                {
+                  "from": "4",
+                  "interp": {
+                    "type": "hold"
+                  },
+                  "to": "6",
+                  "u": [
+                    0.0,
+                    1.0
+                  ],
+                  "v": [
+                    0.0,
+                    0.0
+                  ]
+                }
+              ],
+              "band6Q": [
+                {
+                  "from": "4",
+                  "interp": {
+                    "type": "hold"
+                  },
+                  "to": "6",
+                  "u": [
+                    0.0,
+                    1.0
+                  ],
+                  "v": [
+                    0.707,
+                    0.707
+                  ]
+                }
+              ],
+              "band7Freq": [
+                {
+                  "from": "4",
+                  "interp": {
+                    "type": "hold"
+                  },
+                  "to": "6",
+                  "u": [
+                    0.0,
+                    1.0
+                  ],
+                  "v": [
+                    5000.0,
+                    5000.0
+                  ]
+                }
+              ],
+              "band7Gain": [
+                {
+                  "from": "4",
+                  "interp": {
+                    "type": "hold"
+                  },
+                  "to": "6",
+                  "u": [
+                    0.0,
+                    1.0
+                  ],
+                  "v": [
+                    -3.0,
+                    -3.0
+                  ]
+                }
+              ],
+              "band7Q": [
+                {
+                  "from": "4",
+                  "interp": {
+                    "type": "hold"
+                  },
+                  "to": "6",
+                  "u": [
+                    0.0,
+                    1.0
+                  ],
+                  "v": [
+                    0.707,
+                    0.707
+                  ]
+                }
+              ],
+              "band8Freq": [
+                {
+                  "from": "4",
+                  "interp": {
+                    "type": "hold"
+                  },
+                  "to": "6",
+                  "u": [
+                    0.0,
+                    1.0
+                  ],
+                  "v": [
+                    14000.0,
+                    14000.0
+                  ]
+                }
+              ],
+              "band8Gain": [
+                {
+                  "from": "4",
+                  "interp": {
+                    "type": "hold"
+                  },
+                  "to": "6",
+                  "u": [
+                    0.0,
+                    1.0
+                  ],
+                  "v": [
+                    0.0,
+                    0.0
+                  ]
+                }
+              ],
+              "band8Q": [
+                {
+                  "from": "4",
+                  "interp": {
+                    "type": "hold"
+                  },
+                  "to": "6",
+                  "u": [
+                    0.0,
+                    1.0
+                  ],
+                  "v": [
+                    0.707,
+                    0.707
+                  ]
+                }
+              ]
+            },
+            "values": {
+              "band1Type": "highPass",
+              "band2Type": "lowShelf",
+              "band3Type": "off",
+              "band4Type": "peak",
+              "band5Type": "off",
+              "band6Type": "peak",
+              "band7Type": "highShelf",
+              "band8Type": "lowPass"
+            }
+          }
+        ],
+        "from": "4",
+        "gain": [
+          {
+            "db": [
+              0.0,
+              0.0
+            ],
+            "from": "4",
+            "interp": {
+              "type": "hold"
+            },
+            "to": "6",
+            "u": [
+              0.0,
+              1.0
+            ]
+          }
+        ],
+        "item": "c3",
+        "pan": [
+          {
+            "from": "4",
+            "interp": {
+              "type": "hold"
+            },
+            "pan": [
+              0.0,
+              0.0
+            ],
+            "to": "6",
+            "u": [
+              0.0,
+              1.0
+            ]
+          }
+        ],
+        "sourceFrom": "1",
+        "speed": "1001/1000",
+        "to": "6",
+        "track": "t1"
+      }
+    ],
+    "timeline": "tl1",
+    "to": "6"
+  },
+  "project": {
+    "assets": {
+      "a1": {
+        "audio": {
+          "channels": 2,
+          "sampleRate": 48000
+        },
+        "duration": "600",
+        "fingerprint": "fp-a1",
+        "id": "a1",
+        "kind": "media",
+        "path": "a1.bin"
+      },
+      "a2": {
+        "audio": {
+          "channels": 1,
+          "sampleRate": 48000
+        },
+        "duration": "600",
+        "fingerprint": "fp-a2",
+        "id": "a2",
+        "kind": "media",
+        "path": "a2.bin"
+      }
+    },
+    "id": "p1",
+    "name": "A0",
+    "rate": "30",
+    "schemaVersion": 6,
+    "timelines": [
+      {
+        "id": "tl1",
+        "name": "tl1",
+        "rate": "30",
+        "resolution": {
+          "height": 1080,
+          "width": 1920
+        },
+        "tracks": [
+          {
+            "id": "t1",
+            "items": [
+              {
+                "asset": "a1",
+                "duration": "2",
+                "id": "c1",
+                "kind": "clip",
+                "sourceIn": "0",
+                "speed": "1/2",
+                "start": "0"
+              },
+              {
+                "asset": "a2",
+                "audio": {
+                  "fadeIn": "1/4"
+                },
+                "duration": "2",
+                "id": "c2",
+                "kind": "clip",
+                "sourceIn": "1",
+                "speed": "3/2",
+                "start": "2"
+              },
+              {
+                "asset": "a1",
+                "duration": "2",
+                "effects": [
+                  {
+                    "id": "fx1",
+                    "kind": "eq",
+                    "params": {
+                      "band1Freq": 60.0,
+                      "band1Type": "highPass",
+                      "band2Gain": 4.0,
+                      "band2Type": "lowShelf",
+                      "band4Gain": -6.0,
+                      "band4Q": 2.0,
+                      "band4Type": "peak",
+                      "band6Type": "peak",
+                      "band7Gain": -3.0,
+                      "band7Type": "highShelf",
+                      "band8Freq": 14000.0,
+                      "band8Type": "lowPass"
+                    }
+                  }
+                ],
+                "id": "c3",
+                "kind": "clip",
+                "sourceIn": "1",
+                "speed": "1001/1000",
+                "start": "4"
+              }
+            ],
+            "kind": "audio",
+            "name": "T1"
+          }
+        ]
+      }
+    ]
+  },
+  "range": [
+    "0",
+    "6"
+  ],
+  "sources": {
+    "a1": {
+      "l": [
+        {
+          "db": -3.0,
+          "kind": "pink",
+          "seed": 1
+        },
+        {
+          "db": -12.0,
+          "hz": 220.0,
+          "kind": "sine"
+        }
+      ],
+      "r": [
+        {
+          "db": -3.0,
+          "kind": "pink",
+          "seed": 2
+        },
+        {
+          "db": -12.0,
+          "hz": 330.0,
+          "kind": "sine"
+        }
+      ],
+      "secs": 8
+    },
+    "a2": {
+      "mono": [
+        {
+          "burst": 0.9,
+          "db": -6.0,
+          "hz": 180.0,
+          "kind": "burst",
+          "start": 0.25
+        },
+        {
+          "burst": 1.2,
+          "db": -18.0,
+          "hz": 240.0,
+          "kind": "burst",
+          "start": 1.5
+        },
+        {
+          "burst": 0.6,
+          "db": -10.0,
+          "hz": 6500.0,
+          "kind": "burst",
+          "start": 3.0
+        },
+        {
+          "burst": 1.5,
+          "db": -3.0,
+          "hz": 150.0,
+          "kind": "burst",
+          "start": 4.0
+        },
+        {
+          "db": -50.0,
+          "kind": "noise",
+          "seed": 3
+        }
+      ],
+      "secs": 8
+    }
+  },
+  "timeline": "tl1",
+  "what": "clips at speeds 1/2, 3/2 and 1001/1000 through WSOLA, one with an EQ"
+}

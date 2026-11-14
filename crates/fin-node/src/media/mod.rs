@@ -15,6 +15,7 @@
 //!   worker can no longer write (spec §3.3).
 //!
 //! - `mediaProxyPlan` (`proxy.rs`, 6B-1 Task 14): a proxy's cache key, before its job.
+//! - `mediaThumbsPlan` (`thumbs.rs`, 6B-1 Task 15): the same for thumbnails and filmstrips.
 //! - [`cache`]: the media cache (`MediaCache`, 6B-1 Task 13): its index, commits, pins and
 //!   eviction.
 //!
@@ -25,6 +26,7 @@ mod asset_job;
 pub mod cache;
 mod inputs;
 pub mod proxy;
+pub mod thumbs;
 
 use std::path::{Path, PathBuf};
 

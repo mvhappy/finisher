@@ -1,4 +1,4 @@
-//! `fin look --at <t>[,<t>…] [--out <dir>] [--size WxH] [--no-wait]` (plan 6A Task 13): PNG
+//! `fin look --at <t>[,<t>…] [--out <dir>] [--size WxH] [--originals] [--no-wait]` (plan 6A Task 13): PNG
 //! frames of a timeline, rendered by a `media.look` job on the server's media worker
 //! (`media.look`). `fin` links no media crate: it resolves the times, sends the request and
 //! prints the answer.
@@ -13,6 +13,10 @@
 //! - `--no-wait` answers `{timeline, at, job}` at once; the result is the job's: `fin wait
 //!   <job.id>` waits for it and `fin job show <job.id>` reads it (its `result` is the
 //!   `LookResult`).
+//! - A layer reads its asset's `1080` proxy when the media cache holds one (through the
+//!   original's sample table: the same frame, within the proxy's quality; plan 6B-1 Task 16);
+//!   `--originals` reads originals only. Each frame says which it read: `source` is `proxy` or
+//!   `original`, and `proxyFallbacks` names the assets whose listed proxy could not be read.
 //! - `--out` is a folder (relative to the current directory); without it the frames go to
 //!   `workspace/shared/look/` of the project. It needs `project.write`.
 
@@ -42,6 +46,11 @@ pub struct LookArgs {
     #[arg(long, value_name = "WxH")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<String>,
+    /// Read the originals only: no layer reads a proxy (default: the `1080` proxy when the
+    /// cache holds one; each frame's `source` says which was read).
+    #[arg(long)]
+    #[serde(default)]
+    pub originals: bool,
     /// Answer `{job}` at once instead of waiting for the frames.
     #[arg(long = "no-wait")]
     #[serde(default)]
@@ -89,6 +98,9 @@ pub fn run(backend: &dyn Backend, globals: &Globals, a: &LookArgs) -> Result<Val
     }
     if let Some(size) = &a.size {
         payload["size"] = parse_size(size)?;
+    }
+    if a.originals {
+        payload["originals"] = json!(true);
     }
     let mut answer = backend.project_call("media.look", payload)?;
     if let Some(m) = answer.as_object_mut() {

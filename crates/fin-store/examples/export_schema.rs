@@ -109,6 +109,13 @@ fn main() {
         g.subschema_for::<fin_media::jobs::ProxyParams>();
         g.subschema_for::<fin_media::jobs::ProxyResult>();
         g.subschema_for::<fin_media::jobs::ProxyStatus>();
+        // `media.thumbs` (6B-1 Task 15): params, an item's value, the filmstrip index, a run.
+        g.subschema_for::<fin_media::jobs::ThumbsParams>();
+        g.subschema_for::<fin_media::jobs::ThumbItem>();
+        g.subschema_for::<fin_media::jobs::StripIndex>();
+        g.subschema_for::<fin_media::jobs::ThumbsRun>();
+        g.subschema_for::<fin_media::jobs::ThumbsPlanRequest>();
+        g.subschema_for::<fin_media::jobs::ThumbsPlan>();
         g.subschema_for::<fin_library::RawRel>();
         g.subschema_for::<fin_library::Expect>();
         g.subschema_for::<fin_library::ScanEntry>();

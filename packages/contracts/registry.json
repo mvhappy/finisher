@@ -1598,6 +1598,26 @@
     },
     {
       "argKinds": {},
+      "group": "media",
+      "identity": [
+        "projectId",
+        "branch",
+        "asset",
+        "at",
+        "strip",
+        "maxSide",
+        "tileHeight"
+      ],
+      "name": "media.thumbs",
+      "rpcs": [
+        {
+          "method": "media.thumbs"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
       "group": "fonts",
       "identity": [],
       "name": "fonts.ls",

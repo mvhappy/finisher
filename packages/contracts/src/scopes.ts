@@ -327,6 +327,8 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   // 6B-1 Task 14: a proxy reads the project and may submit a job; its status only reads.
   "media.proxy": { scopes: ["project.read", "jobs.submit"], resolve: BRANCH },
   "media.proxy.status": { scopes: ["project.read"], resolve: BRANCH },
+  // Thumbnails and filmstrips (6B-1 Task 15): read the project, submit the job.
+  "media.thumbs": { scopes: ["project.read", "jobs.submit"], resolve: BRANCH },
   // 6B-1 Task 11: a write of the branch (one `asset.reprobe` record); `deep` also runs a job.
   "asset.reprobe": {
     scopes: ["project.write"],

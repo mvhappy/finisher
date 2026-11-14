@@ -2269,6 +2269,13 @@ export type LibraryScanMode = "full" | "dirs" | "poll";
  */
 export type LogLevel = "debug" | "info" | "warn" | "error";
 /**
+ * What a look frame's pictures were read from (plan 6B-1 Task 16).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "LookSource".
+ */
+export type LookSource = "proxy" | "original";
+/**
  * `@<publisher>/<name>` (8A Decision 2).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -2305,6 +2312,20 @@ export type Runtime =
       node: string;
       type: "node";
     };
+/**
+ * The codec of a proxy (Decision 5).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProxyCodec".
+ */
+export type ProxyCodec = "h264" | "av1";
+/**
+ * A proxy tier (spec §7.1).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProxyTier".
+ */
+export type ProxyTier = "540" | "1080";
 /**
  * The OS confinement the worker applied to itself (spec §3.5.1).
  *
@@ -2413,20 +2434,6 @@ export type Placeholder =
  * via the `definition` "Severity".
  */
 export type Severity = "low" | "medium" | "high" | "critical";
-/**
- * The codec of a proxy (Decision 5).
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "ProxyCodec".
- */
-export type ProxyCodec = "h264" | "av1";
-/**
- * A proxy tier (spec §7.1).
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "ProxyTier".
- */
-export type ProxyTier = "540" | "1080";
 /**
  * What to purge (`fin diagnostics purge`, `diagnostics.purge`).
  *
@@ -2584,6 +2591,28 @@ export type TestGarbage = "json" | "seq" | "long" | "otherJob" | "unknownType";
  * via the `definition` "TestHelperBehaviour".
  */
 export type TestHelperBehaviour = "ok" | "exitEarly" | "hang" | "spawn" | "call";
+/**
+ * What `media.thumbs` makes.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ThumbsMode".
+ */
+export type ThumbsMode =
+  | {
+      thumbs: {
+        maxSide: number;
+        times: Rational[];
+      };
+    }
+  | {
+      strip: {
+        /**
+         * 0 in a plan request: the host fills it from the duration.
+         */
+        sprites?: number;
+        tileHeight: number;
+      };
+    };
 /**
  * What one worker serves.
  *
@@ -8015,7 +8044,31 @@ export interface LookFrame {
    * The plan's BLAKE3 (lowercase hex).
    */
   plan: string;
+  /**
+   * The assets whose proxy was listed in the manifest but could not be read (their layers
+   * read the original); absent when none.
+   */
+  proxyFallbacks?: LookProxyFallback[];
+  /**
+   * Where the frame's pictures came from.
+   */
+  source: LookSource;
   width: number;
+}
+/**
+ * Why a layer that had a proxy read its original instead (`LookFrame.proxyFallbacks`): the
+ * entry or its files were gone, changed or unreadable between the manifest and the open.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "LookProxyFallback".
+ */
+export interface LookProxyFallback {
+  asset: string;
+  /**
+   * `missing`, `changed`, `invalid` (the entry's files do not agree with each other or the
+   * original) or `decode` (a proxy frame did not decode).
+   */
+  reason: string;
 }
 /**
  * `media.look` v1: frames of `timeline` at each time in `at`, as PNGs in `out/`.
@@ -8032,6 +8085,11 @@ export interface LookParams {
    * The branch of the snapshot (an id, a name or `<name>#<id>`).
    */
   branch?: string;
+  /**
+   * Read the originals only: a layer never reads a proxy (`fin look --originals`, plan
+   * 6B-1 Task 16). Part of the job's identity (`dedupe`).
+   */
+  originals?: boolean;
   /**
    * Where the kind's `onSucceeded` moves the frames: absolute, or relative to the project
    * folder; `workspace/shared/look/` when absent. Never inside `.finisher/` or `assets/`
@@ -8221,6 +8279,32 @@ export interface ManifestAsset {
    * is missing.
    */
   original?: OriginalFile | null;
+  /**
+   * The proxies the media cache holds for this asset's fingerprint when the manifest was
+   * written (spec §4.2 "from 6B"; plan 6B-1 Task 16), pinned for the job's life by the host.
+   * A layer reads the `1080` one when `media.look` does not ask for originals
+   * ([`ManifestAsset::proxy`]).
+   */
+  proxies?: ManifestProxy[];
+}
+/**
+ * One proxy entry of the media cache (`cache/media/<key[0..2]>/<key>/`): `proxy.mp4`,
+ * `table.bin` (the original's sample table) and `meta.json` (plan 6B-1 Decision 7).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ManifestProxy".
+ */
+export interface ManifestProxy {
+  codec: ProxyCodec;
+  /**
+   * The entry's directory on this machine, absolute.
+   */
+  dir: string;
+  /**
+   * The entry's cache key.
+   */
+  key: string;
+  tier: ProxyTier;
 }
 /**
  * Font bytes for captions (plan 6A Decision 3): the server's font cache, read-only, then the
@@ -9535,6 +9619,47 @@ export interface UnitEntry {
   source: UnitSource;
 }
 /**
+ * `strip.json`: where each time of the source is in the sprites.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "StripIndex".
+ */
+export interface StripIndex {
+  /**
+   * [`STRIP_SPRITE_SECONDS`].
+   */
+  spriteSeconds: number;
+  sprites: StripSprite[];
+  tileHeight: number;
+  /**
+   * [`STRIP_TILE_SECONDS`].
+   */
+  tileSeconds: number;
+  tileWidth: number;
+  version: number;
+}
+/**
+ * One sprite of `strip.json`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "StripSprite".
+ */
+export interface StripSprite {
+  file: string;
+  tiles: StripTile[];
+}
+/**
+ * One tile of a sprite in `strip.json`: its source time and the original frame it shows; its
+ * x offset in the sprite is its position times the tile width.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "StripTile".
+ */
+export interface StripTile {
+  at: Rational;
+  frame: number;
+}
+/**
  * A package target's signed custom metadata (`custom` in its publisher's delegated role): one
  * type for the editor that signs it, the TUF client that reads it and the plan that checks it.
  *
@@ -9909,6 +10034,152 @@ export interface TestWarmResult {
   probes?: (number | null)[];
   served: number;
   value: unknown;
+}
+/**
+ * What a thumbnail item reports (`item` value): its file in the entry and what it shows.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ThumbItem".
+ */
+export interface ThumbItem {
+  /**
+   * The requested time (thumbnails).
+   */
+  at?: Rational;
+  file: string;
+  /**
+   * The original frame index shown (`frame_at`), thumbnails only.
+   */
+  frame?: number;
+  height: number;
+  /**
+   * The tiles of the sprite (filmstrips).
+   */
+  tiles?: number;
+  width: number;
+}
+/**
+ * `media.thumbs` v1: thumbnails or a filmstrip of the asset `asset` (content `fingerprint`),
+ * which the cache knows as `key`. A batch kind whose items are the thumbnails or sprites.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ThumbsParams".
+ */
+export interface ThumbsParams {
+  /**
+   * A project asset, through the job's `in/manifest.json` (its fingerprint there must be
+   * `fingerprint`, else `ASSET_CHANGED`).
+   */
+  asset: string;
+  /**
+   * The branch whose head names the asset (`main` when absent). Host only.
+   */
+  branch?: string;
+  /**
+   * The vendor class the host expects the original's decoder to have (part of the key).
+   */
+  decoderClass: VendorClass;
+  /**
+   * The source's display size, for the kind's memory rule (Decision 18). Host only.
+   */
+  display?: Size;
+  fingerprint: string;
+  /**
+   * [`thumbs_key`] of the fields above: where the host commits the entry.
+   */
+  key: string;
+  mode: ThumbsMode;
+  /**
+   * The items still to make (a retry after a crash: the engine restricts the params to the
+   * items it has not acknowledged); all of them when absent. Files of the others are kept.
+   */
+  only?: string[];
+  /**
+   * The project that asked (host only: `prepare` writes the manifest from its branch head,
+   * `onSucceeded` commits the entry for it).
+   */
+  projectId?: string;
+}
+/**
+ * What `mediaThumbsPlan` answers.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ThumbsPlan".
+ */
+export interface ThumbsPlan {
+  /**
+   * The backend the report names first for the original's codec (absent when planned from
+   * a proxy's `decoderClass`).
+   */
+  decoder?: string;
+  decoderClass: VendorClass;
+  /**
+   * The job's items.
+   */
+  items: string[];
+  key: string;
+  /**
+   * The mode with a filmstrip's sprite count filled in.
+   */
+  mode: ThumbsMode;
+}
+/**
+ * What `mediaThumbsPlan` (fin-node) is asked: the key of a `media.thumbs` job before it is
+ * submitted. The decoder class comes from the original (`sourceCodec` and the report's
+ * `decoders` for it: the first that decodes it) or, when the original is not read, from the
+ * `1080` proxy entry the worker will read (`decoderClass`, which its `meta.json` records:
+ * Decision 11 keys the original's decoder class either way). Exactly one of the two.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ThumbsPlanRequest".
+ */
+export interface ThumbsPlanRequest {
+  /**
+   * The original's decoder class as a proxy entry records it (instead of `sourceCodec`).
+   */
+  decoderClass?: VendorClass;
+  /**
+   * The report's backends for `source_codec`, in the order they are tried.
+   */
+  decoders?: string[];
+  /**
+   * The source's duration in seconds (`MediaInfo.duration`; filmstrips).
+   */
+  duration?: Rational;
+  fingerprint: string;
+  /**
+   * A filmstrip with `sprites: 0` (or none) is planned from `duration`.
+   */
+  mode: ThumbsMode;
+  /**
+   * The original's video codec (the asset's `video.codec`).
+   */
+  sourceCodec?: VideoCodec;
+}
+/**
+ * What a `media.thumbs` run answers: where its frames came from.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ThumbsRun".
+ */
+export interface ThumbsRun {
+  /**
+   * The entry is complete (`meta.json` written).
+   */
+  complete: boolean;
+  /**
+   * Items made in this run.
+   */
+  made: number;
+  /**
+   * Why the proxy the manifest lists could not be read (the original was read instead):
+   * `missing`, `changed` or `invalid`, as a look's `proxyFallbacks` give it.
+   */
+  proxyFailed?: string;
+  /**
+   * `proxy` or `original`.
+   */
+  source: string;
 }
 /**
  * `tx.get` for a transaction that is not (or no longer) on its branch.

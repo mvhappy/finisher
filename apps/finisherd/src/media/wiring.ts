@@ -12,7 +12,9 @@ import { Effect } from "effect";
 import type { Tickets } from "../auth/tickets.ts";
 import type { ListenerPolicy } from "../http/policy.ts";
 import type { JobEngine } from "../jobs/api.ts";
+import { MEDIA_LOOK } from "../jobs/kinds/media.look.ts";
 import type { ProxyKindDeps } from "../jobs/kinds/media.proxy.ts";
+import { MEDIA_THUMBS } from "../jobs/kinds/media.thumbs.ts";
 import type { LibraryService } from "../library/service.ts";
 import type { ProjectRegistryShape } from "../projects.ts";
 import type { MediaCacheService } from "./cache.ts";
@@ -20,6 +22,7 @@ import { CapTokens } from "./cap-tokens.ts";
 import { makeMediaHttp, type MediaRequestHandler } from "./http.ts";
 import { type CapabilitiesCache, mediaCapabilities } from "./caps.ts";
 import { MEDIA_SYSTEM_OWNER, type ProxyService, makeProxyService } from "./proxy.ts";
+import { type ThumbsService, makeThumbsService } from "./thumbs.ts";
 import { proxy540Stage } from "./stages.ts";
 
 export interface MediaWiring {
@@ -36,7 +39,7 @@ export interface MediaWiring {
     engine: JobEngine,
     library: Pick<LibraryService, "registerStage" | "registry">,
     projects: Pick<ProjectRegistryShape, "ensure" | "snapshot" | "resolveBranch" | "dirOf">,
-  ) => { readonly capabilities: CapabilitiesCache; readonly proxies: ProxyService };
+  ) => { readonly capabilities: CapabilitiesCache; readonly proxies: ProxyService; readonly thumbs: ThumbsService };
 }
 
 export function mediaWiring(mediaCache: MediaCacheService, tickets: Pick<Tickets, "onDrop">, log: (message: string) => void): MediaWiring {
@@ -71,12 +74,17 @@ export function mediaWiring(mediaCache: MediaCacheService, tickets: Pick<Tickets
         },
       });
       caps = capabilities;
+      // The pins of a look or thumbnails job on the proxies its manifest lists (6B-1 Tasks 16 and
+      // 15) end with the job, however it ends.
+      engine.onDone((job) => {
+        if (job.kind === MEDIA_LOOK || job.kind === MEDIA_THUMBS) void mediaCache.cache?.release(`job:${job.id}`).catch(() => undefined);
+      });
       const delay = testHooks === undefined ? 0 : Number(process.env.FIN_TEST_PROXY_DELAY_MS ?? 0);
       proxies = makeProxyService({ registry: projects, engine, capabilities, cache: () => mediaCache.cache, log, ...(Number.isFinite(delay) && delay > 0 ? { testDelayMs: delay } : {}) });
       if (library.registry.list().length > 0) void Effect.runPromise(Effect.ignore(capabilities(MEDIA_SYSTEM_OWNER)));
       for (const id of early) void proxies.used(id);
       early.clear();
-      return { capabilities, proxies };
+      return { capabilities, proxies, thumbs: makeThumbsService({ engine, capabilities, proxies, cache: () => mediaCache.cache }) };
     },
   };
 }

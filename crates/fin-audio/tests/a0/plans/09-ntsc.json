@@ -1,0 +1,414 @@
+{
+  "plan": {
+    "from": "1001/30000",
+    "items": [
+      {
+        "asset": "a1",
+        "from": "1001/30000",
+        "gain": [
+          {
+            "db": [
+              0.0,
+              0.0
+            ],
+            "from": "1001/30000",
+            "interp": {
+              "type": "hold"
+            },
+            "shapes": [
+              {
+                "curve": "linear",
+                "kind": "fadeIn",
+                "p": [
+                  0.06666666666666667,
+                  1.0
+                ]
+              }
+            ],
+            "to": "1001/2000",
+            "u": [
+              0.0,
+              1.0
+            ]
+          },
+          {
+            "db": [
+              0.0,
+              0.0
+            ],
+            "from": "1001/2000",
+            "interp": {
+              "type": "hold"
+            },
+            "to": "1001/400",
+            "u": [
+              0.0,
+              1.0
+            ]
+          },
+          {
+            "db": [
+              0.0,
+              0.0
+            ],
+            "from": "1001/400",
+            "interp": {
+              "type": "hold"
+            },
+            "shapes": [
+              {
+                "curve": "equalPower",
+                "kind": "crossOut",
+                "p": [
+                  0.0,
+                  1.0
+                ]
+              }
+            ],
+            "to": "7007/2000",
+            "u": [
+              0.0,
+              1.0
+            ]
+          }
+        ],
+        "item": "c1",
+        "pan": [
+          {
+            "from": "1001/30000",
+            "interp": {
+              "type": "hold"
+            },
+            "pan": [
+              0.0,
+              0.0
+            ],
+            "to": "7007/2000",
+            "u": [
+              0.0,
+              1.0
+            ]
+          }
+        ],
+        "sourceFrom": "1001/30000",
+        "speed": "1",
+        "to": "7007/2000",
+        "track": "t1"
+      },
+      {
+        "asset": "a2",
+        "from": "1001/400",
+        "gain": [
+          {
+            "db": [
+              0.0,
+              0.0
+            ],
+            "from": "1001/400",
+            "interp": {
+              "type": "hold"
+            },
+            "shapes": [
+              {
+                "curve": "equalPower",
+                "kind": "crossIn",
+                "p": [
+                  0.0,
+                  1.0
+                ]
+              }
+            ],
+            "to": "7007/2000",
+            "u": [
+              0.0,
+              1.0
+            ]
+          },
+          {
+            "db": [
+              0.0,
+              0.0
+            ],
+            "from": "7007/2000",
+            "interp": {
+              "type": "hold"
+            },
+            "to": "13013/3000",
+            "u": [
+              0.0,
+              1.0
+            ]
+          },
+          {
+            "db": [
+              0.0,
+              0.0
+            ],
+            "from": "13013/3000",
+            "interp": {
+              "type": "hold"
+            },
+            "shapes": [
+              {
+                "curve": "linear",
+                "kind": "fadeOut",
+                "p": [
+                  0.0,
+                  1.0
+                ]
+              }
+            ],
+            "to": "1001/200",
+            "u": [
+              0.0,
+              1.0
+            ]
+          }
+        ],
+        "item": "c2",
+        "pan": [
+          {
+            "from": "1001/400",
+            "interp": {
+              "type": "hold"
+            },
+            "pan": [
+              0.0,
+              0.0
+            ],
+            "to": "1001/200",
+            "u": [
+              0.0,
+              1.0
+            ]
+          }
+        ],
+        "sourceFrom": "1001/2000",
+        "speed": "1",
+        "to": "1001/200",
+        "track": "t1"
+      },
+      {
+        "asset": "a1",
+        "from": "1001/3000",
+        "gain": [
+          {
+            "db": [
+              -6.0,
+              -6.0
+            ],
+            "from": "1001/3000",
+            "interp": {
+              "type": "hold"
+            },
+            "to": "13013/3000",
+            "u": [
+              0.0,
+              1.0
+            ]
+          }
+        ],
+        "item": "c3",
+        "pan": [
+          {
+            "from": "1001/3000",
+            "interp": {
+              "type": "hold"
+            },
+            "pan": [
+              0.7,
+              0.7
+            ],
+            "to": "13013/3000",
+            "u": [
+              0.0,
+              1.0
+            ]
+          }
+        ],
+        "sourceFrom": "1001/600",
+        "speed": "1",
+        "to": "13013/3000",
+        "track": "t2"
+      }
+    ],
+    "timeline": "tl1",
+    "to": "1001/200"
+  },
+  "project": {
+    "assets": {
+      "a1": {
+        "audio": {
+          "channels": 2,
+          "sampleRate": 48000
+        },
+        "duration": "600",
+        "fingerprint": "fp-a1",
+        "id": "a1",
+        "kind": "media",
+        "path": "a1.bin"
+      },
+      "a2": {
+        "audio": {
+          "channels": 1,
+          "sampleRate": 48000
+        },
+        "duration": "600",
+        "fingerprint": "fp-a2",
+        "id": "a2",
+        "kind": "media",
+        "path": "a2.bin"
+      }
+    },
+    "id": "p1",
+    "name": "A0",
+    "rate": "30",
+    "schemaVersion": 6,
+    "timelines": [
+      {
+        "id": "tl1",
+        "name": "tl1",
+        "rate": "30000/1001",
+        "resolution": {
+          "height": 1080,
+          "width": 1920
+        },
+        "tracks": [
+          {
+            "id": "t1",
+            "items": [
+              {
+                "asset": "a1",
+                "audio": {
+                  "fadeIn": "1001/2000"
+                },
+                "duration": "3003/1000",
+                "id": "c1",
+                "kind": "clip",
+                "sourceIn": "0",
+                "start": "0"
+              },
+              {
+                "asset": "a2",
+                "audio": {
+                  "fadeOut": "1001/1500"
+                },
+                "duration": "1001/500",
+                "id": "c2",
+                "kind": "clip",
+                "sourceIn": "1001/1000",
+                "start": "3003/1000"
+              }
+            ],
+            "kind": "audio",
+            "name": "T1",
+            "transitions": [
+              {
+                "between": [
+                  "c1",
+                  "c2"
+                ],
+                "curve": "equalPower",
+                "duration": "1001/1000",
+                "id": "tr1",
+                "kind": "crossfade"
+              }
+            ]
+          },
+          {
+            "id": "t2",
+            "items": [
+              {
+                "asset": "a1",
+                "audio": {
+                  "gain": -6.0,
+                  "pan": 0.7
+                },
+                "duration": "1001/250",
+                "id": "c3",
+                "kind": "clip",
+                "sourceIn": "1001/600",
+                "start": "1001/3000"
+              }
+            ],
+            "kind": "audio",
+            "name": "T2"
+          }
+        ]
+      }
+    ]
+  },
+  "range": [
+    "1001/30000",
+    "1001/200"
+  ],
+  "sources": {
+    "a1": {
+      "l": [
+        {
+          "db": -3.0,
+          "kind": "pink",
+          "seed": 1
+        },
+        {
+          "db": -12.0,
+          "hz": 220.0,
+          "kind": "sine"
+        }
+      ],
+      "r": [
+        {
+          "db": -3.0,
+          "kind": "pink",
+          "seed": 2
+        },
+        {
+          "db": -12.0,
+          "hz": 330.0,
+          "kind": "sine"
+        }
+      ],
+      "secs": 8
+    },
+    "a2": {
+      "mono": [
+        {
+          "burst": 0.9,
+          "db": -6.0,
+          "hz": 180.0,
+          "kind": "burst",
+          "start": 0.25
+        },
+        {
+          "burst": 1.2,
+          "db": -18.0,
+          "hz": 240.0,
+          "kind": "burst",
+          "start": 1.5
+        },
+        {
+          "burst": 0.6,
+          "db": -10.0,
+          "hz": 6500.0,
+          "kind": "burst",
+          "start": 3.0
+        },
+        {
+          "burst": 1.5,
+          "db": -3.0,
+          "hz": 150.0,
+          "kind": "burst",
+          "start": 4.0
+        },
+        {
+          "db": -50.0,
+          "kind": "noise",
+          "seed": 3
+        }
+      ],
+      "secs": 8
+    }
+  },
+  "timeline": "tl1",
+  "what": "a 29.97 timeline: edges, fades and an equal-power crossfade on 1001/30000 frame times"
+}

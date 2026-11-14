@@ -28,8 +28,10 @@ use fin_codecs::{DecodeThreads, FrameReader, ProbeResult};
 use fin_compositor::LayerIssue;
 use fin_container::Limits;
 use fin_library::{Expect, OpenError, RawRel};
-use fin_media::jobs::{LOOK_MAX_SIDE, ManifestAsset, OriginalFile};
+use fin_media::jobs::{LOOK_MAX_SIDE, ManifestAsset, ManifestProxy, OriginalFile};
 use serde_json::{Value, json};
+
+use super::proxy_source::{self, ProxySide, Refusal};
 
 /// Sources kept open.
 pub const MAX_OPEN: usize = 8;
@@ -114,19 +116,29 @@ pub fn missing(asset: &str, reason: &str, message: Option<&str>) -> LayerIssue {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct Key {
-    fingerprint: String,
-    path: String,
-    size: u64,
-    mtime_ns: String,
-    file_id: Option<String>,
+enum Key {
+    Original {
+        fingerprint: String,
+        path: String,
+        size: u64,
+        mtime_ns: String,
+        file_id: Option<String>,
+    },
+    /// A proxy cache entry (plan 6B-1 Task 16): its key says everything, the directory is where
+    /// this machine keeps it.
+    Proxy {
+        fingerprint: String,
+        key: String,
+        dir: String,
+    },
 }
 
 /// An open source: its reader and a second handle on the same file, for the identity check
-/// on reuse.
+/// on reuse. A proxy entry's `proxy` holds the original's table and display facts.
 pub struct Opened {
     pub reader: FrameReader<File>,
     held: File,
+    pub proxy: Option<ProxySide>,
 }
 
 pub enum Entry {
@@ -173,6 +185,28 @@ impl OpenCache {
         self.confine.as_deref()
     }
 
+    /// Moves the entry `key` to the most recently used end when it is there and `valid`, drops
+    /// it when it is not; whether it is there to use.
+    fn reuse(&mut self, key: &Key, valid: impl FnOnce(&Entry) -> bool) -> bool {
+        let Some(i) = self.entries.iter().position(|(k, _)| k == key) else {
+            return false;
+        };
+        let e = self.entries.remove(i);
+        let ok = valid(&e.1);
+        if ok {
+            self.entries.push(e);
+        }
+        ok
+    }
+
+    /// Makes room for one more entry, then keeps `entry` as the most recently used.
+    fn push(&mut self, key: Key, entry: Entry) {
+        if self.entries.len() >= MAX_OPEN {
+            self.entries.remove(0);
+        }
+        self.entries.push((key, entry));
+    }
+
     /// The entry of `asset` (its `original` present), opened now if it is not open.
     pub fn get(
         &mut self,
@@ -180,35 +214,79 @@ impl OpenCache {
         o: &OriginalFile,
         caps: &ProbeResult,
     ) -> (&mut Entry, Got) {
-        let key = Key {
+        let key = Key::Original {
             fingerprint: asset.fingerprint.clone(),
             path: o.path.clone(),
             size: o.size,
             mtime_ns: o.mtime_ns.clone(),
             file_id: o.file_id.clone(),
         };
-        let mut got = Got::Opened;
-        if let Some(i) = self.entries.iter().position(|(k, _)| *k == key) {
-            let held_ok = match &self.entries[i].1 {
-                Entry::Open(open) => still_there(o, &open.held, self.confine.as_deref()),
-                Entry::Failed(_) => true,
-            };
-            let e = self.entries.remove(i);
-            if held_ok {
-                self.entries.push(e);
-                got = Got::Reused;
-            }
-        }
-        if got == Got::Opened {
-            if self.entries.len() >= MAX_OPEN {
-                self.entries.remove(0);
-            }
+        let confine = self.confine.clone();
+        let reused = self.reuse(&key, |e| match e {
+            Entry::Open(open) => still_there(o, &open.held, confine.as_deref()),
+            Entry::Failed(_) => true,
+        });
+        let got = if reused { Got::Reused } else { Got::Opened };
+        if !reused {
             let entry = open(&asset.asset, o, caps, self.confine.as_deref());
-            self.entries.push((key, entry));
+            self.push(key, entry);
         }
         self.enforce_budget(FRAME_BUDGET);
         let (_, entry) = self.entries.last_mut().expect("just pushed");
         (entry, got)
+    }
+
+    /// The open proxy entry `p` of `asset`, opened now if it is not open. A proxy that cannot be
+    /// used is a [`Refusal`] and no entry (the layer reads the original; a later job asks
+    /// again, as the entry may be back). The entry just returned is the most recently used one:
+    /// [`last_proxy`](Self::last_proxy) reaches it again.
+    pub fn get_proxy(
+        &mut self,
+        asset: &ManifestAsset,
+        p: &ManifestProxy,
+        caps: &ProbeResult,
+    ) -> Result<Got, Refusal> {
+        // Under `--replay` a manifest's cache directory is another machine's.
+        if self.confine.is_some() {
+            return Err(Refusal::Missing);
+        }
+        let key = Key::Proxy {
+            fingerprint: asset.fingerprint.clone(),
+            key: p.key.clone(),
+            dir: p.dir.clone(),
+        };
+        let reused = self.reuse(&key, |e| match e {
+            Entry::Open(open) => open
+                .proxy
+                .as_ref()
+                .is_some_and(|side| proxy_source::still_there(p, side)),
+            Entry::Failed(_) => false,
+        });
+        if !reused {
+            let o = proxy_source::open(p, &asset.fingerprint, caps)?;
+            self.push(
+                key,
+                Entry::Open(Box::new(Opened {
+                    reader: o.reader,
+                    held: o.held,
+                    proxy: Some(o.side),
+                })),
+            );
+        }
+        self.enforce_budget(FRAME_BUDGET);
+        Ok(if reused { Got::Reused } else { Got::Opened })
+    }
+
+    /// The most recently used entry, which [`get_proxy`](Self::get_proxy) just made current,
+    /// as an open proxy.
+    pub fn last_proxy(&mut self) -> Option<(&mut FrameReader<File>, &ProxySide)> {
+        match self.entries.last_mut() {
+            Some((Key::Proxy { .. }, Entry::Open(o))) => {
+                let side = o.proxy.as_ref()?;
+                Some((&mut o.reader, side))
+            }
+            _ => None,
+        }
     }
 
     /// The decoded frames all entries keep, in bytes.
@@ -273,7 +351,11 @@ fn open(asset: &str, o: &OriginalFile, caps: &ProbeResult, confine: Option<&Path
     match reader {
         Ok(mut reader) => {
             reader.set_cache_cap(FRAME_BUDGET / 4);
-            Entry::Open(Box::new(Opened { reader, held }))
+            Entry::Open(Box::new(Opened {
+                reader,
+                held,
+                proxy: None,
+            }))
         }
         Err(e) => {
             let mut details = match e.details {
@@ -332,6 +414,7 @@ mod tests {
             kind: AssetKind::Media,
             fingerprint: "fp".into(),
             original: Some(o.clone()),
+            proxies: Vec::new(),
         }
     }
 

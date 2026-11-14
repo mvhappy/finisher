@@ -10523,6 +10523,21 @@
           "description": "The plan's BLAKE3 (lowercase hex).",
           "type": "string"
         },
+        "proxyFallbacks": {
+          "description": "The assets whose proxy was listed in the manifest but could not be read (their layers\nread the original); absent when none.",
+          "items": {
+            "$ref": "#/$defs/LookProxyFallback"
+          },
+          "type": "array"
+        },
+        "source": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/LookSource"
+            }
+          ],
+          "description": "Where the frame's pictures came from."
+        },
         "width": {
           "format": "uint32",
           "minimum": 0,
@@ -10534,7 +10549,8 @@
         "file",
         "width",
         "height",
-        "plan"
+        "plan",
+        "source"
       ],
       "type": "object"
     },
@@ -10552,6 +10568,10 @@
         "branch": {
           "description": "The branch of the snapshot (an id, a name or `<name>#<id>`).",
           "type": "string"
+        },
+        "originals": {
+          "description": "Read the originals only: a layer never reads a proxy (`fin look --originals`, plan\n6B-1 Task 16). Part of the job's identity (`dedupe`).",
+          "type": "boolean"
         },
         "outDir": {
           "description": "Where the kind's `onSucceeded` moves the frames: absolute, or relative to the project\nfolder; `workspace/shared/look/` when absent. Never inside `.finisher/` or `assets/`\n(`EXPORT_DESTINATION`). The worker ignores it.",
@@ -10595,6 +10615,23 @@
         "timeline",
         "at",
         "outName"
+      ],
+      "type": "object"
+    },
+    "LookProxyFallback": {
+      "description": "Why a layer that had a proxy read its original instead (`LookFrame.proxyFallbacks`): the\nentry or its files were gone, changed or unreadable between the manifest and the open.",
+      "properties": {
+        "asset": {
+          "type": "string"
+        },
+        "reason": {
+          "description": "`missing`, `changed`, `invalid` (the entry's files do not agree with each other or the\noriginal) or `decode` (a proxy frame did not decode).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "asset",
+        "reason"
       ],
       "type": "object"
     },
@@ -10656,6 +10693,21 @@
         "details"
       ],
       "type": "object"
+    },
+    "LookSource": {
+      "description": "What a look frame's pictures were read from (plan 6B-1 Task 16).",
+      "oneOf": [
+        {
+          "const": "proxy",
+          "description": "At least one layer of the frame read a `1080` proxy through its original's sample\ntable: the frame is within T5 of the original's, not bit-equal to it.",
+          "type": "string"
+        },
+        {
+          "const": "original",
+          "description": "Every media layer read its original (or the frame has none).",
+          "type": "string"
+        }
+      ]
     },
     "LookStats": {
       "description": "What a warm worker reused (spec §3.2 item 1: caches keyed by content).",
@@ -10853,6 +10905,13 @@
             }
           ],
           "description": "The file on this machine (plan 6A Decision 5: the model's stored path), `null` when it\nis missing."
+        },
+        "proxies": {
+          "description": "The proxies the media cache holds for this asset's fingerprint when the manifest was\nwritten (spec §4.2 \"from 6B\"; plan 6B-1 Task 16), pinned for the job's life by the host.\nA layer reads the `1080` one when `media.look` does not ask for originals\n([`ManifestAsset::proxy`]).",
+          "items": {
+            "$ref": "#/$defs/ManifestProxy"
+          },
+          "type": "array"
         }
       },
       "required": [
@@ -10877,6 +10936,32 @@
           "type": "array"
         }
       },
+      "type": "object"
+    },
+    "ManifestProxy": {
+      "description": "One proxy entry of the media cache (`cache/media/<key[0..2]>/<key>/`): `proxy.mp4`,\n`table.bin` (the original's sample table) and `meta.json` (plan 6B-1 Decision 7).",
+      "properties": {
+        "codec": {
+          "$ref": "#/$defs/ProxyCodec"
+        },
+        "dir": {
+          "description": "The entry's directory on this machine, absolute.",
+          "type": "string"
+        },
+        "key": {
+          "description": "The entry's cache key.",
+          "type": "string"
+        },
+        "tier": {
+          "$ref": "#/$defs/ProxyTier"
+        }
+      },
+      "required": [
+        "tier",
+        "key",
+        "dir",
+        "codec"
+      ],
       "type": "object"
     },
     "Marker": {
@@ -18112,6 +18197,93 @@
       ],
       "type": "object"
     },
+    "StripIndex": {
+      "additionalProperties": false,
+      "description": "`strip.json`: where each time of the source is in the sprites.",
+      "properties": {
+        "spriteSeconds": {
+          "description": "[`STRIP_SPRITE_SECONDS`].",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sprites": {
+          "items": {
+            "$ref": "#/$defs/StripSprite"
+          },
+          "type": "array"
+        },
+        "tileHeight": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tileSeconds": {
+          "description": "[`STRIP_TILE_SECONDS`].",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tileWidth": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "version": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version",
+        "tileWidth",
+        "tileHeight",
+        "tileSeconds",
+        "spriteSeconds",
+        "sprites"
+      ],
+      "type": "object"
+    },
+    "StripSprite": {
+      "additionalProperties": false,
+      "description": "One sprite of `strip.json`.",
+      "properties": {
+        "file": {
+          "type": "string"
+        },
+        "tiles": {
+          "items": {
+            "$ref": "#/$defs/StripTile"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "file",
+        "tiles"
+      ],
+      "type": "object"
+    },
+    "StripTile": {
+      "additionalProperties": false,
+      "description": "One tile of a sprite in `strip.json`: its source time and the original frame it shows; its\nx offset in the sprite is its position times the tile width.",
+      "properties": {
+        "at": {
+          "$ref": "#/$defs/Rational"
+        },
+        "frame": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "at",
+        "frame"
+      ],
+      "type": "object"
+    },
     "Stroke": {
       "description": "An outline around the glyphs. A stroke equal to the default (width 0) is no stroke.",
       "properties": {
@@ -19007,6 +19179,298 @@
         "lineHeight",
         "letterSpacing",
         "align"
+      ],
+      "type": "object"
+    },
+    "ThumbItem": {
+      "additionalProperties": false,
+      "description": "What a thumbnail item reports (`item` value): its file in the entry and what it shows.",
+      "properties": {
+        "at": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/Rational"
+            }
+          ],
+          "description": "The requested time (thumbnails)."
+        },
+        "file": {
+          "type": "string"
+        },
+        "frame": {
+          "description": "The original frame index shown (`frame_at`), thumbnails only.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "height": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tiles": {
+          "description": "The tiles of the sprite (filmstrips).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "width": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "file",
+        "width",
+        "height"
+      ],
+      "type": "object"
+    },
+    "ThumbsMode": {
+      "description": "What `media.thumbs` makes.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "A PNG per time (source seconds), its longest side at most `max_side`.",
+          "properties": {
+            "thumbs": {
+              "additionalProperties": false,
+              "properties": {
+                "maxSide": {
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "times": {
+                  "items": {
+                    "$ref": "#/$defs/Rational"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "times",
+                "maxSide"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "thumbs"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Sprites of tiles `tile_height` tall; `sprites` is [`strip_sprites`] of the source's\nduration (the host plans it, the worker checks it: `PLAN_MISMATCH {reason: sprites}`).",
+          "properties": {
+            "strip": {
+              "additionalProperties": false,
+              "properties": {
+                "sprites": {
+                  "default": 0,
+                  "description": "0 in a plan request: the host fills it from the duration.",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "tileHeight": {
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "tileHeight"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "strip"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ThumbsParams": {
+      "additionalProperties": false,
+      "description": "`media.thumbs` v1: thumbnails or a filmstrip of the asset `asset` (content `fingerprint`),\nwhich the cache knows as `key`. A batch kind whose items are the thumbnails or sprites.",
+      "properties": {
+        "asset": {
+          "description": "A project asset, through the job's `in/manifest.json` (its fingerprint there must be\n`fingerprint`, else `ASSET_CHANGED`).",
+          "type": "string"
+        },
+        "branch": {
+          "description": "The branch whose head names the asset (`main` when absent). Host only.",
+          "type": "string"
+        },
+        "decoderClass": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/VendorClass"
+            }
+          ],
+          "description": "The vendor class the host expects the original's decoder to have (part of the key)."
+        },
+        "display": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/Size"
+            }
+          ],
+          "description": "The source's display size, for the kind's memory rule (Decision 18). Host only."
+        },
+        "fingerprint": {
+          "type": "string"
+        },
+        "key": {
+          "description": "[`thumbs_key`] of the fields above: where the host commits the entry.",
+          "type": "string"
+        },
+        "mode": {
+          "$ref": "#/$defs/ThumbsMode"
+        },
+        "only": {
+          "description": "The items still to make (a retry after a crash: the engine restricts the params to the\nitems it has not acknowledged); all of them when absent. Files of the others are kept.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "projectId": {
+          "description": "The project that asked (host only: `prepare` writes the manifest from its branch head,\n`onSucceeded` commits the entry for it).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "fingerprint",
+        "asset",
+        "mode",
+        "decoderClass",
+        "key"
+      ],
+      "type": "object"
+    },
+    "ThumbsPlan": {
+      "additionalProperties": false,
+      "description": "What `mediaThumbsPlan` answers.",
+      "properties": {
+        "decoder": {
+          "description": "The backend the report names first for the original's codec (absent when planned from\na proxy's `decoderClass`).",
+          "type": "string"
+        },
+        "decoderClass": {
+          "$ref": "#/$defs/VendorClass"
+        },
+        "items": {
+          "description": "The job's items.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "key": {
+          "type": "string"
+        },
+        "mode": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/ThumbsMode"
+            }
+          ],
+          "description": "The mode with a filmstrip's sprite count filled in."
+        }
+      },
+      "required": [
+        "key",
+        "decoderClass",
+        "mode",
+        "items"
+      ],
+      "type": "object"
+    },
+    "ThumbsPlanRequest": {
+      "additionalProperties": false,
+      "description": "What `mediaThumbsPlan` (fin-node) is asked: the key of a `media.thumbs` job before it is\nsubmitted. The decoder class comes from the original (`sourceCodec` and the report's\n`decoders` for it: the first that decodes it) or, when the original is not read, from the\n`1080` proxy entry the worker will read (`decoderClass`, which its `meta.json` records:\nDecision 11 keys the original's decoder class either way). Exactly one of the two.",
+      "properties": {
+        "decoderClass": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/VendorClass"
+            }
+          ],
+          "description": "The original's decoder class as a proxy entry records it (instead of `sourceCodec`)."
+        },
+        "decoders": {
+          "description": "The report's backends for `source_codec`, in the order they are tried.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "duration": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/Rational"
+            }
+          ],
+          "description": "The source's duration in seconds (`MediaInfo.duration`; filmstrips)."
+        },
+        "fingerprint": {
+          "type": "string"
+        },
+        "mode": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/ThumbsMode"
+            }
+          ],
+          "description": "A filmstrip with `sprites: 0` (or none) is planned from `duration`."
+        },
+        "sourceCodec": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/VideoCodec"
+            }
+          ],
+          "description": "The original's video codec (the asset's `video.codec`)."
+        }
+      },
+      "required": [
+        "fingerprint",
+        "mode"
+      ],
+      "type": "object"
+    },
+    "ThumbsRun": {
+      "additionalProperties": false,
+      "description": "What a `media.thumbs` run answers: where its frames came from.",
+      "properties": {
+        "complete": {
+          "description": "The entry is complete (`meta.json` written).",
+          "type": "boolean"
+        },
+        "made": {
+          "description": "Items made in this run.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "proxyFailed": {
+          "description": "Why the proxy the manifest lists could not be read (the original was read instead):\n`missing`, `changed` or `invalid`, as a look's `proxyFallbacks` give it.",
+          "type": "string"
+        },
+        "source": {
+          "description": "`proxy` or `original`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "made",
+        "source",
+        "complete"
       ],
       "type": "object"
     },

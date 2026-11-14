@@ -262,6 +262,8 @@ mod tests {
             width: w,
             height: h,
             plan: String::new(),
+            source: fin_media::jobs::LookSource::Original,
+            proxy_fallbacks: Vec::new(),
         };
         let frames = [frame(1920, 1080), frame(640, 360)];
         let facts = JobFacts {

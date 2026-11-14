@@ -66,6 +66,10 @@ pub struct LookParams {
     /// (`EXPORT_DESTINATION`). The worker ignores it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub out_dir: Option<String>,
+    /// Read the originals only: a layer never reads a proxy (`fin look --originals`, plan
+    /// 6B-1 Task 16). Part of the job's identity (`dedupe`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub originals: bool,
 }
 
 /// Each side of a frame 1 to [`LOOK_MAX_SIDE`].
@@ -131,6 +135,28 @@ impl LookParams {
     }
 }
 
+/// What a look frame's pictures were read from (plan 6B-1 Task 16).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum LookSource {
+    /// At least one layer of the frame read a `1080` proxy through its original's sample
+    /// table: the frame is within T5 of the original's, not bit-equal to it.
+    Proxy,
+    /// Every media layer read its original (or the frame has none).
+    Original,
+}
+
+/// Why a layer that had a proxy read its original instead (`LookFrame.proxyFallbacks`): the
+/// entry or its files were gone, changed or unreadable between the manifest and the open.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LookProxyFallback {
+    pub asset: String,
+    /// `missing`, `changed`, `invalid` (the entry's files do not agree with each other or the
+    /// original) or `decode` (a proxy frame did not decode).
+    pub reason: String,
+}
+
 /// One rendered frame of a `media.look`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -143,6 +169,12 @@ pub struct LookFrame {
     pub height: u32,
     /// The plan's BLAKE3 (lowercase hex).
     pub plan: String,
+    /// Where the frame's pictures came from.
+    pub source: LookSource,
+    /// The assets whose proxy was listed in the manifest but could not be read (their layers
+    /// read the original); absent when none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub proxy_fallbacks: Vec<LookProxyFallback>,
 }
 
 /// A layer, or an effect or mask of a drawn one, that a frame left out (spec §2.7).
@@ -223,6 +255,7 @@ mod tests {
             branch: None,
             rev: None,
             out_dir: None,
+            originals: false,
         }
     }
 

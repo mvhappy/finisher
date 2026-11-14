@@ -40,6 +40,7 @@ pub static JOB_KINDS: NameTable = NameTable::new(
         "media.capabilities",
         "media.probeDeep",
         "media.proxy",
+        "media.thumbs",
     ],
 );
 

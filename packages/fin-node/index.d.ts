@@ -544,6 +544,8 @@ export * from "./sandbox.js";
 export * from "./library.js";
 // The media cache (`media-cache.js`, 6B-1 Task 13).
 export * from "./media-cache.js";
+// Thumbnail and filmstrip plans (`media-thumbs.js`, 6B-1 Task 15).
+export * from "./media-thumbs.js";
 // The native Windows pipe listener (`pipe.js`).
 export * from "./pipe.js";
 // The vault and the identity key (`vault.js`, 5B).

@@ -32,7 +32,7 @@ fn bessel_i0(x: f64) -> f64 {
 }
 
 /// The polyphase tables for the reduced ratio `l / m` (output rate / input rate).
-pub(super) struct Kernel {
+pub(crate) struct Kernel {
     /// Taps either side of the output instant, in input samples: tap `j` of a table reads input
     /// `i − half + 1 + j`, where `i = floor(t)` for the output's source time `t`.
     pub half: usize,
@@ -104,7 +104,7 @@ fn tap(d: f64, fc: f64, half_len: f64, i0_beta: f64) -> f64 {
 }
 
 /// `Σ c[j]·x[j]` in `f32`, in index order (no fused multiply-add, no reordering).
-pub(super) fn dot(c: &[f32], x: &[f32]) -> f32 {
+pub(crate) fn dot(c: &[f32], x: &[f32]) -> f32 {
     let mut acc = 0.0f32;
     for (a, b) in c.iter().zip(x) {
         acc += a * b;
