@@ -3,7 +3,7 @@
 import { Rpc } from "effect/rpc";
 import { Schema } from "effect";
 import { FinError } from "./errors.ts";
-import { AssetReprobePayload, AssetReprobeSuccess, MediaCacheGcPayload, MediaCacheGcSuccess, MediaCacheStatusSuccess, MediaCapabilitiesSuccess, MediaLookPayload, MediaLookSuccess, MediaProbeDeepPayload, MediaProbeDeepSuccess, MediaProxyPayload, MediaProxyStatusPayload, MediaProxyStatusSuccess, MediaProxySuccess, MediaUrlPayload, MediaUrlSuccess } from "./media.ts";
+import { AssetReprobePayload, AssetReprobeSuccess, MediaCacheGcPayload, MediaCacheGcSuccess, MediaCacheStatusSuccess, MediaCapabilitiesSuccess, MediaLookPayload, MediaLookSuccess, MediaProbeDeepPayload, MediaProbeDeepSuccess, MediaProxyPayload, MediaProxyStatusPayload, MediaProxyStatusSuccess, MediaProxySuccess, MediaThumbsPayload, MediaThumbsSuccess, MediaUrlPayload, MediaUrlSuccess } from "./media.ts";
 
 export const MEDIA_RPCS = [
   /** Plan 6A Task 13: looks at a timeline, and what this machine's media worker can do. */
@@ -21,4 +21,6 @@ export const MEDIA_RPCS = [
   /** 6B-1 Task 14: a proxy of a video asset, and the state of its tiers. */
   Rpc.make("media.proxy", { payload: MediaProxyPayload, success: MediaProxySuccess, error: FinError }),
   Rpc.make("media.proxy.status", { payload: MediaProxyStatusPayload, success: MediaProxyStatusSuccess, error: FinError }),
+  /** 6B-1 Task 15: thumbnails at source times, or the filmstrip, of a video asset. */
+  Rpc.make("media.thumbs", { payload: MediaThumbsPayload, success: MediaThumbsSuccess, error: FinError }),
 ] as const;

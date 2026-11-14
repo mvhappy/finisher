@@ -18,7 +18,8 @@
 //   starts its turn (interrupted or ended in the queue, gone stale, or its turn failing to start)
 //   hands them back in its run, as a provider does (plan 7D Decision 13, owner decision
 //   2026-11-13): `notice {steerReturned: {harness, steers: [{text, nodeId, at}]}}`, so
-//   `agent.session.resume {resendReturned}` sends them again.
+//   `agent.session.resume {resendReturned}` sends them again (hook context among them is held
+//   again as the notice is written, `hook-context.ts`).
 // - In memory only: a restart interrupts every running session, queued ones too.
 // - **The turn** (`enter`, `begin`): an admitted run's provider turn starts here, its budget's
 //   run clock with it; a turn that cannot start fails the run (an `error` node, the session
@@ -162,13 +163,13 @@ export class LiveLimits {
     await this.#d.turns.interrupt(sessionId, e.code);
   }
 
-  /** A steer to the session's queued run: recorded (its `userMessage`) and held; false when it has none. */
-  async hold(sessionId: string, text: string): Promise<boolean> {
+  /** A steer to the session's queued run: recorded (its `userMessage`, `payload`) and held, its node's id answered; undefined when it has none. */
+  async hold(sessionId: string, text: string, payload: Readonly<Record<string, unknown>> = { text, trigger: "steer" }): Promise<{ readonly nodeId?: string; readonly runId: string } | undefined> {
     const q = this.#queue.find((x) => x.sessionId === sessionId);
-    if (q === undefined || !this.#d.current(sessionId, q.runId)) return false;
-    const node = await this.#d.turns.append({ sessionId, runId: q.runId, kind: "userMessage", payload: { text, trigger: "steer" } });
+    if (q === undefined || !this.#d.current(sessionId, q.runId)) return undefined;
+    const node = await this.#d.turns.append({ sessionId, runId: q.runId, kind: "userMessage", payload });
     q.steers.push({ text, ...(node === undefined ? {} : { nodeId: node.id, at: node.createdAt }) });
-    return true;
+    return { runId: q.runId, ...(node === undefined ? {} : { nodeId: node.id }) };
   }
 
   isQueued(sessionId: string): boolean {

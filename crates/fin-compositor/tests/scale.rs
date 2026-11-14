@@ -4,7 +4,7 @@
 //! `gpu.rs`). NV12 planes are compared as grey RGBA images (each plane on its own).
 
 use fin_compositor::nv12::{self, Nv12Frame};
-use fin_compositor::reference::scale::{scale_nv12, scale_rgb};
+use fin_compositor::reference::scale::{scale_nv12, scale_rgb, scale_rgba8};
 use fin_compositor::{SourceFrame, scale_level};
 use fin_core::Rational;
 use fin_media::colour::{Primaries, Transfer};
@@ -153,6 +153,26 @@ fn nv12_from_rgb_matches_the_definitions() {
     assert_eq!(nv12::uv_codes([1.0, 1.0, 1.0]), (128, 128));
 }
 
+#[test]
+fn rgba8_is_the_scaled_picture_quantised() {
+    // A thumbnail is the scale pass's R′G′B′, rounded half to even, opaque.
+    let p = pattern(9, 320, 180, 5);
+    let src = source(&p, ColourTags::BT709);
+    let out = Size::new(100, 56);
+    let rgb = scale_rgb(&src, out);
+    let rgba = scale_rgba8(&src, out);
+    assert_eq!(rgba.len(), 100 * 56 * 4);
+    for (px, c) in rgba.chunks(4).zip(&rgb) {
+        for k in 0..3 {
+            assert_eq!(
+                px[k],
+                (c[k].clamp(0.0, 1.0) * 255.0).round_ties_even() as u8
+            );
+        }
+        assert_eq!(px[3], 255);
+    }
+}
+
 /// A plane as a grey RGBA image, for T1.
 fn grey(plane: &[u8]) -> Vec<u8> {
     plane.iter().flat_map(|&c| [c, c, c, 255]).collect()
@@ -236,5 +256,39 @@ mod gpu {
         };
         let e = c.scale_nv12(&gpu, &bad, Size::new(32, 32)).unwrap_err();
         assert_eq!(e.code, "UNSUPPORTED_PIXEL_FORMAT");
+    }
+
+    #[test]
+    fn gpu_scale_rgba8_within_t1() {
+        let Some(gpu) = gpu() else { return };
+        let mut c = Compositor::new(&gpu);
+        for (w, h, ow, oh, colour) in [
+            (1920, 1080, 512, 288, ColourTags::BT709),
+            (1080, 1920, 288, 512, ColourTags::BT709),
+            (321, 181, 320, 180, ColourTags::BT709),
+            (640, 360, 160, 90, PQ),
+        ] {
+            let p = pattern(7, w, h, 11);
+            let src = source(&p, colour);
+            let name = format!("{w}x{h}→{ow}x{oh} {:?}", colour.transfer);
+            let want = scale_rgba8(&src, Size::new(ow, oh));
+            let got = c.scale_rgba8(&gpu, &src, Size::new(ow, oh)).unwrap();
+            assert_eq!(got.len(), want.len(), "{name}");
+            let m = t1(&want, &got);
+            eprintln!("{name}: max |Δ| {}, PSNR {:.1} dB", m.max_abs, m.psnr);
+            assert!(passes(&m), "{name}: {m:?}");
+            assert!(got.chunks(4).all(|p| p[3] == 255), "{name}: opaque");
+        }
+        let p = flat(64, 64, 128, 128, 128);
+        let bad = SourceFrame {
+            format: PixelFormat::I444,
+            ..source(&p, ColourTags::BT709)
+        };
+        let e = c.scale_rgba8(&gpu, &bad, Size::new(32, 32)).unwrap_err();
+        assert_eq!(e.code, "UNSUPPORTED_PIXEL_FORMAT");
+        let e = c
+            .scale_rgba8(&gpu, &source(&p, ColourTags::BT709), Size::new(1, 32))
+            .unwrap_err();
+        assert_eq!(e.code, "INVALID_OP");
     }
 }

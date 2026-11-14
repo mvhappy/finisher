@@ -128,7 +128,7 @@ function readsOf(extra: unknown): ReadonlyArray<string> {
  * The item's error, which fails the job, or `undefined` for its `ProxyResult`. A worker's error
  * carries its guidance in `details.fix` (fin-workers' `job_error`): it becomes the error's `fix`.
  */
-function outcomeOf(items: ReadonlyMap<string, { readonly value?: unknown } | { readonly error: FinError }>, fp: string): FinError | undefined {
+export function outcomeOf(items: ReadonlyMap<string, { readonly value?: unknown } | { readonly error: FinError }>, fp: string): FinError | undefined {
   const o = items.get(fp);
   if (o === undefined) return finError("JOB_FAILED", "the worker answered nothing for the proxy", { item: fp });
   if (!("error" in o)) return undefined;

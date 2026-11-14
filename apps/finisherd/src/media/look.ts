@@ -34,6 +34,8 @@ export interface LookRequest {
   readonly out?: string | undefined;
   readonly size?: { readonly width: number; readonly height: number } | undefined;
   readonly wait?: boolean | undefined;
+  /** Read originals only (`fin look --originals`): a layer never reads a proxy. */
+  readonly originals?: boolean | undefined;
 }
 
 interface Rat {
@@ -165,6 +167,7 @@ export function look(deps: MediaRpcDeps, owner: JobOwner, req: LookRequest): Eff
       planSamples: [],
       ...(req.size === undefined ? {} : { size: { width: req.size.width, height: req.size.height } }),
       ...(req.out === undefined ? {} : { outDir: req.out }),
+      ...(req.originals === true ? { originals: true } : {}),
     };
     const job = yield* deps.engine.submit(owner, { kind: MEDIA_LOOK, params, project: req.projectId });
     if (req.wait === false) return { job };

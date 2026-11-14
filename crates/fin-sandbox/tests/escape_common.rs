@@ -279,7 +279,7 @@ mod unix {
 
     fn hook(t: &Tree) -> LaunchRequest {
         LaunchRequest::Hook(HookInput {
-            project_dir: t.p("p"),
+            project_dir: Some(t.p("p")),
             hook_file: t.p("p/hooks/check.sh"),
             toolchains: toolchains(),
             tmp: t.p("hook-tmp"),

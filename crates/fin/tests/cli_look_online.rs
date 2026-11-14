@@ -314,6 +314,68 @@ fn media_proxy_and_status_answer_typed() {
     assert_eq!(bad.code, 2, "{}", bad.stdout);
 }
 
+#[test]
+fn media_thumbs_answer_typed() {
+    let Some(server) = Server::start_with("media_thumbs", Vec::new(), None) else {
+        return;
+    };
+    let (sd, root) = (&server.sd, &server.root);
+    ok(fin(
+        sd,
+        root,
+        &["project", "create", "film", "--name", "Film"],
+    ));
+    let dir = root.join("film");
+    media(&dir.join("clip.mp4"), 1);
+    ok(fin(sd, &dir, &["asset", "add", "clip.mp4"]));
+    let rev = ok(fin(sd, &dir, &["status"]))["rev"].clone();
+    // Exactly one of --at and --strip, each option with its own mode: usage errors (exit 2),
+    // before anything reaches the server.
+    for args in [
+        &["media", "thumbs", "a1"][..],
+        &["media", "thumbs", "a1", "--at", "0", "--strip"],
+        &["media", "thumbs", "a1", "--strip", "--max-side", "64"],
+        &["media", "thumbs", "a1", "--at", "0", "--tile-height", "64"],
+    ] {
+        let r = fin(sd, &dir, args);
+        assert_eq!(r.code, 2, "{args:?}: {}", r.stdout);
+    }
+    // A time that is not one is the time's own error, as for `fin look`.
+    assert_error(
+        &fin(sd, &dir, &["media", "thumbs", "a1", "--at", "soon"]),
+        3,
+        "INVALID_TIME",
+    );
+    let made = fin(
+        sd,
+        &dir,
+        &["media", "thumbs", "a1", "--at", "0,1.5s", "--no-wait"],
+    );
+    let strip = fin(sd, &dir, &["media", "thumbs", "a1", "--strip", "--no-wait"]);
+    if made.code == 0 {
+        // A decoder for H.264 here (macOS, Windows): the entry is ready or being made.
+        assert!(
+            made.json["state"] == "ready" || made.json["state"] == "making",
+            "{}",
+            made.stdout
+        );
+        assert_eq!(made.json["mode"], "thumbs");
+        assert_eq!(ok(strip)["mode"], "strip");
+    } else {
+        // No H.264 decoder (Linux until 6B-2): the key cannot be planned.
+        assert_error(&made, 5, "CODEC_UNAVAILABLE");
+        assert_eq!(made.json["error"]["details"]["direction"], "decode");
+        assert_error(&strip, 5, "CODEC_UNAVAILABLE");
+    }
+    // Asking commits nothing.
+    assert_eq!(ok(fin(sd, &dir, &["status"]))["rev"], rev);
+    assert_error(
+        &fin(sd, &dir, &["media", "thumbs", "a9", "--strip"]),
+        3,
+        "ASSET_NOT_FOUND",
+    );
+}
+
 /// `fin media proxy` waits as long as the server does (review of Task 14): the server's answer is
 /// held past fin's ordinary call timeout (`FIN_TEST_PROXY_DELAY_MS`, test-hooks builds only), and
 /// fin still prints it rather than `SERVER_TIMEOUT`.
@@ -357,6 +419,8 @@ fn look_and_caps_are_unavailable_offline() {
     let r = support::offline(&snapshot, &["media", "proxy", "a1"]);
     assert_error(&r, 5, "SERVER_UNAVAILABLE");
     let r = support::offline(&snapshot, &["media", "status", "a1"]);
+    assert_error(&r, 5, "SERVER_UNAVAILABLE");
+    let r = support::offline(&snapshot, &["media", "thumbs", "a1", "--strip"]);
     assert_error(&r, 5, "SERVER_UNAVAILABLE");
 }
 

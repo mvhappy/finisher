@@ -495,6 +495,7 @@ describe("through the project registry", () => {
         }),
       wait: () => Effect.succeed([{ id: "caps", state: "succeeded", result: V1 } as unknown as JobView]),
       get: () => Effect.die(0),
+      onDone: () => () => {},
     };
     const media = mediaWiring({ cache: undefined } as unknown as MediaCacheService, { onDrop: () => {} }, () => {});
     const scope = Effect.runSync(Scope.make());

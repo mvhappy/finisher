@@ -35,7 +35,8 @@ use fin_library::{Expect, OpenError, RawRel, open_for_read};
 use fin_media::backend::{EncodePurpose, backend};
 use fin_media::cache::{EntryEncoder, EntryFile, EntryMeta, META_FILE};
 use fin_media::jobs::{
-    MANIFEST_VERSION, ProxyCodec, ProxyParams, ProxyResult, RenderManifest, gop, proxy_key,
+    MANIFEST_VERSION, ManifestAsset, ProxyCodec, ProxyParams, ProxyResult, RenderManifest, gop,
+    proxy_key,
 };
 use fin_media::table_bin::{self, TABLE_FILE};
 use fin_media::{ColourTags, MediaInfo, VideoTrackInfo};
@@ -54,7 +55,7 @@ const CRF_540: u8 = 38;
 const CRF_1080: u8 = 32;
 
 /// A failure of the item (`Item`) or of the job (`Job`: retried by the engine's policy).
-enum Fail {
+pub(super) enum Fail {
     Item(JobError),
     Job(JobError),
 }
@@ -72,7 +73,7 @@ impl From<CoreError> for Fail {
     }
 }
 
-fn item(code: &str, message: String, details: Value) -> Fail {
+pub(super) fn item(code: &str, message: String, details: Value) -> Fail {
     Fail::Item(JobError::new(code, message).with_details(details))
 }
 
@@ -130,7 +131,23 @@ fn open_source(p: &ProxyParams, ctx: &JobCtx<'_>, dir: &JobDir, warm: &Warm) -> 
             item(code, e.to_string(), json!({ "library": f.library }))
         });
     }
-    let asset = p.asset.as_deref().unwrap_or_default();
+    open_asset(
+        ctx,
+        dir,
+        warm,
+        p.asset.as_deref().unwrap_or_default(),
+        &p.fingerprint,
+    )
+}
+
+/// The manifest's entry for `asset`, whose fingerprint must be `fingerprint` (else
+/// `ASSET_CHANGED`).
+pub(super) fn manifest_asset(
+    ctx: &JobCtx<'_>,
+    dir: &JobDir,
+    asset: &str,
+    fingerprint: &str,
+) -> Result<ManifestAsset, Fail> {
     let manifest: RenderManifest =
         inputs::read_json(ctx, dir, "in/manifest.json", MANIFEST_CAP).map_err(Fail::Job)?;
     if manifest.version != MANIFEST_VERSION {
@@ -151,13 +168,25 @@ fn open_source(p: &ProxyParams, ctx: &JobCtx<'_>, dir: &JobDir, warm: &Warm) -> 
             .with_details(json!({ "file": "in/manifest.json", "asset": asset })),
         )
     })?;
-    if a.fingerprint != p.fingerprint {
+    if a.fingerprint != fingerprint {
         return Err(item(
             "ASSET_CHANGED",
-            format!("asset {asset} is not the content the proxy was asked for"),
+            format!("asset {asset} is not the content the job was asked for"),
             json!({ "asset": asset, "reason": "fingerprint" }),
         ));
     }
+    Ok(a.clone())
+}
+
+/// A project asset's original, opened through the manifest and 6A's no-follow opener.
+pub(super) fn open_asset(
+    ctx: &JobCtx<'_>,
+    dir: &JobDir,
+    warm: &Warm,
+    asset: &str,
+    fingerprint: &str,
+) -> Result<File, Fail> {
+    let a = manifest_asset(ctx, dir, asset, fingerprint)?;
     let missing = |reason: &str, message: String| {
         item(
             "ORIGINALS_MISSING",
@@ -218,17 +247,7 @@ fn make(p: &ProxyParams, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<ProxyR
             json!({ "kind": "videoTrack" }),
         )
     })?;
-    // Decision 9 (spec §10.1): Dolby Vision profile 5 has no backward-compatible base layer;
-    // profile 8's base layer is what the decoder outputs.
-    if let Some(dv) = video.hdr.and_then(|h| h.dolby_vision)
-        && dv.profile == 5
-    {
-        return Err(item(
-            "CODEC_UNAVAILABLE",
-            "Dolby Vision profile 5 has no base layer this machine can show".into(),
-            json!({ "codec": video.codec, "direction": "decode", "reason": "dolbyVisionProfile5" }),
-        ));
-    }
+    refuse_dolby_vision_5(&video)?;
     let table = reader.table().clone();
     let frames = table.len() as u64;
     // A source that presents no frame has nothing to proxy: typed, never an empty proxy.
@@ -339,13 +358,29 @@ fn make(p: &ProxyParams, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<ProxyR
     })
 }
 
-fn now_ms() -> i64 {
+/// Decision 9 (spec §10.1): Dolby Vision profile 5 has no backward-compatible base layer, so
+/// nothing reads it (`CODEC_UNAVAILABLE {reason: dolbyVisionProfile5}`); profile 8's base layer
+/// is what the decoder outputs. Proxies and thumbnails of an original both refuse it.
+pub(super) fn refuse_dolby_vision_5(video: &VideoTrackInfo) -> Result<(), Fail> {
+    if let Some(dv) = video.hdr.and_then(|h| h.dolby_vision)
+        && dv.profile == 5
+    {
+        return Err(item(
+            "CODEC_UNAVAILABLE",
+            "Dolby Vision profile 5 has no base layer this machine can show".into(),
+            json!({ "codec": video.codec, "direction": "decode", "reason": "dolbyVisionProfile5" }),
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
-fn io_error(path: &Path, e: impl std::fmt::Display) -> CoreError {
+pub(super) fn io_error(path: &Path, e: impl std::fmt::Display) -> CoreError {
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -354,14 +389,14 @@ fn io_error(path: &Path, e: impl std::fmt::Display) -> CoreError {
 }
 
 /// Writes `bytes` as a new output file (no link at any segment).
-fn write_file(dir: &JobDir, path: &Path, bytes: &[u8]) -> Result<(), CoreError> {
+pub(super) fn write_file(dir: &JobDir, path: &Path, bytes: &[u8]) -> Result<(), CoreError> {
     let mut f = fin_shm::create_output(path).map_err(|e| inputs::relative(dir, e))?;
     f.write_all(bytes).map_err(|e| io_error(path, e))?;
     f.sync_all().map_err(|e| io_error(path, e))
 }
 
 /// The size and BLAKE3 of `out/<key>/<name>`, read back through the checked open.
-fn entry_file(job: &JobDir, dir: &Path, name: &str) -> Result<EntryFile, CoreError> {
+pub(super) fn entry_file(job: &JobDir, dir: &Path, name: &str) -> Result<EntryFile, CoreError> {
     let path = dir.join(name);
     let mut f = fin_shm::checked_open(&path, u64::MAX).map_err(|e| inputs::relative(job, e))?;
     let mut hasher = blake3::Hasher::new();

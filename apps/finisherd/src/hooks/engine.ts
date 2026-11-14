@@ -55,23 +55,31 @@
 //   ignored ones included, and failures resolved to a block), `timeouts`, `failures`; `dropped`;
 //   `unreadable` layers.
 import { statSync } from "node:fs";
-import { type FinError, HOOK_CLASSES, HOOK_LIMITS, type HookEvent, type HookLayer, type Principal, type Session } from "@finisher/contracts";
+import { type FinError, HOOK_CLASSES, HOOK_LIMITS, type HookEvent, type HookLayer, type Session } from "@finisher/contracts";
 import type { HookRequest, HookSession } from "@finisher/core-types";
 import { Effect } from "effect";
 import { RACY_MS } from "../agent/file-cache.ts";
 import { globMatch } from "../agent/glob.ts";
 import type { AuditInput } from "../control/audit.ts";
 import { finError } from "../errors.ts";
+import type { Invoker } from "../plugins/host/rights.ts";
 import type { ConfiguredHook, HookConfig } from "./config.ts";
 import type { HookCredentialPort } from "./credential.ts";
 import { type HookFailure, type HookFailureKind, type HookProcessDeps, type HookRun, HookSlots, isCommandHook, isNotRun, runCommandHook } from "./process.ts";
 
-/** Where an event happens and whose it is. */
+/**
+ * Where an event happens and whose it is. No `projectId`: a server-scoped event (a call or a job
+ * that names no project): only the managed, user and plugin layers apply, the request carries
+ * no `project`, and a `fin` hook fails `unavailable` (its credential is a project's).
+ */
 export interface HookAt {
-  readonly projectId: string;
+  readonly projectId?: string;
   readonly session?: Session;
-  /** The caller (a block is audited as theirs; `principals` filters on its kind). */
-  readonly principal: Principal;
+  /**
+   * The caller (a block is audited as theirs; `principals` filters on its kind): a principal, or
+   * an invoker of no principal kind (`systemInvoker` for a system job's `JobDone`, Task 8).
+   */
+  readonly principal: Invoker;
   /** What a hook's `match` is tested against (Decision 6); none: hooks with a `match` do not run. */
   readonly names?: readonly string[];
 }
@@ -345,8 +353,9 @@ class Engine implements HookEngineImpl {
   async #chain(event: HookEvent, at: HookAt, payload: unknown, hooks: readonly ConfiguredHook[]): Promise<HookOutcome> {
     const cls = HOOK_CLASSES[event];
     const counters = this.#counters[event];
-    const dir = this.#d.config.dirOf(at.projectId);
-    const req: HookRequest = { event, v: 1, ...(at.session === undefined ? {} : { session: sessionOf(at.session) }), project: { id: at.projectId, dir: dir ?? "" }, payload };
+    const dir = at.projectId === undefined ? undefined : this.#d.config.dirOf(at.projectId);
+    const project = at.projectId === undefined ? {} : { project: { id: at.projectId, dir: dir ?? "" } };
+    const req: HookRequest = { event, v: 1, ...(at.session === undefined ? {} : { session: sessionOf(at.session) }), ...project, payload };
     const texts: string[] = [];
     const ids: string[] = [];
     let bytes = 0;
@@ -421,14 +430,16 @@ class Engine implements HookEngineImpl {
 
   #start(h: ConfiguredHook, req: HookRequest, at: HookAt, dir: string | undefined): Promise<HookRun | undefined> {
     if (!isCommandHook(h)) return this.#d.plugins?.run(h, req, at) ?? Promise.resolve(undefined);
-    if (dir === undefined) return Promise.resolve({ kind: "unavailable", detail: "the project is not open on this server" } satisfies HookFailure);
+    const projectId = at.projectId;
+    if (projectId === undefined && h.spec?.fin === true) return Promise.resolve({ kind: "unavailable", detail: "a fin hook needs the event's project for its credential" } satisfies HookFailure);
+    if (projectId !== undefined && dir === undefined) return Promise.resolve({ kind: "unavailable", detail: "the project is not open on this server" } satisfies HookFailure);
     return Effect.runPromise(
       runCommandHook(h, req, {
         ...this.#d.process,
         serverData: this.#d.serverData,
         slots: this.#slots,
         signal: this.#stopping.signal,
-        ...(h.spec?.fin === true && this.#d.credentials !== undefined ? { credential: () => this.#d.credentials!.forRun(h, at.projectId) } : {}),
+        ...(h.spec?.fin === true && this.#d.credentials !== undefined && projectId !== undefined ? { credential: () => this.#d.credentials!.forRun(h, projectId) } : {}),
         recheck: () => this.#d.config.applies(at.projectId, h),
         onStart: ({ warning }) => {
           if (warning === undefined || this.#warned) return;
@@ -466,7 +477,7 @@ class Engine implements HookEngineImpl {
       principal: { kind: at.principal.kind, id: at.principal.id },
       outcome: "denied",
       code: "HOOK_BLOCKED",
-      details: { event, hookId: h.id, layer: h.layer, projectId: at.projectId, ...(at.session === undefined ? {} : { session: at.session.id }), ...(after ? { after: true } : {}) },
+      details: { event, hookId: h.id, layer: h.layer, ...(at.projectId === undefined ? {} : { projectId: at.projectId }), ...(at.session === undefined ? {} : { session: at.session.id }), ...(after ? { after: true } : {}) },
     });
   }
 }

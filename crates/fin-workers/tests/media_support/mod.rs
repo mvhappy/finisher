@@ -119,13 +119,19 @@ impl Fixture {
     /// `t1`: the AV1 clip (64 frames at 30 fps, 320×180) for 0–2 s from its start, then the
     /// H.264 file for 2–3 s.
     pub fn new() -> Fixture {
+        Fixture::with_clip(ClipSpec::default())
+    }
+
+    /// The fixture with the AV1 clip `spec` makes (`frames`, `size` and `keyint` are the
+    /// fixture's): a VFR or edit-listed clip, say.
+    pub fn with_clip(spec: ClipSpec) -> Fixture {
         let dir = tempfile::tempdir().unwrap();
         let av1 = dir.path().join("pattern.mp4");
         let spec = ClipSpec {
             frames: CLIP_FRAMES,
             size: CLIP_SIZE,
             keyint: 16,
-            ..ClipSpec::default()
+            ..spec
         };
         std::fs::write(&av1, pattern_clip(&spec).unwrap()).unwrap();
         let h264 = dir.path().join("other.mp4");
@@ -223,6 +229,7 @@ impl Fixture {
             kind: fin_core::AssetKind::Media,
             fingerprint: fp.into(),
             original: Some(original(p)),
+            proxies: Vec::new(),
         };
         RenderManifest {
             version: MANIFEST_VERSION,
@@ -252,6 +259,7 @@ impl Fixture {
             branch: None,
             rev: None,
             out_dir: None,
+            originals: false,
         }
     }
 
@@ -370,4 +378,167 @@ pub fn write_params(job: &Job, params: &LookParams) {
         serde_json::to_vec(params).unwrap(),
     )
     .unwrap();
+}
+
+/// A proxy cache entry of the fixture's AV1 clip, in a cache directory of its own
+/// (`<root>/<key[0..2]>/<key>/{proxy.mp4,table.bin,meta.json}`).
+pub struct ProxyEntry {
+    pub _root: tempfile::TempDir,
+    pub dir: PathBuf,
+    pub key: String,
+}
+
+impl ProxyEntry {
+    /// The manifest's view of the entry.
+    pub fn listed(&self) -> fin_media::jobs::ManifestProxy {
+        fin_media::jobs::ManifestProxy {
+            tier: fin_media::jobs::ProxyTier::Preview,
+            key: self.key.clone(),
+            dir: self.dir.to_str().unwrap().into(),
+            codec: fin_media::jobs::ProxyCodec::Av1,
+        }
+    }
+}
+
+/// Runs `media.proxy` (tier `1080`, AV1) on the fixture's AV1 clip and files its output the way
+/// the cache does.
+pub fn make_proxy(fx: &Fixture) -> ProxyEntry {
+    use fin_media::backend::VendorClass;
+    use fin_media::jobs::{ProxyCodec, ProxyParams, ProxyTier, proxy_key};
+    let tier = ProxyTier::Preview;
+    let key = proxy_key("fp-av1", tier, ProxyCodec::Av1, VendorClass::Software).to_string();
+    let params = ProxyParams {
+        fingerprint: "fp-av1".into(),
+        tier,
+        codec: ProxyCodec::Av1,
+        decoder_class: VendorClass::Software,
+        key: key.clone(),
+        asset: Some(fx.av1_id.clone()),
+        file: None,
+        project_id: None,
+        branch: None,
+        display: None,
+        intra_ok: false,
+    };
+    let job = Job::new();
+    let manifest = RenderManifest {
+        assets: vec![fx.manifest().asset(&fx.av1_id).unwrap().clone()],
+        ..fx.manifest()
+    };
+    std::fs::write(
+        job.path("in/manifest.json"),
+        serde_json::to_vec(&manifest).unwrap(),
+    )
+    .unwrap();
+    let mut w = crate::support::spawn_with(&["media"], &worker_env());
+    w.hello();
+    let start = job.start(
+        "media.proxy",
+        serde_json::to_value(&params).unwrap(),
+        &["in/manifest.json", "out/"],
+    );
+    w.send(&fin_jobs::HostMsg::Start(start));
+    let run = w.drive(crate::support::no_calls);
+    assert!(
+        matches!(run.end, crate::support::End::Result(_)),
+        "{:?}",
+        run.end
+    );
+    assert!(
+        run.events
+            .iter()
+            .any(|e| matches!(e, crate::support::Ev::Item(_, Some(_)))),
+        "a proxy: {:?}",
+        run.events
+    );
+    let root = tempfile::tempdir().unwrap();
+    let dir = std::fs::canonicalize(root.path())
+        .unwrap()
+        .join(&key[..2])
+        .join(&key);
+    std::fs::create_dir_all(&dir).unwrap();
+    for f in ["proxy.mp4", "table.bin", "meta.json"] {
+        std::fs::copy(job.out().join(&key).join(f), dir.join(f)).unwrap();
+    }
+    ProxyEntry {
+        _root: root,
+        dir,
+        key,
+    }
+}
+
+impl Fixture {
+    /// The manifest with `proxy` listed for the AV1 asset.
+    pub fn manifest_with(&self, proxy: &ProxyEntry) -> RenderManifest {
+        let mut m = self.manifest();
+        for a in &mut m.assets {
+            if a.asset == self.av1_id {
+                a.proxies = vec![proxy.listed()];
+            }
+        }
+        m
+    }
+}
+
+/// PSNR in dB over the colour channels of two RGBA8 images (infinite when equal).
+pub fn psnr_rgb(a: &[u8], b: &[u8]) -> f64 {
+    assert_eq!(a.len(), b.len());
+    let (mut sq, mut n) = (0f64, 0f64);
+    // Every fourth byte is alpha.
+    for (i, (x, y)) in a.iter().zip(b).enumerate() {
+        if i % 4 != 3 {
+            sq += (f64::from(*x) - f64::from(*y)).powi(2);
+            n += 1.0;
+        }
+    }
+    if sq == 0.0 {
+        f64::INFINITY
+    } else {
+        10.0 * (255.0 * 255.0 / (sq / n)).log10()
+    }
+}
+
+/// Mean SSIM over the luma (BT.709 weights) of two RGBA8 images of `width`, in 8×8 windows
+/// stepped by 4 (Wang et al. 2004, uniform window, `K1` 0.01, `K2` 0.03, `L` 255).
+pub fn ssim_luma(a: &[u8], b: &[u8], width: u32) -> f64 {
+    assert_eq!(a.len(), b.len());
+    let luma = |p: &[u8]| -> Vec<f64> {
+        p.as_chunks::<4>()
+            .0
+            .iter()
+            .map(|px| {
+                0.2126 * f64::from(px[0]) + 0.7152 * f64::from(px[1]) + 0.0722 * f64::from(px[2])
+            })
+            .collect()
+    };
+    let (x, y) = (luma(a), luma(b));
+    let w = width as usize;
+    let h = x.len() / w;
+    let (c1, c2) = ((0.01f64 * 255.0).powi(2), (0.03f64 * 255.0).powi(2));
+    const WIN: usize = 8;
+    let (mut total, mut windows) = (0f64, 0u32);
+    for top in (0..=h - WIN).step_by(4) {
+        for left in (0..=w - WIN).step_by(4) {
+            let (mut sx, mut sy, mut sxx, mut syy, mut sxy) = (0f64, 0f64, 0f64, 0f64, 0f64);
+            for r in top..top + WIN {
+                for c in left..left + WIN {
+                    let (p, q) = (x[r * w + c], y[r * w + c]);
+                    sx += p;
+                    sy += q;
+                    sxx += p * p;
+                    syy += q * q;
+                    sxy += p * q;
+                }
+            }
+            let n = (WIN * WIN) as f64;
+            let (mx, my) = (sx / n, sy / n);
+            let vx = sxx / n - mx * mx;
+            let vy = syy / n - my * my;
+            let cov = sxy / n - mx * my;
+            total += ((2.0 * mx * my + c1) * (2.0 * cov + c2))
+                / ((mx * mx + my * my + c1) * (vx + vy + c2));
+            windows += 1;
+        }
+    }
+    total / f64::from(windows)
 }

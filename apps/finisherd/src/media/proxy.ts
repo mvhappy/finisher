@@ -31,6 +31,7 @@ import type { JobEngine } from "../jobs/api.ts";
 import { MEDIA_PROXY, decodersOf, proxyCodec } from "../jobs/kinds/media.proxy.ts";
 import type { ProjectRegistryShape } from "../projects.ts";
 import type { CapabilitiesCache } from "./caps.ts";
+import type { ThumbsService } from "./thumbs.ts";
 
 /** How long `media.proxy` waits for its job. */
 export const PROXY_WAIT_MS = 10 * 60_000;
@@ -87,6 +88,17 @@ export interface ProxyService {
    */
   readonly ensure: (owner: JobOwner, req: Pick<ProxyRequest, "projectId" | "asset" | "branch" | "tier">) => Effect.Effect<EntryMeta, FinError>;
   /**
+   * The planner's view of a project's video asset: its content, codec, duration and display size
+   * (`ASSET_NOT_FOUND`, `ASSET_TYPE_UNSUPPORTED`). For consumers that plan cache keys (Task 15).
+   */
+  readonly source: (projectId: string, asset: string, branch?: string | undefined) => Effect.Effect<AssetSource, FinError>;
+  /**
+   * `source` without reading the asset's file: its content and display size from the branch's
+   * snapshot alone (`ASSET_NOT_FOUND`, `ASSET_TYPE_UNSUPPORTED`). For a consumer that can answer
+   * from the cache while the original is offline (Task 15's review).
+   */
+  readonly asset: (projectId: string, asset: string, branch?: string | undefined) => Effect.Effect<AssetFacts, FinError>;
+  /**
    * A project opened (or, with `assets`, a commit added those assets) here: a background `1080`
    * proxy of each video asset of `main` not asked for yet this run. Resolves when all were asked.
    */
@@ -107,8 +119,14 @@ interface Source {
   readonly asset: string;
   readonly fingerprint: string;
   readonly sourceCodec: string;
+  /** `MediaInfo.duration` as the probe wrote it (a rational string), when it gave one. */
+  readonly duration?: string;
   readonly display?: { readonly width: number; readonly height: number };
 }
+
+export type AssetSource = Source;
+/** A video asset as its snapshot gives it: no probe of its file. */
+export type AssetFacts = Omit<Source, "sourceCodec" | "duration">;
 
 interface Planned {
   readonly params: ProxyParams;
@@ -154,13 +172,23 @@ export const CONTENT_FAILURES: ReadonlySet<string> = new Set([
 const endedWithout = (job: JobView): boolean => !MAKING.has(job.state) && job.state !== "succeeded";
 
 /** The server's capability cache and proxy service, for the handlers (absent in handler tests built without them). */
-export class MediaProxyTag extends Context.Service<MediaProxyTag, { readonly capabilities: CapabilitiesCache; readonly proxies: ProxyService }>()("finisherd/MediaProxy") {}
+export class MediaProxyTag extends Context.Service<MediaProxyTag, { readonly capabilities: CapabilitiesCache; readonly proxies: ProxyService; readonly thumbs?: ThumbsService }>()("finisherd/MediaProxy") {}
+
+/**
+ * `e` with the absolute `path` of asset `asset`'s file kept out of it (Task 15's review): fin-node's
+ * probe names the file it could not read, which no answer passes on; `details.asset` says which.
+ */
+export function scrubPath(e: FinError, path: string, asset: string): FinError {
+  const hide = (v: string): string => v.split(path).join(`asset ${asset}'s file`);
+  const details = isObj(e.details) ? Object.fromEntries(Object.entries(e.details).filter(([k]) => k !== "path").map(([k, v]) => [k, typeof v === "string" ? hide(v) : v])) : {};
+  return finError(e.code, hide(e.message), { ...details, asset }, e.fix === undefined ? undefined : hide(e.fix));
+}
 
 export function makeProxyService(deps: ProxyServiceDeps): ProxyService {
   const probe = deps.probe ?? probeFile;
   const log = deps.log ?? (() => {});
-  /** The source codec of a file, by path and fingerprint (a new fingerprint probes again). */
-  const codecs = new Map<string, string>();
+  /** The source codec and duration of a file, by path and fingerprint (a new fingerprint probes again). */
+  const codecs = new Map<string, { readonly codec: string; readonly duration?: string }>();
   /** The last job of each key this run (status, ensure). */
   const jobs = new Map<string, string>();
   /** `<project>\0<fingerprint>` already asked for at first use this run. */
@@ -170,17 +198,19 @@ export function makeProxyService(deps: ProxyServiceDeps): ProxyService {
   /** The content failure of each key this run (`CONTENT_FAILURES`). */
   const failed = new Map<string, FinError>();
 
-  const sourceCodec = (path: string, fingerprint: string): Effect.Effect<string, FinError> => {
+  const sourceCodec = (path: string, fingerprint: string, asset: string): Effect.Effect<{ readonly codec: string; readonly duration?: string }, FinError> => {
     const id = `${path}\0${fingerprint}`;
     const known = codecs.get(id);
     if (known !== undefined) return Effect.succeed(known);
     return Effect.flatMap(
-      attempt(() => probe(path)),
+      attempt(() => probe(path)).pipe(Effect.mapError((e) => scrubPath(e, path, asset))),
       (json) => {
-        const codec = (JSON.parse(json) as { media?: { video?: { codec?: unknown } } }).media?.video?.codec;
+        const media = (JSON.parse(json) as { media?: { duration?: unknown; video?: { codec?: unknown } } }).media;
+        const codec = media?.video?.codec;
         if (typeof codec !== "string") return Effect.fail(finError("ASSET_TYPE_UNSUPPORTED", "the asset's file has no video track", { reason: "noVideo" }, "make proxies of video assets"));
-        codecs.set(id, codec);
-        return Effect.succeed(codec);
+        const found = { codec, ...(typeof media?.duration === "string" ? { duration: media.duration } : {}) };
+        codecs.set(id, found);
+        return Effect.succeed(found);
       },
     );
   };
@@ -198,18 +228,35 @@ export function makeProxyService(deps: ProxyServiceDeps): ProxyService {
       return yield* sourceOf(projectId, branch, asset, a);
     });
 
+  /** Asset `asset` of a snapshot of `branch` (its JSON `a`), with its file's path: nothing is read. */
+  const factsOf = (projectId: string, branch: string, asset: string, a: AssetJson): Effect.Effect<AssetFacts & { readonly path: string }, FinError> => {
+    if (a.kind !== "media" || typeof a.fingerprint !== "string" || typeof a.path !== "string" || !isObj(a.video)) {
+      return Effect.fail(finError("ASSET_TYPE_UNSUPPORTED", `asset ${asset} is not a video asset`, { asset, kind: a.kind ?? null }, "make proxies of video assets"));
+    }
+    const dir = deps.registry.dirOf(projectId);
+    const path = isAbsolute(a.path) || dir === undefined ? a.path : join(dir, a.path);
+    const d = a.video.display ?? a.video;
+    const display = typeof d.width === "number" && typeof d.height === "number" ? { width: d.width, height: d.height } : undefined;
+    return Effect.succeed({ projectId, branch, asset, fingerprint: a.fingerprint, path, ...(display === undefined ? {} : { display }) });
+  };
+
   /** The planner's view of asset `asset` (its JSON `a`, from a snapshot of `branch`). */
   const sourceOf = (projectId: string, branch: string, asset: string, a: AssetJson): Effect.Effect<Source, FinError> =>
     Effect.gen(function* () {
-      if (a.kind !== "media" || typeof a.fingerprint !== "string" || typeof a.path !== "string" || !isObj(a.video)) {
-        return yield* Effect.fail(finError("ASSET_TYPE_UNSUPPORTED", `asset ${asset} is not a video asset`, { asset, kind: a.kind ?? null }, "make proxies of video assets"));
-      }
-      const dir = deps.registry.dirOf(projectId);
-      const path = isAbsolute(a.path) || dir === undefined ? a.path : join(dir, a.path);
-      const codec = yield* sourceCodec(path, a.fingerprint);
-      const d = a.video.display ?? a.video;
-      const display = typeof d.width === "number" && typeof d.height === "number" ? { width: d.width, height: d.height } : undefined;
-      return { projectId, branch, asset, fingerprint: a.fingerprint, sourceCodec: codec, ...(display === undefined ? {} : { display }) };
+      const { path, ...facts } = yield* factsOf(projectId, branch, asset, a);
+      const { codec, duration } = yield* sourceCodec(path, facts.fingerprint, asset);
+      return { ...facts, sourceCodec: codec, ...(duration === undefined ? {} : { duration }) };
+    });
+
+  const assetFacts = (projectId: string, asset: string, requested: string | undefined): Effect.Effect<AssetFacts, FinError> =>
+    Effect.gen(function* () {
+      yield* deps.registry.ensure(projectId);
+      const branch = yield* deps.registry.resolveBranch(projectId, requested ?? "main");
+      const assets = yield* assetsOf(projectId, branch);
+      const a = Object.hasOwn(assets, asset) ? assets[asset] : undefined;
+      if (a === undefined) return yield* Effect.fail(finError("ASSET_NOT_FOUND", `no asset ${asset} on ${branch}`, { asset, branch }, "use the id of an existing asset"));
+      const { path: _, ...facts } = yield* factsOf(projectId, branch, asset, a);
+      return facts;
     });
 
   const plan = (report: unknown, src: Source, tier: ProxyTier, asked: ProxyCodec | undefined): Effect.Effect<Planned, FinError> =>
@@ -373,5 +420,5 @@ export function makeProxyService(deps: ProxyServiceDeps): ProxyService {
       }),
     ).catch(() => undefined);
 
-  return { request, status, ensure, used: usedHere };
+  return { request, status, ensure, source, asset: assetFacts, used: usedHere };
 }

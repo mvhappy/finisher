@@ -22,7 +22,7 @@ export interface ChainHooks {
   readonly authorOf?: (principal: Principal) => string | undefined;
   /**
    * Stage 7, after the handler answered: never fails the call (the write has landed), and
-   * reports its own failures itself.
+   * reports its own failures itself. `projects`: every project stage 3 resolved for the call.
    */
-  readonly after?: (tag: FinRpcTag, principal: Principal, payload: unknown, result: unknown, headers: unknown) => Effect.Effect<void>;
+  readonly after?: (tag: FinRpcTag, principal: Principal, payload: unknown, result: unknown, headers: unknown, projects?: ReadonlyArray<string>) => Effect.Effect<void>;
 }

@@ -79,6 +79,22 @@ export declare class MediaCache {
    * listed. Serving a file (spec §7.3) is a series of these reads, the entry pinned `http:<id>`.
    */
   readFile(key: string, file: string, offset: number, len: number): Promise<Buffer | null>;
+  /**
+   * Lists, in the job's `in/manifest.json` (`inDir`, written by `prepareMediaJob`), the `1080`
+   * proxy of each asset's fingerprint the index holds (`ManifestAsset.proxies`: tier, key,
+   * absolute directory, codec), pinned for `holder` (`job:<id>`; release it when the job
+   * ends). Each listed entry is a hit: it now serves `projects` (the job's, as `serve`), so they
+   * reach it and pin it while open. Resolves to the files a worker reads from those entries (absolute, for the job's
+   * `reads`): none when no asset has a proxy, and then the manifest is left as it is.
+   */
+  attachProxies(inDir: string, holder: string, projects: ReadonlyArray<string>): Promise<string[]>;
+  /**
+   * The `1080` proxy entry of the content `fingerprint` that `attachProxies` would list (the newest
+   * current one), now serving `projects` (pinned for those open), or `null` when there is none.
+   * Pins nothing for a job: `media.thumbs` plans from its `meta.json` (the original's media
+   * information and decoder class) when the original is not read.
+   */
+  currentProxy(fingerprint: string, projects: ReadonlyArray<string>): Promise<EntryMeta | null>;
   /** The entries made from the source with this fingerprint. */
   entriesFor(asset: { readonly fingerprint: string }): Promise<EntryMeta[]>;
   /** The projects `key` serves (reach for media bytes, spec §7.3). */

@@ -142,10 +142,10 @@ fn request_v_is_1() {
             harness: Harness::Fake,
             root_branch: Some("main".into()),
         }),
-        HookProject {
+        Some(HookProject {
             id: "01J00000000000000000000001".into(),
             dir: "/projects/demo".into(),
-        },
+        }),
         json!({"rpc": "item.trim"}),
     );
     assert_eq!(req.v, 1);
@@ -172,14 +172,32 @@ fn request_v_is_1() {
     let bare = HookRequest::new(
         HookEvent::JobDone,
         None,
-        HookProject {
+        Some(HookProject {
             id: "p".into(),
             dir: "/p".into(),
-        },
+        }),
         Value::Null,
     );
     let v = serde_json::to_value(&bare).unwrap();
     assert!(v.get("session").is_none(), "{v}");
+
+    // A server-scoped event (a call or a job that names no project): no `project` key, and a
+    // request without one decodes.
+    let server = HookRequest::new(
+        HookEvent::PreCommand,
+        None,
+        None,
+        json!({"rpc": "auth.whoami"}),
+    );
+    let v = serde_json::to_value(&server).unwrap();
+    assert!(v.get("project").is_none(), "{v}");
+    assert_eq!(
+        serde_json::from_value::<HookRequest>(json!({"event": "JobDone", "v": 1, "payload": null}))
+            .unwrap()
+            .project,
+        None
+    );
+    assert_eq!(serde_json::from_value::<HookRequest>(v).unwrap(), server);
 
     // A plugin handler's job params carry the same request.
     let run = HookRun {

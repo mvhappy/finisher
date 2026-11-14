@@ -16,6 +16,7 @@
 //   and has no price is charged its projection, never 0); a stop waits for the calls in flight
 //   (the safe point) for at most `stopGraceMs` (30 s), then aborts them, interrupts the session
 //   with `BUDGET_EXCEEDED` and opens a `budget` approval.
+// - **The hooks' tap** (7F Decision 18): every published item and 80 % notice, watched or not.
 import type { Approval, BudgetState, FinError, Harness, ProviderEvent, Run, Session, WatchItem } from "@finisher/contracts";
 import { Effect } from "effect";
 import { finError, toFinError } from "../errors.ts";
@@ -24,8 +25,7 @@ import { Budget, type Crossings, DEFAULT_BUDGET, type Reading } from "./budget.t
 import type { Clock, Ids } from "./clock.ts";
 import type { AgentCore } from "./core.ts";
 import { credentialPath } from "./credentials.ts";
-import type { Pricing, RuntimeDeps, RuntimeJournal, ToolExecutor } from "./runtime-deps.ts";
-import { budgetError, errorShape, harnessUnknown, limitsOf, NO_JOURNAL, parseRef, REPORTED_PRICING, runFacts, toolsOf } from "./runtime-deps.ts";
+import { budgetError, errorShape, harnessUnknown, limitsOf, NO_JOURNAL, parseRef, type Pricing, REPORTED_PRICING, type RuntimeDeps, type RuntimeJournal, runFacts, type ToolExecutor, toolsOf } from "./runtime-deps.ts";
 import { call, closeLive, closeScope, type Live, openLive } from "./runtime-live.ts";
 import { OutboxDrainer } from "./runtime-outbox.ts";
 import { UsageAccounting } from "./runtime-usage.ts";
@@ -94,6 +94,7 @@ export abstract class RuntimeEngine {
       // A tail's stop: the session's current instance stops its run, if one is going on.
       stop: (id, r) => (this.lives.has(id) ? this.requestStop(this.lives.get(id)!, r) : Promise.resolve()),
       dropped: () => void this.dropped++,
+      events: this.deps.sessionEvents,
     });
   }
 
@@ -197,6 +198,7 @@ export abstract class RuntimeEngine {
   }
 
   protected publish(sessionId: string, item: WatchItem): void {
+    this.deps.sessionEvents?.published(sessionId, item);
     this.hub.publish(sessionId, item);
   }
 
@@ -485,9 +487,7 @@ export abstract class RuntimeEngine {
   }
 
   protected async crossings(live: Live, runId: string, c: Crossings): Promise<void> {
-    for (const n of c.notices) {
-      await this.append({ sessionId: live.sessionId, runId, kind: "notice", payload: { budget: n.kind, used: n.used, limit: n.limit, at: 0.8 } });
-    }
+    await this.#usage.notices(live.sessionId, runId, c.notices);
     if (c.stop) await this.requestStop(live, c.stop);
   }
 

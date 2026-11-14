@@ -16,11 +16,17 @@ use crate::nv12::Nv12Frame;
 use crate::pipelines::Stage;
 use crate::pool::Key;
 use crate::readback;
-use crate::scale::scale_level;
+use crate::scale::{code8, scale_level};
 use crate::source::{SourceFrame, readable};
 
 /// The scaled picture before NV12: full `f32`, so the planes are made from what the reference
 /// keeps.
+/// What `encode_scale` reads back.
+enum Planes {
+    Nv12,
+    Rgba,
+}
+
 pub(crate) const SCALED: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
 pub(crate) const LUMA: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
 pub(crate) const CHROMA: wgpu::TextureFormat = wgpu::TextureFormat::Rg8Unorm;
@@ -45,6 +51,38 @@ impl Compositor {
         src: &SourceFrame,
         out: Size,
     ) -> Result<Nv12Frame, CoreError> {
+        self.check_scale(gpu, src, out)?;
+        let buffers = self.scoped(gpu, |c| c.encode_scale(gpu, src, out, Planes::Nv12))?;
+        let (cw, ch) = (out.width.div_ceil(2), out.height.div_ceil(2));
+        let y = readback::read_bytes(gpu, &buffers[0], out.width, out.height, 1)?;
+        let uv = readback::read_bytes(gpu, &buffers[1], cw, ch, 2)?;
+        Ok(Nv12Frame { size: out, y, uv })
+    }
+
+    /// `src` (coded orientation) scaled to `out` as opaque 8-bit RGBA, row-major (the pictures
+    /// of thumbnails and filmstrips): the scaled R′G′B′ picture clamped to 0…1, scaled to 255 and
+    /// rounded half to even, as `reference::scale::scale_rgba8` does. The same errors as
+    /// [`Compositor::scale_nv12`].
+    pub fn scale_rgba8(
+        &mut self,
+        gpu: &Gpu,
+        src: &SourceFrame,
+        out: Size,
+    ) -> Result<Vec<u8>, CoreError> {
+        self.check_scale(gpu, src, out)?;
+        let buffers = self.scoped(gpu, |c| c.encode_scale(gpu, src, out, Planes::Rgba))?;
+        let raw = readback::read_bytes(gpu, &buffers[0], out.width, out.height, 16)?;
+        Ok(raw
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| f32::from_le_bytes(*b))
+            .enumerate()
+            .map(|(i, v)| if i % 4 == 3 { 255 } else { code8(v) })
+            .collect())
+    }
+
+    fn check_scale(&mut self, gpu: &Gpu, src: &SourceFrame, out: Size) -> Result<(), CoreError> {
         gpu.check_lost()?;
         let _ = gpu.take_uncaptured();
         readable(src).map_err(|details| {
@@ -60,10 +98,7 @@ impl Compositor {
                     .with_details(json!({ "width": out.width, "height": out.height })),
             );
         }
-        let (buffers, (cw, ch)) = self.scoped(gpu, |c| c.encode_scale(gpu, src, out))?;
-        let y = readback::read_bytes(gpu, &buffers[0], out.width, out.height, 1)?;
-        let uv = readback::read_bytes(gpu, &buffers[1], cw, ch, 2)?;
-        Ok(Nv12Frame { size: out, y, uv })
+        Ok(())
     }
 
     fn encode_scale(
@@ -71,7 +106,8 @@ impl Compositor {
         gpu: &Gpu,
         src: &SourceFrame,
         out: Size,
-    ) -> Result<([wgpu::Buffer; 2], (u32, u32)), CoreError> {
+        planes_out: Planes,
+    ) -> Result<Vec<wgpu::Buffer>, CoreError> {
         let (device, queue) = (gpu.device(), gpu.queue());
         let max = device.limits().max_texture_dimension_2d;
         if src.size.width > max || src.size.height > max {
@@ -123,7 +159,7 @@ impl Compositor {
                 out.width,
                 out.height,
                 SCALED,
-                target | wgpu::TextureUsages::TEXTURE_BINDING,
+                target | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
             ),
         );
         let ps = self.pipelines.get(device, Stage::Scale);
@@ -147,6 +183,13 @@ impl Compositor {
         );
         pass(&mut enc, &scaled, clear, &ps, &g, None);
 
+        if let Planes::Rgba = planes_out {
+            let b = readback::staging(device, out.width, out.height, 16);
+            readback::copy_bytes(&mut enc, &scaled, &b, out.width, out.height, 16);
+            queue.submit([enc.finish()]);
+            return Ok(vec![b]);
+        }
+
         // The NV12 planes.
         let (cw, ch) = (out.width.div_ceil(2), out.height.div_ceil(2));
         let copy = target | wgpu::TextureUsages::COPY_SRC;
@@ -166,6 +209,6 @@ impl Compositor {
         readback::copy_bytes(&mut enc, &luma, &by, out.width, out.height, 1);
         readback::copy_bytes(&mut enc, &chroma, &buv, cw, ch, 2);
         queue.submit([enc.finish()]);
-        Ok(([by, buv], (cw, ch)))
+        Ok(vec![by, buv])
     }
 }

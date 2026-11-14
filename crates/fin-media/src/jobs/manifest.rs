@@ -4,6 +4,8 @@ use fin_core::{AssetKind, Project};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::proxy::{ProxyCodec, ProxyTier};
+
 /// `in/snapshot.json` (plan 6A Decision 2).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -45,6 +47,32 @@ pub struct ManifestAsset {
     /// The file on this machine (plan 6A Decision 5: the model's stored path), `null` when it
     /// is missing.
     pub original: Option<OriginalFile>,
+    /// The proxies the media cache holds for this asset's fingerprint when the manifest was
+    /// written (spec §4.2 "from 6B"; plan 6B-1 Task 16), pinned for the job's life by the host.
+    /// A layer reads the `1080` one when `media.look` does not ask for originals
+    /// ([`ManifestAsset::proxy`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub proxies: Vec<ManifestProxy>,
+}
+
+impl ManifestAsset {
+    /// The proxy of `tier`, if the manifest lists one.
+    pub fn proxy(&self, tier: ProxyTier) -> Option<&ManifestProxy> {
+        self.proxies.iter().find(|p| p.tier == tier)
+    }
+}
+
+/// One proxy entry of the media cache (`cache/media/<key[0..2]>/<key>/`): `proxy.mp4`,
+/// `table.bin` (the original's sample table) and `meta.json` (plan 6B-1 Decision 7).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ManifestProxy {
+    pub tier: ProxyTier,
+    /// The entry's cache key.
+    pub key: String,
+    /// The entry's directory on this machine, absolute.
+    pub dir: String,
+    pub codec: ProxyCodec,
 }
 
 /// A file a worker opens, with what it looked like when the manifest was written.

@@ -218,9 +218,11 @@ async function warmLooks(server, sd, dirs) {
   // Each project's look starts a warm worker of its own: the key names the project under an
   // applied profile, so no worker serves two projects (one per project, owner decision).
   const workers = [];
+  // `--originals`: a first-use `1080` proxy lands at any time, and a look that lists it reads its
+  // cache entry, outside a confined warm worker's roots, so it runs cold (plan 7C Decision 19; 6B-1 Task 16).
   for (const dir of dirs) {
     const before = warm();
-    const r = finRaw(sd, dir, ["look", "--at", "0"]);
+    const r = finRaw(sd, dir, ["look", "--at", "0", "--originals"]);
     assertEqual(r.status, 0, `fin look in ${dir} (${r.text} ${r.stderr})`);
     const added = [...warm()].filter((w) => !before.has(w));
     assertEqual(added.length, 1, `fin look in ${dir}: one new warm worker (${[...warm()].join(", ")})`);

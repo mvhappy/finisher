@@ -287,7 +287,7 @@ export const hookSessionMatches: Same<typeof HookSessionSchema.Type, T.HookSessi
 export const HookRequestSchema = Schema.Struct({
   event: HookEventSchema,
   payload: Schema.Unknown,
-  project: HookProjectSchema,
+  project: Schema.optionalKey(HookProjectSchema),
   session: Schema.optionalKey(HookSessionSchema),
   v: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
 });

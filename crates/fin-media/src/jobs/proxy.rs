@@ -251,6 +251,20 @@ pub fn decoder_for<S: AsRef<str>>(
         .find(|b| b.decode.contains(&source))
 }
 
+/// `CODEC_UNAVAILABLE {direction: decode}`: no backend of the report decodes `source`.
+pub(crate) fn no_decoder(source: VideoCodec) -> CoreError {
+    let name = serde_json::to_value(source).unwrap_or_default();
+    CoreError::new(
+        "CODEC_UNAVAILABLE",
+        format!(
+            "no decoder on this machine reads {}",
+            name.as_str().unwrap_or("this codec")
+        ),
+    )
+    .with_details(json!({ "codec": name, "direction": "decode" }))
+    .with_fix("see `fin media caps` for what this machine decodes; the codec plugin adds more")
+}
+
 /// The key a proxy of a `source`-coded original will have, with the decoder the report names
 /// first (the host's half of Decision 11); `CODEC_UNAVAILABLE {direction: decode}` when none
 /// decodes it.
@@ -262,18 +276,7 @@ pub fn plan_key<S: AsRef<str>>(
     backends: &[S],
 ) -> Result<(CacheKey, &'static crate::backend::BackendEntry), CoreError> {
     let Some(b) = decoder_for(source, backends) else {
-        let name = serde_json::to_value(source).unwrap_or_default();
-        return Err(CoreError::new(
-            "CODEC_UNAVAILABLE",
-            format!(
-                "no decoder on this machine reads {}",
-                name.as_str().unwrap_or("this codec")
-            ),
-        )
-        .with_details(json!({ "codec": name, "direction": "decode" }))
-        .with_fix(
-            "see `fin media caps` for what this machine decodes; the codec plugin adds more",
-        ));
+        return Err(no_decoder(source));
     };
     Ok((proxy_key(fingerprint, tier, codec, b.class), b))
 }
