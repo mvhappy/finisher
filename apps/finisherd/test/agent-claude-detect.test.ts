@@ -424,6 +424,8 @@ describe("where the CLI is", () => {
       expect(thrown(() => resolveClaudePath({ setting, platform: "win32", isFile: () => true })).fix, setting).toBe("install the native build");
     }
     expect(resolveClaudePath({ setting: "C:\\native\\claude.exe", platform: "win32", isFile })).toBe("C:\\native\\claude.exe");
+    // A setting naming no file is missing, whatever its name: never a (detected) shim.
+    expect(thrown(() => resolveClaudePath({ setting: "C:\\nope\\claude", platform: "win32", isFile }))).toMatchObject({ details: { reason: "pathMissing" } });
   });
 });
 

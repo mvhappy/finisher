@@ -162,8 +162,9 @@ export function resolveClaudePath(i: ResolveInput): string {
     if (!absolute(i.setting, i.platform)) {
       throw finError("PROVIDER_UNAVAILABLE", "agents.claudeCode.path must be an absolute path", { harness: HARNESS, reason: "relativePath" }, "set agents.claudeCode.path in settings.json to the CLI's absolute path");
     }
-    checkNative(i.setting, i.platform);
+    // Missing first: a missing file is not installed, whatever its name (never a detected shim).
     if (!isFile(i.setting)) throw notInstalled("pathMissing");
+    checkNative(i.setting, i.platform);
     return i.setting;
   }
   for (const raw of (i.pathEnv ?? "").split(p.delimiter)) {
