@@ -121,7 +121,8 @@ export async function run() {
     if (h264 === "refuse") {
       const r = finRaw(sd, project, ["media", "proxy", asset["h.mp4"], "--tier", "540"]);
       assertEqual([r.status, errorCode(r.text)], [5, "CODEC_UNAVAILABLE"], "the H.264 proxy on Linux");
-      assertEqual(r.json.error.details, { codec: "h264", direction: "decode" }, "CODEC_UNAVAILABLE details");
+      // The fields the refusal must carry; guidance (Task 8) may join them.
+      assertEqual([r.json.error.details?.codec, r.json.error.details?.direction], ["h264", "decode"], "CODEC_UNAVAILABLE details");
       if (TASK8) h264Guidance(h264Row(caps), r.json);
       else log("NOTE: laterBatch 6B-2 guidance on the H.264 row and refusal waits on 6B-1 Task 8 (h264Guidance, TASK8 in proxy-lib.mjs)");
     }
@@ -138,8 +139,11 @@ export async function run() {
     const vfr = vfrPts(60);
     const want = [
       ...[0, 15, 30, 45].map((tick, i) => ({ i, place: placeFlat, scale: 1.125, want: nearestFrame(cfr, tick) })),
+      // `2s`: the cut into the rotated VFR clip, its source at `--in 1s` (tick 30 at 30 ticks/s).
+      { i: 4, place: placeRotated, scale: 2, want: nearestFrame(vfr, 30) },
       ...VFR_MIDPOINTS.map((tick, k) => ({ i: 5 + k, place: placeRotated, scale: 2, want: nearestFrame(vfr, tick) })),
     ];
+    assertEqual(want.map((w) => w.i), AT.map((_, i) => i), "every look time has its frame id checked");
     for (const { i, place, scale, want: id } of want) {
       const [o, p] = [originals, proxied].map((look) => readFrameId(readPng(look.frames[i].file), place, scale));
       assertEqual([o, p], [id, id], `frame id at ${AT[i]} (original, proxy)`);

@@ -25,10 +25,10 @@ export const TASK8 = false;
  * code puts a guidance line in the answer (the worker answers the v1 report), so this waits on `TASK8`.
  */
 export function h264Guidance(row, refusal) {
-  const later = (lines) => lines.some((g) => g.code === "laterBatch" && g.batch === "6B-2");
+  const later = (lines) => Array.isArray(lines) && lines.some((g) => g?.code === "laterBatch" && g?.batch === "6B-2");
   if (!later(row.guidance)) throw new Error(`the report's H.264 row has no laterBatch 6B-2 guidance: ${JSON.stringify(row.guidance)}`);
-  const text = JSON.stringify(refusal?.error ?? {});
-  if (!text.includes("laterBatch") || !text.includes("6B-2")) throw new Error(`CODEC_UNAVAILABLE without laterBatch 6B-2 guidance: ${text}`);
+  const error = refusal?.error;
+  if (error?.code !== "CODEC_UNAVAILABLE" || !later(error.details?.guidance)) throw new Error(`CODEC_UNAVAILABLE without laterBatch 6B-2 guidance: ${JSON.stringify(error ?? {})}`);
 }
 
 const isObj = (v) => typeof v === "object" && v !== null && !Array.isArray(v);

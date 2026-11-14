@@ -73,4 +73,13 @@ test("the Task 19 assertions hold on the shape the plan names and fail on today'
   h264Guidance({ guidance: [later] }, { error: { code: "CODEC_UNAVAILABLE", details: { guidance: [later] } } });
   assert.throws(() => h264Guidance({ guidance: [] }, {}), /no laterBatch/);
   assert.throws(() => h264Guidance({ guidance: [later] }, { error: { details: { codec: "h264" } } }), /CODEC_UNAVAILABLE without/);
+  // Guidance must be structured, not words in a message.
+  assert.throws(() => h264Guidance({ guidance: [later] }, { error: { code: "CODEC_UNAVAILABLE", message: "laterBatch 6B-2", details: {} } }), /CODEC_UNAVAILABLE without/);
+});
+
+test("thumbnails may report rtFactorMilli 0; a proxy may not", () => {
+  const caps = { kind: "media.capabilities", kv: 2, payload: { sandbox: "landlock", codecs: [{ codec: "h264", guidance: [{ code: "laterBatch", batch: "6B-2" }] }] } };
+  const thumbs = done("media.thumbs", { media: { ...media(3), rtFactorMilli: 0 } });
+  task19Diagnostics([caps, done("media.proxy", { media: media(90) }), thumbs], { platform: "linux", proxyFrames: [90] });
+  assert.throws(() => task19Diagnostics([caps, done("media.proxy", { media: { ...media(90), rtFactorMilli: 0 } })], { platform: "linux", proxyFrames: [90] }), /rtFactorMilli 0/);
 });

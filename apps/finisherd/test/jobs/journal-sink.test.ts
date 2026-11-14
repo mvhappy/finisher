@@ -232,6 +232,10 @@ test("the cold media kinds' result keeps the worker's media object for job.done"
   // A batch kind's runs: the last that had a media object wins; none: no `media` key.
   expect(mediaCombine([{ made: 0 }, { made: 1, media }], items)).toEqual({ items: { fp: { key: "k" } }, itemErrors: [], media });
   expect(mediaCombine([{ made: 1 }], items)).toEqual({ items: { fp: { key: "k" } }, itemErrors: [] });
+  // An isolating retry's runs: their frames add up (2 + 1 thumbnails), the rest is the last run's.
+  const two = { ...media, frames: 2, backend: "svt-av1" };
+  const one = { ...media, frames: 1 };
+  expect(mediaCombine([{ media: two }, { made: 0 }, { media: one }], items)).toEqual({ items: { fp: { key: "k" } }, itemErrors: [], media: { ...one, frames: 3 } });
   const view = (result: unknown) => ({ result }) as unknown as Parameters<typeof mediaJournal>[0];
   expect(mediaJournal(view({ media }))).toEqual({ media });
   expect(mediaJournal(view({ media: [1] }))).toEqual({});
