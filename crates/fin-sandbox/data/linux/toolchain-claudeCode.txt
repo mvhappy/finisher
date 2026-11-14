@@ -1,0 +1,21 @@
+# Claude Code's own read list for Linux, on top of toolchain-base.txt (plan 7D Decision 6 and
+# Task 14; 7C Decision 6): what the CLI reads at start that the base list does not give.
+# Source: plan 7D Task 0 (2.1.321, 2026-11-13), the unsigned CLI started under fin-sandbox-exec
+# (Landlock enforced): the reads it was refused, recorded in tests/fixtures/claude-code-start.json.
+# One path per line; each entry names its evidence. Everything here is a real path, never a
+# link (a Landlock root is opened without following links).
+#
+# NOT here, on purpose:
+#  - the install tree (one file, `~/.local/share/claude/versions/<v>`, `~/.local/bin/claude` the
+#    link to it): it moves with the person's install, so the adapter passes the directory of
+#    the resolved binary as the process's `extraRead` (Decision 7), never a path of this file;
+#  - `/proc/self/*` (statm, stat, cgroup, uid_map): a per-process link, which no root can name.
+#    The CLI carries on without them (Task 0: every start ran its turn with them refused);
+#  - `/etc/machine-id` and `~/.gitconfig`: also refused, also tolerated, and a machine id and a
+#    user's git configuration are not the sandbox's to give.
+/usr/share/ca-certificates  # TLS roots: the /etc/ssl/certs/* links point here (Task 0, sandboxed start)
+/proc/stat  # CPU and uptime counters at start (Task 0, sandboxed start)
+/proc/version  # kernel version string (Task 0, sandboxed start)
+/proc/sys/vm  # memory tunables the runtime reads (Task 0, sandboxed start)
+/sys/devices/system/cpu/online  # CPU count (Task 0, sandboxed start)
+/sys/kernel/mm/transparent_hugepage  # huge page settings the allocator reads (Task 0, sandboxed start)

@@ -1,0 +1,6 @@
+# Claude Code's own read list for macOS, on top of toolchain-base.txt (plan 7D Task 14).
+# Empty: nothing is proven. Task 0 ran on Linux only; the CLI's start under Seatbelt has not
+# been recorded, so no entry is claimed (the install tree comes from the adapter's `extraRead`,
+# never from this file).
+# TODO(7D Task 18): record the denials of a real start on macOS and list what it needs here
+# (and the `mach-lookup` names in mach-agent.txt, unchanged until then).

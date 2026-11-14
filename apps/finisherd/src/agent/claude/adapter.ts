@@ -13,7 +13,7 @@
 // decides whether a session may start on it, and each open checks the setting again. Nothing
 // runs the CLI at boot.
 import { realpathSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import type { FinError, Node, ProviderEvent, Session } from "@finisher/contracts";
 import { Effect } from "effect";
 import type { KeyFs } from "../../auth/keys.ts";
@@ -32,6 +32,7 @@ import type { ClaudeModelCache } from "./models.ts";
 import { completeProbe, probe, probeFlagsHash } from "./probe.ts";
 import { signInIgnored, untestedVersionNotices } from "./probe-check.ts";
 import { ClaudeSession, IDLE_CLOSE_MS } from "./instances.ts";
+import { installTreeRead } from "./install.ts";
 import { claudePermissions } from "./permissions.ts";
 import { interruptedNote, resumeState, toldIds } from "./resume.ts";
 import { ClaudeInstance, CLOSE_EXIT_WAIT_MS, type EventSink, type RequestPort } from "./session.ts";
@@ -164,7 +165,7 @@ export function ClaudeCodeAdapter(deps: ClaudeDeps): ProviderAdapter {
         if (d.problem?.code === "PROVIDER_AUTH" && spec.providerRef === null && !resume) return yield* Effect.fail(d.problem);
         const binary = yield* attempt(() => realpathSync(d.path));
         // Decision 7: the CLI's install tree, resolved, which its process reads.
-        const extraRead = [dirname(binary)];
+        const extraRead = installTreeRead(binary, os);
         const flagsHash = probeFlagsHash(os);
         const found = yield* probe(asDetection(d), flagsHash, { sandbox: deps.sandbox, binary, os, extraRead });
         // Decision 15: a plan sign-in's money is shown, not charged (unless the owner asked), so

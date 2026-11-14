@@ -1,0 +1,398 @@
+{
+  "about": "Plan 7D Task 14: the escape cases of a Claude Code `agent` session, run by tests/escape_common.rs on the fixture of server_data.json (harness claudeCode: its sign-in store is the directory providers/claudeCode/home/store/; the agent is session s1, s2 another session). Each deny is an observed denial with an unsandboxed control. Nothing Claude Code would load by itself is readable: the project's CLAUDE.md, CLAUDE.local.md and .claude/, the user's ~/.claude/ and ~/.claude.json, another session's provider/, and the sign-in home outside store/ (spec §4.5, §8.6). The store's parent is not writable, and another session's inbox socket (Task 0: <tmp>/cc-socks-<uid>/<pid>.sock) cannot be connected to (Landlock ABI 9; below it SANDBOX_SOCKETS_EXPOSED, the case is skipped with that reason). The allow cases hold the harness's list (data/linux/toolchain-claudeCode.txt) to what it names. macOS and Windows cases are added where Task 18 records a start.",
+  "cases": [
+    {
+      "name": "read the project's CLAUDE.md",
+      "profiles": [
+        "agent"
+      ],
+      "harness": "claudeCode",
+      "op": [
+        "read",
+        "$T/p/CLAUDE.md"
+      ],
+      "expect": "deny"
+    },
+    {
+      "name": "read the project's CLAUDE.local.md",
+      "profiles": [
+        "agent"
+      ],
+      "harness": "claudeCode",
+      "op": [
+        "read",
+        "$T/p/CLAUDE.local.md"
+      ],
+      "expect": "deny"
+    },
+    {
+      "name": "read the project's .claude/settings.json",
+      "profiles": [
+        "agent"
+      ],
+      "harness": "claudeCode",
+      "op": [
+        "read",
+        "$T/p/.claude/settings.json"
+      ],
+      "expect": "deny"
+    },
+    {
+      "name": "list the project's .claude directory",
+      "profiles": [
+        "agent"
+      ],
+      "harness": "claudeCode",
+      "op": [
+        "list",
+        "$T/p/.claude"
+      ],
+      "expect": "deny"
+    },
+    {
+      "name": "overwrite the project's CLAUDE.md",
+      "profiles": [
+        "agent"
+      ],
+      "harness": "claudeCode",
+      "op": [
+        "write",
+        "$T/p/CLAUDE.md"
+      ],
+      "expect": "deny"
+    },
+    {
+      "name": "plant a project settings.local.json",
+      "profiles": [
+        "agent"
+      ],
+      "harness": "claudeCode",
+      "op": [
+        "create",
+        "$T/p/.claude/settings.local.json"
+      ],
+      "expect": "deny"
+    },
+    {
+      "name": "read the user's ~/.claude/settings.json",
+      "profiles": [
+        "agent"
+      ],
+      "harness": "claudeCode",
+      "op": [
+        "read",
+        "$T/home/.claude/settings.json"
+      ],
+      "expect": "deny"
+    },
+    {
+      "name": "read the user's ~/.claude.json",
+      "profiles": [
+        "agent"
+      ],
+      "harness": "claudeCode",
+      "op": [
+        "read",
+        "$T/home/.claude.json"
+      ],
+      "expect": "deny"
+    },
+    {
+      "name": "plant a user ~/.claude/settings.json",
+      "profiles": [
+        "agent"
+      ],
+      "harness": "claudeCode",
+      "op": [
+        "write",
+        "$T/home/.claude/settings.json"
+      ],
+      "expect": "deny"
+    },
+    {
+      "name": "read another session's provider/settings.json",
+      "profiles": [
+        "agent"
+      ],
+      "harness": "claudeCode",
+      "op": [
+        "read",
+        "$T/data/agents/s2/provider/settings.json"
+      ],
+      "expect": "deny"
+    },
+    {
+      "name": "plant a hook in another session's provider/",
+      "profiles": [
+        "agent"
+      ],
+      "harness": "claudeCode",
+      "op": [
+        "create",
+        "$T/data/agents/s2/provider/hooks.json"
+      ],
+      "expect": "deny"
+    },
+    {
+      "name": "read the sign-in home's profile outside store/",
+      "profiles": [
+        "agent"
+      ],
+      "harness": "claudeCode",
+      "op": [
+        "read",
+        "$T/data/providers/claudeCode/home/.claude.json"
+      ],
+      "expect": "deny"
+    },
+    {
+      "name": "list the sign-in home",
+      "profiles": [
+        "agent"
+      ],
+      "harness": "claudeCode",
+      "op": [
+        "list",
+        "$T/data/providers/claudeCode/home"
+      ],
+      "expect": "deny"
+    },
+    {
+      "name": "overwrite the sign-in home's profile",
+      "profiles": [
+        "agent"
+      ],
+      "harness": "claudeCode",
+      "op": [
+        "write",
+        "$T/data/providers/claudeCode/home/.claude.json"
+      ],
+      "expect": "deny"
+    },
+    {
+      "name": "write the store directory's parent",
+      "profiles": [
+        "agent"
+      ],
+      "harness": "claudeCode",
+      "op": [
+        "create",
+        "$T/data/providers/claudeCode/home/settings.json"
+      ],
+      "expect": "deny"
+    },
+    {
+      "name": "make a sibling of the store directory",
+      "profiles": [
+        "agent"
+      ],
+      "harness": "claudeCode",
+      "op": [
+        "mkdir",
+        "$T/data/providers/claudeCode/home/store2"
+      ],
+      "expect": "deny"
+    },
+    {
+      "name": "move the store directory away",
+      "profiles": [
+        "agent"
+      ],
+      "harness": "claudeCode",
+      "op": [
+        "rename",
+        "$T/data/providers/claudeCode/home/store",
+        "$T/data/providers/claudeCode/home/moved"
+      ],
+      "expect": "deny",
+      "os": [
+        "linux"
+      ]
+    },
+    {
+      "name": "connect to another session's inbox socket",
+      "profiles": [
+        "agent"
+      ],
+      "harness": "claudeCode",
+      "op": [
+        "connect-unix",
+        "$T/inbox/cc-socks-1/4242.sock"
+      ],
+      "expect": "deny",
+      "needs": "unixSockets"
+    },
+    {
+      "name": "read the store's credentials file",
+      "profiles": [
+        "agent"
+      ],
+      "harness": "claudeCode",
+      "op": [
+        "read",
+        "$T/data/providers/claudeCode/home/store/.credentials.json"
+      ],
+      "expect": "allow"
+    },
+    {
+      "name": "write a refreshed credentials file into the store",
+      "profiles": [
+        "agent"
+      ],
+      "harness": "claudeCode",
+      "op": [
+        "create",
+        "$T/data/providers/claudeCode/home/store/.credentials.json.tmp"
+      ],
+      "expect": "allow"
+    },
+    {
+      "name": "rewrite the credentials file in place",
+      "profiles": [
+        "agent"
+      ],
+      "harness": "claudeCode",
+      "op": [
+        "write",
+        "$T/data/providers/claudeCode/home/store/.credentials.json"
+      ],
+      "expect": "allow"
+    },
+    {
+      "name": "rename inside the store",
+      "profiles": [
+        "agent"
+      ],
+      "harness": "claudeCode",
+      "op": [
+        "rename",
+        "$T/data/providers/claudeCode/home/store/.credentials.json",
+        "$T/data/providers/claudeCode/home/store/.credentials.json.old"
+      ],
+      "expect": "allow",
+      "os": [
+        "linux"
+      ]
+    },
+    {
+      "name": "read /proc/stat",
+      "profiles": [
+        "agent"
+      ],
+      "harness": "claudeCode",
+      "op": [
+        "read",
+        "/proc/stat"
+      ],
+      "expect": "allow",
+      "os": [
+        "linux"
+      ]
+    },
+    {
+      "name": "read /proc/version",
+      "profiles": [
+        "agent"
+      ],
+      "harness": "claudeCode",
+      "op": [
+        "read",
+        "/proc/version"
+      ],
+      "expect": "allow",
+      "os": [
+        "linux"
+      ]
+    },
+    {
+      "name": "list /proc/sys/vm",
+      "profiles": [
+        "agent"
+      ],
+      "harness": "claudeCode",
+      "op": [
+        "list",
+        "/proc/sys/vm"
+      ],
+      "expect": "allow",
+      "os": [
+        "linux"
+      ]
+    },
+    {
+      "name": "read the online CPUs",
+      "profiles": [
+        "agent"
+      ],
+      "harness": "claudeCode",
+      "op": [
+        "read",
+        "/sys/devices/system/cpu/online"
+      ],
+      "expect": "allow",
+      "os": [
+        "linux"
+      ]
+    },
+    {
+      "name": "list the TLS roots the certificate links point to",
+      "profiles": [
+        "agent"
+      ],
+      "harness": "claudeCode",
+      "op": [
+        "list",
+        "/usr/share/ca-certificates"
+      ],
+      "expect": "allow",
+      "os": [
+        "linux"
+      ]
+    },
+    {
+      "name": "list /proc",
+      "profiles": [
+        "agent"
+      ],
+      "harness": "claudeCode",
+      "op": [
+        "list",
+        "/proc"
+      ],
+      "expect": "deny",
+      "os": [
+        "linux"
+      ]
+    },
+    {
+      "name": "read /proc/self/stat",
+      "profiles": [
+        "agent"
+      ],
+      "harness": "claudeCode",
+      "op": [
+        "read",
+        "/proc/self/stat"
+      ],
+      "expect": "deny",
+      "os": [
+        "linux"
+      ]
+    },
+    {
+      "name": "a harness with no list does not read /proc/stat",
+      "profiles": [
+        "agent"
+      ],
+      "harness": "codex",
+      "op": [
+        "read",
+        "/proc/stat"
+      ],
+      "expect": "deny",
+      "os": [
+        "linux"
+      ]
+    }
+  ]
+}

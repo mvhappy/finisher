@@ -81,10 +81,13 @@ function enforced(): boolean {
 const ACCOUNT = "tester@example.invalid";
 const UUID_VAR = "$session_id";
 
-/** The fake installed as a CLI of its own: the binary, its sidecar and script; the observations in the session's config dir. */
+/** The fake installed as a CLI of its own, in the native layout (`…/claude/versions/<v>`, the
+ * only one whose directory a session reads: `install.ts`): the binary, its sidecar and script;
+ * the observations in the session's config dir. */
 function install(script: Record<string, unknown>, observedAt = "@config/observed.json", account = ACCOUNT): string {
-  const dir = mkdtempSync(join(tmp, "cli-"));
-  const binary = join(dir, "claude");
+  const dir = join(mkdtempSync(join(tmp, "cli-")), "claude", "versions");
+  mkdirSync(dir, { recursive: true });
+  const binary = join(dir, VERSION);
   copyFileSync(FAKE, binary);
   writeFileSync(join(dir, "script.json"), JSON.stringify(script));
   writeFileSync(join(dir, "fake-claude.json"), JSON.stringify({ script: "script.json", observed: observedAt, version: VERSION, account }));
@@ -627,6 +630,8 @@ describe("the instance", () => {
     const w = await openWatched({ steps: [{ expect: "user", cumulativeUsage: { inputTokens: 1, outputTokens: 1 } }] });
     expect(w.spawns).toHaveLength(1);
     expect(w.spawns[0]!.argv[0]).toBe(realpathSync(w.binary));
+    // The native layout (`…/claude/versions/<v>`): its directory (any other binary is granted
+    // alone, `agent-claude-install.test.ts`).
     expect(w.spawns[0]!.opts.extraRead).toEqual([dirname(realpathSync(w.binary))]);
     expect(w.spawns[0]!.opts.env).toMatchObject({ CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1" });
     // Without its sandbox the adapter starts nothing.
