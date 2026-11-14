@@ -6,6 +6,7 @@
 
 pub mod audio_layout;
 pub mod backend;
+pub mod backend_audio;
 pub mod cache;
 pub mod colour;
 pub mod format;

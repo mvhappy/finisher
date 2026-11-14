@@ -1,0 +1,20 @@
+[package]
+name = "fin-aacenc-sys"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "vo-aacenc (AAC-LC encode, Linux only) built from the pinned submodule with cc, and the C shim fin-codecs calls (no features: built once). Empty on other targets."
+links = "vo-aacenc"
+
+[build-dependencies]
+# vo-aacenc (fixed point, static, C paths only; no ARM assembly) from the pinned submodule
+# `third_party/vo-aacenc`, plus the shim over its codec API (`shim/fin_aacenc_shim.c`). Linux
+# only: on every other target `build.rs` compiles nothing.
+cc = { version = "1", features = ["parallel"] }
+
+[dev-dependencies]
+# `tests/native_gate.rs`: the native gate's vo-aacenc entry against the submodule.
+blake3 = "1"
+serde_json = "1"

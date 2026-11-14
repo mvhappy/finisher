@@ -76,6 +76,8 @@ pub enum AudioCodec {
     Pcm,
     Ac3,
     Eac3,
+    /// Vorbis (Ogg, WebM `A_VORBIS`; 6C).
+    Vorbis,
     /// Anything else; the sample entry's four-character code is in `AudioTrackInfo.fourcc`.
     Other,
 }
@@ -93,6 +95,7 @@ impl AudioCodec {
             | b"fl64" | b"raw " => AudioCodec::Pcm,
             b"ac-3" => AudioCodec::Ac3,
             b"ec-3" => AudioCodec::Eac3,
+            b"vorb" => AudioCodec::Vorbis,
             _ => AudioCodec::Other,
         }
     }

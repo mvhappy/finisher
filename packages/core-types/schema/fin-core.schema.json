@@ -1047,6 +1047,36 @@
       ],
       "type": "string"
     },
+    "AudioBackendEntry": {
+      "description": "One audio backend: its name (a `MEDIA_BACKENDS` entry, Decision 24), its class and what it\ncan decode and encode at most on the platforms it is built for.",
+      "properties": {
+        "class": {
+          "$ref": "#/$defs/VendorClass"
+        },
+        "decode": {
+          "items": {
+            "$ref": "#/$defs/AudioCodec"
+          },
+          "type": "array"
+        },
+        "encode": {
+          "items": {
+            "$ref": "#/$defs/AudioCodec"
+          },
+          "type": "array"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "class",
+        "decode",
+        "encode"
+      ],
+      "type": "object"
+    },
     "AudioCodec": {
       "oneOf": [
         {
@@ -1060,6 +1090,11 @@
             "ac3",
             "eac3"
           ],
+          "type": "string"
+        },
+        {
+          "const": "vorbis",
+          "description": "Vorbis (Ogg, WebM `A_VORBIS`; 6C).",
           "type": "string"
         },
         {

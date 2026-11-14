@@ -350,6 +350,7 @@ fn audio_priming_from_the_edit_list_and_two_tracks() {
             sample_rate: 48_000,
             channels: 2,
             priming: 0,
+            presented: None,
         })
         .unwrap();
     w.write(t, b"x", 0, 0, 960, true).unwrap();
