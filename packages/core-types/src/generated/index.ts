@@ -7725,6 +7725,11 @@ export interface LegacyWorkerInfo {
    */
   renderVersion: number;
   /**
+   * The OS confinement the worker applied to itself (spec §3.5.1, plan 6B-1 Task 18); an
+   * answer from before it has none: `none`.
+   */
+  sandbox?: "none" | "landlock" | "worker";
+  /**
    * The `fin-workers` crate's version.
    */
   version: string;

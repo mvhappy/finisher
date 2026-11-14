@@ -10,7 +10,7 @@ use fin_jobs::{JobError, StartJob};
 use fin_media::RENDER_VERSION;
 use fin_media::jobs::{
     CapSupport, CapabilitiesParams, CodecCapabilities, LegacyCodecCaps, LegacyMediaCapabilities,
-    LegacyWorkerInfo,
+    LegacyWorkerInfo, WorkerSandbox,
 };
 use serde_json::Value;
 
@@ -35,6 +35,20 @@ fn codec(c: &CodecSupport) -> LegacyCodecCaps {
     }
 }
 
+/// The sandbox in force (sp6 §3.5.1, §15): `landlock` once the worker profile's Landlock phase
+/// restricted this process (Linux, no seccomp yet; Windows after the AppContainer token check),
+/// `worker` once the full profile did (macOS Seatbelt: files, no network, no process creation),
+/// else `none` (Landlock disabled, or the profile not ready).
+pub(crate) fn sandbox() -> WorkerSandbox {
+    if !fin_sandbox::self_apply::applied() {
+        WorkerSandbox::None
+    } else if cfg!(target_os = "macos") {
+        WorkerSandbox::Worker
+    } else {
+        WorkerSandbox::Landlock
+    }
+}
+
 pub fn run(job: &StartJob, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<Value, JobError> {
     serde_json::from_value::<CapabilitiesParams>(job.params.clone())
         .map_err(|e| JobError::new("JOB_PARAMS_INVALID", format!("params: {e}")))?;
@@ -51,6 +65,7 @@ pub fn run(job: &StartJob, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<Valu
         worker: LegacyWorkerInfo {
             version: env!("CARGO_PKG_VERSION").to_string(),
             render_version: RENDER_VERSION,
+            sandbox: sandbox(),
         },
     };
     // Once per server run in practice: the server caches the answer (Task 13). Built only

@@ -19,7 +19,7 @@ use fin_core::events::payloads::{
 };
 use fin_jobs::worker::JobCtx;
 use fin_media::VideoCodec;
-use fin_media::jobs::{CapSupport, GpuAdapter, LegacyMediaCapabilities, LookFrame};
+use fin_media::jobs::{CapSupport, GpuAdapter, LegacyMediaCapabilities, LookFrame, WorkerSandbox};
 
 /// A `render.stats` window: one minute.
 pub const WINDOW_MS: u64 = 60_000;
@@ -204,17 +204,11 @@ pub fn capabilities_event(caps: &LegacyMediaCapabilities) -> MediaCapabilitiesEv
             .collect(),
         gpu: caps.gpu.as_ref().map(gpu_entry),
         copy_path: CopyPath::Copy,
-        // sp6 §15: `landlock` once the worker profile's Landlock phase restricted this process
-        // (Linux, no seccomp yet); `worker` once the full profile did (macOS Seatbelt: files,
-        // no network, no process creation).
-        sandbox: if fin_sandbox::self_apply::applied() {
-            if cfg!(target_os = "macos") {
-                Sandbox::Worker
-            } else {
-                Sandbox::Landlock
-            }
-        } else {
-            Sandbox::None
+        // sp6 §15: the answer's (`caps::sandbox`).
+        sandbox: match caps.worker.sandbox {
+            WorkerSandbox::None => Sandbox::None,
+            WorkerSandbox::Landlock => Sandbox::Landlock,
+            WorkerSandbox::Worker => Sandbox::Worker,
         },
         render_version: caps.worker.render_version,
     }

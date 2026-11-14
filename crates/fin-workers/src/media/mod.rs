@@ -27,6 +27,8 @@ use serde_json::Value;
 mod caps;
 mod diag;
 mod encode_pipeline;
+#[cfg(feature = "test-hooks")]
+mod escape;
 mod fonts;
 mod inputs;
 mod look;
@@ -41,6 +43,8 @@ mod sources;
 mod thumbs;
 mod thumbs_source;
 
+/// The kinds `hello` lists. The escape suite's probe (`escape.rs`, `test-hooks` builds only) is
+/// not one of them: it is no fin-core kind and no host ever submits it.
 static KINDS: &[KindVersion] = &[
     KindVersion::new("media.look", 1),
     KindVersion::new("media.capabilities", 1),
@@ -126,6 +130,8 @@ impl Family for MediaFamily {
             ("media.probeDeep", 1) => probe_deep::run(job, ctx, &mut self.state),
             ("media.proxy", 1) => proxy::run(job, ctx, &mut self.state),
             ("media.thumbs", 1) => thumbs::run(job, ctx, &mut self.state),
+            #[cfg(feature = "test-hooks")]
+            (escape::KIND, 1) => escape::run(job),
             (kind, version) => Err(JobError::new(
                 "JOB_KIND_UNKNOWN",
                 format!("family media has no kind {kind} v{version}"),

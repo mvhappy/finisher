@@ -9528,6 +9528,11 @@
           "minimum": 0,
           "type": "integer"
         },
+        "sandbox": {
+          "$ref": "#/$defs/WorkerSandbox",
+          "default": "none",
+          "description": "The OS confinement the worker applied to itself (spec §3.5.1, plan 6B-1 Task 18); an\nanswer from before it has none: `none`."
+        },
         "version": {
           "description": "The `fin-workers` crate's version.",
           "type": "string"

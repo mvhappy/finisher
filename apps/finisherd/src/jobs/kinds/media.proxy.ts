@@ -4,7 +4,9 @@
 //   batches of fingerprints) and a project's `media.proxy` share it. The source is a project
 //   asset (`asset`: `prepare` writes the one-asset manifest and fails `ASSET_CHANGED` when the
 //   fingerprint moved) or a library file (`file`: the worker opens it through the catalogue's
-//   raw chain and `Expect`).
+//   raw chain and `Expect`). Either way the job reads that one file: a library file is granted as
+//   itself, never its library's root (6B-1 Task 18; the opener resolves below an `O_PATH` root,
+//   which the worker profile does not need to grant).
 // - Priority `background`, `qos: background`; resources `["gpu", "hwenc"]` when the cached
 //   capability report names a hardware encoder for the codec, else `["gpu", "cpu"]`
 //   (`proxyResources`); memory by the source's display size (Decision 18).
@@ -14,7 +16,7 @@
 //   and a poisoned item fails the job `POISON_ITEM`, which `rememberPoison` keeps); otherwise the
 //   entry `out/<key>/` is committed by `MediaCache.commit` (rename, then insert) for the project
 //   that asked. Other projects with the same content reach it through `serve` on their lookup.
-import { realpath } from "node:fs/promises";
+import { lstat, realpath } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import type { FinError } from "@finisher/contracts";
 import type { ProxyParams } from "@finisher/core-types";
@@ -119,6 +121,55 @@ async function canonical(paths: ReadonlyArray<string>): Promise<string[]> {
   return out.sort();
 }
 
+const UTF8 = new TextDecoder("utf-8", { fatal: true });
+
+/**
+ * One raw component as a path component; `undefined` when it is not UTF-8 (this process cannot
+ * name it), `null` when it is no component at all (empty, `.`, `..`, a `/` or NUL).
+ */
+function component(b64: unknown): string | null | undefined {
+  if (typeof b64 !== "string") return null;
+  const bytes = Buffer.from(b64, "base64");
+  if (bytes.includes(0) || bytes.includes(0x2f)) return null;
+  let c: string;
+  try {
+    c = UTF8.decode(bytes);
+  } catch {
+    return undefined;
+  }
+  return c === "" || c === "." || c === ".." ? null : c;
+}
+
+/**
+ * What a library file's proxy reads (6B-1 Task 18): the file at its raw chain below the
+ * (canonical) root, when it is a regular file there now with no link on the way; else nothing
+ * (the worker's open then fails and is reported). A valid chain this process cannot name (a
+ * component that is not UTF-8) is granted its deepest nameable directory, at most the root.
+ */
+export async function libraryFileReads(file: { readonly root: string; readonly rel: unknown }): Promise<string[]> {
+  const [root] = await canonical([file.root]);
+  if (root === undefined) return [];
+  const raw = (file.rel as { components?: unknown } | null | undefined)?.components;
+  if (!Array.isArray(raw) || raw.length === 0) return [];
+  const parts = raw.map(component);
+  if (parts.includes(null)) return [];
+  const names: string[] = [];
+  for (const name of parts) {
+    if (name === undefined || name === null) break;
+    names.push(name);
+  }
+  const whole = names.length === raw.length;
+  const path = join(root, ...names);
+  try {
+    // No link anywhere below the root (the opener refuses one; a grant would follow it).
+    const st = await lstat(path);
+    const kind = whole ? st.isFile() : st.isDirectory();
+    return kind && (await realpath(path)) === path ? [path] : [];
+  } catch {
+    return [];
+  }
+}
+
 function readsOf(extra: unknown): ReadonlyArray<string> {
   const reads = (extra as { reads?: unknown } | null | undefined)?.reads;
   return Array.isArray(reads) ? reads.filter((r): r is string => typeof r === "string") : [];
@@ -163,7 +214,7 @@ export function mediaProxyKind(deps: ProxyKindDeps): KindSpec<ProxyParams, unkno
       Effect.gen(function* () {
         const p = ctx.job.params;
         if (p.file != null) {
-          const reads = yield* Effect.promise(() => canonical([p.file!.root]));
+          const reads = yield* Effect.promise(() => libraryFileReads(p.file!));
           return { extra: { reads } };
         }
         if (p.projectId == null) return yield* Effect.fail(invalid("projectId", "required for an asset"));
