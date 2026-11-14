@@ -161,6 +161,10 @@ pub struct Ask {
     /// Once allowed, run the call as the CLI does (`Bash`: a login shell, `runner/bash.rs`).
     #[serde(default)]
     pub run: bool,
+    /// A tool of an SDK MCP server (`mcp__<server>__<tool>`, `runner/mcp_call.rs`): announced,
+    /// asked, and once allowed called with `tools/call`; its answer is the call's result.
+    #[serde(default)]
+    pub mcp: bool,
 }
 
 #[derive(Debug, Default, Clone, Copy, Deserialize)]

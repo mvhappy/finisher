@@ -82,6 +82,12 @@ impl Runner {
         rid
     }
 
+    /// Sends an `mcp_message` notification (no JSON-RPC id) whose answer is only consumed.
+    pub(super) fn mcp_notify(&mut self, server: &str, message: Value) {
+        let rid = self.mcp_send(server, message);
+        self.mcp.quiet.push(rid);
+    }
+
     /// Starts every SDK server's handshake (once).
     pub(super) fn mcp_start(&mut self) {
         if self.mcp.started {

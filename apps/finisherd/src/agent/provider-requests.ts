@@ -113,6 +113,9 @@ interface Pending {
 
 const run = <A, E>(e: Effect.Effect<A, E>) => Effect.runPromiseExit(e);
 
+/** An allow names the call it decided (an adapter that runs it sets `FIN_CALL`: 7D Task 13). */
+const callOf = (ctx: RequestContext) => (ctx.callId === undefined ? {} : { callId: ctx.callId });
+
 /** The 7A answer, kept for a runtime without provider permissions (and for `userInput`). */
 async function declined(ctx: RequestContext, e: RequestEvent, reason: string): Promise<void> {
   await ctx.node({ requestId: e.id, kind: e.kind, ...(e.tool === undefined ? {} : { tool: e.tool }), input: e.input ?? null, decision: "deny", by: "policy", reason });
@@ -171,7 +174,7 @@ export class ProviderRequests {
     const answer = async (allow: boolean, node: { readonly reason: string; readonly rule?: string; readonly layer?: string }) => {
       await ctx.node({ ...base, decision: allow ? "allow" : "deny", by: "policy", ...node });
       if (allow) await this.#opened(ctx, tool, input);
-      const err = await ctx.respond(allow ? { kind: "approval", allow } : { kind: "approval", allow, message: denyMessage(node) });
+      const err = await ctx.respond(allow ? { kind: "approval", allow, ...callOf(ctx) } : { kind: "approval", allow, message: denyMessage(node) });
       if (err) ctx.log("agent runtime: the provider refused an answer", { code: err.code });
     };
     const decided = await run(this.#d.permissions.explain(ctx.session, { tool, input, ...(ctx.unconfined === true ? { unconfined: true } : {}) }));
@@ -218,7 +221,7 @@ export class ProviderRequests {
       const node = a.status === "answered" ? { decision: a.decision, by: "user", answeredBy: a.by } : { decision: "deny", by: "policy", reason: "expired" };
       await p.ctx.node({ approvalId: a.id, requestId: p.requestId, kind: "provider", tool: p.tool, ...node });
       if (allow) await this.#opened(p.ctx, p.tool, p.input);
-      const err = await p.ctx.respond(allow ? { kind: "approval", allow } : { kind: "approval", allow, message: denyMessage({ reason: a.status === "answered" ? "user" : "expired" }) });
+      const err = await p.ctx.respond(allow ? { kind: "approval", allow, ...callOf(p.ctx) } : { kind: "approval", allow, message: denyMessage({ reason: a.status === "answered" ? "user" : "expired" }) });
       if (err) p.ctx.log("agent runtime: the provider refused an answer", { code: err.code });
     }
   }

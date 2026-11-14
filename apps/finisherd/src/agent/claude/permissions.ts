@@ -31,12 +31,13 @@
 //   which denials no prompt named, and each becomes a `notice {cliDenied}` (`map.ts`).
 // - **Anything else** is answered `error` at once: a `hook_callback` (no SDK hooks are registered,
 //   Decision 18) and a request subtype this host does not know, each with a notice; an MCP
-//   `tools/call` of another tool (the brokered shell is Task 13's) a JSON-RPC error.
+//   `tools/call` of another tool a JSON-RPC error (the brokered shell's `shell` never reaches
+//   this port: `mcp-host.ts` serves it in front of it, Task 13).
 import type { FinError, ProviderEvent } from "@finisher/contracts";
 import { finError } from "../../errors.ts";
 import type { RuntimeAnswer } from "../adapter.ts";
 import { MCP_SERVER } from "./launch.ts";
-import { isMcpToolCall, mcpReply } from "./probe-check.ts";
+import { callKey, isMcpToolCall, mcpReply } from "./mcp-host.ts";
 import { type CanUseToolAnswer, type CliRequest, encodeAnswer } from "./protocol.ts";
 import type { Denial } from "./map.ts";
 import type { RequestPort } from "./session.ts";
@@ -54,18 +55,6 @@ interface Waiting {
   /** The JSON-RPC id of an MCP `approve` call (absent on the `stdio` path). */
   readonly rpc?: { readonly id: unknown };
 }
-
-/** JSON with object keys sorted, so the same input matches whatever order its keys came in. */
-const stable = (v: unknown): string => {
-  if (Array.isArray(v)) return `[${v.map(stable).join(",")}]`;
-  if (typeof v === "object" && v !== null) {
-    const o = v as Record<string, unknown>;
-    return `{${Object.keys(o).sort().map((k) => `${JSON.stringify(k)}:${stable(o[k])}`).join(",")}}`;
-  }
-  return JSON.stringify(v) ?? "null";
-};
-/** One call as a key: its tool and input. */
-const callKey = (tool: string, input: unknown) => `${tool}\u0000${stable(input)}`;
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const clip = (s: string) => s.slice(0, 64);

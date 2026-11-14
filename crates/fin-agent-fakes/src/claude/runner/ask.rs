@@ -54,9 +54,9 @@ impl Runner {
             .tool_use_id
             .clone()
             .unwrap_or_else(|| format!("toolu_fake_{}", self.req_n + 1));
-        if ask.bash {
+        if ask.bash || ask.mcp {
             self.announce(ask, &tool_use_id);
-            if self.bash_rejected(ask, &tool_use_id) {
+            if self.bash_rejected(ask, &tool_use_id) || self.mcp_absent(ask, &tool_use_id) {
                 return (Outcome::Cancelled, tool_use_id);
             }
         }

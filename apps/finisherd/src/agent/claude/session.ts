@@ -10,7 +10,8 @@
 // - **Control lines**: the `finisher` SDK MCP server's handshake is answered at once (Task 0: it
 //   starts before the `initialize` answer); every other CLI request (`can_use_tool`, an MCP
 //   `tools/call`, `hook_callback`, a newer CLI's) goes to one place, `RequestPort` (Task 8's
-//   `claude/permissions.ts`: a `request` the runtime decides); answers to the host's own
+//   `claude/permissions.ts`: a `request` the runtime decides), behind the server's host
+//   (`mcp-host.ts`, Task 13: the handshake and the brokered shell); answers to the host's own
 //   requests (`initialize`, `interrupt`) are matched by id.
 // - **Turns** (Decision 13): `startTurn` writes the user line (the run's facts first) and the
 //   turn ends at its `result` (`map.ts`). Verified on 2.1.321 (7D Task 0, s1b/s1d): a steer never
@@ -38,8 +39,10 @@ import type { BoundEvent, CallGate, ProjectedUsage, ProviderRef, ProviderSession
 import type { SandboxedChild } from "../sandbox.ts";
 import type { LaunchPlan } from "./launch.ts";
 import { type Denial, LineMapper, type UsageSource } from "./map.ts";
+import { isMcpToolCall, type McpHostPort, mcpHost } from "./mcp-host.ts";
 import { claudePermissions } from "./permissions.ts";
-import { type CheckOptions, firstTurnGate, isMcpToolCall, mcpReply } from "./probe-check.ts";
+import { type CheckOptions, firstTurnGate } from "./probe-check.ts";
+import type { ShellTool } from "./shell-tool.ts";
 import { type CliLine, type CliRequest, decodeLine, encodeAnswer, encodeControl, encodeUser, lineFramer, type SystemInit } from "./protocol.ts";
 
 /** Decision 16: how long the turn's `result` may take after the `interrupt` request. */
@@ -59,8 +62,11 @@ export const CLOSE_EXIT_WAIT_MS = 5_000;
  * `hook_callback`, a newer CLI's): `claudePermissions()` (Task 8) unless a test passes its own.
  */
 export interface RequestPort {
-  /** A CLI request: the events it becomes (a `request` for the runtime) and an answer line to write now. */
-  request(requestId: string, r: CliRequest): { readonly events?: readonly ProviderEvent[]; readonly answer?: string };
+  /**
+   * A CLI request: the events it becomes (a `request` for the runtime), an answer line to write
+   * now, or one to write when `later` settles (none when it settles undefined: a brokered shell).
+   */
+  request(requestId: string, r: CliRequest): { readonly events?: readonly ProviderEvent[]; readonly answer?: string; readonly later?: Promise<string | undefined> };
   /** The runtime's answer to a `request` event: the line to write, or why there is none. */
   respond(id: string, a: RuntimeAnswer): string | FinError;
   /** The CLI withdrew `requestId` (`control_cancel_request`). */
@@ -96,6 +102,8 @@ export interface InstanceOptions {
   /** The first init that passed the gate: the events it adds (an `untestedVersion` notice). */
   readonly onInit?: (init: SystemInit) => readonly ProviderEvent[];
   readonly requests?: RequestPort;
+  /** The brokered shell (Decision 21), when `plan.mcpTools` serves `mcp__finisher__shell`. */
+  readonly shell?: ShellTool;
   readonly usage?: UsageSource;
   /** The runtime's budget check, once per turn (Task 9, Decision 15), with the turn's projection. */
   readonly gate?: CallGate;
@@ -115,7 +123,7 @@ export class ClaudeInstance {
   readonly #queue: Queue.Queue<BoundEvent, Cause.Done>;
   readonly #gate: ReturnType<typeof firstTurnGate>;
   readonly #map: LineMapper;
-  readonly #requests: RequestPort;
+  readonly #requests: McpHostPort;
   /** The adapter's events waiting for the gate. */
   #pending: ProviderEvent[];
   #inited = false;
@@ -151,7 +159,7 @@ export class ClaudeInstance {
     this.#o = o;
     this.#queue = queue;
     this.#gate = firstTurnGate(o.plan, o.check ?? {});
-    this.#requests = o.requests ?? claudePermissions();
+    this.#requests = mcpHost(o.requests ?? claudePermissions(), { mcpTools: o.plan.mcpTools, ...(o.shell === undefined ? {} : { shell: o.shell }) });
     this.#map = new LineMapper(o.usage, { asked: (d) => this.#requests.asked?.(d) === true, turnEnded: () => this.#requests.turnEnded?.() });
     this.#pending = [...(o.notices ?? [])];
     this.#initialized = new Promise((resolve) => (this.#answerInitialize = resolve));
@@ -193,6 +201,7 @@ export class ClaudeInstance {
       await Promise.race([ended, new Promise((r) => setTimeout(r, 500).unref())]);
       this.#exit = { code: e.code, signal: e.signal ?? null };
       this.#answerInitialize(null);
+      this.#requests.closed();
       this.#returnHeld();
       this.#turnOpen = false;
       this.#cliTurn = false;
@@ -346,7 +355,7 @@ export class ClaudeInstance {
     // The SDK MCP handshake, at once, before and after the gate (Task 0); a `tools/call` is a
     // request like any other (Decision 10's `approve`).
     if (l.kind === "controlRequest" && l.request.subtype === "mcp_message" && !isMcpToolCall(l.request.message)) {
-      this.#write(encodeAnswer(l.request_id, mcpReply(l.request.server_name, l.request.message, this.#o.plan.mcpTools)));
+      this.#write(encodeAnswer(l.request_id, this.#requests.handshake(l.request.server_name, l.request.message)));
       return;
     }
     if (l.kind === "controlResponse") {
@@ -393,6 +402,7 @@ export class ClaudeInstance {
       const r = this.#requests.request(l.request_id, l.request);
       if (r.answer !== undefined) this.#write(r.answer);
       if (r.events !== undefined) this.#deliver(r.events);
+      void r.later?.then((line) => line !== undefined && this.#write(line));
       return;
     }
     this.#flush();
@@ -499,6 +509,7 @@ export class ClaudeInstance {
       // Before the close drops every later event: an interrupt that ended in the group kill
       // closes the instance before its exit is seen (review of the hand-back, S1).
       this.#returnHeld();
+      this.#requests.closed();
       this.#closed = true;
       this.#pending = [];
       this.#notify();

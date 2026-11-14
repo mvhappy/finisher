@@ -26,6 +26,7 @@ impl Runner {
                 tool_use_id: Some(id.clone()),
                 bash: false,
                 run: false,
+                mcp: false,
             };
             let key = match self.ask(&ask).0 {
                 Outcome::Allowed => "reran",
