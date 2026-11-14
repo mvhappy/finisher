@@ -35,11 +35,12 @@ impl<R: Read + Seek + Send> Packets for Track<R> {
     }
 }
 
-/// The first audio track of an MP4 file: its packets, its info and its configuration record.
+/// The first audio track of an MP4 file: its packets, its info, its configuration record and
+/// the samples its packets hold (the sum of their durations, before the edit list).
 pub(crate) fn open<R: Read + Seek + Send + 'static>(
     r: R,
     limits: &Limits,
-) -> Result<(Box<dyn Packets>, AudioTrackInfo, CodecConfig), CoreError> {
+) -> Result<(Box<dyn Packets>, AudioTrackInfo, CodecConfig, u64), CoreError> {
     let demux = Demuxer::open(r, limits)?;
     let (Some(info), Some(track)) = (demux.info().audio.clone(), demux.audio()) else {
         return Err(fin_container::error::invalid(
@@ -47,6 +48,10 @@ pub(crate) fn open<R: Read + Seek + Send + 'static>(
             json!({ "reason": "noAudioTrack" }),
         ));
     };
+    let total = (0..track.sample_count())
+        .filter_map(|i| track.sample(i))
+        .map(|s| s.duration as u64)
+        .sum();
     let (track, config) = (track.track, track.config.clone());
     Ok((
         Box::new(Track {
@@ -56,5 +61,6 @@ pub(crate) fn open<R: Read + Seek + Send + 'static>(
         }),
         info,
         config,
+        total,
     ))
 }

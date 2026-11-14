@@ -70,3 +70,16 @@ fn chunk(out: &mut Vec<u8>, id: &[u8; 4], body: &[u8]) {
         out.push(0);
     }
 }
+
+/// `file` (a WAVE file from [`wav`]) with a `JUNK` chunk of `len` bytes before `fmt `, its
+/// declared size `declared` (normally `len`), the RIFF size fixed up.
+pub fn with_junk(file: &[u8], len: usize, declared: u32) -> Vec<u8> {
+    let mut out = file[..12].to_vec();
+    out.extend_from_slice(b"JUNK");
+    out.extend_from_slice(&declared.to_le_bytes());
+    out.resize(out.len() + len + len % 2, 0);
+    out.extend_from_slice(&file[12..]);
+    let riff = (out.len() - 8) as u32;
+    out[4..8].copy_from_slice(&riff.to_le_bytes());
+    out
+}

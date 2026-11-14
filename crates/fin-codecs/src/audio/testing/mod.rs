@@ -5,6 +5,7 @@
 pub mod aiff;
 pub mod caf;
 pub mod flac;
+pub mod mp3;
 pub mod ogg;
 pub mod wav;
 

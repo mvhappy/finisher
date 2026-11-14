@@ -6,7 +6,7 @@
 use std::io::Cursor;
 
 use fin_audio::testing::{analyse, signals};
-use fin_codecs::audio::testing::{aiff, caf, flac, ogg, quantised, wav};
+use fin_codecs::audio::testing::{aiff, caf, flac, mp3, ogg, quantised, wav};
 use fin_codecs::{AudioLimits, AudioReader};
 use fin_media::AudioCodec;
 use fin_media::audio_layout::{ChannelLayout, ChannelPos};
@@ -379,4 +379,76 @@ fn mp4_audio_routes_by_codec() {
             }
         }
     }
+}
+
+/// An MP4 of 12 silent stereo MP3 frames, priming 1.
+fn mp4_mp3() -> Vec<u8> {
+    let mut w = fin_container::Mp4Writer::new(Cursor::new(Vec::new()), Default::default()).unwrap();
+    let t = w
+        .add_audio(fin_container::AudioTrackConfig {
+            config: fin_container::CodecConfig::Other { fourcc: *b".mp3" },
+            sample_rate: 48_000,
+            channels: 2,
+            priming: 1,
+        })
+        .unwrap();
+    for i in 0..12i64 {
+        let n = mp3::FRAME_SAMPLES as i64;
+        w.write(t, &mp3::frame(2), i * n, i * n, n as u32, true)
+            .unwrap();
+    }
+    w.finish().unwrap().into_inner()
+}
+
+#[test]
+fn mp4_hostile_padding_is_corrupt() {
+    let bytes = mp4_mp3();
+    let (r, pcm, _) = decode(bytes.clone()).unwrap();
+    assert_eq!(r.info().codec, AudioCodec::Mp3);
+    assert_eq!(pcm.len() / 2, 12 * 1152 - 1, "priming 1 trimmed");
+    // Every `stts` delta set to u32::MAX: the edit list then leaves almost all of it as padding,
+    // which must not be held in memory (nor pass the decode budget).
+    let at = bytes.windows(4).position(|w| w == b"stts").expect("stts");
+    let mut bad = bytes.clone();
+    let entries = u32::from_be_bytes(bad[at + 8..at + 12].try_into().unwrap()) as usize;
+    for e in 0..entries {
+        let d = at + 12 + e * 8 + 4;
+        bad[d..d + 4].copy_from_slice(&u32::MAX.to_be_bytes());
+    }
+    let e = decode(bad).unwrap_err();
+    assert_eq!(e.code, "MEDIA_CORRUPT", "{e:?}");
+    assert_eq!(e.details["at"], "edts");
+}
+
+#[test]
+fn wav_layout_after_a_large_chunk() {
+    let src = vec![0.25f32; 4 * 64];
+    let plain = wav::wav(&src, 4, 48_000, wav::WavFormat::Pcm16, None);
+    let (_, _, layout) = decode(wav::with_junk(&plain, 70_000, 70_000)).unwrap();
+    assert_eq!(
+        layout,
+        ChannelLayout::wave_default(4),
+        "fmt after 70,000 bytes of JUNK"
+    );
+    // A chunk claiming more bytes than the file has, before `fmt `, is corrupt.
+    let e = decode(wav::with_junk(&plain, 16, u32::MAX - 1)).unwrap_err();
+    assert_eq!(e.code, "MEDIA_CORRUPT", "{e:?}");
+}
+
+#[test]
+fn mp3_xing_length_is_exact() {
+    let full = mp3::mp3(1, 40, true);
+    let (r, pcm, _) = decode(full.clone()).unwrap();
+    assert_eq!(r.info().codec, AudioCodec::Mp3);
+    assert_eq!(
+        r.declared_frames(),
+        Some(pcm.len() as u64),
+        "the Xing count is met"
+    );
+    // One byte short of the stated frames: corrupt, not short.
+    let e = decode(full[..full.len() - 1].to_vec()).unwrap_err();
+    assert_eq!(e.code, "MEDIA_CORRUPT", "{e:?}");
+    // Without a Xing tag the length is an estimate: a cut file still decodes what is there.
+    let plain = mp3::mp3(1, 40, false);
+    decode(plain[..plain.len() - 1].to_vec()).unwrap();
 }

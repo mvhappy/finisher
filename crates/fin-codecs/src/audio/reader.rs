@@ -26,7 +26,7 @@ use symphonia::core::meta::MetadataOptions;
 
 use super::mp4;
 use super::registry::{open_audio_decoder, symphonia_decodes};
-use super::sniff::{Kind, ogg_end, sniff, wave_layout};
+use super::sniff::{Kind, mp3_exact, ogg_end, sniff, wave_layout};
 use super::symphonia::{BACKEND, SymphoniaDecoder, codec_of, error, guarded};
 use super::traits::{AudioConfig, AudioDecoder, DecodedAudio};
 use crate::traits::BackendId;
@@ -127,6 +127,12 @@ pub struct AudioReader {
     /// The WAVE layout of Decision 3, in place of symphonia's guess for a mask-less file.
     layout: Option<ChannelLayout>,
     declared: Option<u64>,
+    /// `declared` is exact: fewer frames is a cut file.
+    exact: bool,
+    /// Frames the trim drops (priming and padding), on top of the budget.
+    slack: u64,
+    /// Frames decoded, before trimming.
+    decoded: u64,
     max_frames: u64,
     trim: Trim,
     out: u64,
@@ -214,13 +220,18 @@ impl AudioReader {
                     })?;
                     r.seek(SeekFrom::Start(0)).map_err(io)?;
                 }
-                let layout = if kind == Kind::Wave {
-                    wave_layout(&head)
-                } else {
-                    None
+                let layout = match kind {
+                    Kind::Wave => wave_layout(&mut r, len)?,
+                    _ => None,
                 };
-                Self::open_symphonia(Source { r, len }, kind, layout, limits)
-                    .map_err(|e| corrupt_unless_typed(e, kind))?
+                // Lengths symphonia reads from the stream are exact; an MP3's is an estimate
+                // unless a Xing/Info or VBRI frame states it.
+                let exact = kind.exact_length() || (kind == Kind::Mp3 && mp3_exact(&mut r)?);
+                r.seek(SeekFrom::Start(0)).map_err(io)?;
+                let mut reader = Self::open_symphonia(Source { r, len }, kind, layout, limits)
+                    .map_err(|e| corrupt_unless_typed(e, kind))?;
+                reader.exact = exact;
+                reader
             }
         };
         reader.check(limits)
@@ -230,7 +241,23 @@ impl AudioReader {
         r: R,
         limits: &AudioLimits,
     ) -> Result<Self, CoreError> {
-        let (src, info, config) = mp4::open(r, &limits.container)?;
+        let (src, info, config, total) = mp4::open(r, &limits.container)?;
+        // Untrusted edit lists: priming and padding are bounded by what the track holds, and the
+        // padding (held back in memory until the end) by one second.
+        let (priming, padding) = (info.priming as u64, info.padding as u64);
+        if priming + padding > total || padding > info.sample_rate as u64 {
+            return Err(CoreError::new(
+                "MEDIA_CORRUPT",
+                format!(
+                    "the audio track's priming ({priming}) and padding ({padding}) do not fit its \
+                     {total} samples"
+                ),
+            )
+            .with_details(json!({
+                "at": "edts", "format": "mp4", "priming": priming, "padding": padding,
+                "samples": total,
+            })));
+        }
         let dec = open_audio_decoder(&info, &AudioConfig::Record(config))?;
         Ok(AudioReader {
             trim: Trim {
@@ -246,7 +273,10 @@ impl AudioReader {
                 buf: Vec::new(),
             },
             layout: None,
-            declared: None,
+            declared: Some(total - priming - padding),
+            exact: false,
+            slack: priming + padding,
+            decoded: 0,
             max_frames: 0,
             out: 0,
             ended: false,
@@ -303,6 +333,9 @@ impl AudioReader {
                 dec,
             },
             declared,
+            exact: false,
+            slack: 0,
+            decoded: 0,
             max_frames: 0,
             trim: Trim::default(),
             out: 0,
@@ -417,6 +450,16 @@ impl AudioReader {
         if let Some(l) = &self.layout {
             d.layout = l.clone();
         }
+        // The budget counts what was decoded, before the trim drops anything.
+        self.decoded += (d.interleaved.len() / n) as u64;
+        if self.decoded > self.max_frames.saturating_add(self.slack) {
+            let rate = self.info.sample_rate as u64;
+            return Err(limit(
+                "maxSeconds",
+                self.decoded / rate,
+                self.max_frames / rate,
+            ));
+        }
         d.interleaved = self.trim.push(&d.interleaved, n);
         let frames = (d.interleaved.len() / n) as u64;
         if frames == 0 {
@@ -434,7 +477,7 @@ impl AudioReader {
     /// At the end: a container that stated its length must have delivered all of it.
     fn finish(&mut self) -> Result<(), CoreError> {
         match self.declared {
-            Some(want) if self.kind.exact_length() && self.out < want => Err(CoreError::new(
+            Some(want) if self.exact && self.out < want => Err(CoreError::new(
                 "MEDIA_CORRUPT",
                 format!("the audio ends early: {} of {want} frames", self.out),
             )
