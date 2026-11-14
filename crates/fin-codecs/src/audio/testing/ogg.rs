@@ -176,3 +176,41 @@ pub fn vorbis_silence(channels: u8, rate: u32, packets: usize) -> Vec<u8> {
     }
     ogg(0x5EED, &all)
 }
+
+/// The Ogg Opus identification header (RFC 7845 §5.1) for an MP4 `dOps` body (ISO/IEC 23003-5
+/// §4.3.2): the same fields, little-endian, behind `OpusHead` and version 1.
+pub fn opus_head(dops: &[u8]) -> Vec<u8> {
+    let be16 = |i: usize| u16::from_be_bytes([dops[i], dops[i + 1]]);
+    let mut p = b"OpusHead".to_vec();
+    p.push(1);
+    p.push(dops[1]);
+    p.extend_from_slice(&be16(2).to_le_bytes());
+    p.extend_from_slice(&u32::from_be_bytes([dops[4], dops[5], dops[6], dops[7]]).to_le_bytes());
+    p.extend_from_slice(&be16(8).to_le_bytes());
+    p.extend_from_slice(&dops[10..]);
+    p
+}
+
+fn opus_tags() -> Vec<u8> {
+    let vendor = b"finisher test writer";
+    let mut p = b"OpusTags".to_vec();
+    p.extend_from_slice(&(vendor.len() as u32).to_le_bytes());
+    p.extend_from_slice(vendor);
+    p.extend_from_slice(&0u32.to_le_bytes());
+    p
+}
+
+/// An Ogg Opus stream (RFC 7845) of encoded `packets` of `frame_size` samples each, with the
+/// header from `dops`. Each packet ends a page whose granule position counts the samples
+/// decoded so far (pre-skip included); the last page's is `pre-skip + valid`, which tells a
+/// reader to drop the padding at the end.
+pub fn opus(dops: &[u8], packets: &[Vec<u8>], frame_size: u32, valid: u64) -> Vec<u8> {
+    let pre_skip = u16::from_be_bytes([dops[2], dops[3]]) as i64;
+    let end = pre_skip + valid as i64;
+    let mut all = vec![(opus_head(dops), 0), (opus_tags(), 0)];
+    for (k, p) in packets.iter().enumerate() {
+        let granule = ((k as i64 + 1) * frame_size as i64).min(end);
+        all.push((p.clone(), granule));
+    }
+    ogg(0x0905, &all)
+}

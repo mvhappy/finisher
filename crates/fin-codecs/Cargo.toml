@@ -16,6 +16,9 @@ fin-svt-sys = { path = "../fin-svt-sys" }
 # dav1d (AV1 decode, spec §6.4) and the shim, built once (no features) from the pinned
 # submodule `third_party/dav1d` with cc: assembly on x86_64 (nasm) and aarch64.
 fin-dav1d-sys = { path = "../fin-dav1d-sys" }
+# libopus 1.6.1 (Opus decode and encode, 6C Decision 11) and the shim, built once (no features)
+# from the pinned submodule `third_party/opus` with cc: float, no dnn, intrinsics or assembly.
+fin-opus-sys = { path = "../fin-opus-sys" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Audio containers and codecs (6C Decision 9 and the tech stack): MPL-2.0, unmodified, no

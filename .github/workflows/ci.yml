@@ -35,8 +35,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # third_party/svt-av1 and third_party/dav1d (fin-svt-sys and fin-dav1d-sys build SVT-AV1
-          # and dav1d from them; shallow per .gitmodules).
+          # third_party/svt-av1, third_party/dav1d and third_party/opus (fin-svt-sys, fin-dav1d-sys
+          # and fin-opus-sys build SVT-AV1, dav1d and libopus from them; shallow per .gitmodules).
           submodules: true
           # The whole history: scripts/check-a0-history.mjs (in `pnpm gates`) checks every
           # commit that touched the A0 hashes, and fails on a shallow clone.

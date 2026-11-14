@@ -27,16 +27,25 @@ pub struct AudioBackendEntry {
     pub encode: &'static [AudioCodec],
 }
 
-use AudioCodec::{Alac, Flac, Mp3, Pcm, Vorbis};
+use AudioCodec::{Alac, Flac, Mp3, Opus, Pcm, Vorbis};
 
-/// The audio backends built so far. Tasks 13–16 add `libopus` (`software`), symphonia's AAC-LC
-/// and `vo-aacenc` (Linux only), `audiotoolbox` (macOS) and `mediafoundation` (Windows).
-pub static AUDIO_BACKENDS: &[AudioBackendEntry] = &[AudioBackendEntry {
-    name: "symphonia",
-    class: VendorClass::Software,
-    decode: &[Pcm, Flac, Alac, Mp3, Vorbis],
-    encode: &[],
-}];
+/// The audio backends built so far. Tasks 14–16 add symphonia's AAC-LC and `vo-aacenc` (Linux
+/// only), `audiotoolbox` (macOS) and `mediafoundation` (Windows).
+pub static AUDIO_BACKENDS: &[AudioBackendEntry] = &[
+    AudioBackendEntry {
+        name: "symphonia",
+        class: VendorClass::Software,
+        decode: &[Pcm, Flac, Alac, Mp3, Vorbis],
+        encode: &[],
+    },
+    // libopus 1.6.1 built from source on every target (Task 13).
+    AudioBackendEntry {
+        name: "libopus",
+        class: VendorClass::Software,
+        decode: &[Opus],
+        encode: &[Opus],
+    },
+];
 
 /// The audio backend called `name`.
 pub fn audio_backend(name: &str) -> Option<&'static AudioBackendEntry> {

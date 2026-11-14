@@ -337,6 +337,7 @@ fn mp4_audio(config: fin_container::CodecConfig, priming: u32) -> Vec<u8> {
             sample_rate: 48_000,
             channels: 2,
             priming,
+            presented: None,
         })
         .unwrap();
     for i in 0..10i64 {
@@ -349,12 +350,13 @@ fn mp4_audio(config: fin_container::CodecConfig, priming: u32) -> Vec<u8> {
 #[test]
 fn mp4_audio_routes_by_codec() {
     use fin_container::CodecConfig;
-    // Opus and AAC arrive with Tasks 13–16.
+    // Opus goes to libopus (Task 13; its round trips are `audio_opus.rs`): these packets are
+    // not Opus, so the decode fails typed. AAC arrives with Tasks 14–16.
     let dops = vec![0, 2, 0x01, 0x38, 0, 0, 0xBB, 0x80, 0, 0, 0];
     let e = decode(mp4_audio(CodecConfig::Opus { dops }, 312)).unwrap_err();
     assert_eq!(
-        (e.code.as_str(), &e.details["codec"]),
-        ("CODEC_UNAVAILABLE", &"opus".into())
+        (e.code.as_str(), &e.details["backend"]),
+        ("DECODE_FAILED", &"libopus".into())
     );
     // ALAC in MP4 needs its `alac` box, which the demuxer does not hand out.
     let e = decode(mp4_audio(CodecConfig::Other { fourcc: *b"alac" }, 0)).unwrap_err();
@@ -402,6 +404,7 @@ fn mp4_mp3_with(packets: i64, priming: u32) -> Vec<u8> {
             sample_rate: 48_000,
             channels: 2,
             priming,
+            presented: None,
         })
         .unwrap();
     for i in 0..packets {

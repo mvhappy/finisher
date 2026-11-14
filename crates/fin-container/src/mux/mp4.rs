@@ -100,13 +100,32 @@ fn rescale(ticks: u64, from: u32, to: u32) -> u64 {
     ((ticks as u128 * to as u128 + from as u128 / 2) / from as u128) as u64
 }
 
-/// The movie timescale: the first video track's, else the first track's.
+/// The movie timescale. With an audio track (6C plan Decision 22): the least common multiple
+/// of the first audio track's rate and the first video track's timescale, so both tracks'
+/// edits are exact (the audio rate alone for audio-only files, and when the LCM passes
+/// `u32::MAX`). Without audio, as before: the first video track's, else the first track's.
 fn movie_timescale(tracks: &[Track]) -> u32 {
-    tracks
+    let video = tracks
         .iter()
-        .find(|t| matches!(t.kind, TrackKind::Video(_)))
-        .or(tracks.first())
-        .map_or(1000, |t| t.timescale)
+        .find(|t| matches!(t.kind, TrackKind::Video(_)));
+    let audio = tracks
+        .iter()
+        .find(|t| matches!(t.kind, TrackKind::Audio(_)));
+    match (audio, video) {
+        (Some(a), Some(v)) => {
+            let (x, y) = (a.timescale as u64, v.timescale as u64);
+            u32::try_from(x / gcd(x, y) * y).unwrap_or(a.timescale)
+        }
+        (Some(a), None) => a.timescale,
+        (None, _) => video.or(tracks.first()).map_or(1000, |t| t.timescale),
+    }
+}
+
+fn gcd(mut a: u64, mut b: u64) -> u64 {
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    a
 }
 
 /// Composition times relative to the first decode time: the earliest and the end.
@@ -150,9 +169,9 @@ fn edits(t: &Track, movie_ts: u32, fragmented: bool) -> Result<Vec<ElstEntry>, C
         });
     }
     let (start, end) = presentation(t);
-    let priming = match &t.kind {
-        TrackKind::Audio(a) => a.priming as i64,
-        TrackKind::Video(_) => 0,
+    let (priming, presented) = match &t.kind {
+        TrackKind::Audio(a) => (a.priming as i64, a.presented),
+        TrackKind::Video(_) => (0, None),
     };
     let media_time = start + priming;
     if media_time < 0 {
@@ -161,12 +180,23 @@ fn edits(t: &Track, movie_ts: u32, fragmented: bool) -> Result<Vec<ElstEntry>, C
             json!({ "start": start }),
         ));
     }
-    if media_time != 0 || !out.is_empty() {
+    if media_time != 0 || !out.is_empty() || presented.is_some() {
+        // Decision 22: exactly the presented samples, else to the end of the encoded ones.
+        let shown = presented.unwrap_or((end - media_time).max(0) as u64);
         out.push(ElstEntry {
-            segment_duration: rescale((end - media_time).max(0) as u64, t.timescale, movie_ts),
+            segment_duration: rescale(shown, t.timescale, movie_ts),
             media_time: Some(media_time as u64),
             media_rate: rate,
         });
+        // A last edit of duration 0 reads as "to the end of the media" (ISO/IEC 14496-12
+        // §8.6.6), so nothing presented is closed by an empty edit after it.
+        if shown == 0 && presented.is_some() {
+            out.push(ElstEntry {
+                segment_duration: 0,
+                media_time: None,
+                media_rate: rate,
+            });
+        }
     }
     Ok(out)
 }
