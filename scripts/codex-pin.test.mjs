@@ -4,6 +4,8 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 import { after } from "node:test";
 import { fixtureRoot, runGate } from "./gate-helpers.mjs";
@@ -27,8 +29,12 @@ const tmp = () => {
 
 /** A ustar archive of `{path: content}` (gzipped), the layout of a platform package. */
 function tarball(files) {
+  return gzipSync(rawTar(Object.entries(files)));
+}
+/** The uncompressed ustar bytes of `[path, content]` entries (a path may repeat), with the end blocks. */
+function rawTar(entries, { end = true } = {}) {
   const blocks = [];
-  for (const [path, content] of Object.entries(files)) {
+  for (const [path, content] of entries) {
     const body = Buffer.from(content);
     const h = Buffer.alloc(512);
     h.write(path, 0, "utf8");
@@ -45,8 +51,8 @@ function tarball(files) {
     h.write(sum.toString(8).padStart(6, "0") + "\0 ", 148);
     blocks.push(h, body, Buffer.alloc((512 - (body.length % 512)) % 512));
   }
-  blocks.push(Buffer.alloc(1024));
-  return gzipSync(Buffer.concat(blocks));
+  if (end) blocks.push(Buffer.alloc(1024));
+  return Buffer.concat(blocks);
 }
 const sri = (buf) => "sha512-" + createHash("sha512").update(buf).digest("base64");
 const V = "package/vendor/x86_64-unknown-linux-musl/";
@@ -98,6 +104,42 @@ test("a kept file missing from the tarball is an error", async () => {
   await assert.rejects(extractKept(file, join(dir, "out"), KEPT, { integrity: sri(buf) }), /codex-path\/rg/);
 });
 
+test("extract_fails_closed_on_a_truncated_archive: a cut body, a cut header or no end blocks write nothing", async () => {
+  const dir = tmp();
+  const two = rawTar([[V + "bin/codex", "CODEX-BIN"], [V + "codex-path/rg", "RG-BIN"]], { end: false });
+  const cuts = {
+    // The codex entry's body cut short (its header promised 9 bytes).
+    body: rawTar([[V + "codex-path/rg", "RG-BIN"], [V + "bin/codex", "CODEX-BIN"]], { end: false }).subarray(0, 1024 + 512 + 4),
+    // Both kept files whole, then half a header.
+    header: Buffer.concat([two, rawTar([["package/package.json", "{}"]], { end: false }).subarray(0, 100)]),
+    // Both kept files whole, and no end-of-archive blocks.
+    noEnd: two,
+  };
+  for (const [name, raw] of Object.entries(cuts)) {
+    const file = join(dir, `${name}.tgz`);
+    const buf = gzipSync(raw);
+    writeFileSync(file, buf);
+    const dest = join(dir, `out-${name}`);
+    await assert.rejects(extractKept(file, dest, KEPT, { integrity: sri(buf) }), /truncated|end of the archive/, name);
+    assert.deepEqual(existsSync(dest) ? readdirSync(dest) : [], [], name);
+  }
+});
+
+test("extract_refuses_duplicate_destinations: a second codex entry is refused, and every opened file removed", async () => {
+  const dir = tmp();
+  const buf = gzipSync(rawTar([[V + "bin/codex", "CODEX-BIN"], [V + "codex-path/rg", "RG-BIN"], [V + "bin/codex", "TRUNC"]]));
+  const file = join(dir, "dup.tgz");
+  writeFileSync(file, buf);
+  const dest = join(dir, "out");
+  await assert.rejects(extractKept(file, dest, KEPT, { integrity: sri(buf) }), /more than once|duplicate/);
+  assert.deepEqual(readdirSync(dest), []);
+  // Another triple's copy of a kept file lands on the same destination: refused as well.
+  const buf2 = gzipSync(rawTar([[V + "bin/codex", "CODEX-BIN"], ["package/vendor/aarch64-unknown-linux-musl/bin/codex", "OTHER"], [V + "codex-path/rg", "RG-BIN"]]));
+  writeFileSync(file, buf2);
+  await assert.rejects(extractKept(file, dest, KEPT, { integrity: sri(buf2) }), /more than once|duplicate/);
+  assert.deepEqual(readdirSync(dest), []);
+});
+
 function goodRoot(extra = {}, pin = {}) {
   const v = "0.167.0";
   const base = `vendor/codex/${v}/`;
@@ -136,13 +178,31 @@ test("gate_refuses_bwrap_in_kept", () => {
   assert.match(r.out, /CODEX_PIN.*bwrap/);
 });
 
-test("gate refuses a kept file that is not codex or rg, and a stray bwrap file", () => {
-  const r = gate(goodRoot({}, { targets: { "linux-x64": { integrity: "sha512-AAAA", kept: ["bin/codex-code-mode-host"] } } }));
+/** Every target as the real pin has it, with `over` replacing some. */
+const allTargets = (over) => {
+  const t = { integrity: "sha512-AAAA", kept: ["bin/codex", "codex-path/rg"] };
+  const w = { integrity: "sha512-AAAA", kept: ["bin/codex.exe", "codex-path/rg.exe"] };
+  return { targets: { "linux-x64": t, "linux-arm64": t, "darwin-x64": t, "darwin-arm64": t, "win32-x64": w, "win32-arm64": w, ...over } };
+};
+
+test("gate refuses a kept file that is not codex or rg (only the allow-list's finding), and a stray bwrap file", () => {
+  assert.equal(gate(goodRoot({}, allTargets({}))).code, 0);
+  const r = gate(goodRoot({}, allTargets({ "linux-x64": { integrity: "sha512-AAAA", kept: ["bin/codex", "bin/codex-code-mode-host"] } })));
   assert.equal(r.code, 1, r.out);
-  assert.match(r.out, /CODEX_PIN/);
+  const found = r.out.split("\n").filter((l) => l.includes("CODEX_PIN"));
+  assert.equal(found.length, 1, r.out);
+  assert.match(found[0], /CODEX_PIN linux-x64: kept names bin\/codex-code-mode-host, only bin\/codex and codex-path\/rg/);
   const r2 = gate(goodRoot({ "resources/codex/linux-x64/bwrap": "x" }));
   assert.equal(r2.code, 1, r2.out);
   assert.match(r2.out, /CODEX_PIN.*bwrap/);
+});
+
+test("gate_refuses_bwrap_any_case: a Bwrap.exe or BWRAP anywhere in the tree", () => {
+  for (const f of ["resources/codex/win32-x64/Bwrap.exe", "tools/BWRAP", "x/bWrap-helper"]) {
+    const r = gate(goodRoot({ [f]: "x" }));
+    assert.equal(r.code, 1, `${f}: ${r.out}`);
+    assert.match(r.out, new RegExp(`CODEX_PIN ${f.replace(/[.]/g, "\\.")}: bwrap`));
+  }
 });
 
 test("gate refuses a snapshot that is not the pin's version, or lacks its files", () => {
@@ -226,4 +286,13 @@ test("check_mode_compares_fresh_schema: a fresh generation is compared with the 
   assert.ok(diffs.some((d) => /schema-experimental/.test(d)));
   writeFileSync(join(snap, "features.txt"), "other\n");
   assert.ok(checkSnapshot({ bin: "/c/codex", snapshotDir: snap, workDir: join(dir, "w4"), run: fake("{\"a\":1}") }).some((d) => /features\.txt/.test(d)));
+});
+
+test("check_mode_needs_the_host_target: --check over targets this host cannot run fails, before any download", () => {
+  const host = `${process.platform}-${process.arch}`;
+  const other = ["linux-x64", "darwin-arm64"].find((t) => t !== host);
+  const r = spawnSync(process.execPath, [fileURLToPath(new URL("./codex-pin.mjs", import.meta.url)), "--check", "--target", other], { encoding: "utf8", env: { ...process.env, npm_config_offline: "true" } });
+  assert.equal(r.status, 1, r.stdout + r.stderr);
+  assert.match(r.stderr, /--check.*host/);
+  assert.doesNotMatch(r.stdout, /integrity verified/);
 });

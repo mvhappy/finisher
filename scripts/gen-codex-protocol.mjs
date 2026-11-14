@@ -138,6 +138,25 @@ const bare = (node) => {
 
 const methodOf = (member) => member.properties.method.enum[0];
 
+/**
+ * The JSON Schema keywords the generator understands. Any other keyword (`pattern`, `maximum`,
+ * `const`, `maxLength`, `not`, `if`, …) fails the generation, so a re-pin that adds a constraint
+ * can never be decoded more loosely than its schema says. `description`, `title`, `default` and
+ * `$schema` are documentation; `format` is allowed only with the numeric widths in `FORMATS`,
+ * which are not range-checked beyond `minimum` (the pins so far pair every unsigned width with
+ * `minimum: 0`).
+ */
+export const KEYWORDS = new Set(["type", "properties", "required", "items", "additionalProperties", "enum", "oneOf", "anyOf", "allOf", "$ref", "minimum", "minLength", "format", "description", "title", "default", "$schema", "definitions"]);
+export const FORMATS = new Set(["int32", "int64", "uint", "uint16", "uint32", "uint64", "double"]);
+function understood(node, where) {
+  if (node === null || typeof node !== "object" || Array.isArray(node)) return;
+  for (const k of Object.keys(node)) if (!KEYWORDS.has(k)) throw new Error(`${where}: the schema keyword ${JSON.stringify(k)} is not understood by this generator`);
+  if (node.minLength !== undefined && !([node.type].flat().includes("string") && Number.isSafeInteger(node.minLength)))
+    throw new Error(`${where}: minLength outside a string schema`);
+  if (node.format !== undefined && !(FORMATS.has(node.format) && [node.type].flat().some((t) => t === "integer" || t === "number")))
+    throw new Error(`${where}: the format ${JSON.stringify(node.format)} is not understood by this generator`);
+}
+
 /** The generated file's text. Throws on a schema construct it does not handle. */
 export function generate(root) {
   const version = readPinVersion(root);
@@ -297,6 +316,7 @@ export function generate(root) {
   // `member`: the node is a member of an open union, so a union it is itself has no fallback of its
   // own (the outer union's decides what is unknown; an inner one would swallow its siblings' tags).
   const emit = (node, from, member = false) => {
+    understood(node, from);
     if (node === true || (node !== null && typeof node === "object" && Object.keys(node).every((k) => ["description", "title", "default", "$schema"].includes(k))))
       return "Schema.Unknown";
     if (node === false) throw new Error("a `false` schema");
@@ -336,7 +356,7 @@ export function generate(root) {
     }
     switch (node.type) {
       case "string":
-        return "Schema.String";
+        return typeof node.minLength === "number" ? `Schema.String.check(Schema.isMinLength(${node.minLength}))` : "Schema.String";
       case "boolean":
         return "Schema.Boolean";
       case "null":
@@ -374,6 +394,8 @@ export function generate(root) {
   };
 
   const emitUnion = (alts, from, member = false) => {
+    // members read without `emit` (enum values, tags) are held to the same keywords
+    for (const a of alts) understood(deref(a), from);
     const nullable = alts.some(isNull);
     const rest = alts.filter((a) => !isNull(a));
     const wrap = (s) => (nullable ? `Schema.NullOr(${s})` : s);

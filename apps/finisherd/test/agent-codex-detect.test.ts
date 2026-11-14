@@ -77,6 +77,7 @@ function installFake(name: string, o: { version?: string; script?: Record<string
 const pinDeps = (bin: string | undefined): PinDeps => ({
   env: bin === undefined ? {} : { FIN_CODEX_BIN: bin },
   testHooks: true,
+  devCheckout: false,
   platform: process.platform,
   arch: process.arch,
   resourcesDir: join(tmp, "no-resources"),

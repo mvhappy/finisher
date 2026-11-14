@@ -5,9 +5,10 @@
 // at a fixed clock over the fixture's `account.key`, a test key): the lifted code must read them,
 // hash, refuse, confirm and expire exactly as before, and write the same bytes.
 import { createHmac } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { FinError, ProviderEvent } from "@finisher/contracts";
 import { Effect, Exit } from "effect";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -15,6 +16,8 @@ import type { ProviderSession } from "../src/agent/adapter.ts";
 import { type AuthStatus, accountCheck, accountFile, accountKey, accountProblem, accountsOf, CliAccounts, EXPECT_TTL_MS, instanceAccount, registerAccountAudit } from "../src/agent/cli/account.ts";
 import { eventGate } from "../src/agent/cli/gate.ts";
 import { type CliInstance, CliSession, type EventSink } from "../src/agent/cli/instances.ts";
+import { invalidateCodexDetection } from "../src/agent/codex/detect.ts";
+import { pinnedCodexVersion } from "../src/agent/codex/pin.ts";
 import { runConsole } from "../src/console/main.ts";
 import type { Prompt } from "../src/console/prompt.ts";
 import { finError } from "../src/errors.ts";
@@ -209,11 +212,39 @@ describe("the account record", () => {
   });
 });
 
+const FAKE_CODEX = fileURLToPath(new URL(`../../../target/debug/fake-codex${process.platform === "win32" ? ".exe" : ""}`, import.meta.url));
+const NO_FAKE_CODEX = !existsSync(FAKE_CODEX) && process.env.FIN_REQUIRE_SERVER !== "1";
+const SAVED_ENV = { FIN_RESOURCES_DIR: process.env.FIN_RESOURCES_DIR, FIN_TEST_HOOKS: process.env.FIN_TEST_HOOKS, FIN_TEST_SANDBOX_READY: process.env.FIN_TEST_SANDBOX_READY };
+
+/** `fake-codex` as the bundled Codex (`FIN_RESOURCES_DIR`, a checkout's), signed in to `account`. */
+function installFakeCodex(data: string, account: Record<string, unknown>): void {
+  const res = join(tmp, "resources");
+  const dir = join(res, "codex", `${process.platform}-${process.arch}`);
+  mkdirSync(dir, { recursive: true });
+  const bin = join(dir, process.platform === "win32" ? "codex.exe" : "codex");
+  copyFileSync(FAKE_CODEX, bin);
+  chmodSync(bin, 0o755);
+  writeFileSync(join(dir, "fake-codex.json"), JSON.stringify({ observed: join(tmp, "observed.json"), version: pinnedCodexVersion() }));
+  const home = join(data, "providers", "codex", "home");
+  mkdirSync(home, { recursive: true, mode: 0o700 });
+  writeFileSync(join(home, "auth.json"), JSON.stringify({ account, tokens: { access_token: "TOKEN" } }));
+  writeFileSync(join(data, "settings.json"), JSON.stringify({ agents: { codex: { enabled: true } } }));
+  process.env.FIN_RESOURCES_DIR = res;
+  process.env.FIN_TEST_HOOKS = "1";
+  process.env.FIN_TEST_SANDBOX_READY = "agent";
+  invalidateCodexDetection();
+}
+
 describe("confirming takes the harness", () => {
   let server: AgentServer | undefined;
   afterEach(async () => {
     await server?.stop();
     server = undefined;
+    for (const [k, v] of Object.entries(SAVED_ENV)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    invalidateCodexDetection();
   });
 
   const NOT_A_TERMINAL: Prompt = { isInteractive: () => false, show: () => undefined, ask: async () => "" };
@@ -269,6 +300,25 @@ describe("confirming takes the harness", () => {
     expect((await run(["provider", "account", "confirm"], person())).code).toBe(2);
     // Not at a terminal: refused for either harness.
     expect((await run(["provider", "account", "confirm", "codex"])).code).toBe(7);
+    // A Codex change waits (`fake-codex` signed in to another account than the recorded one):
+    // the console shows and confirms Codex's, and Claude Code's file is untouched.
+    if (NO_FAKE_CODEX) return;
+    const data = server.serverData;
+    const claudeBefore = read(fileOf(data, "claudeCode"));
+    const key = accountKey(data);
+    const was = new CliAccounts(data, { harness: "codex" }).observe({ signedIn: true, authMethod: "chatgpt", label: "a@example.invalid" }, key).hash;
+    installFakeCodex(data, { type: "chatgpt", email: "b@example.invalid", planType: "pro" });
+    const yes = person();
+    const confirmed = await run(["provider", "account", "confirm", "codex"], yes);
+    expect(confirmed.code, confirmed.err).toBe(0);
+    const now = new CliAccounts(data, { harness: "codex" });
+    expect(now.pending()).toBeUndefined();
+    const current = (JSON.parse(read(fileOf(data, "codex"))) as { current: { hash: string } }).current.hash;
+    expect(current, confirmed.out).not.toBe(was);
+    expect(yes.shown.join("\n")).toContain(current);
+    expect(confirmed.out).toContain(`Codex sessions now run on account ${current} (was ${was})`);
+    expect(read(fileOf(data, "claudeCode"))).toBe(claudeBefore);
+    expect(new CliAccounts(data, { harness: "claudeCode" }).pending()).toBe(HASHES.b);
   });
 });
 
@@ -390,5 +440,94 @@ describe("the idle-close process loop", () => {
     // The closed process's sink is inert: its late events are dropped.
     sinks[0]!.offer({ type: "notice", name: "late", details: {} } as ProviderEvent);
     await loop.close();
+  });
+
+  test("idle_loop_close_during_reopen: a turn waiting on the idle close starts nothing once the session closes", async () => {
+    const log: string[] = [];
+    const procs: ReturnType<typeof fakeProcess>[] = [];
+    const sinks: EventSink[] = [];
+    const loop = await Effect.runPromise(
+      CliSession.open(
+        {
+          harness: "codex",
+          instance: "01INSTANCE",
+          ref: { kind: "codex", id: "thread-1" },
+          idleCloseMs: () => 5,
+          rollbackIdle: () => Effect.void,
+          start: ({ resume, sink }) =>
+            Effect.sync(() => {
+              const p = fakeProcess(procs.length, log);
+              log.push(`start@${procs.length}:${resume}`);
+              procs.push(p);
+              sinks.push(sink);
+              return p.instance;
+            }),
+        },
+        false,
+      ),
+    );
+    const s = loop.session();
+    await Effect.runPromise(s.startTurn({ text: "one" } as never));
+    sinks[0]!.offer({ type: "turnCompleted", stopReason: "end" } as ProviderEvent);
+    await new Promise((r) => setTimeout(r, 40));
+    expect(log).toEqual(["start@0:false", "turn@0", "close@0"]);
+    // The turn waits on the idle close; the session closes meanwhile; then the old process goes.
+    const turn = Effect.runPromiseExit(s.startTurn({ text: "two" } as never));
+    await new Promise((r) => setTimeout(r, 10));
+    const closed = loop.close();
+    procs[0]!.finish(true);
+    await closed;
+    const exit = await turn;
+    expect(Exit.isFailure(exit)).toBe(true);
+    expect(JSON.stringify(exit)).toContain("SESSION_INTERRUPTED");
+    // No second process: or, had one started, it is closed before `close()` resolves.
+    const starts = log.filter((l) => l.startsWith("start@")).length;
+    const closes = log.filter((l) => l.startsWith("close@")).length;
+    expect(starts).toBe(closes);
+    expect(loop.running()).toBe(false);
+  });
+
+  test("idle_loop_close_during_start: a process still starting when the session closes is closed before close() resolves", async () => {
+    const log: string[] = [];
+    const procs: ReturnType<typeof fakeProcess>[] = [];
+    const sinks: EventSink[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const loop = await Effect.runPromise(
+      CliSession.open(
+        {
+          harness: "codex",
+          instance: "01INSTANCE",
+          ref: { kind: "codex", id: "thread-1" },
+          idleCloseMs: () => 5,
+          rollbackIdle: () => Effect.void,
+          start: ({ resume, sink }) =>
+            Effect.promise(async () => {
+              if (resume) await gate;
+              const p = fakeProcess(procs.length, log);
+              log.push(`start@${procs.length}:${resume}`);
+              procs.push(p);
+              sinks.push(sink);
+              if (resume) p.finish(true);
+              return p.instance;
+            }),
+        },
+        false,
+      ),
+    );
+    const s = loop.session();
+    await Effect.runPromise(s.startTurn({ text: "one" } as never));
+    sinks[0]!.offer({ type: "turnCompleted", stopReason: "end" } as ProviderEvent);
+    await new Promise((r) => setTimeout(r, 40));
+    procs[0]!.finish(true);
+    // Two turns at once: one process starts for both, and the session closes while it starts.
+    const turns = [Effect.runPromiseExit(s.startTurn({ text: "two" } as never)), Effect.runPromiseExit(s.startTurn({ text: "three" } as never))];
+    await new Promise((r) => setTimeout(r, 10));
+    const closed = loop.close();
+    release();
+    await closed;
+    expect(log).toEqual(["start@0:false", "turn@0", "close@0", "start@1:true", "close@1"]);
+    for (const exit of await Promise.all(turns)) expect(JSON.stringify(exit)).toContain("SESSION_INTERRUPTED");
+    expect(loop.running()).toBe(false);
   });
 });

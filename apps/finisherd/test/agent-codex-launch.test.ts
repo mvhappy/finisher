@@ -17,6 +17,8 @@ import {
   disabledFeatures,
   SHELL_DYNAMIC_TOOL,
   threadResumeParams,
+  tomlString,
+  tomlTable,
 } from "../src/agent/codex/launch.ts";
 import type { CodexProbe } from "../src/agent/codex/probe-types.ts";
 import { ThreadResumeParams, ThreadStartParams } from "../src/agent/codex/generated/protocol.ts";
@@ -30,6 +32,7 @@ const EDITOR = ["fin", "workspace_read", "workspace_write", "workspace_list", "R
 const CRITIC = ["fin", "workspace_read", "workspace_list", "Read", "Grep", "Glob"];
 const ROOT: Record<Os, string> = { linux: "/srv/data/agents", darwin: "/Users/x/data/agents", win32: "C:\\data\\agents" };
 const BIN: Record<Os, string> = { linux: "/opt/fin/codex/linux-x64/codex", darwin: "/opt/fin/codex/darwin-arm64/codex", win32: "C:\\fin\\codex\\win32-x64\\codex.exe" };
+const PROJECT: Record<Os, string> = { linux: "/p/P", darwin: "/Users/x/P", win32: "C:\\p\\P" };
 const CWD: Record<Os, string> = { linux: `/p/P/workspace/${SID}`, darwin: `/Users/x/P/workspace/${SID}`, win32: `C:\\p\\P\\workspace\\${SID}` };
 const PARENT: Record<Os, NodeJS.ProcessEnv> = {
   linux: { PATH: "/usr/bin:/bin", LANG: "C.UTF-8", HOME: "/home/u", SHELL: "/bin/zsh" },
@@ -45,7 +48,7 @@ const COMMITTED = readFileSync(new URL("../../../vendor/codex/0.167.0/features.t
 
 const dirs = (os: Os) => sessionDirs(ROOT[os], SID, os);
 const envOf = (os: Os) =>
-  sessionEnv({ session, server: os === "win32" ? "\\\\.\\pipe\\finisher" : "/run/fin.sock", projectDir: os === "win32" ? "C:\\p\\P" : "/p/P", dirs: dirs(os), parent: PARENT[os], platform: os });
+  sessionEnv({ session, server: os === "win32" ? "\\\\.\\pipe\\finisher" : "/run/fin.sock", projectDir: PROJECT[os], dirs: dirs(os), parent: PARENT[os], platform: os });
 const spec = (over: Partial<SessionSpec> = {}, os: Os = "linux"): SessionSpec => ({
   sessionId: SID,
   projectId: "P1",
@@ -393,5 +396,40 @@ describe("Codex launch plan", () => {
     const e = caught(() => launch("linux", {}, { sandbox: "danger-full-access", approval: "on-request" }));
     expect(e.code).toBe("PROVIDER_VERSION");
     expect(e.details).toMatchObject({ harness: "codex", missing: "patchApproval" });
+  });
+});
+
+describe("review fixes (Task 7)", () => {
+  test("cwd_is_exactly_the_session_workspace", () => {
+    for (const os of ["linux", "darwin", "win32"] as const) {
+      expect(launch(os).startParams.cwd).toBe(CWD[os]);
+      // Another folder that only ends in `workspace/<sid>` is not this session's workspace.
+      const other = os === "win32" ? `C:\\elsewhere\\workspace\\${SID}` : `/elsewhere/workspace/${SID}`;
+      const e = caught(() => launch(os, { cwd: other }));
+      expect(e.code, os).toBe("INTERNAL");
+      expect(e.details, os).toMatchObject({ sessionId: SID });
+      // Nor a subfolder of it, or the project folder itself.
+      for (const cwd of [os === "win32" ? `${CWD[os]}\\sub` : `${CWD[os]}/sub`, PROJECT[os]]) expect(caught(() => launch(os, { cwd })).code, cwd).toBe("INTERNAL");
+    }
+    // A session environment without `FIN_PROJECT_DIR` is refused before the cwd is trusted.
+    const { FIN_PROJECT_DIR: _, ...noProject } = envOf("linux");
+    expect(caught(() => launch("linux", { env: noProject })).code).toMatch(/INTERNAL|SANDBOX_ENV/);
+  });
+
+  test("toml_strings_escape_exactly", () => {
+    // Expected strings are written by hand from TOML 1.0's basic-string rules, not by `JSON.stringify`.
+    expect(tomlString('say "hi"')).toBe('"say \\"hi\\""');
+    expect(tomlString("C:\\Windows\\System32")).toBe('"C:\\\\Windows\\\\System32"');
+    expect(tomlString("a\nb\tc\rd")).toBe('"a\\nb\\tc\\rd"');
+    expect(tomlString("del\u007fx")).toBe('"del\\u007Fx"');
+    expect(tomlString("nul\u0000bell\u0007")).toBe('"nul\\u0000bell\\u0007"');
+    expect(tomlString("é€😀")).toBe('"é€😀"');
+    expect(tomlString("")).toBe('""');
+    // A lone surrogate is no Unicode scalar value: TOML cannot carry it.
+    for (const bad of ["\ud800", "x\udfffy", "\ud83d"]) expect(() => tomlString(bad), JSON.stringify(bad)).toThrow(/Unicode/);
+    // Keys: bare where TOML allows (`A-Za-z0-9_-`), quoted otherwise.
+    expect(tomlTable({ PATH: "/bin", "ProgramFiles(x86)": "C:\\Program Files (x86)", "a.b": "1", "x-y_9": "2", "": "e" })).toBe(
+      '{""="e", PATH="/bin", "ProgramFiles(x86)"="C:\\\\Program Files (x86)", "a.b"="1", x-y_9="2"}',
+    );
   });
 });

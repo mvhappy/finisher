@@ -204,13 +204,13 @@ export function appServerArgs(config: readonly string[], disabled: readonly stri
 }
 
 /** A TOML basic string (`-c` values are TOML): JSON's escapes are TOML's, plus DEL. */
-function tomlString(v: string): string {
+export function tomlString(v: string): string {
   if (!v.isWellFormed()) throw finError("INTERNAL", "a session variable is not valid Unicode", {});
   return JSON.stringify(v).replaceAll("\u007f", "\\u007F");
 }
 
 /** `{K="v", …}`, keys sorted: an inline table, bare keys where TOML allows them. */
-function tomlTable(env: Readonly<Record<string, string>>): string {
+export function tomlTable(env: Readonly<Record<string, string>>): string {
   const key = (k: string) => (/^[A-Za-z0-9_-]+$/.test(k) ? k : tomlString(k));
   const rows = Object.keys(env)
     .sort()
@@ -232,10 +232,15 @@ function threadSandbox(probe: CodexProbe): Pick<Closed<ThreadStartParams>, "sand
   return { sandbox: probe.sandbox, approvalPolicy: probe.approval === "granular" ? GRANULAR : "on-request" };
 }
 
-/** `spec.cwd`, checked to be `workspace/<sessionId>` (absolute, normal). Throws `INTERNAL`. */
-function workspaceCwd(s: Session, cwd: string, os: NodeJS.Platform): string {
+/**
+ * `spec.cwd`, checked to be exactly `<FIN_PROJECT_DIR>/workspace/<sessionId>` of the session's
+ * own environment (absolute, normal): not merely a folder ending in `workspace/<sessionId>`.
+ * Throws `INTERNAL`.
+ */
+function workspaceCwd(s: Session, cwd: string, env: Readonly<Record<string, string>>, os: NodeJS.Platform): string {
   const path = os === "win32" ? win32 : posix;
-  if (!path.isAbsolute(cwd) || path.normalize(cwd) !== cwd || !cwd.endsWith(path.sep + path.join("workspace", s.id))) {
+  const project = env.FIN_PROJECT_DIR;
+  if (project === undefined || !path.isAbsolute(project) || !path.isAbsolute(cwd) || path.normalize(cwd) !== cwd || cwd !== path.join(project, "workspace", s.id)) {
     throw finError("INTERNAL", "the session's working directory is not its own workspace", { sessionId: s.id });
   }
   return cwd;
@@ -254,7 +259,7 @@ export function codexLaunch(s: Session, spec: SessionSpec, probe: CodexProbe, os
   if (probe.version !== pinned) {
     throw finError("PROVIDER_VERSION", `Codex ${probe.version} is not the pinned ${pinned}`, { harness: "codex", version: probe.version, pinned }, "reinstall Finisher");
   }
-  const cwd = workspaceCwd(s, spec.cwd, os);
+  const cwd = workspaceCwd(s, spec.cwd, spec.env, os);
   const tools = codexTools(spec.tools);
   const thread = threadSandbox(probe);
   // The session environment (Decision 5: `CODEX_HOME` = `provider/`, `HOME` = `tmp/home`, `SHELL`)
@@ -294,6 +299,12 @@ export function codexLaunch(s: Session, spec: SessionSpec, probe: CodexProbe, os
  * start-only `dynamicTools`, `ephemeral` or `serviceName` (the pin's `ThreadResumeParams` has
  * none). A thread that declared `shell` resumes only on a pin that recorded it restores the
  * declaration from its rollout, else `PROVIDER_VERSION {missing: "resumeDynamicTools"}`.
+ *
+ * The decision reads today's role (`l`, built from the session's current allow-set), not the
+ * tools the thread was started with: a thread started with `shell` whose role no longer allows it
+ * resumes here, and its rollout may still declare `shell`.
+ * TODO(7E Task 12): the `shell` handler refuses every `item/tool/call` for `shell` when
+ * `l.tools.shell` is false (a call the role does not allow is never run, whatever the thread says).
  */
 export function threadResumeParams(l: CodexLaunch, threadId: string, pin: CodexPinFacts = codexPinFacts()): Closed<ThreadResumeParams> {
   if (threadId === "") throw finError("INVALID_REQUEST", "a Codex thread id is empty", {});

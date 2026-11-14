@@ -11,16 +11,25 @@
 //   refused at `request` before anything is written. An error response fails its request only:
 //   `PROVIDER_PROTOCOL {method, reason: "rpcError", rpcError: {code, message}}`, which the adapter
 //   reads (`-32600 "no rollout found …"` is a lost transcript, Decision 17).
-// - **The end:** the server's EOF fails every pending request `PROVIDER_EXITED {method, reason:
-//   "eof"}` and ends `notifications`; a request after it fails at once.
+// - **The end:** the server's EOF (its stdout's `end`, or a `close` without one, as after a kill
+//   destroys the pipe) fails every pending request `PROVIDER_EXITED {method, reason: "eof"}` and
+//   ends `notifications`; a request after it fails at once. A write that fails fails its request
+//   `PROVIDER_EXITED {reason: "stdinClosed"}` at once, as does a request after `end()`.
 // - **Drift fails closed:** a line that is not JSON-RPC, a response to an id never sent, a line
 //   over the cap, or a known notification or server request missing a needed field is
 //   `PROVIDER_PROTOCOL`: pending requests and `notifications` fail with it and the client stops
 //   (a bad server request is answered `-32602` first). A method the pin's schema does not list
 //   for the adapter is an `unknown` notification or request, never an error.
 // - **Server requests** go to one `ServerRequestPort` (held until `serve`); its reply is typed to
-//   the request's method (a reply for another method is answered `-32603`), and a request Codex
-//   resolves itself (`serverRequest/resolved`) stops its handler.
+//   the request's method (a reply for another method is answered `-32603`). **Each gets exactly
+//   one answer** unless Codex resolves it itself (`serverRequest/resolved`: a held one is dropped,
+//   a running handler is interrupted, and nothing is written for it even if the handler still
+//   finishes) or the client stops (EOF, drift: handlers are interrupted, nothing more is written).
+//   A handler that fails, dies or ends interrupted for any other reason is answered `-32603`. An
+//   id that arrives again while its request is still open (held or running) is drift (`reason:
+//   "duplicateRequestId"`): neither is answered, so Codex never sees two answers for one id; an
+//   id reused after its answer is a new request.
+// - **Notifications sent** are only `CLIENT_NOTIFICATIONS` (`initialized`), checked at run time.
 //
 // Portions adapted from T3 Code's `effect-codex-app-server` (`src/protocol.ts`,
 // `src/_internal/shared.ts`) at pingdotgg/t3code@5f85768394f417f5bd098ca7fe4fc41ef07a7cda: the
@@ -145,7 +154,8 @@ export interface CodexRpc {
    * others (`features`, `project_doc_max_bytes`, an unknown managed requirement).
    */
   requestRaw<M extends ClientMethod>(m: M, p: ParamsOf<M>): Effect.Effect<{ readonly result: ResultOf<M>; readonly raw: unknown }, FinError>;
-  notify(m: (typeof P.CLIENT_NOTIFICATIONS)[number]): Effect.Effect<void>;
+  /** Sends a client notification (only `initialized`; anything else fails `methodNotAllowed`). */
+  notify(m: (typeof P.CLIENT_NOTIFICATIONS)[number]): Effect.Effect<void, FinError>;
   /** The server's notifications in order; ends at its EOF, fails `PROVIDER_PROTOCOL` on drift. */
   readonly notifications: Stream.Stream<ServerNotification, FinError>;
   /** Starts answering server requests (those that came before are dispatched now). */
@@ -254,6 +264,8 @@ class Rpc implements CodexRpc {
   readonly #pending = new Map<number, Pending>();
   readonly #handlers = new Map<string, Fiber.Fiber<ServerReply>>();
   readonly #held: ServerRequest[] = [];
+  /** Running handlers' keys whose request Codex resolved itself: not answered. */
+  readonly #resolved = new Set<string>();
   readonly notifications: Stream.Stream<ServerNotification, FinError>;
   #nextId = 1;
   #port: ServerRequestPort | null = null;
@@ -278,6 +290,8 @@ class Rpc implements CodexRpc {
       take(framer.end());
       this.#eof();
     });
+    // destroyed without an `end` (a kill): the end all the same; a partial last line is dropped
+    io.stdout.on("close", () => this.#eof());
     io.stdout.on("error", () => this.#eof());
     io.stdin.on("error", () => 0);
   }
@@ -310,9 +324,12 @@ class Rpc implements CodexRpc {
     });
   }
 
-  notify(m: (typeof P.CLIENT_NOTIFICATIONS)[number]): Effect.Effect<void> {
-    return Effect.sync(() => {
+  notify(m: (typeof P.CLIENT_NOTIFICATIONS)[number]): Effect.Effect<void, FinError> {
+    return Effect.suspend(() => {
+      if (!(P.CLIENT_NOTIFICATIONS as readonly string[]).includes(m))
+        return Effect.fail(protocol(`Finisher never sends the notification ${JSON.stringify(name64(String(m)))} to Codex`, { method: name64(String(m)), reason: "methodNotAllowed" }));
       if (this.#stopped === null && !this.#stdinEnded) this.#write({ method: m });
+      return Effect.void;
     });
   }
 
@@ -345,6 +362,8 @@ class Rpc implements CodexRpc {
       case "response":
       case "error": {
         const id = m.id;
+        if (id === null && m.kind === "error")
+          return this.#fail(protocol(`Codex reported an error for no request: ${m.error.message.slice(0, 200)}`, { reason: "rpcError", rpcError: m.error }));
         if (typeof id !== "number" || id < 1 || id >= this.#nextId)
           return this.#fail(protocol("Codex answered a request Finisher never sent", { id: typeof id === "string" ? name64(id) : id }));
         const p = this.#pending.get(id);
@@ -361,14 +380,28 @@ class Rpc implements CodexRpc {
       case "notification": {
         const n = m.notification;
         // Codex settles a request itself when its turn ends: a handler still running stops.
-        if (n.method === "serverRequest/resolved") this.#handlers.get(JSON.stringify(n.params.requestId))?.interruptUnsafe();
+        // A held one is dropped; a running one is interrupted and never answered.
+        if (n.method === "serverRequest/resolved") {
+          const key = JSON.stringify(n.params.requestId);
+          const at = this.#held.findIndex((r) => JSON.stringify(r.id) === key);
+          if (at !== -1) this.#held.splice(at, 1);
+          const fiber = this.#handlers.get(key);
+          if (fiber !== undefined) {
+            this.#resolved.add(key);
+            fiber.interruptUnsafe();
+          }
+        }
         Queue.offerUnsafe(this.#queue, n);
         return;
       }
-      case "request":
+      case "request": {
+        const key = JSON.stringify(m.request.id);
+        if (this.#handlers.has(key) || this.#held.some((r) => JSON.stringify(r.id) === key))
+          return this.#fail(protocol("Codex sent a request id again while it was still open", { id: typeof m.request.id === "string" ? name64(m.request.id) : m.request.id, reason: "duplicateRequestId" }));
         if (this.#port === null) this.#held.push(m.request);
         else this.#dispatch(m.request);
         return;
+      }
     }
   }
 
@@ -378,9 +411,12 @@ class Rpc implements CodexRpc {
     this.#handlers.set(key, fiber);
     fiber.addObserver((exit) => {
       if (this.#handlers.get(key) === fiber) this.#handlers.delete(key);
-      if (this.#stopped !== null) return;
+      const resolved = this.#resolved.delete(key);
+      // Codex settled it, or the client stopped: no answer is owed (or could be read).
+      if (resolved || this.#stopped !== null) return;
       if (Exit.isSuccess(exit)) this.#answer(r, exit.value);
-      else if (!Cause.hasInterruptsOnly(exit.cause)) this.#write({ id: r.id, error: { code: -32603, message: "Finisher failed to answer this request" } });
+      // a failure, a defect, or an interruption nobody here asked for: still one answer
+      else this.#write({ id: r.id, error: { code: -32603, message: "Finisher failed to answer this request" } });
     });
   }
 
@@ -414,6 +450,7 @@ class Rpc implements CodexRpc {
     for (const p of pending) p.resume(Effect.fail(why === "eof" ? exited(p.method, "eof") : why));
     for (const f of this.#handlers.values()) f.interruptUnsafe();
     this.#handlers.clear();
+    this.#resolved.clear();
     this.#held.length = 0;
   }
 }

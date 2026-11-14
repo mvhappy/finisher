@@ -16,7 +16,8 @@
 // committed snapshot `vendor/codex/<version>/{schema/, schema-experimental/, features.txt}`.
 // `schema-experimental/` keeps only the two bundle files (Decision 2: the experimental
 // bundle is read for `dynamicTools` and `item/tool/call`).
-// `--check` writes nothing: it compares a fresh generation with the committed snapshot.
+// `--check` writes nothing: it compares a fresh generation with the committed snapshot, and
+// fails when the host's target is not among those selected (nothing would be compared).
 // `LICENSE` and `NOTICE` come from the `rust-v<version>` tag of github.com/openai/codex (the
 // npm packages carry neither).
 import { spawnSync } from "node:child_process";
@@ -76,8 +77,10 @@ function paxPath(body) {
 /**
  * Verifies `file` against `integrity`, then streams the tarball and writes only the entries
  * `package/vendor/<triple>/<kept>` into `destDir`, flat by base name (`bin/codex` becomes
- * `codex`). Returns the names written; a kept file that is missing is an error and removes
- * what was written.
+ * `codex`). Returns the names written. It fails closed, removing every file it opened: a kept
+ * file that is missing, a kept destination reached twice (another entry, or another triple's
+ * copy, of the same name), an archive cut short (inside a body, a header or a pax record) or
+ * without its end-of-archive block, or bytes other than zeros after that block.
  */
 export async function extractKept(file, destDir, kept, { integrity }) {
   await verifyTarball(file, integrity);
@@ -88,6 +91,9 @@ export async function extractKept(file, destDir, kept, { integrity }) {
   }
   mkdirSync(destDir, { recursive: true });
   const written = [];
+  /** Every destination opened (written or not), removed on any failure. */
+  const opened = new Set();
+  let ended = false; // the end-of-archive zero block was read
   let state = "header";
   let hdr = Buffer.alloc(0);
   let remaining = 0;
@@ -112,6 +118,10 @@ export async function extractKept(file, destDir, kept, { integrity }) {
     for await (const chunk of createReadStream(file).pipe(createGunzip())) {
       let buf = chunk;
       while (buf.length) {
+        if (ended) {
+          if (!buf.every((b) => b === 0)) throw new Error(`${basename(file)} has data after the end of the archive`);
+          break;
+        }
         if (state === "header") {
           const take = buf.subarray(0, 512 - hdr.length);
           hdr = Buffer.concat([hdr, take]);
@@ -119,7 +129,10 @@ export async function extractKept(file, destDir, kept, { integrity }) {
           if (hdr.length < 512) continue;
           const h = hdr;
           hdr = Buffer.alloc(0);
-          if (h.every((b) => b === 0)) continue;
+          if (h.every((b) => b === 0)) {
+            ended = true;
+            continue;
+          }
           const type = String.fromCharCode(h[156] || 0x30);
           const size = octal(h.subarray(124, 136));
           remaining = size;
@@ -131,14 +144,19 @@ export async function extractKept(file, destDir, kept, { integrity }) {
             if (cstr(h.subarray(257, 262)) === "ustar" && h[345]) name = `${cstr(h.subarray(345, 500))}/${name}`;
             if (override !== undefined) name = override;
             const m = /^package\/vendor\/[^/]+\/(.+)$/.exec(name);
-            if (m && want.has(m[1])) cur = { fd: openSync(join(destDir, want.get(m[1])), "w", 0o755), name: want.get(m[1]) };
+            if (m && want.has(m[1])) {
+              const dest = want.get(m[1]);
+              if (opened.has(dest)) throw new Error(`${basename(file)} holds ${dest} more than once (${name})`);
+              opened.add(dest);
+              cur = { fd: openSync(join(destDir, dest), "w", 0o755), name: dest };
+            }
             override = undefined;
           } else if (type !== "g") override = undefined;
           if (remaining === 0) endBody();
           else state = "body";
         } else if (state === "body") {
           const take = buf.subarray(0, remaining);
-          if (cur) writeSync(cur.fd, take);
+          if (cur) for (let off = 0; off < take.length; ) off += writeSync(cur.fd, take, off);
           if (special) special.chunks.push(Buffer.from(take));
           remaining -= take.length;
           buf = buf.subarray(take.length);
@@ -151,15 +169,15 @@ export async function extractKept(file, destDir, kept, { integrity }) {
         }
       }
     }
+    if (!ended || state !== "header" || hdr.length !== 0 || special || override !== undefined)
+      throw new Error(`${basename(file)} is truncated: it ends before the end of the archive`);
+    const missing = [...want.entries()].filter(([, n]) => !written.includes(n)).map(([k]) => k);
+    if (missing.length) throw new Error(`${basename(file)} does not contain ${missing.join(", ")}`);
   } catch (e) {
     if (cur) closeSync(cur.fd);
-    for (const n of written) rmSync(join(destDir, n), { force: true });
+    cur = undefined;
+    for (const n of opened) rmSync(join(destDir, n), { force: true });
     throw e;
-  }
-  const missing = [...want.entries()].filter(([, n]) => !written.includes(n)).map(([k]) => k);
-  if (missing.length) {
-    for (const n of written) rmSync(join(destDir, n), { force: true });
-    throw new Error(`${basename(file)} does not contain ${missing.join(", ")}`);
   }
   return written;
 }
@@ -257,6 +275,9 @@ export async function main(argv, root = join(dirname(fileURLToPath(import.meta.u
   const host = hostTarget();
   const pin = readPin(root);
   const targets = all ? TARGETS : [ti === -1 ? host : argv[ti + 1]];
+  // A check that compares nothing is no check: it needs the host's own target, which it can run.
+  if (check && (host === undefined || !targets.includes(host)))
+    throw new Error(`--check generates the schema with the host's own binary: select ${host ?? "a supported host"} (no target given, or --all)`);
   const cache = join(root, ".cache/codex");
   let failed = false;
   for (const target of targets) {
