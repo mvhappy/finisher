@@ -92,7 +92,7 @@ export function writeKeyFile(path: string, key: Buffer, platform: NodeJS.Platfor
 }
 
 /**
- * `writeKeyFile` for any text (`agent/claude/account.ts`'s state, `agent/provider-pid.ts`): a
+ * `writeKeyFile` for any text (`agent/cli/account.ts`'s state, `agent/provider-pid.ts`): a
  * temp file unique to this call, 0600 at every write, written whole (a short write is continued;
  * one that writes nothing fails), fsynced, renamed over `path` (retried on Windows), the
  * directory fsynced.

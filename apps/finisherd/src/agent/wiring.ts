@@ -35,7 +35,7 @@ import { remember } from "./remember.ts";
 import { builtinEnvironment } from "./builtin/environment.ts";
 import { localClient, type ModelClient, openrouterClient } from "./builtin/compat.ts";
 import { finIndex } from "./builtin/fin-tool.ts";
-import { indexOf, ShellAttribution } from "./claude/attribution.ts";
+import { indexOf, ShellAttribution } from "./cli/attribution.ts";
 import { BuiltinAdapter } from "./builtin/loop.ts";
 import { builtinTools } from "./builtin/tools.ts";
 import { BUNDLED_CATALOGUE, Catalogue } from "./catalogue/catalogue.ts";

@@ -113,7 +113,7 @@ export class FinIndex {
     this.#globals = globals;
   }
 
-  /** The commands, in index order (`claude/attribution.ts` reads argv with them too). */
+  /** The commands, in index order (`cli/attribution.ts` reads argv with them too). */
   get commands(): ReadonlyArray<FinCommand> {
     return [...this.#byName.values()];
   }

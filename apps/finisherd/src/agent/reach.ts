@@ -33,7 +33,7 @@
 //   (`agent:<role>:<sessionId>`), whatever it sent, and every commit, undo, redo, revert,
 //   cherry-pick and merge it makes is recorded in `session_txs` after the engine answers,
 //   whatever its call attribution: `exact` with a `FIN_CALL`; without one (a CLI agent's own
-//   shell) what `claude/attribution.ts` infers from the `fin-args-hash` header (7D Task 12).
+//   shell) what `cli/attribution.ts` infers from the `fin-args-hash` header (7D Task 12).
 import { join } from "node:path";
 import type { FinError, FinRpcTag, Principal, Session } from "@finisher/contracts";
 import { ruleOf } from "@finisher/contracts";
@@ -45,7 +45,7 @@ import { canonicalPath, type ChainProjects, resolveWrites, rootsOf } from "../ch
 import { actorFor, headerOf } from "../diagnostics.ts";
 import { finError } from "../errors.ts";
 import { committedOf } from "../history.ts";
-import { ARGS_HASH_HEADER, type Matched } from "./claude/attribution.ts";
+import { ARGS_HASH_HEADER, type Matched } from "./cli/attribution.ts";
 import { resumeDenied } from "./child-resume.ts";
 import type { SessionTx } from "./store-tables.ts";
 
