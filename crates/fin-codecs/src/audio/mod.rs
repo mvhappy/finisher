@@ -1,9 +1,15 @@
 //! Audio codecs (6C plan Decisions 3, 8–10, 22, 24): the decoder and encoder traits, backend
 //! choice under the audio encoder policy (`registry`, the only place that opens an audio
-//! encoder), the symphonia and libopus backends, MP4 audio through `fin-container`, and [`AudioReader`],
-//! which hands out a file's audio at its own rate and channel layout. Nothing here resamples or
-//! downmixes: `fin-codecs` never links `fin-audio`; the worker converts (`audio_src.rs`).
+//! encoder), the symphonia and libopus backends, AAC-LC on Linux (symphonia and vo-aacenc), MP4
+//! audio through `fin-container`, and [`AudioReader`], which hands out a file's audio at its own
+//! rate and channel layout. Nothing here resamples or downmixes: `fin-codecs` never links
+//! `fin-audio`; the worker converts (`audio_src.rs`).
 
+// Finisher's own AAC code: Linux only (Decision 9).
+#[cfg(target_os = "linux")]
+mod aac_config;
+#[cfg(target_os = "linux")]
+mod aac_linux;
 mod mp4;
 mod ogg_opus;
 mod opus;

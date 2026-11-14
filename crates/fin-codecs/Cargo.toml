@@ -22,8 +22,15 @@ fin-opus-sys = { path = "../fin-opus-sys" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Audio containers and codecs (6C Decision 9 and the tech stack): MPL-2.0, unmodified, no
-# default features; never `opt-simd*` (the only path to rustfft). `aac` is Linux-only (Task 14).
+# default features; never `opt-simd*` (the only path to rustfft). `aac` is Linux-only (below).
 symphonia = { workspace = true, features = ["wav", "aiff", "flac", "ogg", "vorbis", "mp3", "alac", "caf", "pcm"] }
+
+# Finisher's own AAC code (6C Decision 9, spec §16.4), Linux only: symphonia's AAC-LC decoder
+# and vo-aacenc (Decision 12, built from the pinned submodule `third_party/vo-aacenc`). macOS
+# and Windows use the OS codec; neither crate is in their graphs (scripts/check-crate-deps.mjs).
+[target.'cfg(target_os = "linux")'.dependencies]
+symphonia = { workspace = true, features = ["aac"] }
+fin-aacenc-sys = { path = "../fin-aacenc-sys" }
 
 # Platform codecs (6B-1), target-gated (scripts/check-crate-deps.mjs): VideoToolbox on macOS
 # (Tasks 4–5), Media Foundation on Windows 11 (Tasks 6–7). No other target links them.

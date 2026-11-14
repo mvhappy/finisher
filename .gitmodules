@@ -10,3 +10,7 @@
 	path = third_party/opus
 	url = https://github.com/xiph/opus.git
 	shallow = true
+[submodule "third_party/vo-aacenc"]
+	path = third_party/vo-aacenc
+	url = https://github.com/mvhappy/vo-aacenc
+	shallow = true

@@ -7,7 +7,8 @@ members = ["crates/*", "examples/plugins/rust-tools"]
 # The codecs (`fin-codecs`, `fin-svt-sys`, `fin-dav1d-sys`) are members since 6A-2's media
 # worker links them: their SVT-AV1 and dav1d builds need cmake, nasm on x86_64 and the
 # `third_party/svt-av1`, `third_party/dav1d` and `third_party/opus` submodules (6C adds
-# `fin-opus-sys`, libopus built with cc). `fin-codecs`' own fixtures:
+# `fin-opus-sys`, libopus built with cc, and on Linux `fin-aacenc-sys`, vo-aacenc built with cc
+# from `third_party/vo-aacenc`; empty elsewhere). `fin-codecs`' own fixtures:
 # `cargo test -p fin-codecs --features testing`.
 # The plugin SDK, its harness and the example plugins (sub-project 8B) are members outside the
 # defaults, like `fin-plugin-cli`: plugin authors' tooling, not part of the app; `--workspace`
@@ -15,6 +16,7 @@ members = ["crates/*", "examples/plugins/rust-tools"]
 default-members = [
     "crates/fin",
     "crates/fin-agent-fakes",
+    "crates/fin-aacenc-sys",
     "crates/fin-audio",
     "crates/fin-codecs",
     "crates/fin-compositor",

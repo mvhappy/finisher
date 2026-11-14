@@ -1,5 +1,5 @@
 //! The libopus backend (6C plan Decisions 3, 11 and 22): `fin-opus-sys`'s shim wrapped once.
-//! This module is the only place with `unsafe` in `fin-codecs`' audio code.
+//! With `aac_linux.rs` (Linux), the only places with `unsafe` in `fin-codecs`' audio code.
 //!
 //! Decoding is at 48 kHz for mapping families 0 and 1 (up to 8 channels, Vorbis order), with
 //! the header's output gain; pre-skip is the reader's to trim (`AudioTrackInfo.priming`). The
