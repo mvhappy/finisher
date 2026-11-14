@@ -48,7 +48,7 @@ pub fn run(job: &StartJob, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<Valu
     p.check().map_err(job_error)?;
     let fp = p.fingerprint.clone();
     ctx.begin(&fp);
-    match make(&p, ctx, warm) {
+    match make(&p, ctx, warm, job.attempt) {
         Ok(result) => {
             let value = serde_json::to_value(&result)
                 .map_err(|e| job_error(CoreError::new("INTERNAL", e.to_string())))?;
@@ -140,22 +140,32 @@ fn open_entry(
         return None;
     }
     let src = CachedSource::open(dir, key).ok()?;
-    let meta = read_meta(dir)?;
+    let meta = src.meta();
+    let class = meta.decoder_class;
     let usable = src.entry().recipe == PcmRecipe::Pcm48
         && meta.fingerprint == p.fingerprint
-        && wave_key(&p.fingerprint, meta.decoder_class).as_str() == p.key;
-    usable.then_some((src, meta.decoder_class))
+        && wave_key(&p.fingerprint, class).as_str() == p.key;
+    usable.then_some((src, class))
 }
 
-fn read_meta(dir: &Path) -> Option<EntryMeta> {
-    use std::io::Read;
-    let f = fin_shm::checked_open(&dir.join(META_FILE), 4 << 20).ok()?;
-    let mut bytes = Vec::new();
-    f.take(4 << 20).read_to_end(&mut bytes).ok()?;
-    serde_json::from_slice(&bytes).ok()
+/// Test builds only (hosts clear a worker's environment, so the fault is named in the
+/// fingerprint): `test-crashonce-` aborts the first attempt once the peaks are built.
+#[cfg(feature = "test-hooks")]
+fn test_built(fingerprint: &str, attempt: u32) {
+    if fingerprint.starts_with("test-crashonce-") && attempt == 1 {
+        std::process::abort();
+    }
 }
 
-fn make(p: &WaveParams, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<WaveResult, Fail> {
+#[cfg(not(feature = "test-hooks"))]
+fn test_built(_: &str, _: u32) {}
+
+fn make(
+    p: &WaveParams,
+    ctx: &mut JobCtx<'_>,
+    warm: &mut Warm,
+    attempt: u32,
+) -> Result<WaveResult, Fail> {
     let dir = inputs::job_dir(ctx).map_err(Fail::Job)?;
     inputs::out_dir(ctx, &dir).map_err(Fail::Job)?;
     manifest_asset(ctx, &dir, &p.asset, &p.fingerprint)?;
@@ -227,6 +237,7 @@ fn make(p: &WaveParams, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<WaveRes
             json!({ "reason": "noSamples" }),
         )
     })?;
+    test_built(&p.fingerprint, attempt);
     let out = dir.output().join(&p.key);
     fin_shm::create_output_dir(&out)
         .map_err(|e| inputs::relative_refusal(&dir, e))

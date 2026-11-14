@@ -356,3 +356,62 @@ fn wave_missing_original_and_changed_asset_typed() {
         "ASSET_CHANGED"
     );
 }
+
+/// The entry of a `fp`-fingerprint source made by `media.pcm` as `recipe`, in a returned job.
+fn make_entry(s: &Source, fp: &str, recipe: PcmRecipe, layout: PcmLayout) -> (Job, String) {
+    let job = job_for(fp, Some(&s.path));
+    let pp = PcmParams {
+        recipe,
+        key: pcm_key(fp, recipe, layout, VendorClass::Software).to_string(),
+        layout,
+        ..pcm_params(fp, layout)
+    };
+    let run = start(
+        &job,
+        "media.pcm",
+        serde_json::to_value(&pp).unwrap(),
+        &["in/manifest.json", "out/"],
+    );
+    assert!(matches!(run.end, End::Result(_)), "{:?}", run.end);
+    (job, pp.key)
+}
+
+#[test]
+fn wave_chunk_failing_mid_read_restarts_from_the_decode() {
+    // Two chunks of a stereo entry (1,048,576 frames each): the second does not verify.
+    let s = source(1_200_000, 48_000, 2);
+    let (pcm_job, key) = make_entry(&s, "fp", PcmRecipe::Pcm48, PcmLayout::Stereo);
+    let entry = pcm_job.out().join(&key);
+    let chunk = entry.join(fin_media::jobs::chunk_name(1));
+    assert!(chunk.exists());
+    let mut b = std::fs::read(&chunk).unwrap();
+    b[0] ^= 0xff;
+    std::fs::write(&chunk, b).unwrap();
+    let p = WaveParams {
+        pcm_key: Some(key),
+        ..wave_params("fp")
+    };
+    let job = job_for("fp", Some(&s.path));
+    let r = outcome(&run_wave(&job, &p, Some(&entry)), "fp").unwrap();
+    // The first block was already folded into the peaks: only a reset makes them the decode's.
+    assert_eq!(r.from, WaveFrom::Decode);
+    assert_eq!(peaks_bytes(&job, &p.key), reference(&s.path).to_bytes());
+}
+
+#[test]
+fn wave_refuses_an_entry_that_is_not_this_sources_pcm48() {
+    let s = source(60_000, 48_000, 2);
+    // Another source's pcm48 (its own fingerprint), and this source's pcm16m.
+    let other = make_entry(&s, "fp-other", PcmRecipe::Pcm48, PcmLayout::Stereo);
+    let small = make_entry(&s, "fp", PcmRecipe::Pcm16m, PcmLayout::Mono);
+    for (entry_job, key) in [other, small] {
+        let p = WaveParams {
+            pcm_key: Some(key.clone()),
+            ..wave_params("fp")
+        };
+        let job = job_for("fp", Some(&s.path));
+        let r = outcome(&run_wave(&job, &p, Some(&entry_job.out().join(&key))), "fp").unwrap();
+        assert_eq!(r.from, WaveFrom::Decode, "{key}");
+        assert_eq!(peaks_bytes(&job, &p.key), reference(&s.path).to_bytes());
+    }
+}

@@ -8,7 +8,9 @@
 //   files, read only. The worker verifies the entry and reads the original instead when it is not
 //   usable (evicted meanwhile, changed), so no pin is held: the bytes are the same either way.
 // - Priority `background`, `qos: background`, pool `cpu`; memory `batch`'s `min(4 GiB, 25 %)`.
-// - Identity (`dedupe`): the cache key. `rememberPoison` as `media.pcm`.
+// - Identity (`dedupe`): the cache key. `crashRestarts` and `rememberPoison` as `media.pcm`: a worker
+//   crash on this one item is retried from the start while attempts remain, and poisons it only
+//   once they are spent.
 // - A retry restarts from sample 0 (Decision 23; the entry is one small file). `onSucceeded`: the
 //   item's error fails the job with it; otherwise `out/<key>/` is committed by `MediaCache.commit`
 //   for the project that asked.
@@ -101,6 +103,7 @@ export function mediaWaveformKind(deps: WaveKindDeps): KindSpec<WaveParams, unkn
     batch: { items: (p) => [p.fingerprint], restrict: (p) => p },
     dedupe: waveDedupe,
     rememberPoison: true,
+    crashRestarts: true,
     memory: BATCH_MEMORY,
     files: (p) => [{ name: "in/manifest.json", mode: "read" as const }, ...(p.pcmKey == null ? [] : [{ name: "in/pcm.json", mode: "read" as const }]), { name: "out/", mode: "write" as const }],
     prepare: (ctx) =>

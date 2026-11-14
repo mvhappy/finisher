@@ -7,11 +7,11 @@ import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { FinError, JobView } from "@finisher/contracts";
+import { finError, toFinError } from "../src/errors.ts";
 import type { EntryMeta, WaveParams, WaveResult } from "@finisher/core-types";
 import { Engine, MediaCache, mediaPcmPlan, mediaWavePlan, validateJobParams } from "@finisher/fin-node";
 import { Effect } from "effect";
 import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
-import { toFinError } from "../src/errors.ts";
 import { registerMediaKinds } from "../src/jobs/kinds/media.look.ts";
 import { MEDIA_WAVEFORM, mediaWaveformKind, waveDedupe } from "../src/jobs/kinds/media.waveform.ts";
 import { BATCH_MEMORY } from "../src/media/memory.ts";
@@ -80,7 +80,7 @@ describe("the kind and the plan", () => {
 
   test("background, cold, cpu, a batch of the fingerprint, identity by the cache key", () => {
     const k = kind();
-    expect(k).toMatchObject({ kind: MEDIA_WAVEFORM, version: 1, family: "media", warm: false, defaultPriority: "background", qos: "background", rememberPoison: true, resources: ["cpu"], memory: BATCH_MEMORY });
+    expect(k).toMatchObject({ kind: MEDIA_WAVEFORM, version: 1, family: "media", warm: false, defaultPriority: "background", qos: "background", rememberPoison: true, crashRestarts: true, resources: ["cpu"], memory: BATCH_MEMORY });
     expect(k.resumable).toBeUndefined();
     expect(k.batch!.items(params())).toEqual(["fp-a1"]);
     expect(k.dedupe!(params())).toBe(waveDedupe(params()));
@@ -226,9 +226,43 @@ describe("the job and the RPC", () => {
   }, 60_000);
 });
 
+describe("a crashing worker", () => {
+  test("a crash mid-job is retried and committed, not poisoned", async () => {
+    // Test builds of the worker abort on the first attempt of `test-crashonce-…`.
+    const fp = "test-crashonce-a1";
+    const { t, cache, wave, pid, asset } = await setup(false, fp);
+    const w = mediaWavePlan({ fingerprint: fp, decoderClass: pcmPlan(fp).decoderClass });
+    const p = params({ fingerprint: fp, key: w.key, asset, projectId: pid, branch: "main" });
+    const v = await t.runJob(MEDIA_WAVEFORM, p, { project: pid });
+    expect(v.state, JSON.stringify(v.error)).toBe("succeeded");
+    expect(v.attempts).toBe(2);
+    expect(await cache.lookup(p.key)).not.toBeNull();
+    // No poison is left: asking again (dedupe would answer a poisoned job) is a cache hit.
+    expect(await run(wave.request(OWNER, { projectId: pid, asset }))).toMatchObject({ key: p.key, state: "ready", cached: true });
+  }, 240_000);
+});
+
 describe("after the pcm48 commit", () => {
+  test("a pcm48 that outlasts the wait still gets its waveform once it commits", async () => {
+    const pcmPlanned = { ...pcmPlan("fp-slow"), fingerprint: "fp-slow", asset: "a1", projectId: "p1", branch: "main" } as unknown as Parameters<ReturnType<typeof makeWaveService>["afterPcm48"]>[0];
+    const submitted: Array<{ kind: string; params: WaveParams }> = [];
+    let waits = 0;
+    const engine = {
+      // The pcm48 job is still running for the first two waits.
+      wait: () => (++waits <= 2 ? Effect.fail(finError("WAIT_TIMEOUT", "still running", {})) : Effect.succeed([{ id: "j1", state: "succeeded" } as unknown as JobView])),
+      submit: (_: unknown, req: { kind: string; params: WaveParams }) => Effect.sync(() => (submitted.push(req), { id: "w1", state: "queued" } as unknown as JobView)),
+    };
+    const held = new Set([pcmPlanned.key]);
+    const cache = { lookup: async (k: string) => (held.has(k) ? ({ key: k } as unknown) : null), serve: async () => undefined } as unknown as MediaCache;
+    const wave = makeWaveService({ registry: {} as never, pcm: {} as never, engine: engine as never, cache: () => cache, waitMs: 10 });
+    wave.afterPcm48(pcmPlanned, "j1");
+    await vi.waitFor(() => expect(submitted).toHaveLength(1), { timeout: 10_000 });
+    expect(waits).toBe(3);
+    expect(submitted[0]).toMatchObject({ kind: MEDIA_WAVEFORM, params: { fingerprint: "fp-slow", pcmKey: pcmPlanned.key, asset: "a1" } });
+  });
+
   test("wave_after_pcm48_commit: the first-use pcm48 of an audio clip is followed by its waveform, read from that entry", async () => {
-    const { cache, pcm, t, pid } = await setup(true);
+    const { cache, pcm, wave, t, pid, engine } = await setup(true);
     const feed = pcmPlan("fp-a1");
     const w = wavePlan("fp-a1");
     await pcm.used(pid);
@@ -248,8 +282,9 @@ describe("after the pcm48 commit", () => {
     expect(((done.result as { items: Record<string, WaveResult> }).items["fp-a1"])).toMatchObject({ from: "pcm48", frames: 144_000 });
     // The entry is the one a decode makes.
     expect((await cache.lookup(w.key)) as EntryMeta | null).toMatchObject({ recipe: "wave" });
-    // Used again: the pcm48 and the waveform are both held, so nothing more is submitted.
-    await pcm.used(pid);
+    // Asked for again: a cache hit, and no further waveform job.
+    const asset = Object.keys((JSON.parse(await engine.snapshot("main")) as { project: { assets: object } }).project.assets)[0]!;
+    expect(await run(wave.request(OWNER, { projectId: pid, asset }))).toMatchObject({ key: w.key, state: "ready", cached: true });
     expect(t.engine.list({}).jobs.filter((j) => j.kind === MEDIA_WAVEFORM)).toHaveLength(1);
   }, 240_000);
 });

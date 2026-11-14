@@ -308,6 +308,11 @@ impl CachedSource {
         &self.entry
     }
 
+    /// The entry's `meta.json` as checked by [`CachedSource::open`].
+    pub fn meta(&self) -> &EntryMeta {
+        &self.meta
+    }
+
     /// Chunk `i`'s samples, read and verified on first use.
     fn chunk(&mut self, i: usize) -> Result<&[f32], CoreError> {
         if self.chunk.as_ref().is_none_or(|(k, _)| *k != i) {

@@ -47,6 +47,8 @@ export interface WaveServiceDeps {
   readonly engine: Pick<JobEngine, "submit" | "wait">;
   readonly cache: () => MediaCache | undefined;
   readonly log?: (message: string) => void;
+  /** How long one wait for the `pcm48` job lasts before it is waited for again (default `WAVE_WAIT_MS`). */
+  readonly waitMs?: number;
 }
 
 export interface WaveService {
@@ -117,8 +119,16 @@ export function makeWaveService(deps: WaveServiceDeps): WaveService {
     void Effect.runPromise(
       Effect.gen(function* () {
         if (job !== undefined) {
-          const [done] = yield* deps.engine.wait([job], { timeoutMs: WAVE_WAIT_MS });
-          if ((done as JobView).state !== "succeeded") return;
+          // pcm48 runs at background priority and may outlast any one wait: wait again while it is
+          // still queued or running (a wait that ends otherwise says how the job ended).
+          for (;;) {
+            const waited = yield* Effect.result(deps.engine.wait([job], { timeoutMs: deps.waitMs ?? WAVE_WAIT_MS }));
+            if (waited._tag === "Success") {
+              if ((waited.success[0] as JobView).state !== "succeeded") return;
+              break;
+            }
+            if (waited.failure.code !== "WAIT_TIMEOUT") return yield* Effect.fail(waited.failure);
+          }
         }
         const { p } = yield* paramsOf(pcm, asset, projectId, pcm.branch ?? "main");
         // Only from an entry that is there (the commit follows the job's success); never twice.
