@@ -148,7 +148,7 @@ describe("layers", () => {
     expect(by.get("node")).toMatchObject({ run: ["node", "fake-hook.mjs"], file: join(dir, "fake-hook.mjs") });
     // An absolute program is kept, and is not the hook's own file.
     expect(by.get("abs")).toMatchObject({ run: [abs], file: join(dir, "sub", "data.json") });
-    expect(by.get("user")).toMatchObject({ run: [join(serverData, "hooks", "u.sh")], file: join(serverData, "hooks", "u.sh"), dir: serverData });
+    expect(by.get("user")).toMatchObject({ run: [join(serverData, "hooks", `u${SH}`)], file: join(serverData, "hooks", `u${SH}`), dir: serverData });
   });
 });
 
