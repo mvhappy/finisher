@@ -260,7 +260,9 @@ export interface AssertOptions {
   readonly expect?: Readonly<Record<string, string>>;
   /**
    * Names the adapter may add beyond the session's (a CLI's own documented switches, Claude
-   * Code's non-secret `CLAUDE_CODE_*` among them). Never a name of `NEVER_IN_SESSION` or a key.
+   * Code's non-secret `CLAUDE_CODE_*` among them). Never a name of `NEVER_IN_SESSION`, one
+   * starting with a `NEVER_IN_SESSION_PREFIXES` prefix (`neverInSession`, any case) or a key
+   * (`secretName`): those are refused even when listed here.
    */
   readonly extra?: ReadonlyArray<string>;
   /**

@@ -13,7 +13,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } fr
 import { childEnv, passEnv, secretName } from "../src/env.ts";
 import { assertSessionEnv, openHostSandbox, openSessionSandbox, type SessionSandbox, type SessionSandboxDeps } from "../src/agent/sandbox.ts";
 import { assertSpawnEnv, harnessExtra, NEVER_IN_SESSION, SESSION_SHELLS, sessionEnv } from "../src/agent/sandbox-env.ts";
-import { ensureSessionDirs, providerDirClean, sessionDirs } from "../src/agent/session-dirs.ts";
+import { ensureSessionDirs, plantedName, providerDirClean, sessionDirs } from "../src/agent/session-dirs.ts";
 import { resolveSandboxExecPath } from "../src/sandbox/exec.ts";
 import type { SandboxStatus } from "../src/sandbox/status.ts";
 
@@ -143,7 +143,7 @@ describe("the Codex session environment (Decision 5)", () => {
   test("codex_secret_names_never_pass", async () => {
     // Every one is named: the list, `secretName` or the prefix rule holds it, not the allow-list alone.
     for (const k of ["CODEX_ACCESS_TOKEN", "CODEX_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_ORG_ID", "OPENAI_PROJECT_ID", "RUST_LOG"]) expect(NEVER_IN_SESSION, k).toContain(k);
-    for (const k of ["CODEX_ACCESS_TOKEN", "CODEX_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_ORG_ID", "OPENAI_PROJECT_ID", "OPENAI_WHATEVER"]) expect(secretName(k), k).toBe(true);
+    for (const k of ["CODEX_ACCESS_TOKEN", "CODEX_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_ORG_ID", "OPENAI_PROJECT_ID", "OPENAI_WHATEVER", "openai_whatever", "Codex_Access_Token", "codex_api_key"]) expect(secretName(k), k).toBe(true);
     expect(secretName("CODEX_HOME")).toBe(false);
     // Dropped by the child environment itself, and by a family's pass-through.
     const child = childEnv({}, parent, process.platform);
@@ -235,6 +235,17 @@ describe("provider directory hygiene (Decision 6)", () => {
     // Names in any case (macOS and Windows find `CONFIG.TOML` as `config.toml`).
     expect((await plant("CONFIG.TOML", (at) => writeFileSync(at, "")))?.item).toBe("CONFIG.TOML");
     expect((await plant("Skills", (at) => mkdirSync(at)))?.item).toBe("Skills");
+    // Windows drops trailing dots and spaces: `config.toml.` opens `config.toml`.
+    expect((await plant("config.toml.", (at) => writeFileSync(at, "")))?.item).toBe("config.toml.");
+    expect((await plant("skills ", (at) => mkdirSync(at)))?.item).toBe("skills ");
+    expect((await plant("hooks.json. .", (at) => writeFileSync(at, "")))?.item).toBe("hooks.json. .");
+    // Unicode case folding (APFS, NTFS) maps `ſ` (U+017F) to `s` and `ı` (U+0131) to `i`, which
+    // `toLowerCase` does not: any name that is not printable ASCII is refused outright.
+    for (const name of ["ſkills", "hookſ.json", "skılls", "AGENTſ.md", "conﬁg.toml", "notes-é"]) {
+      expect((await plant(name, (at) => writeFileSync(at, "")))?.item, name).toBe(name);
+    }
+    expect(plantedName("ſkills")).toBe(true);
+    expect(plantedName("models_cache.json")).toBe(false);
     // A link named like one is refused without being followed: dangling, to a directory, to a file.
     expect(await plant("config.toml", (at) => symlinkSync(join(tmp, "nothing-here"), at))).toEqual({ code: "PROVIDER_VERSION", missing: "isolation", item: "config.toml" });
     const elsewhere = join(tmp, "elsewhere");

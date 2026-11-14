@@ -347,8 +347,15 @@ export const PROVIDER_PLANTED: ReadonlyArray<string> = [
   "managed_config.toml",
 ];
 
-/** `name` (one entry of `provider/`) is one Codex would load: `PROVIDER_PLANTED`, `*.config.toml`, `AGENTS*.md`. */
+/**
+ * `name` (one entry of `provider/`) is one Codex would load: `PROVIDER_PLANTED`, `*.config.toml`,
+ * `AGENTS*.md`, in any case, or **any name that is not printable ASCII**: a case-insensitive
+ * file system folds Unicode (APFS and NTFS find `ſkills`, with U+017F, or `skılls`, with
+ * U+0131, as `skills`, which `toLowerCase` does not), so such a name fails closed. Codex itself
+ * writes only ASCII names there (plan 7E Task 0's list).
+ */
 export function plantedName(name: string): boolean {
+  if (!/^[\x20-\x7e]+$/.test(name)) return true;
   // Windows drops trailing dots and spaces (`config.toml.` opens `config.toml`).
   const n = name.toLowerCase().replace(/[. ]+$/, "");
   return PROVIDER_PLANTED.includes(n) || n.endsWith(".config.toml") || (n.startsWith("agents") && n.endsWith(".md"));
