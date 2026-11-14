@@ -1,0 +1,10 @@
+{
+  "turns": [
+    {
+      "steps": [
+        { "dynamicTool": { "tool": "shell", "arguments": { "command": "sleep 60" } } },
+        { "say": "never reached when interrupted" }
+      ]
+    }
+  ]
+}

@@ -35,12 +35,23 @@ pub fn path_of(home: &Path, id: &str) -> PathBuf {
     home.join("sessions").join(format!("rollout-{id}.json"))
 }
 
+/// A stored thread. A turn still `inProgress` belongs to a process that died mid-turn, and is
+/// shown `interrupted`.
+/// UNOBSERVED(7E Task 0 Step 3): how 0.167.0 shows the turn a crash cut short after a resume.
 pub fn load(home: &Path, id: &str) -> Option<Value> {
     // An id is a path component: refuse anything else.
     if id.is_empty() || id.contains(['/', '\\', '.']) {
         return None;
     }
-    serde_json::from_str(&std::fs::read_to_string(path_of(home, id)).ok()?).ok()
+    let mut t: Value =
+        serde_json::from_str(&std::fs::read_to_string(path_of(home, id)).ok()?).ok()?;
+    for turn in t["turns"].as_array_mut().into_iter().flatten() {
+        if turn["status"] == "inProgress" {
+            turn["status"] = json!("interrupted");
+            turn["itemsView"] = json!("full");
+        }
+    }
+    Some(t)
 }
 
 /// Persists a non-ephemeral thread (temp file, then rename).
@@ -66,8 +77,10 @@ pub fn create(id: &str, cwd: &str, model: &str, ephemeral: bool, tools: Vec<Valu
         "updatedAt": now, "dynamicTools": tools, "turns": []})
 }
 
-/// `Thread` as the protocol shows it; `turns` only when asked for.
-pub fn view(home: &Path, t: &Value, version: &str, with_turns: bool) -> Value {
+/// `Thread` as the protocol shows it (`status` is the caller's: `idle`, `active`,
+/// `systemError`, or `notLoaded` for a stored thread this process has not loaded); `turns`
+/// only when asked for.
+pub fn view(home: &Path, t: &Value, version: &str, with_turns: bool, status: Value) -> Value {
     let id = t["id"].as_str().unwrap_or("");
     let cwd = t["cwd"].clone();
     let turns = t["turns"].as_array().cloned().unwrap_or_default();
@@ -82,7 +95,7 @@ pub fn view(home: &Path, t: &Value, version: &str, with_turns: bool) -> Value {
         "preview": preview, "ephemeral": t["ephemeral"], "section": null, "sectionEnteredAt": null,
         "projectId": null, "historyMode": "paginated", "modelProvider": "openai",
         "model": t["model"], "reasoningEffort": null, "createdAt": t["createdAt"],
-        "updatedAt": t["updatedAt"], "recencyAt": t["updatedAt"], "status": {"type": "idle"},
+        "updatedAt": t["updatedAt"], "recencyAt": t["updatedAt"], "status": status,
         "path": if t["ephemeral"] == true { Value::Null } else { json!(path_of(home, id)) },
         "cwd": cwd, "cliVersion": version, "originator": "finisher", "source": "vscode",
         "canAcceptDirectInput": true, "threadSource": null, "agentNickname": null,
@@ -100,18 +113,22 @@ pub fn sandbox_policy(mode: &Value) -> Value {
     }
 }
 
-/// A turn as the thread shows it (`items` are the thread items of the turn).
+/// A turn. With `items` it is the thread's record (`itemsView: "full"`); without, it is what a
+/// notification carries: 0.167.0's `turn/started`, `turn/completed` (failed and interrupted
+/// seen) and `turn/start` answer carry no items (`notLoaded`).
+/// UNOBSERVED(7E Task 0 Step 3): a `completed` turn's `turn/completed` items.
 pub fn turn_view(
     id: &str,
     status: &str,
-    items: &[Value],
+    items: Option<&[Value]>,
     error: Value,
-    started_s: i64,
+    started_s: Option<i64>,
     done_ms: i64,
 ) -> Value {
-    json!({"id": id, "rootTurnId": id, "items": items,
-        "itemsView": if status == "inProgress" { "notLoaded" } else { "full" }, "status": status,
+    let open = status == "inProgress";
+    json!({"id": id, "rootTurnId": id, "items": items.unwrap_or(&[]),
+        "itemsView": if items.is_some() { "full" } else { "notLoaded" }, "status": status,
         "error": error, "startedAt": started_s,
-        "completedAt": if status == "inProgress" { Value::Null } else { json!(now_ms() / 1000) },
-        "durationMs": if status == "inProgress" { Value::Null } else { json!(done_ms) }})
+        "completedAt": if open { Value::Null } else { json!(now_ms() / 1000) },
+        "durationMs": if open { Value::Null } else { json!(done_ms) }})
 }

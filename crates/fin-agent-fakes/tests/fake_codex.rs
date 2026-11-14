@@ -528,10 +528,11 @@ fn fake_messages_validate_against_schema() {
             .to_string(),
     );
     dir.write("codex-home/auth.json", "{}");
+    dir.write("work/b.txt", "b\n");
     let script = json!({"turns": [
         {"steps": [{"say": "hello", "usage": {"last": {"inputTokens": 10, "outputTokens": 2}, "total": {"inputTokens": 10, "outputTokens": 2}}},
             {"dynamicTool": {"tool": "shell", "arguments": {"command": "ls"}}},
-            {"patch": {"changes": [{"path": "a.txt", "kind": {"type": "add"}, "diff": "+x\n"},
+            {"patch": {"changes": [{"path": "a.txt", "kind": {"type": "add"}, "diff": "x\n"},
                 {"path": "b.txt", "kind": {"type": "update", "move_path": "c.txt"}, "diff": ""}]}}]},
         {"steps": [{"fail": {"codexErrorInfo": "usageLimitExceeded", "message": "limit"}}]},
         {"steps": [{"notLoggedIn": true}]},

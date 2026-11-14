@@ -177,13 +177,14 @@ fn fake_dynamic_tool_needs_declaration_and_capability() {
 
 fn patch_script() -> Value {
     let changes = json!([{"path": "src/a.ts", "kind": {"type": "update", "move_path": null}, "diff": "@@ -1 +1 @@\n-a\n+b\n"},
-        {"path": "new.txt", "kind": {"type": "add"}, "diff": "+hi\n"}]);
+        {"path": "new.txt", "kind": {"type": "add"}, "diff": "hi\n"}]);
     json!({"turns": [{"steps": [{"patch": {"changes": changes}}]}, {"steps": [{"patch": {"changes": changes, "itemId": "fc_2"}}]}]})
 }
 
 #[test]
 fn fake_patch_approval_round_trip() {
     let dir = Dir::new("patch");
+    dir.write("work/src/a.ts", "a\n");
     let mut c = Client::start(&dir, Some(patch_script()));
     c.initialize();
     let t = tid(&c.start_thread(&dir, json!({})));
@@ -220,6 +221,11 @@ fn fake_patch_approval_round_trip() {
         .find(|l| l["method"] == "item/completed" && l["params"]["item"]["type"] == "fileChange")
         .unwrap();
     assert_eq!(done["params"]["item"]["status"], "completed");
+    let read = |p: &str| std::fs::read_to_string(dir.work().join(p)).unwrap();
+    assert_eq!(
+        (read("src/a.ts"), read("new.txt")),
+        ("b\n".into(), "hi\n".into())
+    );
     // Declined: the item says so and the turn continues to its end.
     c.start_turn(&t, "edit again");
     let (_, req) = until_request(&mut c, "item/fileChange/requestApproval");
@@ -365,10 +371,10 @@ fn fake_interrupt_then_completed_interrupted() {
         "completed"
     );
     assert!(rest.iter().any(|l| l["params"]["item"]["text"] == "second"));
-    // An interrupt with nothing running is answered and changes nothing.
+    // An interrupt with nothing running is refused as 0.167.0 refuses it, and changes nothing.
     assert_eq!(
-        c.call("turn/interrupt", json!({"threadId": t, "turnId": turn})),
-        json!({})
+        c.call_err("turn/interrupt", json!({"threadId": t, "turnId": turn}))["message"],
+        "no active turn to interrupt"
     );
     assert!(c.next_within(300).is_none());
 }
@@ -445,8 +451,35 @@ fn fake_resume_reads_its_thread() {
     let r = c.call("thread/resume", json!({"threadId": thread, "cwd": dir.work(), "model": null, "sandbox": "read-only",
         "approvalPolicy": "on-request", "approvalsReviewer": "user", "developerInstructions": "x", "config": {}}));
     assert_eq!(r["thread"]["id"], thread.as_str());
-    assert_eq!(r["thread"]["turns"].as_array().unwrap().len(), 1);
-    assert_eq!(r["thread"]["turns"][0]["items"][0]["type"], "userMessage");
+    let item_types = |turns: &Value| -> Vec<Vec<(String, String)>> {
+        turns
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| {
+                t["items"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|i| {
+                        let text = i["content"][0]["text"].as_str().or(i["text"].as_str());
+                        (
+                            i["type"].as_str().unwrap().to_string(),
+                            text.unwrap_or("").to_string(),
+                        )
+                    })
+                    .collect()
+            })
+            .collect()
+    };
+    let pair = |u: &str| {
+        vec![
+            ("userMessage".to_string(), u.to_string()),
+            ("agentMessage".to_string(), "ok".to_string()),
+        ]
+    };
+    // The whole history, each item once.
+    assert_eq!(item_types(&r["thread"]["turns"]), [pair("hello")]);
     assert_eq!(r["approvalPolicy"], "on-request");
     let started = c.until("thread/started");
     assert_eq!(started["params"]["thread"]["id"], thread.as_str());
@@ -456,7 +489,10 @@ fn fake_resume_reads_its_thread() {
         "thread/read",
         json!({"threadId": thread, "includeTurns": true}),
     );
-    assert_eq!(read["thread"]["turns"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        item_types(&read["thread"]["turns"]),
+        [pair("hello"), pair("again")]
+    );
     let read = c.call(
         "thread/read",
         json!({"threadId": thread, "includeTurns": false}),
@@ -479,7 +515,8 @@ fn fake_resume_restores_dynamic_tools_per_pin() {
         c.finish();
     }
     for restores in [true, false] {
-        let mut script = shell_script(json!([]));
+        // The thread's second turn in the second process: both turns call the tool.
+        let mut script = shell_script(shell_script(json!([]))["turns"].clone());
         script["resumeRestoresDynamicTools"] = json!(restores);
         let mut c = Client::start(&dir, Some(script));
         c.initialize();
@@ -527,15 +564,22 @@ fn fake_revert_drops_turns() {
             "thread/revert",
             json!({"threadId": thread, "beforeTurnId": "no-such-turn"}),
         );
-        assert_eq!(e["code"], -32600);
-        assert!(
-            e["message"].as_str().unwrap().contains("no-such-turn"),
-            "{e}"
+        assert_eq!(
+            e,
+            json!({"code": -32600, "message": "turn not found: no-such-turn"})
         );
-        assert_eq!(e["data"]["codexErrorInfo"], "threadRollbackFailed");
         let r = c.call(
             "thread/revert",
             json!({"threadId": thread, "beforeTurnId": turns[1]}),
+        );
+        assert_eq!(
+            r["thread"]["turns"],
+            json!([]),
+            "always empty, as the schema says"
+        );
+        let r = c.call(
+            "thread/read",
+            json!({"threadId": thread, "includeTurns": true}),
         );
         let ids: Vec<&str> = r["thread"]["turns"]
             .as_array()
@@ -642,8 +686,9 @@ fn fake_script_knobs_usage_fail_not_logged_in_account() {
     c.start_turn(&t, "two");
     let lines = c.turn_lines();
     let errs: Vec<&Value> = lines.iter().filter(|l| l["method"] == "error").collect();
-    assert_eq!(errs.len(), 2);
-    assert!(errs.iter().all(|e| e["params"]["willRetry"] == true));
+    assert_eq!(errs.len(), 3);
+    assert!(errs[..2].iter().all(|e| e["params"]["willRetry"] == true));
+    assert_eq!(errs[2]["params"]["willRetry"], false);
     let done = &lines.last().unwrap()["params"]["turn"];
     assert_eq!(done["status"], "failed");
     assert_eq!(
@@ -726,6 +771,6 @@ fn fake_crash_exits_the_way_the_script_says() {
         assert!(c.child.wait().is_ok());
         let st = c.child.try_wait().unwrap().unwrap();
         assert_eq!((st.code(), st.signal()), (code, signal));
-        c.validate_on_drop = false;
+        // Dropping the client validates every line written before the crash.
     }
 }

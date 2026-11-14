@@ -3,7 +3,7 @@
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct Script {
     pub version: Option<String>,
@@ -31,6 +31,8 @@ pub enum Steer {
     #[default]
     Join,
     /// `activeTurnNotSteerable`.
+    /// UNOBSERVED(7E Task 0 Step 3): the refusal's shape (`-32600` with
+    /// `data.codexErrorInfo.activeTurnNotSteerable {turnKind}`).
     Refuse,
 }
 
@@ -46,7 +48,7 @@ pub enum OnInterrupt {
     Exit,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct Turn {
     pub steer: Option<Steer>,
@@ -62,7 +64,13 @@ pub enum Expect {
 }
 
 /// One step; its fields run in the order they are declared here (all optional).
-#[derive(Debug, Default, Deserialize)]
+///
+/// UNOBSERVED(7E Task 0 Step 3): everything a signed-in turn does, as only the unsigned half of
+/// Task 0 ran: the item shapes and order of `say` (agentMessage deltas), `usage`
+/// (`thread/tokenUsage/updated` cadence), `dynamicTool`, `patch`, `fail` (a failure other than
+/// the unsigned 401) and the closing order of a `completed` turn (seen for `failed` and
+/// `interrupted` ones).
+#[derive(Debug, Default, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct Step {
     pub expect: Option<Expect>,
@@ -75,16 +83,18 @@ pub struct Step {
     pub usage: Option<Usage>,
     /// A notification no client knows: `true` (named `fake/unknownNotification`) or a method.
     pub unknown_notification: Option<Value>,
+    /// UNOBSERVED(7E Task 0 Step 3): the `account/updated` shape (`{authMode, planType}`).
     pub account_change: Option<Map<String, Value>>,
     pub dynamic_tool: Option<DynamicTool>,
     pub patch: Option<Patch>,
-    /// The unsigned turn of the real binary: four 401 retries, then a 401 failure.
+    /// The unsigned turn of the real binary (the Task 0 capture): four WebSocket and five HTTPS
+    /// 401 retries, then a 401 failure.
     pub not_logged_in: bool,
     pub fail: Option<Fail>,
     pub crash: Option<Crash>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct Usage {
     pub last: Map<String, Value>,
@@ -93,7 +103,7 @@ pub struct Usage {
     pub model_context_window: Option<i64>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct DynamicTool {
     pub tool: String,
@@ -104,7 +114,7 @@ pub struct DynamicTool {
     pub on_failure: Vec<Value>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct Patch {
     pub changes: Vec<Value>,
@@ -113,7 +123,7 @@ pub struct Patch {
     pub on_decline: Vec<Value>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct Fail {
     pub codex_error_info: Value,
@@ -123,7 +133,7 @@ pub struct Fail {
     pub retries: u32,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Crash {
     /// `KILL`, `TERM`, `SEGV`, `INT` or `HUP`.

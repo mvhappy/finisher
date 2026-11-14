@@ -2,18 +2,31 @@
 
 use serde_json::{Value, json};
 
-use super::Fake;
+use super::{Fake, Reply, rpc};
 use crate::codex::config;
 
 const MODELS: &str = include_str!("../data/models.json");
 
 /// Page `limit` entries from `cursor` (an index as a string); the next cursor when more remain.
-fn page(all: Vec<Value>, p: &Value, default_limit: usize) -> (Vec<Value>, Value) {
-    let start = p["cursor"]
-        .as_str()
-        .and_then(|c| c.parse::<usize>().ok())
-        .unwrap_or(0)
-        .min(all.len());
+/// A cursor that is not one is `invalid cursor: X`; past the end `cursor N exceeds total
+/// <what> M` (both as 0.167.0's `model/list`).
+fn page(
+    all: Vec<Value>,
+    p: &Value,
+    default_limit: usize,
+    what: &str,
+) -> Result<(Vec<Value>, Value), String> {
+    let start = match &p["cursor"] {
+        Value::Null => 0,
+        c => {
+            let raw = c.as_str().map_or_else(|| c.to_string(), str::to_string);
+            let n: usize = raw.parse().map_err(|_| format!("invalid cursor: {raw}"))?;
+            if n > all.len() {
+                return Err(format!("cursor {n} exceeds total {what} {}", all.len()));
+            }
+            n
+        }
+    };
     let limit = p["limit"]
         .as_u64()
         .map_or(default_limit, |l| l.max(1) as usize);
@@ -23,7 +36,7 @@ fn page(all: Vec<Value>, p: &Value, default_limit: usize) -> (Vec<Value>, Value)
     } else {
         Value::Null
     };
-    (all[start..end].to_vec(), next)
+    Ok((all[start..end].to_vec(), next))
 }
 
 impl Fake {
@@ -44,17 +57,18 @@ impl Fake {
             .to_string()
     }
 
-    pub(super) fn model_list(&self, p: &Value) -> Value {
+    pub(super) fn model_list(&self, p: &Value) -> Reply {
         let all: Vec<Value> = self
             .models()
             .into_iter()
             .filter(|m| p["includeHidden"] == true || m["hidden"] != true)
             .collect();
-        let (data, next) = page(all, p, 100);
-        json!({"data": data, "nextCursor": next})
+        let (data, next) = page(all, p, 100, "models").map_err(rpc)?;
+        Ok(json!({"data": data, "nextCursor": next}))
     }
 
-    pub(super) fn feature_list(&self, p: &Value) -> Value {
+    /// UNOBSERVED(7E Task 0 Step 3): the cursor errors of `experimentalFeature/list`.
+    pub(super) fn feature_list(&self, p: &Value) -> Reply {
         let all: Vec<Value> = config::features()
             .iter()
             .map(|f| {
@@ -66,8 +80,8 @@ impl Fake {
                     "enabled": self.eff.feature(f.name), "defaultEnabled": f.default})
             })
             .collect();
-        let (data, next) = page(all, p, 100);
-        json!({"data": data, "nextCursor": next})
+        let (data, next) = page(all, p, 100, "features").map_err(rpc)?;
+        Ok(json!({"data": data, "nextCursor": next}))
     }
 
     /// The signed-in account: only with an `auth.json`; its fields from, in order, the

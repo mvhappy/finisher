@@ -4,11 +4,12 @@
 
 mod lists;
 mod read;
+mod requests;
 mod thread_api;
 mod turn;
 
-use std::collections::HashMap;
-use std::io::{BufRead, Write};
+use std::collections::{HashMap, HashSet};
+use std::io::{BufRead, Read, Write};
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::time::Duration;
@@ -20,6 +21,11 @@ use super::config::{self, Effective};
 use super::observed::Observed;
 use super::script::{OnInterrupt, Script, Steer};
 use super::threads;
+
+/// The longest line read from stdin (the client's frame limit, Decision 3). A longer one is
+/// dropped with a line on stderr and the server goes on.
+/// UNOBSERVED(7E Task 0 Step 3): what 0.167.0 does with an over-long line.
+const MAX_LINE: usize = 16 << 20;
 
 /// The positive set of methods the fake answers (Decision 3's allow-list plus `initialize`).
 const METHODS: &[&str] = &[
@@ -100,7 +106,51 @@ struct Fake {
     tasks: Vec<Task>,
     next_server_id: i64,
     next_call: u32,
-    turn_cursor: usize,
+    /// Server requests withdrawn by an interrupt (an answer to one is recorded as late).
+    withdrawn: HashMap<String, String>,
+    /// `thread/revert`s that wait for the turn they interrupted to end: (id, params).
+    deferred: Vec<(Value, Value)>,
+    /// Threads whose last turn failed (`systemError` until the next turn).
+    failed: HashSet<String>,
+}
+
+/// Reads stdin line by line (at most `MAX_LINE` bytes each) into `tx`; `None` at EOF.
+fn read_stdin(tx: std::sync::mpsc::Sender<Option<String>>) {
+    let stdin = std::io::stdin();
+    let mut r = stdin.lock();
+    loop {
+        let mut buf = Vec::new();
+        match (&mut r)
+            .take(MAX_LINE as u64 + 1)
+            .read_until(b'\n', &mut buf)
+        {
+            Ok(0) | Err(_) => break,
+            Ok(_) if buf.len() > MAX_LINE && !buf.ends_with(b"\n") => {
+                eprintln!("ERROR fake-codex: dropped a line longer than {MAX_LINE} bytes");
+                // The rest of that line.
+                loop {
+                    let mut skip = Vec::new();
+                    match (&mut r).take(1 << 20).read_until(b'\n', &mut skip) {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) if skip.ends_with(b"\n") => break,
+                        Ok(_) => {}
+                    }
+                }
+            }
+            Ok(_) => {
+                while buf.last().is_some_and(|b| *b == b'\n' || *b == b'\r') {
+                    buf.pop();
+                }
+                if tx
+                    .send(Some(String::from_utf8_lossy(&buf).into_owned()))
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        }
+    }
+    let _ = tx.send(None);
 }
 
 pub fn main(args: Vec<String>) -> i32 {
@@ -140,7 +190,11 @@ pub fn main(args: Vec<String>) -> i32 {
         println!("codex-cli {version}");
         return 0;
     }
-    if let Err(e) = config::validate(&argv) {
+    let home = std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".codex")))
+        .unwrap_or_else(|| PathBuf::from(".codex"));
+    if let Err(e) = config::validate(&argv, &home) {
         eprintln!("Error: {e}");
         return 1;
     }
@@ -151,10 +205,6 @@ pub fn main(args: Vec<String>) -> i32 {
         );
         return 1;
     }
-    let home = std::env::var_os("CODEX_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".codex")))
-        .unwrap_or_else(|| PathBuf::from(".codex"));
     let observed = setup.observed.clone().or(script.observed.clone()).map(|o| {
         match o.strip_prefix("@codex/") {
             Some(rest) => home.join(rest),
@@ -173,20 +223,11 @@ pub fn main(args: Vec<String>) -> i32 {
         "enable": argv.enable, "disable": argv.disable, "version": version}),
     );
     let (tx, rx) = channel();
-    std::thread::spawn(move || {
-        for line in std::io::stdin().lock().lines() {
-            match line {
-                Ok(l) => {
-                    if tx.send(Some(l)).is_err() {
-                        return;
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-        let _ = tx.send(None);
-    });
+    std::thread::spawn(move || read_stdin(tx));
     let eff = Effective::new(&argv, &home);
+    if eff.bundled_skills() {
+        lists::install_bundled_skills(&home);
+    }
     let mut fake = Fake {
         rx,
         eff,
@@ -203,7 +244,9 @@ pub fn main(args: Vec<String>) -> i32 {
         tasks: vec![],
         next_server_id: 0,
         next_call: 0,
-        turn_cursor: 0,
+        withdrawn: HashMap::new(),
+        deferred: vec![],
+        failed: HashSet::new(),
     };
     loop {
         fake.pump(None);
@@ -234,10 +277,18 @@ impl Fake {
             return true;
         }
         match serde_json::from_str::<Value>(&line) {
-            Ok(v) => self.inbound(v),
-            Err(e) => self.write(&json!({"id": null, "error": {"code": -32700, "message": format!("Parse error: {e}")}})),
+            Ok(v) if v.get("method").is_some() || v.get("id").is_some() => self.inbound(v),
+            // As 0.167.0: logged, never answered.
+            Ok(_) => Self::undecodable("not a JSON-RPC message"),
+            Err(e) => Self::undecodable(&e.to_string()),
         }
         true
+    }
+
+    fn undecodable(why: &str) {
+        eprintln!(
+            "ERROR codex_app_server_transport::transport: Failed to deserialize JSONRPCMessage: {why}"
+        );
     }
 
     fn write(&mut self, v: &Value) {
@@ -260,30 +311,20 @@ impl Fake {
         id
     }
 
-    /// Waits for the client's answer to a server request; `None` when the turn was interrupted.
-    fn wait_response(&mut self, id: &Value, method: &str) -> Option<Value> {
-        loop {
-            if let Some(v) = self.responses.remove(&id.to_string()) {
-                let mut rec = json!({"id": id, "method": method});
+    fn inbound(&mut self, v: Value) {
+        let method = v.get("method").and_then(Value::as_str).map(str::to_string);
+        let id = v.get("id").cloned();
+        match (method, id) {
+            (None, Some(id)) if self.withdrawn.contains_key(&id.to_string()) => {
+                let method = self.withdrawn[&id.to_string()].clone();
+                let mut rec = json!({"id": id, "method": method, "late": true});
                 for k in ["result", "error"] {
                     if let Some(x) = v.get(k) {
                         rec[k] = x.clone();
                     }
                 }
                 self.obs.push("answers", rec);
-                return Some(v);
             }
-            if self.active.as_ref().is_some_and(|a| a.interrupted) {
-                return None;
-            }
-            self.pump(None);
-        }
-    }
-
-    fn inbound(&mut self, v: Value) {
-        let method = v.get("method").and_then(Value::as_str).map(str::to_string);
-        let id = v.get("id").cloned();
-        match (method, id) {
             (None, Some(id)) => {
                 self.responses.insert(id.to_string(), v);
             }
@@ -298,9 +339,7 @@ impl Fake {
                     self.request(&m, id, v.get("params").cloned().unwrap_or(Value::Null));
                 }
             }
-            _ => self.write(
-                &json!({"id": null, "error": {"code": -32600, "message": "Invalid request"}}),
-            ),
+            _ => Self::undecodable("not a JSON-RPC message"),
         }
     }
 
@@ -315,9 +354,22 @@ impl Fake {
             self.initialize(&params)
         } else if !self.initialized {
             Err(rpc("Not initialized"))
+        } else if method == "thread/revert" && self.revert_waits(&id, &params) {
+            // Answered once the turn it interrupted has ended.
+            return;
         } else {
             self.dispatch(method, &params)
         };
+        self.answer(&id, res);
+        for task in std::mem::take(&mut self.tasks) {
+            match task {
+                Task::Notify(m, p) => self.notify(m, p),
+                Task::PlayTurn { thread, turn, user } => self.play_turn(&thread, &turn, user),
+            }
+        }
+    }
+
+    fn answer(&mut self, id: &Value, res: Reply) {
         match res {
             Ok(result) => self.write(&json!({"id": id, "result": result})),
             Err(e) => {
@@ -326,12 +378,6 @@ impl Fake {
                     err["data"] = d;
                 }
                 self.write(&json!({"id": id, "error": err}));
-            }
-        }
-        for task in std::mem::take(&mut self.tasks) {
-            match task {
-                Task::Notify(m, p) => self.notify(m, p),
-                Task::PlayTurn { thread, turn, user } => self.play_turn(&thread, &turn, user),
             }
         }
     }
@@ -379,18 +425,18 @@ impl Fake {
             "skills/list" => Ok(self.skills_list(p)),
             "hooks/list" => Ok(self.hooks_list(p)),
             "plugin/installed" => Ok(json!({"marketplaces": [], "marketplaceLoadErrors": []})),
-            "mcpServerStatus/list" => Ok(json!({"data": [], "nextCursor": null})),
+            "mcpServerStatus/list" => Ok(self.mcp_status()),
             "app/installed" => Ok(json!({"apps": []})),
-            "experimentalFeature/list" => Ok(self.feature_list(p)),
+            "experimentalFeature/list" => self.feature_list(p),
             "account/read" => Ok(self.account_read()),
-            "model/list" => Ok(self.model_list(p)),
+            "model/list" => self.model_list(p),
             "thread/start" => self.thread_start(p),
             "thread/resume" => self.thread_resume(p),
             "thread/read" => self.thread_read(p),
             "thread/revert" => self.thread_revert(p),
             "turn/start" => self.turn_start(p),
             "turn/steer" => self.turn_steer(p),
-            "turn/interrupt" => Ok(self.turn_interrupt(p)),
+            "turn/interrupt" => self.turn_interrupt(p),
             _ => Err(rpc(format!("unhandled {method}"))),
         }
     }
