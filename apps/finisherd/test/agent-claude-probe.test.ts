@@ -18,9 +18,10 @@ import { CANARY_STYLE, checkInitialize, mcpReply, signInIgnored } from "../src/a
 import { type CliLine, decodeLine, encodeControl, encodeUser, type SystemInit } from "../src/agent/claude/protocol.ts";
 import { openHostSandbox, type SessionSandbox, type SessionSandboxDeps } from "../src/agent/sandbox.ts";
 import type { SandboxStatus } from "../src/sandbox/status.ts";
+import { debugBin } from "./support/debug-bin.ts";
 
 const WIN = process.platform === "win32";
-const FAKE = fileURLToPath(new URL(`../../../target/debug/fake-claude${WIN ? ".exe" : ""}`, import.meta.url));
+const FAKE = debugBin("fake-claude");
 const REQUIRE_FAKE = process.env.FIN_REQUIRE_SERVER === "1";
 const withFake = test.skipIf(!existsSync(FAKE) && !REQUIRE_FAKE);
 

@@ -21,6 +21,7 @@ import type { ChainProjects } from "../src/chain/resolve.ts";
 import { childEnv } from "../src/env.ts";
 import { AgentServer, code, open } from "./support/agent-server.ts";
 import { addAsset, commit, confirmed, type Exit, type NdjsonClient, ok, tx } from "./support/ndjson-client.ts";
+import { debugBin } from "./support/debug-bin.ts";
 
 // --- Units --------------------------------------------------------------------------------
 
@@ -349,7 +350,7 @@ async function setUp() {
 const checkpoint = (c: NdjsonClient, projectId: string, branch: string) => c.call("history.checkpoint", { projectId, branch, name: `c${++n}`, txId: id(), author: "someone" });
 const denied = (e: Exit) => (e.ok ? undefined : { code: e.error.code, rule: (e.error.details as { rule?: string }).rule, layer: (e.error.details as { layer?: string }).layer });
 
-const FIN = fileURLToPath(new URL("../../../target/debug/fin", import.meta.url));
+const FIN = debugBin("fin");
 /** CI (`FIN_REQUIRE_SERVER=1`, as `fin`'s own server tests): a missing `fin` fails instead of skipping. */
 const REQUIRE_FIN = process.env.FIN_REQUIRE_SERVER === "1";
 

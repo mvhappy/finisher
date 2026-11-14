@@ -29,6 +29,7 @@ import type { SessionSandboxDeps } from "../src/agent/sandbox.ts";
 import { readAgentSettings } from "../src/agent/settings.ts";
 import { runConsole } from "../src/console/main.ts";
 import type { SandboxStatus } from "../src/sandbox/status.ts";
+import { debugBin } from "./support/debug-bin.ts";
 
 // Every path finisherd's own code hands `node:fs` (first two arguments), for the store spy.
 const spy = vi.hoisted(() => {
@@ -58,7 +59,7 @@ vi.mock("node:fs/promises", async (orig) => {
 
 const CRED = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_REFRESH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"];
 const WIN = process.platform === "win32";
-const FAKE = fileURLToPath(new URL(`../../../target/debug/fake-claude${WIN ? ".exe" : ""}`, import.meta.url));
+const FAKE = debugBin("fake-claude");
 /** CI (`FIN_REQUIRE_SERVER=1`, as the other Rust-binary tests): a missing fake fails instead of skipping. */
 const REQUIRE_FAKE = process.env.FIN_REQUIRE_SERVER === "1";
 const NO_FAKE = !existsSync(FAKE) && !REQUIRE_FAKE;

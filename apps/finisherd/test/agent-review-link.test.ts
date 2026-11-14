@@ -30,8 +30,9 @@ import { toFinError } from "../src/errors.ts";
 import { entries } from "./support/agent-journal.ts";
 import { AgentServer, code, rpcBranchOps } from "./support/agent-server.ts";
 import { addAsset, commit, confirmed, type Exit, insert, type NdjsonClient, ok, tx } from "./support/ndjson-client.ts";
+import { debugBin } from "./support/debug-bin.ts";
 
-const FIN = fileURLToPath(new URL("../../../target/debug/fin", import.meta.url));
+const FIN = debugBin("fin");
 /** CI (`FIN_REQUIRE_SERVER=1`, as `fin`'s own server tests): a missing `fin` fails instead of skipping. */
 const REQUIRE_FIN = process.env.FIN_REQUIRE_SERVER === "1";
 

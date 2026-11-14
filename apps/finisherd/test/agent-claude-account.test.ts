@@ -34,6 +34,7 @@ import { chainHarness, codeOf, errorOf } from "./support/chain-harness.ts";
 import { addAsset, commit, ok, tx } from "./support/ndjson-client.ts";
 import { person } from "./support/person.ts";
 import { PEOPLE } from "./support/runtime-doubles.ts";
+import { debugBin } from "./support/debug-bin.ts";
 
 // Every path finisherd's own code hands `node:fs` (first two arguments) and every `cwd` it
 // spawns in, for the store spy (`finisherd_never_opens_sign_in_store`).
@@ -83,7 +84,7 @@ vi.mock("node:child_process", async (orig) => {
 });
 
 const WIN = process.platform === "win32";
-const FAKE = fileURLToPath(new URL(`../../../target/debug/fake-claude${WIN ? ".exe" : ""}`, import.meta.url));
+const FAKE = debugBin("fake-claude");
 /** CI (`FIN_REQUIRE_SERVER=1`): a missing fake fails instead of skipping. */
 const REQUIRE_FAKE = process.env.FIN_REQUIRE_SERVER === "1";
 const withFake = test.skipIf(!existsSync(FAKE) && !REQUIRE_FAKE);

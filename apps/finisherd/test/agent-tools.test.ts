@@ -12,6 +12,7 @@ import { builtinEnvironment } from "../src/agent/builtin/environment.ts";
 import { builtinTools, isWrite, systemHash } from "../src/agent/builtin/tools.ts";
 import { confine, workspaceTool } from "../src/agent/builtin/workspace-tools.ts";
 import { childEnv } from "../src/env.ts";
+import { debugBin } from "./support/debug-bin.ts";
 
 let tmp: string;
 let ws: string;
@@ -109,8 +110,8 @@ describe.skipIf(!posix)("fin tool", () => {
     }
   });
 
-  test.skipIf(!existsSync(fileURLToPath(new URL("../../../target/debug/fin", import.meta.url))))("argv_reaches_the_real_fin_verbatim", async () => {
-    const real = fileURLToPath(new URL("../../../target/debug/fin", import.meta.url));
+  test.skipIf(!existsSync(debugBin("fin")))("argv_reaches_the_real_fin_verbatim", async () => {
+    const real = debugBin("fin");
     const r = await runFinTool({ callId: CALL, argv: ["view", "; rm -rf x"] }, env(real));
     expect(r.ok).toBe(false);
     expect(r.output).toMatchObject({ exit: 2, stdout: { error: { code: "USAGE" } } });

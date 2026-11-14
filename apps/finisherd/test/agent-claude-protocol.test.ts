@@ -16,6 +16,7 @@ import {
   lineFramer,
   MAX_LINE_BYTES,
 } from "../src/agent/claude/protocol.ts";
+import { debugBin } from "./support/debug-bin.ts";
 
 const fixture = (name: string): string[] =>
   readFileSync(new URL(`./fixtures/claude/${name}.jsonl`, import.meta.url), "utf8")
@@ -400,7 +401,7 @@ describe("encoding", () => {
     });
   });
 
-  const FAKE = fileURLToPath(new URL(`../../../target/debug/fake-claude${process.platform === "win32" ? ".exe" : ""}`, import.meta.url));
+  const FAKE = debugBin("fake-claude");
   /** CI (`FIN_REQUIRE_SERVER=1`, as the other Rust-binary tests): a missing fake fails instead of skipping. */
   const REQUIRE_FAKE = process.env.FIN_REQUIRE_SERVER === "1";
 
