@@ -116,6 +116,8 @@ fn main() {
         g.subschema_for::<fin_media::jobs::ThumbsRun>();
         g.subschema_for::<fin_media::jobs::ThumbsPlanRequest>();
         g.subschema_for::<fin_media::jobs::ThumbsPlan>();
+        // The audio backend table (6C Task 12).
+        g.subschema_for::<fin_media::backend_audio::AudioBackendEntry>();
         g.subschema_for::<fin_library::RawRel>();
         g.subschema_for::<fin_library::Expect>();
         g.subschema_for::<fin_library::ScanEntry>();
