@@ -40,10 +40,11 @@
 //   workspace's are sources otherwise).
 import type { FinError } from "@finisher/contracts";
 import { posix, win32 } from "node:path";
+import { Effect } from "effect";
 import { finError } from "../../errors.ts";
 import { type EventGate, eventGate } from "../cli/gate.ts";
 import { ALLOWED_FEATURES, type CodexLaunch, codexPinFacts } from "./launch.ts";
-import type { ResultOf } from "./rpc.ts";
+import type { CodexRpc, ResultOf } from "./rpc.ts";
 
 /** What one instance answered: the checked facts. `config` and `requirements` are as sent. */
 export interface InstanceFacts {
@@ -58,8 +59,12 @@ export interface InstanceFacts {
   readonly mcpServers: ResultOf<"mcpServerStatus/list">;
   readonly apps: ResultOf<"app/installed">;
   readonly thread: ResultOf<"thread/start">;
-  /** The instance's `CODEX_HOME` (its `provider/`); `initialize.codexHome` must be it. */
-  readonly codexHome?: string;
+  /**
+   * The instance's `CODEX_HOME` (its `provider/`, from the sandbox environment); `initialize.codexHome`
+   * must be it, and the user config layer `<codexHome>/config.toml`. Compared as plain strings:
+   * a canonicalised path (macOS `/private/var/…`) would refuse falsely (Task 20 checks it).
+   */
+  readonly codexHome: string;
 }
 
 /** The MCP servers Finisher configures for Codex: none (`-c mcp_servers={}`, Decision 6). */
@@ -91,11 +96,11 @@ export function jsonEqual(a: unknown, b: unknown): boolean {
 const USER_AGENT = /^[^/\s]+\/(\d+\.\d+\.\d+[^\s]*)\s/;
 
 /** The version and `CODEX_HOME` an `initialize` answer names. */
-export function checkInitialize(r: ResultOf<"initialize">, pinned: string, codexHome?: string): FinError | null {
+export function checkInitialize(r: ResultOf<"initialize">, pinned: string, codexHome: string): FinError | null {
   const m = USER_AGENT.exec(r.userAgent);
   if (m === null) return versionError("userAgent", "Codex's initialize names no version", { userAgent: label(r.userAgent) });
   if (m[1] !== pinned) return finError("PROVIDER_VERSION", `Codex ${m[1]} is not the pinned ${pinned}`, { harness: "codex", version: m[1], pinned }, "reinstall Finisher");
-  if (codexHome !== undefined && r.codexHome !== codexHome) return isolation("codexHome", "it runs on another CODEX_HOME than its own");
+  if (r.codexHome !== codexHome) return isolation("codexHome", "it runs on another CODEX_HOME than its own");
   return null;
 }
 
@@ -148,7 +153,8 @@ const sessionFlags = (o: unknown): boolean => plain(o) && plain(o.name) && o.nam
 
 /** A feature's effective value is off: `false`, or a table with `enabled: false`. */
 const featureOff = (v: unknown): boolean => v === false || (plain(v) && v.enabled === false);
-const featureOn = (v: unknown): boolean => v === true || (plain(v) && v.enabled === true);
+/** Unset (`null`): the pin's default, which is off for every feature not in `ALLOWED_FEATURES` and not disabled (a disabled one is checked `false` above). */
+const featureUnset = (v: unknown): boolean => v === null;
 
 /** `config/read {includeLayers: true}` (as sent) against the plan. */
 export function checkConfig(raw: unknown, plan: Pick<CodexLaunch, "argv" | "tools" | "disabledFeatures">, codexHome: string): FinError | null {
@@ -178,7 +184,7 @@ export function checkConfig(raw: unknown, plan: Pick<CodexLaunch, "argv" | "tool
     if (!sessionFlags(origins[`features.${f}`]) && !sessionFlags(origins[`features.${f}.enabled`])) return isolation(`feature:${f}`, `feature ${f} is not off by Finisher's flags`);
   }
   for (const [f, v] of Object.entries(features)) {
-    if (featureOn(v) && !ALLOWED_FEATURES.has(f)) return isolation(`feature:${f}`, `feature ${f} is on`);
+    if (!featureOff(v) && !featureUnset(v) && !ALLOWED_FEATURES.has(f)) return isolation(`feature:${f}`, `feature ${f} is ${label(v)}, not off`);
   }
   // Nothing from a file: every origin is a flag, the user layer is the empty throwaway one.
   for (const [key, o] of Object.entries(origins)) {
@@ -328,7 +334,7 @@ export function checkInstance(facts: InstanceFacts, plan: CodexLaunch): FinError
   const pinned = codexPinFacts().version;
   return (
     checkInitialize(facts.initialize, pinned, facts.codexHome) ??
-    checkConfig(facts.config, plan, facts.codexHome ?? facts.initialize.codexHome) ??
+    checkConfig(facts.config, plan, facts.codexHome) ??
     checkRequirements(facts.requirements, plan) ??
     checkLists(facts) ??
     checkThread(facts.thread, plan)
@@ -348,16 +354,32 @@ export function instanceGate<E extends { readonly method: string; readonly name?
     get state() {
       return gate.state;
     },
-    // A skill planted mid-instance (`$CODEX_HOME/skills`, the workspace's `.agents/skills`): the
-    // pin announces it with `skills/changed` (not decoded: it arrives as `unknown`) and would
-    // offer it from the next turn, so the checked `skills/list == []` no longer holds: refuse.
-    // (Task 10 may instead re-run `skills/list` and refuse only a non-empty answer.)
+    // A skill planted mid-instance under `$CODEX_HOME/skills`: the pin announces it with
+    // `skills/changed` (not decoded: it arrives as `unknown`), so the checked `skills/list == []`
+    // no longer holds: refuse. A skill planted in the workspace's `.agents/skills` raises **no**
+    // notification on 0.167.0 (review, real binary: none within 4 s, `skills/list` stays cached
+    // at 0, `{forceReload: true}` lists it): `recheckSkills` before each turn covers that.
     push: (item) => (item.kind === "event" && skillsChanged(item.event) ? gate.refuse(isolation("skills:changed", "a skill appeared while it ran")) : gate.push(item)),
     verify: (item) => gate.verify(item),
     refuse: (e) => gate.refuse(e),
     withdraw: (m) => gate.withdraw(m),
     discard: () => gate.discard(),
   };
+}
+
+/**
+ * Before each turn of an instance (TODO(7E Task 10): the session calls it ahead of every
+ * `turn/start` and refuses the turn, killing the group, on a failure): `skills/list {cwds,
+ * forceReload: true}` must still be empty, else `PROVIDER_VERSION {missing: "isolation", item:
+ * "skill:<name>"}`. `forceReload` because the pin caches the list and a workspace skill planted
+ * mid-instance raises no `skills/changed`. TODO(7E Task 0 Step 3): whether a later turn of the
+ * same instance actually offers such a skill to the model (if never, this is defence in depth).
+ */
+export function recheckSkills(rpc: Pick<CodexRpc, "request">, cwds: readonly string[]): Effect.Effect<void, FinError> {
+  return Effect.flatMap(rpc.request("skills/list", { cwds: [...cwds], forceReload: true }), (skills) => {
+    const skill = skills.data.flatMap((e) => e.skills)[0];
+    return skill === undefined ? Effect.void : Effect.fail(isolation(`skill:${skill.name}`, `the skill ${label(skill.name)} appeared (${label(skill.path)})`));
+  });
 }
 
 /** `skills/changed`, decoded or not. */
