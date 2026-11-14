@@ -3,7 +3,7 @@
 // `codex-resources/bwrap` (LGPL-2.0-or-later, spec §17), its code-mode host or anything else.
 // Every target has a sha512 integrity, the committed snapshot lives in `vendor/codex/<version>/`
 // (the pin's version, and no other) with its schema bundles, `features.txt`, `LICENSE`
-// (Apache-2.0) and `NOTICE`, and no file called `bwrap*` is in the repository's tree. Each
+// (Apache-2.0) and `NOTICE`, and no file called `bwrap*` (in any case) is in the repository's tree. Each
 // finding is `CODEX_PIN <message>`.
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -16,7 +16,7 @@ const ALLOWED = /^(?:bin\/codex|codex-path\/rg)(?:\.exe)?$/;
 export function findings(root) {
   const out = [];
   const bad = (m) => out.push(`CODEX_PIN ${m}`);
-  for (const p of walk(root)) if (/(^|\/)bwrap[^/]*$/.test(p)) bad(`${p}: bwrap (LGPL) must never be in the repository`);
+  for (const p of walk(root)) if (/(^|\/)bwrap[^/]*$/i.test(p)) bad(`${p}: bwrap (LGPL) must never be in the repository`);
   const pinPath = join(root, "vendor/codex/pin.json");
   if (!existsSync(pinPath)) return [...out, "CODEX_PIN vendor/codex/pin.json is missing"];
   let pin;

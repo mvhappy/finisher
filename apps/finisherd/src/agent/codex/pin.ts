@@ -4,12 +4,19 @@
 // there is no `agents.codex.path`. In order:
 //  1. `FIN_CODEX_BIN`, **only in a `test-hooks` build of fin-node** (so `fake-codex` or a
 //     fetched real binary can stand in); a release build never reads it;
-//  2. `<resources>/codex/<target>/codex[.exe]`, beside `finisherd` (`FIN_RESOURCES_DIR`,
-//     else the repository's `resources/`; sub-project 9 packages the binary there);
-//  3. the dev cache `.cache/codex/<version>/<target>/codex[.exe]`.
+//  2. `<resources>/codex/<target>/codex[.exe]`, where `<resources>` is the installation's
+//     `resources/`, found from this module's own location (never the working directory, never the
+//     environment; sub-project 9 packages the binary there);
+//  3. the dev cache `.cache/codex/<version>/<target>/codex[.exe]` (beside the module tree too).
 // None of them: `PROVIDER_UNAVAILABLE {provider: "codex", reason: "notBundled"}`.
+//
+// **What an installed build trusts** (review of Task 2): only (2). `FIN_RESOURCES_DIR` (which
+// replaces (2)'s directory, and must be absolute) and the dev cache (3) are read only when the
+// run is a development one: fin-node is a `test-hooks` build, or the module tree is a repository
+// checkout (a `.git` entry at its root, which an installation never has). So a production
+// server's environment cannot point it at another binary; a checkout's developer can.
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { testHooks } from "@finisher/fin-node";
 import { finError } from "../../errors.ts";
@@ -18,8 +25,11 @@ export interface PinDeps {
   readonly env: Readonly<Record<string, string | undefined>>;
   /** Whether fin-node is a `test-hooks` build. */
   readonly testHooks: boolean;
+  /** Whether the module tree is a repository checkout (not an installation). */
+  readonly devCheckout: boolean;
   readonly platform: string;
   readonly arch: string;
+  /** The installation's `resources/`, beside this module tree (never cwd- or env-derived). */
   readonly resourcesDir: string;
   /** The dev cache's root (`.cache/codex`). */
   readonly cacheRoot: string;
@@ -47,9 +57,10 @@ export function defaultPinDeps(): PinDeps {
   return {
     env: process.env,
     testHooks: testHooks !== undefined,
+    devCheckout: existsSync(join(REPO, ".git")),
     platform: process.platform,
     arch: process.arch,
-    resourcesDir: process.env.FIN_RESOURCES_DIR || join(REPO, "resources"),
+    resourcesDir: join(REPO, "resources"),
     cacheRoot: join(REPO, ".cache/codex"),
     version: pinnedCodexVersion(),
     exists: existsSync,
@@ -74,7 +85,15 @@ export function codexBinary(deps: PinDeps = defaultPinDeps()): string {
   const target = codexTarget(deps.platform, deps.arch);
   if (target === undefined) throw notBundled(`no Codex build for ${deps.platform}-${deps.arch}`);
   const exe = deps.platform === "win32" ? "codex.exe" : "codex";
-  for (const path of [join(deps.resourcesDir, "codex", target, exe), join(deps.cacheRoot, deps.version, target, exe)]) {
+  const dev = deps.testHooks || deps.devCheckout;
+  let resources = deps.resourcesDir;
+  const named = dev ? deps.env.FIN_RESOURCES_DIR : undefined;
+  if (named !== undefined && named !== "") {
+    if (!isAbsolute(named)) throw notBundled(`FIN_RESOURCES_DIR must be an absolute path, not ${named}`);
+    resources = named;
+  }
+  const paths = [join(resources, "codex", target, exe), ...(dev ? [join(deps.cacheRoot, deps.version, target, exe)] : [])];
+  for (const path of paths) {
     if (deps.exists(path)) return path;
   }
   throw notBundled(`no ${exe} for ${target}`);
