@@ -1,6 +1,7 @@
 //! The `command` profile on real processes: both example plugins pass it; a deliberately
 //! broken one (`tests/fixtures/broken`: an undeclared permission, a slow command, a crash, a
-//! leaky log) fails with the expected findings.
+//! leaky log) fails with the expected findings. The `hook` profile runs each declared hook
+//! handler of `tests/fixtures/hooked`, which the `command` profile ignores.
 //!
 //! The Node plugins run on `node` from `PATH` (or `FIN_PLUGIN_TEST_NODE`); the Rust example's
 //! binary is the workspace's build of `example-rust-tools` (built here when this test runs
@@ -324,5 +325,126 @@ fn fixture_file_and_refusals() {
         ("USAGE", &json!("8C"))
     );
     assert_eq!(Profile::parse("command"), Ok(Profile::Command));
+    assert_eq!(Profile::parse("hook"), Ok(Profile::Hook));
     assert!(PAGE_TITLE.contains("Finisher"));
+}
+
+fn hooked(profile: Profile) -> Report {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hooked");
+    let opts = Options {
+        profile,
+        node: node(),
+        ..Options::new(dir)
+    };
+    fin_plugin_test::run(&opts).unwrap_or_else(|e| panic!("{e}: {}", json!(e.details)))
+}
+
+#[test]
+fn command_profile_ignores_hooks() {
+    let r = hooked(Profile::Command);
+    assert!(r.ok, "{:?}", r.findings);
+    assert_eq!(r.commands.len(), 1);
+    assert_eq!(r.commands[0].warm.as_ref().unwrap().outcome, "data");
+    assert_eq!(r.commands[0].cold.as_ref().unwrap().outcome, "data");
+    assert!(r.hooks.is_empty());
+    assert!(r.calls.is_empty(), "no hook ran: {:?}", r.calls);
+}
+
+#[test]
+fn hook_profile_runs_each_declared_handler() {
+    let r = hooked(Profile::Hook);
+    let f = &r.findings;
+    let shown = serde_json::to_string_pretty(f).unwrap();
+    assert_eq!(r.profile, "hook");
+    assert!(!r.ok);
+    assert!(
+        r.commands.is_empty(),
+        "the commands are the command profile's"
+    );
+    let by: Vec<_> = r
+        .hooks
+        .iter()
+        .map(|h| (h.event.as_str(), h.handler.as_str(), h.timeout_s, h.reply))
+        .collect();
+    assert_eq!(
+        by,
+        [
+            ("PreCommand", "guard", 10, Some("block")),
+            ("PreCommand", "audit", 5, Some("context")),
+            ("PreCommand", "long-reason", 10, None),
+            ("PreCommand", "long-text", 10, None),
+            ("PreCommand", "edge", 10, Some("block")),
+            ("SessionStart", "note", 10, Some("allow")),
+            ("JobDone", "audit", 10, Some("context")),
+            ("PreMerge", "rewrite", 10, None),
+            ("PreMerge", "slow", 1, None),
+        ],
+        "{shown}"
+    );
+    // A sample request of the hook's own event, as the engine sends it (protocol v1).
+    assert_eq!(r.hooks[0].request["event"], json!("PreCommand"));
+    assert_eq!(r.hooks[0].request["v"], json!(1));
+    assert_eq!(
+        r.hooks[0].request["payload"]["command"],
+        json!("history list")
+    );
+    assert!(
+        r.hooks[6].request.get("session").is_none(),
+        "JobDone has no session"
+    );
+    // A host call inside a hook is answered and recorded under its handler.
+    assert!(
+        r.calls
+            .iter()
+            .any(|c| c.command == "guard" && c.method == "project.view" && c.code.is_none()),
+        "{:?}",
+        r.calls
+    );
+    // `modify` is no reply in v1; a slow handler times out.
+    assert!(
+        has(
+            f,
+            "reply",
+            "HOOK_REPLY_INVALID",
+            Some("rewrite"),
+            Some("warm")
+        ),
+        "{shown}"
+    );
+    assert!(
+        has(f, "answer", "PLUGIN_TIMEOUT", Some("slow"), Some("warm")),
+        "{shown}"
+    );
+    // Decision 2's limits, in UTF-8 bytes after control characters are stripped.
+    for (hook, field, bytes, max) in [
+        ("long-reason", "reason", 1025, 1024),
+        ("long-text", "text", 16385, 16384),
+    ] {
+        let x = f
+            .iter()
+            .find(|x| x.command.as_deref() == Some(hook) && x.phase == Some("warm"))
+            .unwrap_or_else(|| panic!("{hook}: {shown}"));
+        assert_eq!((x.check, x.code.as_str()), ("reply", "HOOK_REPLY_INVALID"));
+        assert_eq!(
+            x.details,
+            json!({ "reason": "tooLarge", "field": field, "bytes": bytes, "max": max })
+        );
+    }
+    assert_eq!(f.len(), 4, "{shown}");
+    // Only the handlers that passed warm run cold, and pass there too.
+    let cold: Vec<_> = r
+        .hooks
+        .iter()
+        .filter_map(|h| Some((h.handler.as_str(), h.cold.as_ref()?.outcome)))
+        .collect();
+    assert_eq!(
+        cold,
+        [
+            ("guard", "reply"),
+            ("audit", "reply"),
+            ("edge", "reply"),
+            ("note", "reply"),
+            ("audit", "reply")
+        ]
+    );
 }

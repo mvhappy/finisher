@@ -14,7 +14,7 @@
 //! the limits keep a resampler under about 30 MB. Anything else is `MEDIA_LIMIT` with
 //! `details {limit: "sampleRate" | "downsampleRatio", value, max}`.
 
-mod kernel;
+pub(crate) mod kernel;
 
 use fin_core::CoreError;
 use kernel::{Kernel, PHASES, dot};

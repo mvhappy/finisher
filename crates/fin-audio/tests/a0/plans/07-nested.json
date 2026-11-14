@@ -1,0 +1,622 @@
+{
+  "plan": {
+    "from": "0",
+    "items": [
+      {
+        "asset": "a1",
+        "from": "0",
+        "gain": [
+          {
+            "db": [
+              -9.0,
+              -9.0
+            ],
+            "from": "0",
+            "interp": {
+              "type": "hold"
+            },
+            "to": "5",
+            "u": [
+              0.0,
+              1.0
+            ]
+          }
+        ],
+        "item": "c1",
+        "pan": [
+          {
+            "from": "0",
+            "interp": {
+              "type": "hold"
+            },
+            "pan": [
+              0.0,
+              0.0
+            ],
+            "to": "5",
+            "u": [
+              0.0,
+              1.0
+            ]
+          }
+        ],
+        "sourceFrom": "0",
+        "speed": "1",
+        "to": "5",
+        "track": "t1"
+      },
+      {
+        "asset": "a2",
+        "effects": [
+          {
+            "id": "fx2",
+            "kind": "compressor",
+            "numbers": {
+              "attack": [
+                {
+                  "from": "1/2",
+                  "interp": {
+                    "type": "hold"
+                  },
+                  "to": "3",
+                  "u": [
+                    0.0,
+                    1.0
+                  ],
+                  "v": [
+                    5.0,
+                    5.0
+                  ]
+                }
+              ],
+              "knee": [
+                {
+                  "from": "1/2",
+                  "interp": {
+                    "type": "hold"
+                  },
+                  "to": "3",
+                  "u": [
+                    0.0,
+                    1.0
+                  ],
+                  "v": [
+                    6.0,
+                    6.0
+                  ]
+                }
+              ],
+              "makeup": [
+                {
+                  "from": "1/2",
+                  "interp": {
+                    "type": "hold"
+                  },
+                  "to": "3",
+                  "u": [
+                    0.0,
+                    1.0
+                  ],
+                  "v": [
+                    6.0,
+                    6.0
+                  ]
+                }
+              ],
+              "ratio": [
+                {
+                  "from": "1/2",
+                  "interp": {
+                    "type": "hold"
+                  },
+                  "to": "3",
+                  "u": [
+                    0.0,
+                    1.0
+                  ],
+                  "v": [
+                    4.0,
+                    4.0
+                  ]
+                }
+              ],
+              "release": [
+                {
+                  "from": "1/2",
+                  "interp": {
+                    "type": "hold"
+                  },
+                  "to": "3",
+                  "u": [
+                    0.0,
+                    1.0
+                  ],
+                  "v": [
+                    80.0,
+                    80.0
+                  ]
+                }
+              ],
+              "threshold": [
+                {
+                  "from": "1/2",
+                  "interp": {
+                    "type": "hold"
+                  },
+                  "to": "3",
+                  "u": [
+                    0.0,
+                    1.0
+                  ],
+                  "v": [
+                    -24.0,
+                    -24.0
+                  ]
+                }
+              ]
+            },
+            "values": {
+              "detector": "rms"
+            }
+          }
+        ],
+        "from": "1/2",
+        "gain": [
+          {
+            "db": [
+              -2.0,
+              -2.0
+            ],
+            "from": "1/2",
+            "interp": {
+              "type": "hold"
+            },
+            "shapes": [
+              {
+                "curve": "linear",
+                "kind": "fadeIn",
+                "p": [
+                  0.5,
+                  1.0
+                ]
+              }
+            ],
+            "to": "1",
+            "u": [
+              0.0,
+              1.0
+            ]
+          },
+          {
+            "db": [
+              -2.0,
+              -2.0
+            ],
+            "from": "1",
+            "interp": {
+              "type": "hold"
+            },
+            "to": "3",
+            "u": [
+              0.0,
+              1.0
+            ]
+          }
+        ],
+        "item": "c2",
+        "pan": [
+          {
+            "from": "1/2",
+            "interp": {
+              "type": "hold"
+            },
+            "pan": [
+              0.3,
+              0.3
+            ],
+            "to": "3",
+            "u": [
+              0.0,
+              1.0
+            ]
+          }
+        ],
+        "sourceFrom": "1/2",
+        "speed": "1",
+        "to": "3",
+        "track": "t1",
+        "via": [
+          "n1"
+        ]
+      },
+      {
+        "asset": "a1",
+        "effects": [
+          {
+            "id": "fx3",
+            "kind": "gate",
+            "numbers": {
+              "attack": [
+                {
+                  "from": "1",
+                  "interp": {
+                    "type": "hold"
+                  },
+                  "to": "4",
+                  "u": [
+                    0.0,
+                    1.0
+                  ],
+                  "v": [
+                    1.0,
+                    1.0
+                  ]
+                }
+              ],
+              "hold": [
+                {
+                  "from": "1",
+                  "interp": {
+                    "type": "hold"
+                  },
+                  "to": "4",
+                  "u": [
+                    0.0,
+                    1.0
+                  ],
+                  "v": [
+                    50.0,
+                    50.0
+                  ]
+                }
+              ],
+              "range": [
+                {
+                  "from": "1",
+                  "interp": {
+                    "type": "hold"
+                  },
+                  "to": "4",
+                  "u": [
+                    0.0,
+                    1.0
+                  ],
+                  "v": [
+                    -60.0,
+                    -60.0
+                  ]
+                }
+              ],
+              "release": [
+                {
+                  "from": "1",
+                  "interp": {
+                    "type": "hold"
+                  },
+                  "to": "4",
+                  "u": [
+                    0.0,
+                    1.0
+                  ],
+                  "v": [
+                    100.0,
+                    100.0
+                  ]
+                }
+              ],
+              "threshold": [
+                {
+                  "from": "1",
+                  "interp": {
+                    "type": "hold"
+                  },
+                  "to": "4",
+                  "u": [
+                    0.0,
+                    1.0
+                  ],
+                  "v": [
+                    -30.0,
+                    -30.0
+                  ]
+                }
+              ]
+            }
+          }
+        ],
+        "from": "1",
+        "gain": [
+          {
+            "db": [
+              -2.0,
+              -2.0
+            ],
+            "from": "1",
+            "interp": {
+              "type": "hold"
+            },
+            "to": "7/2",
+            "u": [
+              0.0,
+              1.0
+            ]
+          },
+          {
+            "db": [
+              -2.0,
+              -2.0
+            ],
+            "from": "7/2",
+            "interp": {
+              "type": "hold"
+            },
+            "shapes": [
+              {
+                "curve": "linear",
+                "kind": "fadeOut",
+                "p": [
+                  0.0,
+                  1.0
+                ]
+              }
+            ],
+            "to": "4",
+            "u": [
+              0.0,
+              1.0
+            ]
+          }
+        ],
+        "item": "c3",
+        "pan": [
+          {
+            "from": "1",
+            "interp": {
+              "type": "hold"
+            },
+            "pan": [
+              0.0,
+              0.0
+            ],
+            "to": "4",
+            "u": [
+              0.0,
+              1.0
+            ]
+          }
+        ],
+        "sourceFrom": "2",
+        "speed": "1",
+        "to": "4",
+        "track": "t2",
+        "via": [
+          "n1"
+        ]
+      }
+    ],
+    "timeline": "tl1",
+    "to": "5"
+  },
+  "project": {
+    "assets": {
+      "a1": {
+        "audio": {
+          "channels": 2,
+          "sampleRate": 48000
+        },
+        "duration": "600",
+        "fingerprint": "fp-a1",
+        "id": "a1",
+        "kind": "media",
+        "path": "a1.bin"
+      },
+      "a2": {
+        "audio": {
+          "channels": 1,
+          "sampleRate": 48000
+        },
+        "duration": "600",
+        "fingerprint": "fp-a2",
+        "id": "a2",
+        "kind": "media",
+        "path": "a2.bin"
+      }
+    },
+    "id": "p1",
+    "name": "A0",
+    "rate": "30",
+    "schemaVersion": 6,
+    "timelines": [
+      {
+        "id": "tl1",
+        "name": "tl1",
+        "rate": "30",
+        "resolution": {
+          "height": 1080,
+          "width": 1920
+        },
+        "tracks": [
+          {
+            "id": "t1",
+            "items": [
+              {
+                "asset": "a1",
+                "audio": {
+                  "gain": -9.0
+                },
+                "duration": "5",
+                "id": "c1",
+                "kind": "clip",
+                "sourceIn": "0",
+                "start": "0"
+              }
+            ],
+            "kind": "audio",
+            "name": "T1"
+          },
+          {
+            "gain": -2.0,
+            "id": "t2",
+            "items": [
+              {
+                "duration": "4",
+                "id": "n1",
+                "kind": "nested",
+                "sourceIn": "1/2",
+                "start": "1/2",
+                "timeline": "tl2"
+              }
+            ],
+            "kind": "audio",
+            "name": "T2"
+          }
+        ]
+      },
+      {
+        "id": "tl2",
+        "name": "tl2",
+        "rate": "30",
+        "resolution": {
+          "height": 1080,
+          "width": 1920
+        },
+        "tracks": [
+          {
+            "id": "t1",
+            "items": [
+              {
+                "asset": "a2",
+                "audio": {
+                  "fadeIn": "1",
+                  "pan": 0.3
+                },
+                "duration": "3",
+                "effects": [
+                  {
+                    "id": "fx2",
+                    "kind": "compressor",
+                    "params": {
+                      "attack": 5.0,
+                      "knee": 6.0,
+                      "makeup": 6.0,
+                      "ratio": 4.0,
+                      "release": 80.0,
+                      "threshold": -24.0
+                    }
+                  }
+                ],
+                "id": "c2",
+                "kind": "clip",
+                "sourceIn": "0",
+                "start": "0"
+              }
+            ],
+            "kind": "audio",
+            "name": "T1"
+          },
+          {
+            "id": "t2",
+            "items": [
+              {
+                "asset": "a1",
+                "audio": {
+                  "fadeOut": "1/2"
+                },
+                "duration": "3",
+                "effects": [
+                  {
+                    "id": "fx3",
+                    "kind": "gate",
+                    "params": {
+                      "range": -60.0,
+                      "threshold": -30.0
+                    }
+                  }
+                ],
+                "id": "c3",
+                "kind": "clip",
+                "sourceIn": "2",
+                "start": "1"
+              }
+            ],
+            "kind": "audio",
+            "name": "T2"
+          }
+        ]
+      }
+    ]
+  },
+  "range": [
+    "0",
+    "5"
+  ],
+  "sources": {
+    "a1": {
+      "l": [
+        {
+          "db": -3.0,
+          "kind": "pink",
+          "seed": 1
+        },
+        {
+          "db": -12.0,
+          "hz": 220.0,
+          "kind": "sine"
+        }
+      ],
+      "r": [
+        {
+          "db": -3.0,
+          "kind": "pink",
+          "seed": 2
+        },
+        {
+          "db": -12.0,
+          "hz": 330.0,
+          "kind": "sine"
+        }
+      ],
+      "secs": 8
+    },
+    "a2": {
+      "mono": [
+        {
+          "burst": 0.9,
+          "db": -6.0,
+          "hz": 180.0,
+          "kind": "burst",
+          "start": 0.25
+        },
+        {
+          "burst": 1.2,
+          "db": -18.0,
+          "hz": 240.0,
+          "kind": "burst",
+          "start": 1.5
+        },
+        {
+          "burst": 0.6,
+          "db": -10.0,
+          "hz": 6500.0,
+          "kind": "burst",
+          "start": 3.0
+        },
+        {
+          "burst": 1.5,
+          "db": -3.0,
+          "hz": 150.0,
+          "kind": "burst",
+          "start": 4.0
+        },
+        {
+          "db": -50.0,
+          "kind": "noise",
+          "seed": 3
+        }
+      ],
+      "secs": 8
+    }
+  },
+  "timeline": "tl1",
+  "what": "a nested timeline (compressor and gate clips, its own pan and fades) placed with an offset and track gain"
+}

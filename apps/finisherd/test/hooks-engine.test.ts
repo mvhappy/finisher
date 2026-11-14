@@ -481,9 +481,10 @@ describe("the kept index and shutdown (review of Task 4)", () => {
     const f = fixture();
     const config = new HookConfig({ serverData: f.serverData, trustOf: () => undefined, dirOf: () => f.dir, plugins: () => [{ plugin: "p", event: "PreMerge", handler: "h" }, { plugin: "p", event: "UserPrompt", handler: "u" }] });
     const e = engine(f, { config, plugins: { run: () => Promise.reject(new Error("plugin host gone")), digest: () => "d" } });
-    expect((await fire(e, "PreMerge")).blocked).toEqual({ hook: "h", reason: "failed", layer: "plugin" });
+    // A plugin handler is named `plugin:<id>/<handler>` (Task 10).
+    expect((await fire(e, "PreMerge")).blocked).toEqual({ hook: "plugin:p/h", reason: "failed", layer: "plugin" });
     expect((await fire(e, "UserPrompt")).blocked).toBeUndefined();
-    expect(f.notices.map((n) => n.notice)).toContainEqual({ hook: { event: "UserPrompt", id: "u", layer: "plugin", failed: "unavailable", detail: "plugin host gone" } });
+    expect(f.notices.map((n) => n.notice)).toContainEqual({ hook: { event: "UserPrompt", id: "plugin:p/u", layer: "plugin", failed: "unavailable", detail: "plugin host gone" } });
   });
 });
 

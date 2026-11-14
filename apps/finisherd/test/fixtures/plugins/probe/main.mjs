@@ -2,7 +2,10 @@
 // 5C's `fin-jobs` envelope by hand (NDJSON on stdin/stdout, `seq` from 1) as a worker of the
 // `plugin` family, and serves `test.echo` jobs whose `params.value.op` says what to report or
 // try (`command`: a `plugin.command` run's answer). `kinds.json` beside it, when present, replaces the kinds its `hello` names.
-import { readFileSync } from "node:fs";
+// `plugin.hook` jobs (7F Task 10) are served when `hooks.json` is beside it (its `hello` then
+// names `plugin.hook` v1): `{handlers: {<handler>: {reply?, sleepMs?, fail?, calls?}}}`, read at
+// each job (the package is readable to the process; a test sees what a handler got in its job).
+import { existsSync, readFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
 const warm = process.argv.includes("--warm");
@@ -12,6 +15,8 @@ let kinds = [
   { kind: "test.echo", version: 1 },
   { kind: "plugin.command", version: 1 },
 ];
+const HOOKS = new URL("./hooks.json", import.meta.url);
+if (existsSync(HOOKS)) kinds.push({ kind: "plugin.hook", version: 1 });
 try {
   kinds = JSON.parse(readFileSync(new URL("./kinds.json", import.meta.url), "utf8"));
 } catch {}
@@ -43,7 +48,29 @@ let memoryMarker;
 /** Marks a `run` answer that is the job's error, not its result. */
 const FAIL = Symbol("fail");
 
+/**
+ * A `plugin.hook` job: waits `sleepMs`, then answers the handler's `fail` (a `JobError`)
+ * or `reply` (as given: a `modify` too), or with `calls` a context of each host call's
+ * answer (`{value}` or `{error: code}`); `allow` by default.
+ */
+async function hook(job) {
+  const cfg = JSON.parse(readFileSync(HOOKS, "utf8"));
+  const h = cfg.handlers?.[job.params.handler] ?? {};
+  if (h.sleepMs) await new Promise((r) => setTimeout(r, h.sleepMs));
+  if (h.fail) return { [FAIL]: h.fail };
+  if (h.calls) {
+    const out = [];
+    for (const c of h.calls) {
+      const r = await call(c.method, c.params ?? {});
+      out.push(r.error === undefined ? { value: r.value === undefined ? null : "ok" } : { error: r.error.code });
+    }
+    return { reply: "context", text: JSON.stringify(out) };
+  }
+  return h.reply ?? { reply: "allow" };
+}
+
 async function run(job) {
+  if (job.kind === "plugin.hook") return hook(job);
   // `test.echo` carries the op in `value`, a `plugin.command` in its `args`.
   const v = job.params?.value ?? job.params?.args ?? {};
   switch (v.op) {

@@ -17,6 +17,9 @@
 // (`stats.ts`: calls, its jobs' timeouts and crashes, dropped log and stderr, egress) and
 // `plugin.command` through `onCommandRun` (`command-journal.ts`); `worker.exit` and
 // `plugin.exit` come from the job engine's sink (`jobs/journal-sink.ts`).
+//
+// Hook handlers (7F Task 10): `register` also registers the `plugin.hook` kind, which carries
+// this host's handlers (`hooks.ts`, bound to the engine at `bind`) for the hook engine.
 import { rmSync } from "node:fs";
 import { type FinError, isJobRights, type JobState, type JobView } from "@finisher/contracts";
 import { type Journal, validateManifest } from "@finisher/fin-node";
@@ -29,6 +32,8 @@ import type { ControlStore } from "../../control/db.ts";
 import { attemptJson, finError } from "../../errors.ts";
 import type { JobEngine } from "../../jobs/api.ts";
 import type { KindRegistry } from "../../jobs/kinds.ts";
+import { pluginHookKind } from "../../jobs/kinds/plugin.hook.ts";
+import { makePluginHooks } from "./hooks.ts";
 import { RETIRE_GRACE_MS } from "../../jobs/warm-worker.ts";
 import type { InstalledFull, PluginTables } from "../tables.ts";
 import { makeCrashLoop } from "./crash-loop.ts";
@@ -45,8 +50,11 @@ import { splitVia, storeDirOf } from "./program.ts";
 import type { JobRights, Permission, PluginContext } from "@finisher/core-types";
 import { type Invoker, rightsFor } from "./rights.ts";
 
-/** The host API a code plugin must accept to be enabled (sp8b Decision 14). */
-export const PLUGIN_HOST_API = "1.1.0";
+/**
+ * The host API a code plugin must accept to be enabled (sp8b Decision 14): 1.2 consumes hooks
+ * (7F Decision 20), in step with `fin_plugin_api::HOST_API`.
+ */
+export const PLUGIN_HOST_API = "1.2.0";
 
 /** What the lifecycle asks of the plugin processes. */
 export interface PluginHostHooks {
@@ -126,6 +134,13 @@ export function makePluginHost(d: PluginHostDeps) {
     const plugin = from.key !== undefined ? (keyPlugin(from.key).split("|")[0] ?? "") : (cold.get(from.job ?? "")?.plugin ?? "");
     pluginLog.stderr(from.key ?? `job:${from.job ?? ""}`, plugin, line);
   };
+
+  /** A job's rights (Tasks 9, 10): `invoker` ∩ `grants` under its class's generation now. */
+  const rightsOf = (invoker: Invoker, grants: ReadonlyArray<Permission>, sessionRoot?: string): JobRights => {
+    const cls = principalClass({ kind: invoker.kind, id: invoker.id }, rootSessionOf);
+    return rightsFor({ invoker, grants, class: cls, sessionRoot, generation: generations.of(cls) });
+  };
+  const pluginHooks = makePluginHooks({ serverData: d.serverData, tables: d.tables, rightsOf });
 
   const matcher = (id: string, version?: string) => (plugin: string) => (version === undefined ? plugin.startsWith(`${id}@`) : plugin === `${id}@${version}`);
 
@@ -286,8 +301,11 @@ export function makePluginHost(d: PluginHostDeps) {
       }
     });
 
-  return {
-    /** Registers the `plugin` family (before the engine starts) and empties the keys' temp (the authority data is swept at `bind`). */
+  const host = {
+    /**
+     * Registers the `plugin` family and the `plugin.hook` kind (before the engine starts) and
+     * empties the keys' temp (the authority data is swept at `bind`).
+     */
     register(r: KindRegistry): void {
       registerPluginFamily(r, {
         serverData: d.serverData,
@@ -301,6 +319,7 @@ export function makePluginHost(d: PluginHostDeps) {
         onCall: calls.onCall,
         onStderr,
       });
+      r.registerKind(pluginHookKind({ contextOf: (job, o) => host.contextOf(job, o), source: pluginHooks }));
     },
     /**
      * Bumps the classes' generations from the credentials and devices: a credential minted or
@@ -334,10 +353,9 @@ export function makePluginHost(d: PluginHostDeps) {
      * A command job's rights (Task 9): `invoker` ∩ `grants` under its class's generation now;
      * `sessionRoot` is an agent session's root branch.
      */
-    rightsOf(invoker: Invoker, grants: ReadonlyArray<Permission>, sessionRoot?: string): JobRights {
-      const cls = principalClass({ kind: invoker.kind, id: invoker.id }, rootSessionOf);
-      return rightsFor({ invoker, grants, class: cls, sessionRoot, generation: generations.of(cls) });
-    },
+    rightsOf,
+    /** The plugins' hook handlers (7F Task 10): the hook engine's plugin layer. */
+    pluginHooks,
     /** Serves host calls with `deps` (once the server's credentials, sessions and projects exist). */
     serve(deps: CallDeps): void {
       callDeps = deps;
@@ -387,6 +405,7 @@ export function makePluginHost(d: PluginHostDeps) {
      */
     bind(e: JobEngine): void {
       engine = e;
+      pluginHooks.bind(e);
       e.onDone((job) => {
         calls.release(job.id);
         cold.delete(job.id);
@@ -409,6 +428,7 @@ export function makePluginHost(d: PluginHostDeps) {
     },
     hooks: { stop, enabled: (id: string) => crashLoop.clear(id), confined: () => engine?.workers().caps.profiles.plugin === "enforced", enableCheck } satisfies PluginHostHooks,
   };
+  return host;
 }
 
 export type PluginHost = ReturnType<typeof makePluginHost>;

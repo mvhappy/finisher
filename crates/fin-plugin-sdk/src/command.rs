@@ -3,18 +3,34 @@
 
 use fin_jobs::JobError;
 use fin_plugin_api::protocol::errors::codes;
-use fin_plugin_api::protocol::{CommandOut, CommandRun, PluginError};
+use fin_plugin_api::protocol::{CommandOut, CommandRun, HookReply, PluginError};
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 
+use crate::hook::HookCall;
 use crate::host::Host;
 
 /// A plugin: one value per process, made with `Default` before `hello`, serving every command
-/// job the process gets (a warm process serves many, one at a time).
+/// and hook job the process gets (a warm process serves many, one at a time).
 pub trait Plugin: Default {
+    /// Whether the plugin has hook handlers (its manifest's `contributes.hooks`): `hello` then
+    /// announces `plugin.hook` v1 beside `plugin.command` v1, and hook jobs reach [`Plugin::hook`].
+    const HOOKS: bool = false;
+
     /// Runs the manifest command `call.name`. A name the plugin does not implement answers
-    /// [`CommandCall::unknown`].
-    fn command(&mut self, host: &Host, call: CommandCall) -> Result<CommandOut, PluginError>;
+    /// [`CommandCall::unknown`] (the default, for a plugin with hooks only).
+    fn command(&mut self, host: &Host, call: CommandCall) -> Result<CommandOut, PluginError> {
+        let _ = host;
+        Err(call.unknown())
+    }
+
+    /// Runs the manifest hook handler `call.handler` for `call.request`, dispatching by name as
+    /// commands do. A name the plugin does not implement answers [`HookCall::unknown`] (the
+    /// default). An error is a failed hook, which the host resolves by the event's `onTimeout`.
+    fn hook(&mut self, host: &Host, call: HookCall) -> Result<HookReply, PluginError> {
+        let _ = host;
+        Err(call.unknown())
+    }
 }
 
 /// A command run: the host has checked `args` against the command's schema and pinned `rev` to

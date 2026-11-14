@@ -8,6 +8,8 @@ const steps = [
   ["node", ["scripts/check-js-licenses.mjs"]],
   ["node", ["scripts/check-font-catalog.mjs"]],
   ["node", ["scripts/check-eval-floats.mjs"]],
+  // An A0 hash never moves without an AUDIO_VERSION bump (6C Task 11), over the whole history.
+  ["node", ["scripts/check-a0-history.mjs"]],
   ["node", ["scripts/check-wasm-deps.mjs"]],
   ["node", ["scripts/check-generated-types.mjs"]],
   // The exported command registry (7B Decision 1): regenerated with `fin schema --registry`.

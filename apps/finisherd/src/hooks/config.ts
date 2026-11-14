@@ -51,11 +51,13 @@ export const HOOKS_FILE = "finisher.hooks.json";
 /** The local layer's file in `<server-data>/projects/<id>/`. */
 export const LOCAL_HOOKS = "hooks.json";
 
-/** A hook a plugin contributes (Task 10 fills the port). */
+/** A hook a plugin contributes (Task 10: `plugins/host/hooks.ts`). */
 export interface PluginHookRow {
   readonly plugin: string;
   readonly event: HookEvent;
   readonly handler: string;
+  /** The manifest's `timeoutS` (default 10, at most 60). */
+  readonly timeoutS?: number;
 }
 
 /**
@@ -102,7 +104,9 @@ export interface ConfiguredHook {
   readonly dir?: string;
   /** The synthetic hook of an unreadable layer: it blocks. */
   readonly unreadable?: true;
+  /** A plugin handler's plugin id (`id` is then its handler) and its timeout. */
   readonly plugin?: string;
+  readonly timeoutS?: number;
 }
 
 export type ProjectHooksStatus = "none" | "trusted" | "untrusted" | "changed";
@@ -351,12 +355,13 @@ export function checkTrustedHooks(dir: string, projectId: string, expected: stri
 }
 
 /** What makes a configured hook the same hook: where it is declared, as it is configured, as resolved. */
-const hookKey = (h: ConfiguredHook) => JSON.stringify([h.layer, h.source, h.dir, h.id, h.event, h.spec, h.program, h.file, h.bound, h.plugin, h.unreadable]);
+const hookKey = (h: ConfiguredHook) => JSON.stringify([h.layer, h.source, h.dir, h.id, h.event, h.spec, h.program, h.file, h.bound, h.plugin, h.timeoutS, h.unreadable]);
 
 const inert = (event: HookEvent) => (event === "PreRender" || event === "PostRender" ? { inert: "noRenderKind" as const } : {});
 
 /** A configured hook as `agent.hooks.list` shows it. */
 export function listedHook(h: ConfiguredHook, applies: boolean): ListedHook {
+  const timeoutS = h.spec?.timeoutS ?? h.timeoutS;
   return {
     layer: h.layer,
     source: h.source,
@@ -370,7 +375,7 @@ export function listedHook(h: ConfiguredHook, applies: boolean): ListedHook {
     ...(h.spec?.file === undefined ? {} : { file: h.spec.file }),
     ...(h.spec?.principals === undefined ? {} : { principals: h.spec.principals }),
     ...(h.spec?.fin === undefined ? {} : { fin: h.spec.fin }),
-    ...(h.spec?.timeoutS === undefined ? {} : { timeoutS: h.spec.timeoutS }),
+    ...(timeoutS === undefined ? {} : { timeoutS }),
     ...(h.spec?.onTimeout === undefined ? {} : { onTimeout: h.spec.onTimeout }),
   };
 }
@@ -401,7 +406,7 @@ export class HookConfig {
     const rows = [...(this.#d.plugins?.() ?? [])];
     // By plugin id, then each plugin's own order (a stable sort keeps it).
     rows.sort((a, b) => (a.plugin < b.plugin ? -1 : a.plugin > b.plugin ? 1 : 0));
-    return rows.map((r) => ({ layer: "plugin", source: r.plugin, id: r.handler, event: r.event, plugin: r.plugin }));
+    return rows.map((r) => ({ layer: "plugin", source: r.plugin, id: r.handler, event: r.event, plugin: r.plugin, ...(r.timeoutS === undefined ? {} : { timeoutS: r.timeoutS }) }));
   }
 
   /** The folder of a project (open, else indexed). */

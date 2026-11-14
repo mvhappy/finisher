@@ -201,7 +201,7 @@ describe("enable and disable", () => {
     writeFileSync(join(dir, "messages", "en.json"), JSON.stringify({ "plugin.model.purpose": "A test model" }));
     writeFileSync(join(dir, "finisher-plugin.json"), JSON.stringify({ ...manifest, messages: "messages", locales: ["en"], models: [model] }));
     const e = await failure(r.s.h["plugin.enable"]({ id: ID }, as(CONSOLE)));
-    expect(e).toMatchObject({ code: "PLUGIN_CONTRIBUTION_UNSUPPORTED", details: { kind: "models", hostApi: "1.1.0" } });
+    expect(e).toMatchObject({ code: "PLUGIN_CONTRIBUTION_UNSUPPORTED", details: { kind: "models", hostApi: "1.2.0" } });
     const other = process.platform === "win32" ? "linux-x64" : "win32-x64";
     writeFileSync(join(dir, "finisher-plugin.json"), JSON.stringify({ ...manifest, platforms: [other] }));
     expect(await codeOf(r.s.h["plugin.enable"]({ id: ID }, as(CONSOLE)))).toBe("PLUGIN_PLATFORM");

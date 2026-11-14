@@ -1,0 +1,94 @@
+{
+  "manifestVersion": 1,
+  "id": "@example/hooked-tools",
+  "version": "0.1.0",
+  "kind": "code",
+  "hostApi": "^1.2",
+  "license": "MIT",
+  "publisher": {
+    "name": "Finisher tests"
+  },
+  "platforms": [
+    "darwin-arm64",
+    "linux-x64",
+    "linux-arm64",
+    "win32-x64"
+  ],
+  "runtime": {
+    "type": "node",
+    "main": "main.mjs",
+    "node": ">=24.22"
+  },
+  "permissions": [
+    {
+      "perm": "project:read"
+    },
+    {
+      "perm": "hooks:observe",
+      "hooks": [
+        "PreCommand",
+        "PreMerge",
+        "SessionStart",
+        "JobDone"
+      ]
+    }
+  ],
+  "messages": "messages",
+  "locales": [
+    "en"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "name": "echo",
+        "title": "commands.echo",
+        "writes": false,
+        "args": {
+          "type": "object",
+          "properties": {},
+          "additionalProperties": false
+        }
+      }
+    ],
+    "hooks": [
+      {
+        "event": "PreCommand",
+        "handler": "guard"
+      },
+      {
+        "event": "PreCommand",
+        "handler": "audit",
+        "timeoutS": 5
+      },
+      {
+        "event": "PreCommand",
+        "handler": "long-reason"
+      },
+      {
+        "event": "PreCommand",
+        "handler": "long-text"
+      },
+      {
+        "event": "PreCommand",
+        "handler": "edge"
+      },
+      {
+        "event": "SessionStart",
+        "handler": "note"
+      },
+      {
+        "event": "JobDone",
+        "handler": "audit"
+      },
+      {
+        "event": "PreMerge",
+        "handler": "rewrite"
+      },
+      {
+        "event": "PreMerge",
+        "handler": "slow",
+        "timeoutS": 1
+      }
+    ]
+  }
+}

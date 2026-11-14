@@ -15,7 +15,13 @@ export {
   type CommandHandler,
   type CommandResult,
   definePlugin,
+  HOOK_KIND,
+  HOOK_KIND_VERSION,
+  type HookHandler,
+  type HookResult,
   type PluginDefinition,
   runPlugin,
   toCommandOut,
+  toHookOut,
 } from "./runtime.ts";
+export type { HookReply, HookRequest } from "@finisher/core-types";

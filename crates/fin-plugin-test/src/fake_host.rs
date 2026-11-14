@@ -1,8 +1,9 @@
 //! The fake host: starts plugin processes, checks their `hello`, runs `plugin.command` v1 jobs
 //! as the real host does (the args checked against the schema before a job exists, a
 //! [`PluginContext`] in `start.extra`, a [`CommandRun`] in `params` at the fixture's rev under
-//! a held-snapshot handle), answers their calls through [`Calls`], cancels, and records every
-//! call and every call that should not have been made.
+//! a held-snapshot handle) and `plugin.hook` v1 jobs (a [`HookRun`] in `params`), answers their
+//! calls through [`Calls`], cancels, and records every call and every call that should not have
+//! been made.
 
 use std::time::{Duration, Instant};
 
@@ -10,8 +11,8 @@ use fin_jobs::{
     Dirs, Hello, HostMsg, JobError, KindVersion, Limits, Role, Start, StartJob, WorkerMsg,
 };
 use fin_plugin_api::protocol::{
-    COMMAND_KIND, COMMAND_KIND_VERSION, CallLimits, CommandRun, MAX_MESSAGE_BYTES, PluginContext,
-    PluginDirs, PluginRefFull,
+    COMMAND_KIND, COMMAND_KIND_VERSION, CallLimits, CommandRun, HOOK_KIND, HOOK_KIND_VERSION,
+    HookRequest, HookRun, MAX_MESSAGE_BYTES, PluginContext, PluginDirs, PluginRefFull,
 };
 use fin_plugin_api::schema_subset::CompiledArgs;
 use serde_json::{Value, json};
@@ -54,12 +55,23 @@ pub struct JobRun {
     pub cancel_ignored: bool,
 }
 
-/// One command job to run.
+/// What a job runs.
+pub enum JobBody<'a> {
+    /// A `plugin.command` v1 job. The command's schema: the host checks `args` with it before
+    /// anything is sent.
+    Command {
+        schema: &'a CompiledArgs,
+        args: Value,
+    },
+    /// A `plugin.hook` v1 job calling the handler [`Job::command`] names.
+    Hook { request: HookRequest },
+}
+
+/// One command or hook job to run.
 pub struct Job<'a> {
+    /// The command's name, or the hook's handler (in the records and findings).
     pub command: &'a str,
-    /// The command's schema: the host checks `args` with it before anything is sent.
-    pub schema: &'a CompiledArgs,
-    pub args: Value,
+    pub body: JobBody<'a>,
     /// When the job was submitted, if before now: the process it runs on was started for it
     /// (the real host counts a command's timeout from the submit, the process start included).
     pub submitted: Option<Instant>,
@@ -77,7 +89,7 @@ pub struct FakeHost<'a> {
     pub records: Vec<CallRecord>,
     /// Calls that should not have been made, as findings.
     pub violations: Vec<Finding>,
-    /// Every `start` sent: (command, args).
+    /// Every command `start` sent: (command, args).
     pub sent: Vec<(String, Value)>,
     next_job: u64,
 }
@@ -178,7 +190,10 @@ impl<'a> FakeHost<'a> {
         };
         match problem {
             Some(m) => Err(("PLUGIN_PROTOCOL", m)),
-            None => Ok(h),
+            None => {
+                p.hello_kinds = h.kinds.clone();
+                Ok(h)
+            }
         }
     }
 
@@ -196,21 +211,35 @@ impl<'a> FakeHost<'a> {
 
     fn start_msg(&self, id: &str, job: &Job<'_>) -> HostMsg {
         let snapshot = self.calls.snapshot();
-        let run = CommandRun {
-            command: job.command.into(),
-            args: job.args.clone(),
-            project: snapshot.project.id.clone(),
-            branch: "main".into(),
-            rev: snapshot.rev,
-            snapshot: Some(format!("held-{id}")),
+        let (kind, kind_version, params) = match &job.body {
+            JobBody::Command { args, .. } => {
+                let run = CommandRun {
+                    command: job.command.into(),
+                    args: args.clone(),
+                    project: snapshot.project.id.clone(),
+                    branch: "main".into(),
+                    rev: snapshot.rev,
+                    snapshot: Some(format!("held-{id}")),
+                };
+                let params = serde_json::to_value(run).expect("a command run serialises");
+                (COMMAND_KIND, COMMAND_KIND_VERSION, params)
+            }
+            JobBody::Hook { request } => {
+                let run = HookRun {
+                    handler: job.command.into(),
+                    request: request.clone(),
+                };
+                let params = serde_json::to_value(run).expect("a hook run serialises");
+                (HOOK_KIND, HOOK_KIND_VERSION, params)
+            }
         };
         let timeout_s = u16::try_from(job.timeout.as_secs()).unwrap_or(u16::MAX);
         HostMsg::Start(Start {
             job: StartJob {
                 id: id.into(),
-                kind: COMMAND_KIND.into(),
-                kind_version: COMMAND_KIND_VERSION,
-                params: serde_json::to_value(run).expect("a command run serialises"),
+                kind: kind.into(),
+                kind_version,
+                params,
                 checkpoint: None,
                 attempt: 1,
                 extra: Some(
@@ -304,13 +333,19 @@ impl<'a> FakeHost<'a> {
             }
         };
         // Arguments outside the schema never reach the plugin.
-        if let Err(e) = Self::check_args(job.schema, &job.args) {
+        if let JobBody::Command { schema, args } = &job.body
+            && let Err(e) = Self::check_args(schema, args)
+        {
             return done(Ended::Error(e), None);
         }
         self.calls.start_job(job.command, job.phase);
         let msg = self.start_msg(&id, job);
         match p.send(&msg) {
-            Sent::Ok => self.sent.push((job.command.into(), job.args.clone())),
+            Sent::Ok => {
+                if let JobBody::Command { args, .. } = &job.body {
+                    self.sent.push((job.command.into(), args.clone()));
+                }
+            }
             Sent::Gone => {
                 let code = p.wait_exit(Duration::from_secs(1)).and_then(|s| s.code());
                 return done(Ended::Crashed(code), None);

@@ -1348,6 +1348,27 @@ export type TrainingState = "on" | "off" | "undecided";
  */
 export type ContainerKind = "mp4" | "mov" | "webm" | "matroska";
 /**
+ * An event a hook can subscribe to (arch §10 without `PreOp`/`PostOp`, spec §9.1).
+ * `PreRender` and `PostRender` are accepted and inert until a render job kind exists.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "HookEvent".
+ */
+export type HookEvent =
+  | "SessionStart"
+  | "SessionEnd"
+  | "UserPrompt"
+  | "PreCommand"
+  | "PostCommand"
+  | "BranchReady"
+  | "PreMerge"
+  | "PostMerge"
+  | "PreRender"
+  | "PostRender"
+  | "JobDone"
+  | "Approval"
+  | "Notification";
+/**
  * Every key of spec §4.2, consumed or not.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -1830,27 +1851,6 @@ export type HelloRole = "worker" | "helper";
  * via the `definition` "PlacementOutcome".
  */
 export type PlacementOutcome = "clean" | "relocated" | "conflict";
-/**
- * An event a hook can subscribe to (arch §10 without `PreOp`/`PostOp`, spec §9.1).
- * `PreRender` and `PostRender` are accepted and inert until a render job kind exists.
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "HookEvent".
- */
-export type HookEvent =
-  | "SessionStart"
-  | "SessionEnd"
-  | "UserPrompt"
-  | "PreCommand"
-  | "PostCommand"
-  | "BranchReady"
-  | "PreMerge"
-  | "PostMerge"
-  | "PreRender"
-  | "PostRender"
-  | "JobDone"
-  | "Approval"
-  | "Notification";
 /**
  * A hook's answer (Decision 2): one JSON object on stdout, or a `plugin.hook` job's result.
  *
@@ -5767,6 +5767,7 @@ export interface Contributes {
   captionStyles?: CaptionStyleContribution[];
   commands?: CommandContribution[];
   fontCatalogs?: FontCatalogContribution[];
+  hooks?: HookContribution[];
 }
 /**
  * A font catalog file (`fin_fonts::FontCatalog` JSON) whose entries join the server's
@@ -5777,6 +5778,29 @@ export interface Contributes {
  */
 export interface FontCatalogContribution {
   file: string;
+}
+/**
+ * A hook handler (agent §9; 7F Decision 20), run through a `plugin.hook` v1 job in the
+ * hook engine's `plugin` layer. Consumed from host API 1.2.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "HookContribution".
+ */
+export interface HookContribution {
+  /**
+   * Needs `hooks:observe` naming it.
+   */
+  event: HookEvent;
+  /**
+   * `[a-z][a-z0-9-]{0,63}`: the name the SDK dispatches on (`HookRun.handler`); one plugin
+   * lists each `(event, handler)` once.
+   */
+  handler: string;
+  /**
+   * Seconds, 1 to 60; 10 when absent. A failure or timeout follows the event's default
+   * `onTimeout` (a plugin cannot loosen `PreMerge`).
+   */
+  timeoutS?: number;
 }
 /**
  * A structured, machine-readable error. `code` is a stable `SCREAMING_SNAKE` string.
@@ -6922,17 +6946,6 @@ export interface Landed {
   before?: string;
   frame?: number;
   track: string;
-}
-/**
- * A hook handler (agent §9). Typed now; consumable once 7F's hook engine lands (8B
- * Decision 20), refused as `PLUGIN_CONTRIBUTION_UNSUPPORTED` until then.
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "HookContribution".
- */
-export interface HookContribution {
-  event: string;
-  handler: string;
 }
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema

@@ -5,9 +5,11 @@
 //! of that envelope over `fin_jobs::worker` (Decision 21): `hello` with `v` 1, the SDK's
 //! [`MINOR`] and no `envelope` hash; the job loop; `ready` after each job when started with a
 //! trailing `--warm` (a cold process exits 0 after its job); `alive`; cancel; and a host message
-//! of an unknown type (a newer host) dropped, never fatal. Each job is a `plugin.command` v1
-//! run: its params are a [`CommandRun`](fin_plugin_api::protocol::CommandRun), its
-//! `start.extra` the [`PluginContext`], its result a [`CommandOut`].
+//! of an unknown type (a newer host) dropped, never fatal. A job is a `plugin.command` v1 run
+//! (params a [`CommandRun`](fin_plugin_api::protocol::CommandRun), result a [`CommandOut`]) or,
+//! for a plugin with [`Plugin::HOOKS`], a `plugin.hook` v1 run (params a
+//! [`HookRun`](fin_plugin_api::protocol::HookRun), result a [`HookReply`]; 7F Decision 20); its
+//! `start.extra` is the [`PluginContext`].
 //!
 //! Typed host calls (`project.snapshot` with its pages joined, `project.view`, `net.fetch` with
 //! its body read through `net.read`, `log`) are [`Host`]'s methods. Plugins propose
@@ -43,6 +45,7 @@
 pub mod command;
 #[cfg(feature = "files")]
 pub mod files;
+pub mod hook;
 pub mod host;
 mod macros;
 pub mod prelude;
@@ -51,7 +54,10 @@ pub mod runtime;
 pub use command::{CommandCall, Plugin};
 pub use fin_plugin_api::protocol::calls::{Header, HttpMethod, HttpRequest, LogLevel as Level};
 pub use fin_plugin_api::protocol::errors::codes;
-pub use fin_plugin_api::protocol::{CommandOut, PluginContext, PluginError};
+pub use fin_plugin_api::protocol::{
+    CommandOut, HookEvent, HookReply, HookRequest, PluginContext, PluginError,
+};
+pub use hook::HookCall;
 pub use host::{Host, HttpResponse, http_get};
 
 /// Re-exported so a plugin builds ops and reads snapshots without its own dependency.

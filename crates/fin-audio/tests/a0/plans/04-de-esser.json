@@ -1,0 +1,239 @@
+{
+  "plan": {
+    "from": "0",
+    "items": [
+      {
+        "asset": "a3",
+        "effects": [
+          {
+            "id": "fx4",
+            "kind": "deEsser",
+            "numbers": {
+              "frequency": [
+                {
+                  "from": "0",
+                  "interp": {
+                    "type": "hold"
+                  },
+                  "to": "4",
+                  "u": [
+                    0.0,
+                    1.0
+                  ],
+                  "v": [
+                    6000.0,
+                    6000.0
+                  ]
+                }
+              ],
+              "q": [
+                {
+                  "from": "0",
+                  "interp": {
+                    "type": "hold"
+                  },
+                  "to": "4",
+                  "u": [
+                    0.0,
+                    1.0
+                  ],
+                  "v": [
+                    2.0,
+                    2.0
+                  ]
+                }
+              ],
+              "range": [
+                {
+                  "from": "0",
+                  "interp": {
+                    "type": "hold"
+                  },
+                  "to": "4",
+                  "u": [
+                    0.0,
+                    1.0
+                  ],
+                  "v": [
+                    12.0,
+                    12.0
+                  ]
+                }
+              ],
+              "ratio": [
+                {
+                  "from": "0",
+                  "interp": {
+                    "type": "hold"
+                  },
+                  "to": "4",
+                  "u": [
+                    0.0,
+                    1.0
+                  ],
+                  "v": [
+                    6.0,
+                    6.0
+                  ]
+                }
+              ],
+              "threshold": [
+                {
+                  "from": "0",
+                  "interp": {
+                    "type": "hold"
+                  },
+                  "to": "4",
+                  "u": [
+                    0.0,
+                    1.0
+                  ],
+                  "v": [
+                    -30.0,
+                    -30.0
+                  ]
+                }
+              ]
+            }
+          }
+        ],
+        "from": "0",
+        "gain": [
+          {
+            "db": [
+              0.0,
+              0.0
+            ],
+            "from": "0",
+            "interp": {
+              "type": "hold"
+            },
+            "to": "4",
+            "u": [
+              0.0,
+              1.0
+            ]
+          }
+        ],
+        "item": "c1",
+        "pan": [
+          {
+            "from": "0",
+            "interp": {
+              "type": "hold"
+            },
+            "pan": [
+              0.0,
+              0.0
+            ],
+            "to": "4",
+            "u": [
+              0.0,
+              1.0
+            ]
+          }
+        ],
+        "sourceFrom": "0",
+        "speed": "1",
+        "to": "4",
+        "track": "t1"
+      }
+    ],
+    "timeline": "tl1",
+    "to": "4"
+  },
+  "project": {
+    "assets": {
+      "a3": {
+        "audio": {
+          "channels": 1,
+          "sampleRate": 48000
+        },
+        "duration": "600",
+        "fingerprint": "fp-a3",
+        "id": "a3",
+        "kind": "media",
+        "path": "a3.bin"
+      }
+    },
+    "id": "p1",
+    "name": "A0",
+    "rate": "30",
+    "schemaVersion": 6,
+    "timelines": [
+      {
+        "id": "tl1",
+        "name": "tl1",
+        "rate": "30",
+        "resolution": {
+          "height": 1080,
+          "width": 1920
+        },
+        "tracks": [
+          {
+            "id": "t1",
+            "items": [
+              {
+                "asset": "a3",
+                "duration": "4",
+                "effects": [
+                  {
+                    "id": "fx4",
+                    "kind": "deEsser",
+                    "params": {
+                      "frequency": 6000.0,
+                      "ratio": 6.0,
+                      "threshold": -30.0
+                    }
+                  },
+                  {
+                    "enabled": false,
+                    "id": "fx9",
+                    "kind": "gate",
+                    "params": {
+                      "threshold": -10.0
+                    }
+                  }
+                ],
+                "id": "c1",
+                "kind": "clip",
+                "sourceIn": "0",
+                "start": "0"
+              }
+            ],
+            "kind": "audio",
+            "name": "T1"
+          }
+        ]
+      }
+    ]
+  },
+  "range": [
+    "0",
+    "4"
+  ],
+  "sources": {
+    "a3": {
+      "mono": [
+        {
+          "db": -20.0,
+          "kind": "noise",
+          "seed": 5
+        },
+        {
+          "db": -8.0,
+          "hz": 7000.0,
+          "kind": "sine"
+        },
+        {
+          "db": -10.0,
+          "hz": 200.0,
+          "kind": "sine"
+        }
+      ],
+      "secs": 8
+    }
+  },
+  "timeline": "tl1",
+  "what": "a de-esser on hiss and a 7 kHz tone, with a disabled gate left out"
+}
