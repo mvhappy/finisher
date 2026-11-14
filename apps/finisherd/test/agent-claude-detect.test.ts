@@ -24,7 +24,7 @@ import {
   resolveClaudePath,
   signinCommands,
 } from "../src/agent/claude/detect.ts";
-import { accountCheck, accountKey } from "../src/agent/claude/account.ts";
+import { accountCheck, accountKey } from "../src/agent/cli/account.ts";
 import type { SessionSandboxDeps } from "../src/agent/sandbox.ts";
 import { readAgentSettings } from "../src/agent/settings.ts";
 import { runConsole } from "../src/console/main.ts";

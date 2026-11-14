@@ -103,7 +103,7 @@ export interface RuntimeJournal {
   toolCall(r: { session: Session; runId: string; callId: string; providerId: string; tool: string; input: unknown }): void;
   /**
    * A result; `synthetic` for one recovery or an interrupt wrote. `ambiguous`: txIds matched to
-   * this call among others (a CLI shell's, `claude/attribution.ts`), listed beside its own.
+   * this call among others (a CLI shell's, `cli/attribution.ts`), listed beside its own.
    */
   toolResult(r: { sessionId: string; runId: string; callId: string; ok: boolean; output: unknown; synthetic: boolean; ambiguous?: readonly string[] }): void;
   /** An approval opened, answered or expired (`agent.approval` records the decisions). */

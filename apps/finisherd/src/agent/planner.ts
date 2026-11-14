@@ -25,7 +25,7 @@ import type { Harness, Mode, Principal, Session, Weights } from "@finisher/contr
 import { finError } from "../errors.ts";
 import type { Catalogue } from "./catalogue/catalogue.ts";
 import { OPENROUTER_ID } from "./catalogue/prices.ts";
-import { accountChanged } from "./claude/account.ts";
+import { accountChanged } from "./cli/account.ts";
 import { type ClaudeAccess, claudeModelOffered } from "./claude/models.ts";
 import { budgetFor, MODE_RANK, type Role, roleModel, roleUnknown } from "./roles.ts";
 import { harnessUnknown, type SessionPlan, type SessionPlanner, type StartRequest } from "./runtime-deps.ts";

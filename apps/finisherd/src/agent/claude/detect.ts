@@ -33,7 +33,8 @@ import type { Capabilities } from "../adapter.ts";
 import { openHostSandbox, type SandboxedChild, type SessionSandbox, type SessionSandboxDeps } from "../sandbox.ts";
 import { type ClaudeCodeSettings, claudeCodeSettings } from "../settings.ts";
 import { installTreeRead } from "./install.ts";
-import { accountChanged, accountCheck, accountIdentified, accountKey, accountProblem, ClaudeAccounts, labelOfOutput } from "./account.ts";
+import { accountChanged, accountCheck, accountIdentified, accountKey, accountProblem, accountsOf } from "../cli/account.ts";
+import { labelOfOutput } from "./account.ts";
 
 /**
  * The lowest supported version (Decision 9): at least 2.1.314 (the `--setting-sources` leak fix)
@@ -438,8 +439,8 @@ export function claudeProviderInfo(deps: ClaudeDetectDeps): Effect.Effect<Provid
         let problem = d.problem;
         let waiting: string | undefined;
         try {
-          const seen = d.accountHash === undefined ? undefined : new ClaudeAccounts(deps.sandbox.serverData).record(d.accountHash, d.authMethod);
-          waiting = seen?.changed === true ? seen.hash : new ClaudeAccounts(deps.sandbox.serverData).pending();
+          const seen = d.accountHash === undefined ? undefined : accountsOf(deps.sandbox.serverData, "claudeCode").record(d.accountHash, d.authMethod);
+          waiting = seen?.changed === true ? seen.hash : accountsOf(deps.sandbox.serverData, "claudeCode").pending();
           if (waiting !== undefined) problem = accountChanged(waiting);
         } catch (e) {
           problem = e as FinError;
