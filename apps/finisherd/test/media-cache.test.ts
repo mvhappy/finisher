@@ -20,6 +20,13 @@ import { person } from "./support/person.ts";
 let tmp: string;
 let serverData: string;
 let server: RunningServer | undefined;
+/** Caches a test opened itself: closed before the folder goes (Windows keeps an open index). */
+const opened: MediaCache[] = [];
+const open = async (capBytes?: number): Promise<MediaCache> => {
+  const c = await MediaCache.open(serverData, capBytes);
+  opened.push(c);
+  return c;
+};
 
 beforeEach(() => {
   tmp = realpathSync(mkdtempSync(join(tmpdir(), "fin-media-cache-")));
@@ -30,6 +37,7 @@ beforeEach(() => {
 afterEach(async () => {
   await server?.stop();
   server = undefined;
+  for (const c of opened.splice(0)) await c.close();
   rmSync(tmp, { recursive: true, force: true });
 });
 
@@ -107,7 +115,7 @@ describe("media.cacheMaxGiB", () => {
 
 describe("MediaCache over napi", () => {
   test("a commit is checked, moved and indexed; the key JS computes is the one Rust recomputes", async () => {
-    const cache = await MediaCache.open(serverData);
+    const cache = await open();
     expect(cache.openReport()).toEqual({ adopted: 0, deleted: 0, dropped: 0, indexReplaced: false, warnings: [] });
     const [out, key] = job("fp1");
     const meta = await cache.commit(out, key, ["p1"]);
@@ -139,7 +147,7 @@ describe("MediaCache over napi", () => {
   });
 
   test("a full volume is CACHE_IO {freeBytes} (exit 5) and moves nothing", async () => {
-    const cache = await MediaCache.open(serverData);
+    const cache = await open();
     const [out, key] = job("fp1");
     await cache.setFaultsForTest({ freeBytes: 4096 });
     const e = await cache.commit(out, key, []).catch((x: unknown) => x as { code: string; details: Record<string, unknown> });
@@ -150,18 +158,32 @@ describe("MediaCache over napi", () => {
   });
 
   test("a crash between the rename and the insert: the next open adopts the entry", async () => {
-    const first = await MediaCache.open(serverData);
+    const first = await open();
     const [out, key] = job("fp1");
     await first.setFaultsForTest({ stopAfterRename: true });
     await expect(first.commit(out, key, [])).rejects.toMatchObject({ code: "INTERNAL" });
     expect(await first.lookup(key)).toBeNull();
-    const next = await MediaCache.open(serverData);
+    const next = await open();
     expect(next.openReport()).toMatchObject({ adopted: 1, deleted: 0 });
     expect((await next.lookup(key))?.key).toBe(key);
     // Adopted entries serve no project until a commit or a hit's `serve` names one.
     expect(await next.projectsOf(key)).toEqual([]);
     expect(await next.serve(key, ["p1"])).toBe(true);
     expect(await next.projectsOf(key)).toEqual(["p1"]);
+  });
+
+  test("close waits for the calls before it, releases the index and refuses the calls after it", async () => {
+    const cache = await open();
+    const [out, key] = job("fp1");
+    const committed = cache.commit(out, key, []);
+    await cache.close();
+    expect((await committed).key).toBe(key);
+    await expect(cache.status()).rejects.toMatchObject({ code: "CACHE_IO", details: { reason: "io" } });
+    await expect(cache.lookup(key)).rejects.toMatchObject({ code: "CACHE_IO" });
+    await cache.close();
+    // Nothing holds the index (Windows refuses to delete an open SQLite file), and it reopens.
+    rmSync(join(serverData, "cache"), { recursive: true });
+    expect((await (await open()).status()).entries).toBe(0);
   });
 });
 
@@ -209,6 +231,13 @@ describe("the service", () => {
     await Effect.runPromise(Scope.close(scope, Exit.void));
   });
 
+  test("closing the scope closes the cache", async () => {
+    const { cache, scope } = await service();
+    expect((await cache.status()).entries).toBe(0);
+    await Effect.runPromise(Scope.close(scope, Exit.void));
+    await expect(cache.status()).rejects.toMatchObject({ code: "CACHE_IO", details: { reason: "io" } });
+  });
+
   test("a cache that cannot open leaves the service up: logged, every call CACHE_IO", async () => {
     // `cache/media` is a file: the directory cannot be made.
     mkdirSync(join(serverData, "cache"));
@@ -251,7 +280,7 @@ describe("the RPCs on a running server", () => {
     await server.stop();
 
     // While the server is down: an entry serving the project, and a 3 GiB cap.
-    const offline = await MediaCache.open(serverData);
+    const offline = await open();
     const [out, key] = job("fp1");
     await offline.commit(out, key, [projectId]);
     const [out2, key2] = job("fp2");

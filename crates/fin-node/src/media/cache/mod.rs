@@ -19,6 +19,10 @@
 //! - `attachPcm(inDir, holder, projects)` lists, in a `media.listen` job's manifest, the `pcm48`
 //!   entry of each asset's fingerprint, likewise pinned and serving (`pcm.rs`, 6C Task 21).
 //!
+//! - `close()` runs after every call before it and drops the index (`index.db`), so a stopped
+//!   server holds no file in the cache (Windows cannot delete an open SQLite file); every call
+//!   after it rejects with `CACHE_IO {reason: io}`. A garbage-collected cache closes the same way.
+//!
 //! Eviction runs after each commit (here) and every 10 minutes (finisherd's timer calls `gc`).
 
 mod adopt;
@@ -51,7 +55,8 @@ const LISTED_TIERS: &[ProxyTier] = &[ProxyTier::Preview];
 /// The server's media cache (module docs).
 #[napi]
 pub struct MediaCache {
-    cache: Arc<Mutex<Cache>>,
+    /// `None` once closed.
+    cache: Arc<Mutex<Option<Cache>>>,
     worker: Worker,
     root: PathBuf,
     report: String,
@@ -84,7 +89,7 @@ impl MediaCache {
             let done = guarded(
                 || {
                     let mut c = cache.lock().unwrap_or_else(|p| p.into_inner());
-                    f(&mut c).map_err(reject)
+                    f(c.as_mut().ok_or_else(closed)?).map_err(reject)
                 },
                 || {},
             );
@@ -95,6 +100,14 @@ impl MediaCache {
         }))?;
         Ok(promise)
     }
+}
+
+/// `CACHE_IO {reason: io}`: a call after `close`.
+fn closed() -> napi::Error {
+    reject(
+        CoreError::new("CACHE_IO", "the media cache is closed")
+            .with_details(json!({ "reason": "io" })),
+    )
 }
 
 fn json_of(value: &impl serde::Serialize) -> std::result::Result<String, CoreError> {
@@ -136,7 +149,7 @@ pub fn media_cache_open<'e>(
             Ok((cache, report)) => deferred.resolve(move |_env| {
                 Ok(MediaCache {
                     root: cache.root().to_path_buf(),
-                    cache: Arc::new(Mutex::new(cache)),
+                    cache: Arc::new(Mutex::new(Some(cache))),
                     worker: keep,
                     report,
                 })
@@ -153,6 +166,20 @@ impl MediaCache {
     #[napi(catch_unwind)]
     pub fn open_report(&self) -> String {
         self.report.clone()
+    }
+
+    /// Closes the cache once every call before it is done: the index is dropped and every call
+    /// after it rejects with `CACHE_IO {reason: io}`. Closing again does nothing.
+    #[napi(catch_unwind, ts_return_type = "Promise<void>")]
+    pub fn close<'e>(&self, env: &'e Env) -> Result<Object<'e>> {
+        let (deferred, promise) = env.create_deferred::<(), _>()?;
+        let cache = self.cache.clone();
+        self.worker.submit(Box::new(move || {
+            let dropped = cache.lock().unwrap_or_else(|p| p.into_inner()).take();
+            drop(dropped);
+            deferred.resolve(|_env| Ok(()));
+        }))?;
+        Ok(promise)
     }
 
     /// The directory of the entry `key` (whether or not it exists); `null` for a malformed key.

@@ -64,8 +64,8 @@ export interface MediaCacheOptions {
 }
 
 /**
- * Opens the cache with the cap of `settings.json` and starts the eviction timer (stopped with the
- * scope). A cache that does not open is logged and the service answers `CACHE_IO` (never fails).
+ * Opens the cache with the cap of `settings.json` and starts the eviction timer (both closed with
+ * the scope). A cache that does not open is logged and the service answers `CACHE_IO` (never fails).
  */
 export function makeMediaCache(serverData: string, options: MediaCacheOptions = {}): Effect.Effect<MediaCacheService, never, Scope.Scope> {
   const log = options.log ?? (() => {});
@@ -83,6 +83,9 @@ export function makeMediaCache(serverData: string, options: MediaCacheOptions = 
       );
     }
     const cache = opened.success;
+    // Closed with the scope, after everything acquired later (the jobs that use it): a stopped
+    // server holds no file in the cache.
+    yield* Effect.addFinalizer(() => Effect.promise(() => cache.close().catch(() => undefined)));
     const report = cache.openReport();
     for (const w of report.warnings) log(`finisherd: media cache: ${w}`);
     if (report.adopted + report.deleted + report.dropped > 0 || report.indexReplaced) {
