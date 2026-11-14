@@ -303,7 +303,8 @@ describe("the managed rule while the agent profile is not enforced (owner Q3a)",
       const cased = join(root, "P", "WORKSPACE", "s1", "x.txt");
       expect((await at(cased, "darwin")).decision).toBe("allow");
       expect((await at(cased, "win32")).decision).toBe("allow");
-      expect((await at(cased, "linux")).decision).toBe("deny");
+      // Linux's exact comparison, on a case-sensitive file system only: Windows' resolves the case.
+      if (!WIN) expect((await at(cased, "linux")).decision).toBe("deny");
     });
   });
 

@@ -478,7 +478,17 @@ fn follow_ups_carry_project_and_branch() {
     let p = with_clips(2_000);
     let dir = tempfile::tempdir().unwrap();
     let d = dir.path().to_str().unwrap();
-    let pre = format!("fin --project {d} --branch work");
+    // Quoted as `fin`'s `follow::quote` writes a word with a special character (a Windows
+    // path's `\`); a Unix temp dir is a plain word.
+    let plain = d
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || "-_./:@#=,+%".contains(c));
+    let q = if plain {
+        d.to_string()
+    } else {
+        format!("'{d}'")
+    };
+    let pre = format!("fin --project {q} --branch work");
     let v = run(&p, &["--project", d, "--branch", "work", "view"]);
     let next = v["elided"][0]["next"].as_str().unwrap();
     assert!(

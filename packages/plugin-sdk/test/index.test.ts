@@ -255,7 +255,7 @@ describe("the bundler", () => {
     const out = bundle({ entry, outfile: join(tmp, "out", "a.mjs") });
     expect(out.match(/^import .*$/gm)).toEqual(['import * as __fin_node_0 from "node:path";', 'import * as __fin_node_1 from "node:fs";']);
     await import(join(tmp, "out", "a.mjs"));
-    expect((globalThis as { __bundleTest?: unknown }).__bundleTest).toEqual(["b/c", 4, "function"]);
+    expect((globalThis as { __bundleTest?: unknown }).__bundleTest).toEqual([join("b", "c"), 4, "function"]); // the platform's join, at run time
   });
 
   test("refuses what it does not understand", () => {

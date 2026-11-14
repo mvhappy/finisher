@@ -6,7 +6,8 @@ use super::*;
 
 fn tree() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
     let tmp = tempfile::tempdir().unwrap();
-    let root = std::fs::canonicalize(tmp.path()).unwrap();
+    // Plain, as `confine` answers (Windows: `canonicalize` gives a verbatim `\\?\` path).
+    let root = strip_verbatim(std::fs::canonicalize(tmp.path()).unwrap());
     let project = root.join("film");
     let workspace = project.join("workspace").join("s1");
     std::fs::create_dir_all(&workspace).unwrap();

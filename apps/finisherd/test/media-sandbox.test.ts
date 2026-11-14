@@ -31,6 +31,7 @@ import { currentSandboxStatus, sandboxWarnings } from "../src/sandbox/status.ts"
 import { recordingHost } from "./support/fake-host.ts";
 import { closeTestEngines, testEngine } from "./support/jobs.ts";
 import { lookProject, makeAv1Fixture } from "./support/media.ts";
+import { libraryExpect } from "./support/library-expect.ts";
 
 const LINUX = process.platform === "linux";
 const GPU_REQUIRED = process.env.FIN_REQUIRE_GPU === "1";
@@ -154,7 +155,7 @@ function libraryFile(s: Awaited<ReturnType<typeof setup>>): { params: ProxyParam
     root,
     rel: { components: ["shots", "clip.mp4"].map((c) => Buffer.from(c).toString("base64")) },
     display: "shots/clip.mp4",
-    expect: { size: Number(st.size), mtimeNs: st.mtimeNs.toString(), fileId: Buffer.from(new BigUint64Array([st.ino]).buffer).reverse().toString("base64") },
+    expect: libraryExpect(file),
     hydrate: false,
     fp: "fp-lib",
     size: Number(st.size),

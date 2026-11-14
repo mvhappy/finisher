@@ -111,7 +111,11 @@ fn file_args_confined() {
         &host,
         &s,
         &ws,
-        &format!("{{\"cmd\":\"asset.add\",\"args\":{{\"path\":\"{key_text}\"}}}}\n"),
+        // Built as JSON, not by hand: a Windows path's backslashes must be escaped.
+        &format!(
+            "{}\n",
+            serde_json::json!({"cmd": "asset.add", "args": {"path": key_text}})
+        ),
     );
     refused(&run);
     // Before the file is opened: an unreadable file outside is refused as outside, not as

@@ -27,6 +27,7 @@ import { PROXY540_STAGE, proxy540Stage } from "../src/media/stages.ts";
 import type { StageFile } from "../src/library/api.ts";
 import { closeTestEngines, testEngine, until } from "./support/jobs.ts";
 import { makeAv1Fixture } from "./support/media.ts";
+import { libraryExpect } from "./support/library-expect.ts";
 
 const GPU_REQUIRED = process.env.FIN_REQUIRE_GPU === "1";
 const OWNER = { kind: "local", id: "local" } as const;
@@ -311,7 +312,7 @@ function stageFile(probe: unknown): StageFile {
     root: dirname(media),
     rel: { components: [Buffer.from(basename(media)).toString("base64")] },
     display: basename(media),
-    expect: { size: Number(s.size), mtimeNs: s.mtimeNs.toString(), fileId: Buffer.from(new BigUint64Array([s.ino]).buffer).reverse().toString("base64") },
+    expect: libraryExpect(media),
     hydrate: false,
     fp: "fp-lib",
     size: Number(s.size),
