@@ -60,6 +60,7 @@ import { RuleStore } from "./rule-store.ts";
 import type { AclBroker } from "../sandbox/broker.ts";
 import { BROKERED_SHELL_TEST_ENV, ClaudeCodeAdapter } from "./claude/adapter.ts";
 import { claudeProviderInfo } from "./claude/detect.ts";
+import { codexProviderInfo } from "./codex/detect.ts";
 import { remainingIn } from "./claude/usage.ts";
 import { type ClaudeAccess, ClaudeModelCache, claudeAccess, withClaudePricing } from "./claude/models.ts";
 import { type SessionSandboxDeps, sessionSandboxes } from "./sandbox.ts";
@@ -273,6 +274,7 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
       secrets,
       localPresets: catalogue.localPresets,
       claudeCode: claudeInfo,
+      codex: () => codexProviderInfo({ sandbox: sandboxDeps }),
       ...(d.options?.fetch === undefined ? {} : { fetch: d.options.fetch }),
       audit: (by, details) => d.audit.append({ kind: "settings.write", principal: { kind: by.kind, id: by.id }, outcome: "ok", details }),
     });

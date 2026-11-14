@@ -6,13 +6,14 @@
 // refused before anything is read or sent, so a key never lands in shell history or `ps`.
 // Listing names keys by id, label and project only. `provider signin|signout <harness>` prints
 // the CLI's own sign-in commands and runs nothing (plan 7D Decision 23, `agent/claude/detect.ts`;
-// Codex's come with 7E Task 6); `signin --confirm` also lets the next account change through,
+// Codex's: 7E Task 6, `agent/codex/detect.ts`); `signin --confirm` also lets the next account change through,
 // and `provider account confirm <harness>` takes a changed account (Decision 19,
 // `agent/cli/account.ts`, one record per harness): both y/N.
 import { type AgentWarning, FinError, type ProviderKey } from "@finisher/contracts";
 import { KEY_RULE, KEY_RULE_TEXT } from "../agent/admin.ts";
 import { type CliHarness, HARNESS_NAMES } from "../agent/cli/account.ts";
 import { signinLines } from "../agent/claude/detect.ts";
+import { codexSigninLines } from "../agent/codex/detect.ts";
 import { projectArg } from "../agent/console.ts";
 import { type ConsoleConnection, consoleError, valueOf } from "../console/client.ts";
 import { type CommandContext, withConnection } from "../console/commands/context.ts";
@@ -79,8 +80,8 @@ async function accountConfirm(ctx: CommandContext, rest: ReadonlyArray<string>):
   return 0;
 }
 
-/** Each CLI's sign-in commands (TODO(7E Task 6): Codex's, from `codex/detect.ts`). */
-const SIGNIN_PRINTERS: Partial<Record<CliHarness, (serverData: string, verb: "login" | "logout") => string[]>> = { claudeCode: signinLines };
+/** Each CLI's sign-in commands. */
+const SIGNIN_PRINTERS: Partial<Record<CliHarness, (serverData: string, verb: "login" | "logout") => string[]>> = { claudeCode: signinLines, codex: (serverData, verb) => codexSigninLines(serverData, verb) };
 
 /**
  * Prints the CLI's sign-in (or sign-out) commands for a person to run; runs nothing, needs no

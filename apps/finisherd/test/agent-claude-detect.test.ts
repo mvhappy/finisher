@@ -490,8 +490,8 @@ describe("the sign-in commands", () => {
     // A control character in a path never reaches the terminal.
     const ctl = signinCommands("logout", { path: "/bin/cla\u001b[2Jude", serverData: "/d", platform: "linux" });
     expect(ctl.join("\n")).not.toContain("\u001b");
-    // Only `claudeCode`; a CLI that is not there is the detection's refusal.
-    expect(await runConsole(["provider", "signin", "codex", "--server-data", data], { output })).not.toBe(0);
+    // A harness with no sign-in command (7E Task 6 added Codex's); a CLI that is not there is the detection's refusal.
+    expect(await runConsole(["provider", "signin", "gemini", "--server-data", data], { output })).not.toBe(0);
     writeFileSync(join(data, "settings.json"), JSON.stringify({ agents: { claudeCode: { path: join(tmp, "missing", "claude") } } }));
     errs.length = 0;
     expect(await runConsole(["provider", "signin", "claudeCode", "--server-data", data], { output })).not.toBe(0);

@@ -89,6 +89,8 @@ impl Fake {
             .unwrap_or(json!({}));
         Some(match given["type"].as_str() {
             Some("apiKey") => json!({"type": "apiKey"}),
+            Some("amazonBedrock") => json!({"type": "amazonBedrock"}),
+            Some("gcp") => json!({"type": "gcp"}),
             _ => json!({"type": "chatgpt",
                 "email": given["email"].as_str().unwrap_or("person@example.com"),
                 "planType": given["planType"].as_str().unwrap_or("plus")}),
