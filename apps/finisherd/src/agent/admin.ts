@@ -38,6 +38,8 @@ export interface AdminDeps {
    * adapter's own detection once one is registered.
    */
   readonly claudeCode?: () => Effect.Effect<ProviderInfo>;
+  /** Codex's line (`codex/detect.ts` `codexProviderInfo`, plan 7E Task 6): the pin, sign-in method and plan, never a label or token. */
+  readonly codex?: () => Effect.Effect<ProviderInfo>;
 }
 
 /** What an API key looks like (the console checks the same before it asks for a confirmation). */
@@ -229,7 +231,7 @@ export class AgentAdmin {
     return Effect.promise(async () => {
       const providers: ProviderInfo[] = [];
       for (const [harness, adapter] of adapters) {
-        if (harness === "claudeCode" && this.deps.claudeCode !== undefined) continue;
+        if ((harness === "claudeCode" && this.deps.claudeCode !== undefined) || (harness === "codex" && this.deps.codex !== undefined)) continue;
         const exit = await Effect.runPromiseExit(adapter.detect());
         if (exit._tag === "Success") {
           const d = exit.value;
@@ -253,6 +255,7 @@ export class AgentAdmin {
         }
       }
       if (this.deps.claudeCode !== undefined) providers.push(await Effect.runPromise(this.deps.claudeCode()));
+      if (this.deps.codex !== undefined) providers.push(await Effect.runPromise(this.deps.codex()));
       const l = this.local();
       let reachable: boolean | undefined;
       if (l !== undefined) reachable = await listLocalModels(l.baseUrl, this.deps.fetch, this.deps.probeMs).then(() => true, () => false);
