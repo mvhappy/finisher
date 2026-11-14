@@ -57,7 +57,8 @@ export interface KindSpec<P = unknown, R = unknown> {
    * Decision 23): a worker crash with the item in flight is retried (an attempt spent, after the
    * backoff) while attempts remain, and only the last attempt's crash is isolated (the item
    * poisoned, so `rememberPoison` still holds); a crash after the item was acknowledged ends the
-   * job as a success.
+   * job as a success. Registration refuses it on a kind that is not a cold batch, and a job of
+   * more than one item is isolated as usual (`crashRestartable`).
    */
   readonly crashRestarts?: boolean;
   /** Asked before any POISON_ITEM verdict (Decision 31). */
@@ -423,6 +424,8 @@ export function makeKindRegistry(): KindRegistry {
         if (f.profile === "plugin" || f.pluginId !== undefined) refuse(`kind ${k.kind}: a plugin family's kind cannot be submitted by RPC (sub-project 8)`);
         if (typeof k.paramsReach !== "function") refuse(`kind ${k.kind}: an rpc kind declares paramsReach`);
       }
+      // `crashRestarts` (6C Task 18) is for a cold batch: its one-item count is checked per job.
+      if (k.crashRestarts === true && (k.batch === undefined || k.warm === true)) refuse(`kind ${k.kind}: crashRestarts needs a cold batch kind`);
       if (k.files !== undefined && typeof k.files !== "function") {
         const errors = validateMappedFiles(k.files);
         if (errors.length > 0) refuse(`kind ${k.kind}: ${errors.join("; ")}`);
@@ -443,4 +446,9 @@ export function makeKindRegistry(): KindRegistry {
       return programFor(typeof f.program === "function" ? f.program(job, key) : f.program, mode);
     },
   };
+}
+
+/** Whether a crash of a job of `kind` with `params` restarts it (`crashRestarts`): a batch of exactly one item. */
+export function crashRestartable(kind: Pick<KindSpec, "crashRestarts" | "batch">, params: unknown): boolean {
+  return kind.crashRestarts === true && kind.batch !== undefined && kind.batch.items(params as never).length === 1;
 }

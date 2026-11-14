@@ -265,15 +265,15 @@ describe("a worker that dies", () => {
     const want = await cleanFiles();
     // Test builds of the worker abort after chunk 2 on the first attempt of `test-crashonce-…`.
     const fp = "test-crashonce-a1";
-    const { t, cache, pid, asset } = await setup(fp);
+    const { t, cache, pcm, pid, asset } = await setup(fp);
     const p = params({ fingerprint: fp, asset, projectId: pid, branch: "main" });
     const v = await t.runJob(MEDIA_PCM, p, { project: pid });
     expect(v.state, JSON.stringify(v.error)).toBe("succeeded");
     expect(v.attempts).toBe(2);
     expect((v.result as { itemErrors?: unknown[] }).itemErrors ?? []).toEqual([]);
     expect(((await cache.lookup(p.key)) as EntryMeta).files).toEqual(want);
-    // No poison is left: the same key is a cache hit.
-    expect(await cache.lookup(p.key)).not.toBeNull();
+    // No poison is left: asking again (dedupe would answer a poisoned job) is a cache hit.
+    expect(await run(pcm.request(OWNER, { projectId: pid, asset }))).toEqual({ asset, recipe: "pcm48", key: p.key, state: "ready", cached: true });
   }, 240_000);
 
   test("an item acknowledged before the worker died is committed, not run again or poisoned", async () => {
@@ -284,6 +284,8 @@ describe("a worker that dies", () => {
     const p = params({ fingerprint: fp, asset, projectId: pid, branch: "main" });
     const v = await t.runJob(MEDIA_PCM, p, { project: pid });
     expect(v.state, JSON.stringify(v.error)).toBe("succeeded");
+    // Committed from the first attempt's output, never run again.
+    expect(v.attempts).toBe(1);
     expect(((await cache.lookup(p.key)) as EntryMeta).files).toEqual(want);
   }, 240_000);
 
