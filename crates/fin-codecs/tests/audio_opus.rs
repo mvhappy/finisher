@@ -423,3 +423,96 @@ fn opus_encoder_refuses_what_it_cannot_encode() {
         assert!(open_audio_encoder(&cfg(48_000, 2), p).is_ok(), "{p:?}");
     }
 }
+
+// Ogg Opus granule positions (RFC 7845 §4): the reader trims from the stream's own start offset,
+// pre-skip and last granule, with packet durations from the TOC (RFC 6716 §3.1), and counts
+// every decoded frame against the budget.
+
+/// Mono, pre-skip `pre_skip`, 48 kHz, gain 0, family 0.
+fn mono_dops(pre_skip: u16) -> Vec<u8> {
+    let p = pre_skip.to_be_bytes();
+    vec![0, 1, p[0], p[1], 0, 0, 0xBB, 0x80, 0, 0, 0]
+}
+
+/// An Ogg Opus file of `audio` `(packet, granule)` pages behind the two headers.
+fn ogg_opus(dops: &[u8], audio: &[(Vec<u8>, i64)]) -> Vec<u8> {
+    let mut tags = b"OpusTags".to_vec();
+    tags.extend_from_slice(&[0; 8]);
+    let mut packets = vec![(ogg::opus_head(dops), 0), (tags, 0)];
+    packets.extend_from_slice(audio);
+    ogg::ogg(42, &packets)
+}
+
+/// One 20 ms CELT packet (config 31, code 0): 960 frames.
+fn celt_20ms() -> Vec<u8> {
+    vec![0xF8, 0xFF, 0xFE]
+}
+
+fn read_with(
+    bytes: Vec<u8>,
+    limits: &AudioLimits,
+) -> Result<(Option<u64>, usize), fin_core::CoreError> {
+    let mut r = AudioReader::open(Cursor::new(bytes), limits)?;
+    let declared = r.declared_frames();
+    let mut frames = 0;
+    while let Some(c) = r.next()? {
+        frames += c.interleaved.len() / c.layout.channels();
+    }
+    Ok((declared, frames))
+}
+
+#[test]
+fn ogg_opus_decoded_frames_count_against_the_budget() {
+    let limits = AudioLimits {
+        max_seconds: 1,
+        ..AudioLimits::default()
+    };
+    // 1,000 packets of 960 frames (960,000 frames) whose pages all say granule 1: the first
+    // audio page holds more samples than its granule states, which RFC 7845 §4.5 rejects.
+    let audio: Vec<_> = (0..1000).map(|_| (celt_20ms(), 1)).collect();
+    let e = read_with(ogg_opus(&mono_dops(0), &audio), &limits).unwrap_err();
+    assert!(
+        matches!(e.code.as_str(), "MEDIA_CORRUPT" | "MEDIA_LIMIT"),
+        "{e:?}"
+    );
+    // A valid first page (granule 960), then 999 pages that say granule 1: the stream presents
+    // one frame, and the reader stops there instead of decoding 959,040 frames it drops.
+    let mut audio = vec![(celt_20ms(), 960)];
+    audio.extend((0..999).map(|_| (celt_20ms(), 1)));
+    let got = read_with(ogg_opus(&mono_dops(0), &audio), &limits).unwrap();
+    assert_eq!(got, (Some(1), 1));
+}
+
+#[test]
+fn ogg_opus_120ms_packets_trim_to_the_last_granule() {
+    // Config 28 (CELT 2.5 ms), code 3, M = 48 CBR frames of 2 bytes: 5,760 frames (120 ms).
+    let mut packet = vec![0xE3, 48];
+    for _ in 0..48 {
+        packet.extend_from_slice(&[0xFF, 0xFE]);
+    }
+    let dops = mono_dops(0);
+    let config = AudioConfig::Record(CodecConfig::Opus { dops: dops.clone() });
+    let mut d = open_audio_decoder(&info(1, 0), &config).unwrap();
+    d.send(&packet, 0).unwrap();
+    assert_eq!(d.receive().unwrap().unwrap().interleaved.len(), 5760);
+    // Two of them (11,520 frames) whose last granule is 11,000: 520 frames of padding.
+    let file = ogg::opus(&dops, &[packet.clone(), packet], 5760, 11_000);
+    let got = read_with(file, &AudioLimits::default()).unwrap();
+    assert_eq!(got, (Some(11_000), 11_000));
+}
+
+#[test]
+fn ogg_opus_nonzero_start_granule() {
+    // The first audio page ends at granule 48,960 with 960 samples: the stream starts at
+    // 48,000, so it holds 1,920 frames (RFC 7845 §4).
+    let audio = [(celt_20ms(), 48_960), (celt_20ms(), 49_920)];
+    let got = read_with(ogg_opus(&mono_dops(0), &audio), &AudioLimits::default()).unwrap();
+    assert_eq!(got, (Some(1920), 1920));
+    // With a pre-skip of 100 the start offset still comes off first, then the pre-skip.
+    let got = read_with(ogg_opus(&mono_dops(100), &audio), &AudioLimits::default()).unwrap();
+    assert_eq!(got, (Some(1820), 1820));
+    // The same packets from granule 0 present the full two packets minus the pre-skip.
+    let audio = [(celt_20ms(), 960), (celt_20ms(), 1920)];
+    let got = read_with(ogg_opus(&mono_dops(100), &audio), &AudioLimits::default()).unwrap();
+    assert_eq!(got, (Some(1820), 1820));
+}

@@ -2,8 +2,9 @@
 //! at the source's own rate, in its own channel order with its [`ChannelLayout`], from the first
 //! audible sample to the last. MP4/MOV/M4A go through `fin-container` (its limits; the reader
 //! trims `AudioTrackInfo`'s priming and padding); WAV, AIFF, CAF, FLAC, Ogg and MP3 through
-//! symphonia's format readers (which trim their own delay and padding, gapless). It never
-//! resamples or downmixes: the worker does, with `fin-audio` (Decision 3).
+//! symphonia's format readers (which trim their own delay and padding, gapless; Ogg Opus is
+//! trimmed here from its granule positions, `ogg_opus`). It never resamples or downmixes: the
+//! worker does, with `fin-audio` (Decision 3).
 //!
 //! Reads are bounded: more than [`AudioLimits::max_channels`] channels, a rate above
 //! [`AudioLimits::max_rate`] or more than [`AudioLimits::max_seconds`] of audio is `MEDIA_LIMIT`;
@@ -25,6 +26,7 @@ use symphonia::core::io::{MediaSource, MediaSourceStream, MediaSourceStreamOptio
 use symphonia::core::meta::MetadataOptions;
 
 use super::mp4;
+use super::ogg_opus::{self, OpusStart};
 use super::registry::{open_audio_decoder, symphonia_decodes};
 use super::sniff::{Kind, mp3_exact, ogg_end, sniff, wave_layout};
 use super::symphonia::{BACKEND, SymphoniaDecoder, codec_of, error, guarded};
@@ -98,8 +100,9 @@ enum Packets {
         track: u32,
         dec: SymphoniaDecoder,
     },
-    /// One of symphonia's format readers feeding another backend (Ogg Opus to libopus): the
-    /// reader applies each packet's start and end trim (the last granule's cut) itself.
+    /// One of symphonia's format readers feeding another backend (Ogg Opus to libopus). Its
+    /// per-packet trims are ignored: the reader's `Trim` cuts the start offset, pre-skip and
+    /// padding (RFC 7845 §4), after the budget counted every decoded frame.
     Trimmed {
         format: Box<dyn FormatReader>,
         track: u32,
@@ -203,8 +206,12 @@ impl AudioReader {
                         CoreError::new("MEDIA_CORRUPT", format!("the Ogg stream is cut: {why}"))
                             .with_details(json!({ "at": "end", "format": "ogg" }))
                     })?;
-                    r.seek(SeekFrom::Start(0)).map_err(io)?;
                 }
+                let opus = match kind {
+                    Kind::Ogg => ogg_opus::start(&mut r, len)?,
+                    _ => None,
+                };
+                r.seek(SeekFrom::Start(0)).map_err(io)?;
                 let layout = match kind {
                     Kind::Wave => wave_layout(&mut r, len)?,
                     _ => None,
@@ -213,7 +220,8 @@ impl AudioReader {
                 // unless a Xing/Info or VBRI frame states it.
                 let exact = kind.exact_length() || (kind == Kind::Mp3 && mp3_exact(&mut r)?);
                 r.seek(SeekFrom::Start(0)).map_err(io)?;
-                let mut reader = Self::open_symphonia(Source { r, len }, kind, layout, limits)
+                let src = Source { r, len };
+                let mut reader = Self::open_symphonia(src, kind, layout, opus, limits)
                     .map_err(|e| corrupt_unless_typed(e, kind))?;
                 reader.exact = exact;
                 reader
@@ -275,6 +283,7 @@ impl AudioReader {
         src: Source<R>,
         kind: Kind,
         layout: Option<ChannelLayout>,
+        opus: Option<OpusStart>,
         limits: &AudioLimits,
     ) -> Result<Self, CoreError> {
         let format = guarded("reading the container", || {
@@ -308,14 +317,19 @@ impl AudioReader {
             padding: track.padding.unwrap_or(0),
         };
         let (id, mut declared) = (track.id, track.num_frames);
-        check_bounds(&info, declared, limits)?;
         let (packets, trim) = if codec == AudioCodec::Opus {
-            // libopus does not trim: the pre-skip goes here, the end with each packet's trim.
+            // libopus does not trim: the reader cuts the pre-skip and the padding. The last
+            // granule counts from the stream's start offset, pre-skip included (RFC 7845 §4).
+            let offset = match opus {
+                Some(s) if s.serial == id => s.offset,
+                Some(_) => return Err(corrupt("the Ogg Opus stream is not the first audio track")),
+                None => 0,
+            };
+            let skip = info.priming as u64;
+            declared = declared.map(|n| n.saturating_sub(offset.saturating_add(skip)));
+            check_bounds(&info, declared, limits)?;
             let config = AudioConfig::Symphonia(SymphoniaParams(params.clone()));
             let dec = open_audio_decoder(&info, &config)?;
-            let skip = info.priming as u64;
-            // Ogg's stated length counts the pre-skip (the last granule position).
-            declared = declared.map(|n| n.saturating_sub(skip));
             let p = Packets::Trimmed {
                 format,
                 track: id,
@@ -325,10 +339,11 @@ impl AudioReader {
                 p,
                 Trim {
                     skip,
-                    ..Trim::default()
+                    left: declared,
                 },
             )
         } else {
+            check_bounds(&info, declared, limits)?;
             symphonia_decodes(info.codec)?;
             let dec = SymphoniaDecoder::open(params)?;
             let p = Packets::Symphonia {
@@ -447,26 +462,19 @@ impl AudioReader {
                     }
                 }
                 Packets::Trimmed { format, track, dec } => {
+                    // Untrimmed: `emit` counts every decoded frame before `Trim` drops any.
+                    if let Some(d) = dec.receive()? {
+                        return Ok(Some(d));
+                    }
                     let packet = guarded("reading the container", || {
                         format.next_packet().map_err(|e| error(e, true))
                     })?;
                     let Some(packet) = packet else {
-                        return Ok(None);
+                        dec.finish()?;
+                        return dec.receive();
                     };
-                    if packet.track_id != *track {
-                        continue;
-                    }
-                    dec.send(&packet.data, packet.pts.get())?;
-                    while let Some(mut d) = dec.receive()? {
-                        let n = d.layout.channels().max(1);
-                        let frames = d.interleaved.len() / n;
-                        let start = (packet.trim_start.get() as usize).min(frames);
-                        let end = frames - (packet.trim_end.get() as usize).min(frames - start);
-                        d.interleaved.truncate(end * n);
-                        d.interleaved.drain(..start * n);
-                        if !d.interleaved.is_empty() {
-                            return Ok(Some(d));
-                        }
+                    if packet.track_id == *track {
+                        dec.send(&packet.data, packet.pts.get())?;
                     }
                 }
             }

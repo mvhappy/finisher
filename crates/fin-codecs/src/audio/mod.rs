@@ -5,6 +5,7 @@
 //! downmixes: `fin-codecs` never links `fin-audio`; the worker converts (`audio_src.rs`).
 
 mod mp4;
+mod ogg_opus;
 mod opus;
 mod opus_head;
 mod reader;
