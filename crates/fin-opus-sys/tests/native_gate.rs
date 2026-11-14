@@ -11,6 +11,26 @@ fn repo() -> &'static Path {
     Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
 }
 
+/// CR LF folded to LF, as `scripts/check-native-deps.mjs` hashes: Git for Windows checks a
+/// submodule's text out with CRLF (`core.autocrlf=true`), which the repository's
+/// `.gitattributes` does not reach. A lone CR is kept.
+fn lf(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len());
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b'\r' && bytes.get(i + 1) == Some(&b'\n') {
+            continue;
+        }
+        out.push(b);
+    }
+    out
+}
+
+#[test]
+fn a_crlf_checkout_hashes_as_its_lf_text() {
+    assert_eq!(lf(b"one\r\ntwo\r\n"), b"one\ntwo\n");
+    assert_eq!(lf(b"a\rb\n"), b"a\rb\n");
+}
+
 #[test]
 fn native_gate_lists_libopus() {
     let text = std::fs::read_to_string(repo().join("third_party/native.json")).unwrap();
@@ -28,7 +48,7 @@ fn native_gate_lists_libopus() {
     let copying = std::fs::read(repo().join("third_party/opus/COPYING")).unwrap();
     assert_eq!(
         l["files"]["COPYING"],
-        blake3::hash(&copying).to_hex().as_str(),
+        blake3::hash(&lf(&copying)).to_hex().as_str(),
         "the licence text changed: re-review it and update the hash"
     );
     // The gitlink the gate compares against (git is there in every checkout that builds this).

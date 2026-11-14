@@ -137,10 +137,15 @@ function gitlinkAt(root) {
   };
 }
 
-function hashAt(root) {
+/** A file's BLAKE3 with CR LF folded to LF: Git for Windows checks text out with CRLF
+ * (`core.autocrlf=true` by default), and the repository's `.gitattributes` does not reach a
+ * submodule's files, so the hash must not depend on the checkout. A lone CR is kept. */
+export function hashAt(root) {
   return (path) => {
     const full = join(root, path);
-    return existsSync(full) ? blake3(readFileSync(full)) : null;
+    if (!existsSync(full)) return null;
+    const text = readFileSync(full).toString("latin1").replaceAll("\r\n", "\n");
+    return blake3(Buffer.from(text, "latin1"));
   };
 }
 
