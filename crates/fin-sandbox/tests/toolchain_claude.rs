@@ -3,11 +3,17 @@
 //! tree's layout. Pure: runs on every OS.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(unix)]
+use std::path::PathBuf;
 
-use fin_core::events::payloads::agent::{AgentMode, Harness};
+#[cfg(unix)]
+use fin_core::events::payloads::agent::AgentMode;
+use fin_core::events::payloads::agent::Harness;
+#[cfg(unix)]
+use fin_sandbox::AgentInput;
+use fin_sandbox::Os;
 use fin_sandbox::data::{toolchain_base, toolchain_harness};
-use fin_sandbox::{AgentInput, Os};
 use serde::Deserialize;
 
 const LINUX_TEXT: &str = include_str!("../data/linux/toolchain-claudeCode.txt");
