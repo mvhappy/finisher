@@ -4,7 +4,7 @@
 mod argv;
 mod config;
 mod loads;
-mod observed;
+pub(crate) mod observed;
 mod runner;
 mod script;
 mod settings;

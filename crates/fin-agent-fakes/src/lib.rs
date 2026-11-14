@@ -126,5 +126,96 @@
 //!
 //! After an interrupt ends a turn, its remaining steps are skipped up to the next
 //! `expect: "user"`.
+//!
+//! # `fake-codex`
+//!
+//! A stand-in for `codex app-server --listen stdio://` (codex-cli 0.167.0): newline-delimited
+//! JSON-RPC on stdin/stdout, shaped after plan 7E's Task 0 and checked line by line against the
+//! committed schema (`vendor/codex/0.167.0/schema/`) by `tests/fake_codex*.rs`.
+//!
+//! **Argv** (Decision 4): `app-server --listen stdio:// --strict-config -c k=v ... --enable F
+//! ... --disable F ...`, plus `--version` (`codex-cli <version>`). An unknown flag or a missing
+//! subcommand is a usage error (stderr, exit 2). An unknown feature (the rows of the committed
+//! `features.txt`) exits 1 `Unknown feature flag: F`; under `--strict-config` a `-c` key outside
+//! `config/read`'s shape exits 1 ``unknown configuration field `k` in -c/--config override``.
+//!
+//! **Configuration**: the sidecar `<directory of the executable>/fake-codex.json`, `{"script",
+//! "observed", "version"}` (a relative `script` is relative to that directory), or the variables
+//! `FAKE_CODEX_SCRIPT`, `FAKE_CODEX_OBSERVED`, `FAKE_CODEX_VERSION`, which win. TS tests run
+//! `target/debug/fake-codex[.exe]` (built by `cargo build -p fin-agent-fakes`), as for
+//! `fake-claude`. `CODEX_HOME` (else `$HOME/.codex`) is where it keeps threads
+//! (`sessions/rollout-<id>.json`, so a resume in a new process finds them) and looks for
+//! `auth.json`, `skills/`, `hooks.json`, `AGENTS.md`.
+//!
+//! **Methods** (a positive set; anything else is `-32600 "Invalid request: unknown variant
+//! `m`, expected one of ..."`, not `-32601`): `initialize` (before it `-32600 "Not
+//! initialized"`, twice `"Already initialized"`; then an unprompted
+//! `remoteControl/status/changed`), `config/read` (from the `-c`/`--enable`/`--disable` values:
+//! a `sessionFlags` layer above `user` and `system` with `includeLayers`), `configRequirements/read`,
+//! `skills/list` (planted `SKILL.md`s under the cwd and its parents' `.agents/skills`,
+//! `$HOME/.agents/skills`, `$CODEX_HOME/skills`), `hooks/list` (`$CODEX_HOME/hooks.json`, unless
+//! `--disable hooks`), `plugin/installed`, `mcpServerStatus/list`, `app/installed` (empty),
+//! `experimentalFeature/list`, `account/read` (signed out without `$CODEX_HOME/auth.json`;
+//! signed in from `fake-account.json` beside it, else an `account` object in `auth.json`, else
+//! the script's `account`, else a ChatGPT Plus person), `model/list` (paged by `limit` and
+//! `cursor`), `thread/start` (`instructionSources` lists `$CODEX_HOME/AGENTS.md` or its
+//! override, and the cwd's while `project_doc_max_bytes > 0`; `dynamicTools` need the
+//! `experimentalApi` capability), `thread/resume` (`no rollout found for thread id X` when
+//! unknown or ephemeral), `thread/read`, `thread/revert` (`thread not found: X` unless loaded
+//! in this process; drops `beforeTurnId` and every later turn), `turn/start`, `turn/steer`,
+//! `turn/interrupt`. EOF on stdin exits 0 at once.
+//!
+//! ## Script
+//!
+//! `{"version", "observed", "account", "models", "requirements", "steer": "join"|"refuse",
+//! "onInterrupt": "completed"|"ignore"|"exit", "resumeRestoresDynamicTools" (default true),
+//! "revertFails", "turns": [{"steer"?, "onInterrupt"?, "steps": [...]}]}`. The nth `turn/start`
+//! plays `turns[n]`; past the end (or with no script) a turn is a plain `"ok"` agent message.
+//! `observed` may be `@codex/<name>` for `$CODEX_HOME/<name>`. A turn is: response (`turn`
+//! `inProgress`), `thread/status/changed` active, `turn/started`, the user message items, the
+//! steps, `thread/status/changed` idle, `turn/completed`. A step runs these fields in order
+//! (all optional):
+//!
+//! 1. `expect: "steer"|"interrupt"`: wait for a `turn/steer` (consumed one by one) or a
+//!    `turn/interrupt` (the wait ends the turn `interrupted` unless `onInterrupt` is `ignore`).
+//! 2. `sleep` (ms), still serving requests.
+//! 3. `emit [{method, params}]` (`"$threadId"`/`"$turnId"` replaced), `say "text"`
+//!    (`item/started`, `item/agentMessage/delta`, `item/completed`).
+//! 4. `usage {last, total?, modelContextWindow?}`: `thread/tokenUsage/updated`; counts default
+//!    to 0, `totalTokens` to input + output, `total` to the thread's running total plus `last`
+//!    (kept in the thread, so a resume carries on).
+//! 5. `unknownNotification` (`true` or a method name), `accountChange {type, email,
+//!    planType}` (writes `fake-account.json`, sends `account/updated`).
+//! 6. `dynamicTool {tool, arguments, callId?, onSuccess?, onFailure?}`: `item/started`
+//!    `dynamicToolCall`, the server request `item/tool/call`, the wait for its answer
+//!    (`{contentItems, success}`), `item/completed` (`failed` unless `success`). A tool the
+//!    thread did not declare in `dynamicTools` (or lost on a resume with
+//!    `resumeRestoresDynamicTools: false`) is skipped, as the model could not call it, and
+//!    recorded under `skippedTools`.
+//! 7. `patch {changes, itemId?, onAccept?, onDecline?}`: `item/started` `fileChange`, the
+//!    server request `item/fileChange/requestApproval {itemId, ...}` (the changes are in the
+//!    item, as on the real server), the wait, `serverRequest/resolved`, `item/completed`
+//!    (`completed` on `accept`/`acceptForSession`, else `declined`; `cancel` also interrupts).
+//! 8. `notLoggedIn`: four `error {willRetry}` (`responseStreamDisconnected` 401), then the turn
+//!    fails `httpConnectionFailed` 401 (Task 0, without the 14 s). `fail {codexErrorInfo,
+//!    message?, additionalDetails?, retries?}`: `retries` retry `error`s, then a failed turn.
+//!    `crash {signal: KILL|TERM|SEGV|INT|HUP}` or `{code}`.
+//!
+//! `turn/steer`: `join` writes the text as a user message item of the active turn and answers
+//! `{turnId}`; `refuse` answers `-32600` with `data.codexErrorInfo.activeTurnNotSteerable`; a
+//! stale `expectedTurnId` and no active turn are `-32600` errors. `turn/interrupt` is always
+//! answered `{}`.
+//!
+//! ## Observed file
+//!
+//! As `fake-claude`: a JSON array with one record per process, appended in start order and
+//! never removed: `{"id", "pid", "argv", "flags": {"strictConfig", "listen", "config": {key:
+//! "raw TOML text"}, "enable": [...], "disable": [...], "version"}, "envNames": [sorted names,
+//! never values], "clientInfo", "capabilities", "received": [{"method", "id"?, "params"}]
+//! (every message the client sent, notifications included, before any check), "answers":
+//! [{"id", "method", "result"|"error"}] (the client's answers to server requests), "steers":
+//! [{"turnId", "input", "joined"}], "skippedTools": [...], "exit": {"code"|"signal",
+//! "reason": "eof"|"crash"|"interrupted"}}`.
 
 pub mod claude;
+pub mod codex;
