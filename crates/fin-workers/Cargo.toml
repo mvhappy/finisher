@@ -32,6 +32,9 @@ fin-sandbox = { path = "../fin-sandbox" }
 # font cache (no fetcher: workers never fetch), containers, codecs, the compositor and the job
 # directory's rules.
 blake3 = "1"
+# The canonical layout and the resampler of the PCM feeds (6C plan Task 18: decoded audio meets
+# fin-audio only in `src/media/audio_src.rs`).
+fin-audio = { path = "../fin-audio" }
 fin-codecs = { path = "../fin-codecs" }
 fin-compositor = { path = "../fin-compositor" }
 fin-container = { path = "../fin-container" }
@@ -83,6 +86,8 @@ windows-sys = { version = "0.61", features = [
 # CPU reference the GPU frames are compared with.
 fin-codecs = { path = "../fin-codecs", features = ["testing"] }
 fin-compositor = { path = "../fin-compositor", features = ["reference"] }
+# Test signals and their analysis for the proxy's audio (6C plan Task 20).
+fin-audio = { path = "../fin-audio", features = ["testing"] }
 fin-media = { path = "../fin-media", features = ["testing"] }
 fin-testfonts = { path = "../fin-testfonts" }
 fin-jobhost = { path = "../fin-jobhost", features = ["test-hooks"] }

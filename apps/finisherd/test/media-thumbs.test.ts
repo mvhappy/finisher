@@ -21,7 +21,7 @@ import type { MediaCacheService } from "../src/media/cache.ts";
 import { makeThumbsService } from "../src/media/thumbs.ts";
 import { mediaWiring } from "../src/media/wiring.ts";
 import { jobDirs } from "../src/jobs/files.ts";
-import { closeTestEngines, testEngine } from "./support/jobs.ts";
+import { closeTestEngines, testEngine, until } from "./support/jobs.ts";
 import { makeAv1Fixture } from "./support/media.ts";
 
 const GPU_REQUIRED = process.env.FIN_REQUIRE_GPU === "1";
@@ -133,7 +133,7 @@ async function project(serverData: string, fp: string, clip = media): Promise<En
 }
 
 /** A real engine with the media kinds, the cache and the proxy and thumbs services over one project (its clip `clip`). */
-async function setup(fp = "fp-a1", clip = media) {
+async function setup(fp = "fp-a1", clip = media, engineOpts: { diagnostics?: () => boolean } = {}) {
   const serverData = realpathSync(mkdtempSync(join(work, "sd-")));
   const engine = await project(serverData, fp, clip);
   const cache = await MediaCache.open(serverData);
@@ -147,6 +147,7 @@ async function setup(fp = "fp-a1", clip = media) {
   const t = await testEngine({
     serverData,
     register: (r) => registerMediaKinds(r, { serverData, projects, proxy: { cache: () => cache, report: () => caps?.current() } }),
+    ...engineOpts,
   });
   caps = mediaCapabilities({ engine: t.engine });
   const registry = {
@@ -174,6 +175,15 @@ function noGpu(e: { code: string } | null | undefined): boolean {
 }
 
 describe("the job and the RPC", () => {
+  test("with diagnostics on, a thumbnails job's job.done carries the media object (6B-1 Task 19)", async () => {
+    const { t, thumbs, pid } = await setup("fp-diag", media, { diagnostics: () => true });
+    const made = await Effect.runPromise(Effect.result(thumbs.request(OWNER, { projectId: pid, asset: "a1", at: ["0", "1/10"], maxSide: 128 })));
+    if (made._tag === "Failure" && noGpu(made.failure)) return;
+    if (made._tag === "Failure") throw made.failure;
+    const done = await until(() => t.sink.done.find((d) => d.kind === "media.thumbs"));
+    expect(done.extra?.["media"]).toEqual({ codec: "av1", backend: "dav1d", hw: false, resolution: "sd", frames: 2, rtFactorMilli: 0, cacheHit: false, copyPath: "copy" });
+  }, 240_000);
+
   test("thumbnails are made, committed and served; the second ask is a cache hit", async () => {
     const { cache, thumbs, pid } = await setup();
     const made = await Effect.runPromise(Effect.result(thumbs.request(OWNER, { projectId: pid, asset: "a1", at: ["0", "1/10", "1/5"], maxSide: 128 })));

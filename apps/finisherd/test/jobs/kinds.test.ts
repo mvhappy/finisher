@@ -3,7 +3,7 @@
 import * as finNode from "@finisher/fin-node";
 import { Effect } from "effect";
 import { describe, expect, test } from "vitest";
-import { type KindSpec, makeKindRegistry, mappedFileNameError, resolveOrFn, validateMappedFiles } from "../../src/jobs/kinds.ts";
+import { crashRestartable, type KindSpec, makeKindRegistry, mappedFileNameError, resolveOrFn, validateMappedFiles } from "../../src/jobs/kinds.ts";
 import { registerTestKinds, testOnCall } from "../../src/jobs/kinds/test.ts";
 
 const fam = { family: "fam", profile: "worker", program: { binary: "fin-workers", args: ["fam"] } } as const;
@@ -33,6 +33,15 @@ describe("job kinds", () => {
     expect(() => r.registerKind(spec({ kind: "Bad.kind" }))).toThrow(/must match/);
     expect(() => r.registerKind(spec({ kind: "fam.zero", version: 0 }))).toThrow(/version/);
     expect(() => r.registerKind(spec({ kind: "fam.never", timeoutS: 0 }))).toThrow(/timeoutS/);
+    // `crashRestarts` (6C Task 18) only on a cold batch kind, and per job only for one item.
+    const batch = { items: (p: { items: string[] }) => p.items, restrict: (p: unknown) => p };
+    expect(() => r.registerKind(spec({ kind: "fam.restart1", crashRestarts: true }))).toThrow(/crashRestarts needs a cold batch/);
+    expect(() => r.registerKind(spec({ kind: "fam.restart2", crashRestarts: true, batch, warm: true } as Partial<KindSpec>))).toThrow(/crashRestarts needs a cold batch/);
+    r.registerKind(spec({ kind: "fam.restart3", crashRestarts: true, batch } as Partial<KindSpec>));
+    const k = r.kind("fam.restart3")!;
+    expect(crashRestartable(k, { items: ["a"] })).toBe(true);
+    expect(crashRestartable(k, { items: ["a", "b"] })).toBe(false);
+    expect(crashRestartable({ batch } as never, { items: ["a"] })).toBe(false);
     expect(() => r.registerFamily({ ...fam, family: "Fam" })).toThrow(/must match/);
     expect(() => r.registerFamily({ ...fam, family: "warm3", warm: { slots: 3 } })).toThrow(/slots/);
     // Review L4: only built-in families take variables of finisherd's environment, and only listed ones.

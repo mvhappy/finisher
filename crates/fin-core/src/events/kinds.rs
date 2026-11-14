@@ -219,7 +219,7 @@ registry! {
     AgentApproval(p::AgentApproval) = "agent.approval" v 1 via wa::AgentApprovalIn [Agent];
     UiAction(p::UiAction) = "ui.action" v 0 [Ui];
     ReviewVerdict(p::ReviewVerdict) = "review.verdict" v 1 via p::ReviewVerdictIn [Finisherd, Agent];
-    MediaCapabilities(p::MediaCapabilitiesEvent) = "media.capabilities" v 1 [Finisherd];
+    MediaCapabilities(p::MediaCapabilitiesEvent) = "media.capabilities" v 2 [Finisherd];
     RenderStats(p::RenderStats) = "render.stats" v 1 [Finisherd];
     PreviewStats(p::PreviewStats) = "preview.stats" v 0 [Ui];
     RenderSample(p::RenderSample) = "render.sample" v 0 training_only true [Finisherd];

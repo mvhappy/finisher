@@ -56,6 +56,14 @@
     "reason": "Test registries keep their publishers' keys in a keys folder outside the registry (test-hooks builds only); never a library path."
   },
   {
+    "path": "crates/fin-workers/src/media/fonts.rs",
+    "reason": "Stats a file of the server's own font cache without following links, to give fin_library::open_for_read its expectation; its tests write a cache by path."
+  },
+  {
+    "path": "crates/fin-workers/src/media/escape.rs",
+    "reason": "The media escape suite's probe makes file-system attempts by path inside a sandboxed media worker (test-hooks builds only)."
+  },
+  {
     "path": "crates/fin-workers/src/test_family/mod.rs",
     "reason": "The test families read and write the job's own files and process reports by path (test-hooks builds only)."
   },
@@ -130,5 +138,25 @@
   {
     "path": "crates/fin-node/tests/media_cache_proxies.rs",
     "reason": "Tests build and inspect temporary cache trees by path; none is a library reader."
+  },
+  {
+    "path": "crates/fin-workers/src/media/audio_src_tests.rs",
+    "reason": "Unit tests write fixture WAV files and PCM entries into temporary directories and open them by path; never a library path."
+  },
+  {
+    "path": "crates/fin-workers/tests/media_wave.rs",
+    "reason": "Tests write fixture WAV files and a pcm48 entry into temporary directories and read the worker's outputs by path; never a library path."
+  },
+  {
+    "path": "crates/fin-workers/src/media/proxy_audio_tests.rs",
+    "reason": "Unit tests check the proxy audio's scratch file in a temporary job directory by path; never a library path."
+  },
+  {
+    "path": "crates/fin-node/tests/media_cache_pcm.rs",
+    "reason": "Tests build and inspect temporary cache trees by path; none is a library reader."
+  },
+  {
+    "path": "crates/fin-workers/src/media/listen_tests.rs",
+    "reason": "Unit tests write a fixture WAV into a temporary directory and stat it by path; never a library path."
   }
 ]

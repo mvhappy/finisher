@@ -20,6 +20,7 @@
 //!   the vendor class of the backend that decodes the original (a proxy's `meta.json` records
 //!   it), so a thumbnail's entry does not depend on which source made it.
 
+use fin_core::events::payloads::JobMedia;
 use fin_core::{CoreError, Rational};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -436,4 +437,9 @@ pub struct ThumbsRun {
     pub proxy_failed: Option<String>,
     /// The entry is complete (`meta.json` written).
     pub complete: bool,
+    // The `media` object of the job's `job.done` (6B-1 Task 19): present when diagnostics were
+    // on at the worker; numbers and table names only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "JobMedia")]
+    pub media: Option<JobMedia>,
 }

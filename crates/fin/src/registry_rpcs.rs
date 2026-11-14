@@ -98,6 +98,11 @@ pub const ROWS: &[Row] = &[
         rpc!("media.look"),
         &["projectId", "branch", "timeline", "at"]
     ),
+    row!(
+        "listen",
+        rpc!("media.listen"),
+        &["projectId", "branch", "timeline", "from", "to"]
+    ),
     row!("view", rpc!(), PB),
     row!(
         "branch.new",
@@ -223,6 +228,16 @@ pub const ROWS: &[Row] = &[
             "maxSide",
             "tileHeight"
         ]
+    ),
+    row!(
+        "media.pcm",
+        rpc!("media.pcm"),
+        &["projectId", "branch", "asset", "recipe"]
+    ),
+    row!(
+        "media.wave",
+        rpc!("media.waveform"),
+        &["projectId", "branch", "asset"]
     ),
     row!("fonts.ls", rpc!("fonts.catalog"), NONE),
     row!(

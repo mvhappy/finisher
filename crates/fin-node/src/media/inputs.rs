@@ -22,8 +22,8 @@ use fin_library::RawRel;
 use fin_library::source::{NativeSource, Source};
 use fin_library::types::{EntryType, Expect};
 use fin_media::jobs::{
-    FontFileRef, MANIFEST_VERSION, ManifestAsset, ManifestFonts, ManifestProxy, OriginalFile,
-    RenderManifest,
+    FontFileRef, MANIFEST_VERSION, ManifestAsset, ManifestFonts, ManifestPcm, ManifestProxy,
+    OriginalFile, RenderManifest,
 };
 use serde::Serialize;
 use serde_json::json;
@@ -153,6 +153,7 @@ pub fn build_manifest(
             cache: font_cache.and_then(|p| p.to_str()).map(str::to_owned),
             files,
         },
+        pcm: Default::default(),
     }
 }
 
@@ -162,6 +163,25 @@ pub fn with_proxies(manifest: &mut RenderManifest, found: &BTreeMap<String, Vec<
     for a in &mut manifest.assets {
         a.proxies = found.get(&a.fingerprint).cloned().unwrap_or_default();
     }
+}
+
+/// `manifest`'s `pcm` set from `found` (by fingerprint: each asset whose fingerprint has an
+/// entry), and the files a worker reads from those entries (absolute, sorted, once each).
+pub fn with_pcm(
+    manifest: &mut RenderManifest,
+    found: &BTreeMap<String, (ManifestPcm, Vec<String>)>,
+) -> Vec<String> {
+    manifest.pcm.clear();
+    let mut files = Vec::new();
+    for a in &manifest.assets {
+        if let Some((entry, f)) = found.get(&a.fingerprint) {
+            manifest.pcm.insert(a.asset.clone(), entry.clone());
+            files.extend(f.iter().cloned());
+        }
+    }
+    files.sort();
+    files.dedup();
+    files
 }
 
 /// The files a worker reads from the proxy entries `manifest` lists (absolute, sorted, once
@@ -244,6 +264,7 @@ mod tests {
             version: MANIFEST_VERSION,
             assets: vec![asset("a1", "fpA"), asset("a2", "fpB"), asset("a3", "fpA")],
             fonts: ManifestFonts::default(),
+            pcm: Default::default(),
         };
         let found = BTreeMap::from([("fpA".to_string(), vec![proxy("/c/ab/key")])]);
         with_proxies(&mut m, &found);

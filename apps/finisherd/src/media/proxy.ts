@@ -31,7 +31,9 @@ import type { JobEngine } from "../jobs/api.ts";
 import { MEDIA_PROXY, decodersOf, proxyCodec } from "../jobs/kinds/media.proxy.ts";
 import type { ProjectRegistryShape } from "../projects.ts";
 import type { CapabilitiesCache } from "./caps.ts";
+import type { PcmService } from "./pcm.ts";
 import type { ThumbsService } from "./thumbs.ts";
+import type { WaveService } from "./wave.ts";
 
 /** How long `media.proxy` waits for its job. */
 export const PROXY_WAIT_MS = 10 * 60_000;
@@ -112,6 +114,16 @@ interface AssetJson {
   readonly video?: { readonly width?: number; readonly height?: number; readonly display?: { readonly width?: number; readonly height?: number } } | null;
 }
 
+/** A source's audio track as the key needs it. */
+type SourceAudio = { readonly container: string; readonly codec: string };
+
+/** The probe's `media` → its audio track's container and codec, when it has one. */
+export function sourceAudioOf(media: unknown): SourceAudio | undefined {
+  if (typeof media !== "object" || media === null) return undefined;
+  const m = media as { container?: unknown; audio?: { codec?: unknown } | null };
+  return typeof m.container === "string" && typeof m.audio?.codec === "string" ? { container: m.container, codec: m.audio.codec } : undefined;
+}
+
 /** One asset as the planner needs it. */
 interface Source {
   readonly projectId: string;
@@ -119,6 +131,8 @@ interface Source {
   readonly asset: string;
   readonly fingerprint: string;
   readonly sourceCodec: string;
+  /** The probe's container and audio codec, when the file has an audio track (part of the key, 6C Task 20). */
+  readonly sourceAudio?: SourceAudio;
   /** `MediaInfo.duration` as the probe wrote it (a rational string), when it gave one. */
   readonly duration?: string;
   readonly display?: { readonly width: number; readonly height: number };
@@ -126,7 +140,7 @@ interface Source {
 
 export type AssetSource = Source;
 /** A video asset as its snapshot gives it: no probe of its file. */
-export type AssetFacts = Omit<Source, "sourceCodec" | "duration">;
+export type AssetFacts = Omit<Source, "sourceCodec" | "sourceAudio" | "duration">;
 
 interface Planned {
   readonly params: ProxyParams;
@@ -172,7 +186,7 @@ export const CONTENT_FAILURES: ReadonlySet<string> = new Set([
 const endedWithout = (job: JobView): boolean => !MAKING.has(job.state) && job.state !== "succeeded";
 
 /** The server's capability cache and proxy service, for the handlers (absent in handler tests built without them). */
-export class MediaProxyTag extends Context.Service<MediaProxyTag, { readonly capabilities: CapabilitiesCache; readonly proxies: ProxyService; readonly thumbs?: ThumbsService }>()("finisherd/MediaProxy") {}
+export class MediaProxyTag extends Context.Service<MediaProxyTag, { readonly capabilities: CapabilitiesCache; readonly proxies: ProxyService; readonly thumbs?: ThumbsService; readonly pcm?: PcmService; readonly wave?: WaveService }>()("finisherd/MediaProxy") {}
 
 /**
  * `e` with the absolute `path` of asset `asset`'s file kept out of it (Task 15's review): fin-node's
@@ -188,7 +202,7 @@ export function makeProxyService(deps: ProxyServiceDeps): ProxyService {
   const probe = deps.probe ?? probeFile;
   const log = deps.log ?? (() => {});
   /** The source codec and duration of a file, by path and fingerprint (a new fingerprint probes again). */
-  const codecs = new Map<string, { readonly codec: string; readonly duration?: string }>();
+  const codecs = new Map<string, { readonly codec: string; readonly audio?: SourceAudio; readonly duration?: string }>();
   /** The last job of each key this run (status, ensure). */
   const jobs = new Map<string, string>();
   /** `<project>\0<fingerprint>` already asked for at first use this run. */
@@ -198,7 +212,7 @@ export function makeProxyService(deps: ProxyServiceDeps): ProxyService {
   /** The content failure of each key this run (`CONTENT_FAILURES`). */
   const failed = new Map<string, FinError>();
 
-  const sourceCodec = (path: string, fingerprint: string, asset: string): Effect.Effect<{ readonly codec: string; readonly duration?: string }, FinError> => {
+  const sourceCodec = (path: string, fingerprint: string, asset: string): Effect.Effect<{ readonly codec: string; readonly audio?: SourceAudio; readonly duration?: string }, FinError> => {
     const id = `${path}\0${fingerprint}`;
     const known = codecs.get(id);
     if (known !== undefined) return Effect.succeed(known);
@@ -208,7 +222,8 @@ export function makeProxyService(deps: ProxyServiceDeps): ProxyService {
         const media = (JSON.parse(json) as { media?: { duration?: unknown; video?: { codec?: unknown } } }).media;
         const codec = media?.video?.codec;
         if (typeof codec !== "string") return Effect.fail(finError("ASSET_TYPE_UNSUPPORTED", "the asset's file has no video track", { reason: "noVideo" }, "make proxies of video assets"));
-        const found = { codec, ...(typeof media?.duration === "string" ? { duration: media.duration } : {}) };
+        const audio = sourceAudioOf(media);
+        const found = { codec, ...(audio === undefined ? {} : { audio }), ...(typeof media?.duration === "string" ? { duration: media.duration } : {}) };
         codecs.set(id, found);
         return Effect.succeed(found);
       },
@@ -244,8 +259,8 @@ export function makeProxyService(deps: ProxyServiceDeps): ProxyService {
   const sourceOf = (projectId: string, branch: string, asset: string, a: AssetJson): Effect.Effect<Source, FinError> =>
     Effect.gen(function* () {
       const { path, ...facts } = yield* factsOf(projectId, branch, asset, a);
-      const { codec, duration } = yield* sourceCodec(path, facts.fingerprint, asset);
-      return { ...facts, sourceCodec: codec, ...(duration === undefined ? {} : { duration }) };
+      const { codec, audio, duration } = yield* sourceCodec(path, facts.fingerprint, asset);
+      return { ...facts, sourceCodec: codec, ...(audio === undefined ? {} : { sourceAudio: audio }), ...(duration === undefined ? {} : { duration }) };
     });
 
   const assetFacts = (projectId: string, asset: string, requested: string | undefined): Effect.Effect<AssetFacts, FinError> =>
@@ -263,7 +278,7 @@ export function makeProxyService(deps: ProxyServiceDeps): ProxyService {
     Effect.map(
       attempt(async () => {
         const codec = asked ?? proxyCodec(report);
-        const p = mediaProxyPlan({ fingerprint: src.fingerprint, tier, codec, sourceCodec: src.sourceCodec, decoders: decodersOf(report, src.sourceCodec) });
+        const p = mediaProxyPlan({ fingerprint: src.fingerprint, tier, codec, sourceCodec: src.sourceCodec, decoders: decodersOf(report, src.sourceCodec), ...(src.sourceAudio === undefined ? {} : { sourceAudio: src.sourceAudio }) });
         return { codec, p };
       }),
       ({ codec, p }): Planned => ({
@@ -274,6 +289,7 @@ export function makeProxyService(deps: ProxyServiceDeps): ProxyService {
           tier,
           codec,
           decoderClass: p.decoderClass,
+          audio: p.audio,
           key: p.key,
           asset: src.asset,
           projectId: src.projectId,

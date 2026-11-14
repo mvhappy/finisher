@@ -59,6 +59,7 @@ use commands::item::ItemCmd;
 use commands::job::{JobCmd, WaitArgs};
 use commands::keyframe::KeyframeCmd;
 use commands::library::LibraryCmd;
+use commands::listen::ListenArgs;
 use commands::log::LogArgs;
 use commands::look::LookArgs;
 use commands::marker::MarkerCmd;
@@ -125,6 +126,7 @@ enum Cmd {
     #[command(subcommand)]
     Eval(EvalCmd),
     Look(LookArgs),
+    Listen(ListenArgs),
     #[command(subcommand)]
     Job(JobCmd),
     Wait(WaitArgs),
@@ -364,6 +366,7 @@ fn run(args: Vec<OsString>) -> Result<Value, CoreError> {
         Some(Cmd::Style(c)) => edit(g, Edit::Style(c)),
         Some(Cmd::Eval(c)) => commands::eval::run(backend()?.as_ref(), g, &c),
         Some(Cmd::Look(a)) => commands::look::run(backend()?.as_ref(), g, &a),
+        Some(Cmd::Listen(a)) => commands::listen::run(backend()?.as_ref(), g, &a),
         Some(Cmd::Job(c)) => commands::job::run(backend()?.as_ref(), &c),
         Some(Cmd::Wait(a)) => commands::job::wait(backend()?.as_ref(), &a),
         Some(Cmd::Approval(c)) => commands::approval::run(backend()?.as_ref(), &c),

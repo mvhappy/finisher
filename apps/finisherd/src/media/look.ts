@@ -38,13 +38,13 @@ export interface LookRequest {
   readonly originals?: boolean | undefined;
 }
 
-interface Rat {
+export interface Rat {
   readonly n: bigint;
   readonly d: bigint;
 }
 
 /** `"n"` or `"n/d"` (any spelling: it is sent on in lowest terms), else `undefined`. */
-function rational(s: string): Rat | undefined {
+export function rational(s: string): Rat | undefined {
   const m = /^(-?\d{1,38})(?:\/(\d{1,38}))?$/.exec(s);
   if (m === null) return undefined;
   const d = m[2] === undefined ? 1n : BigInt(m[2]);
@@ -52,19 +52,19 @@ function rational(s: string): Rat | undefined {
 }
 
 /** `a ≤ b`, both denominators positive. */
-const le = (a: Rat, b: Rat): boolean => a.n * b.d <= b.n * a.d;
+export const le = (a: Rat, b: Rat): boolean => a.n * b.d <= b.n * a.d;
 
 interface Item {
   readonly start: string;
   readonly duration: string;
 }
-interface TimelineJson {
+export interface TimelineJson {
   readonly id: string;
   readonly tracks?: ReadonlyArray<{ readonly items?: ReadonlyArray<Item> }>;
 }
 
 /** The end of the last item of `tl` (0 for an empty timeline). */
-function extent(tl: TimelineJson): Rat {
+export function extent(tl: TimelineJson): Rat {
   let end: Rat = { n: 0n, d: 1n };
   for (const track of tl.tracks ?? []) {
     for (const item of track.items ?? []) {
@@ -85,7 +85,7 @@ const gcd = (a: bigint, b: bigint): bigint => {
 };
 
 /** `r` in lowest terms, as `fin-core` spells a rational: `n`, or `n/d` with `d > 1`. */
-const show = (r: Rat): string => {
+export const show = (r: Rat): string => {
   const g = gcd(r.n, r.d) || 1n;
   const [n, d] = [r.n / g, r.d / g];
   return d === 1n ? `${n}` : `${n}/${d}`;

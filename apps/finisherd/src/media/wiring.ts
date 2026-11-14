@@ -5,13 +5,16 @@
 // kind's view of the cache and the report; and the `proxy540` stage, registered with the first
 // capability answer (which a server with libraries asks for at start). Also the capability
 // URLs of Task 17: the tokens (dropped with their principal's tickets) and each listener's
-// media route.
+// media route. 6C Task 18: the PCM service, its first-use hook (an asset on an audio track gets a
+// background pcm48) and the pcm16m stage, registered at start (it needs no capability report).
+// 6C Task 19: the waveform service, whose background waveform follows a first-use pcm48's commit.
 import type { CommittedTx } from "@finisher/core-types";
 import { testHooks } from "@finisher/fin-node";
 import { Effect } from "effect";
 import type { Tickets } from "../auth/tickets.ts";
 import type { ListenerPolicy } from "../http/policy.ts";
 import type { JobEngine } from "../jobs/api.ts";
+import { MEDIA_LISTEN } from "../jobs/kinds/media.listen.ts";
 import { MEDIA_LOOK } from "../jobs/kinds/media.look.ts";
 import type { ProxyKindDeps } from "../jobs/kinds/media.proxy.ts";
 import { MEDIA_THUMBS } from "../jobs/kinds/media.thumbs.ts";
@@ -21,8 +24,10 @@ import type { MediaCacheService } from "./cache.ts";
 import { CapTokens } from "./cap-tokens.ts";
 import { makeMediaHttp, type MediaRequestHandler } from "./http.ts";
 import { type CapabilitiesCache, mediaCapabilities } from "./caps.ts";
+import { itemsOf, makePcmService, type PcmService, pcm16mStage } from "./pcm.ts";
 import { MEDIA_SYSTEM_OWNER, type ProxyService, makeProxyService } from "./proxy.ts";
 import { type ThumbsService, makeThumbsService } from "./thumbs.ts";
+import { type WaveService, makeWaveService } from "./wave.ts";
 import { proxy540Stage } from "./stages.ts";
 
 export interface MediaWiring {
@@ -39,7 +44,7 @@ export interface MediaWiring {
     engine: JobEngine,
     library: Pick<LibraryService, "registerStage" | "registry">,
     projects: Pick<ProjectRegistryShape, "ensure" | "snapshot" | "resolveBranch" | "dirOf">,
-  ) => { readonly capabilities: CapabilitiesCache; readonly proxies: ProxyService; readonly thumbs: ThumbsService };
+  ) => { readonly capabilities: CapabilitiesCache; readonly proxies: ProxyService; readonly thumbs: ThumbsService; readonly pcm: PcmService; readonly wave: WaveService };
 }
 
 export function mediaWiring(mediaCache: MediaCacheService, tickets: Pick<Tickets, "onDrop">, log: (message: string) => void): MediaWiring {
@@ -47,6 +52,8 @@ export function mediaWiring(mediaCache: MediaCacheService, tickets: Pick<Tickets
   tickets.onDrop((pred) => capTokens.dropWhere(pred));
   let caps: CapabilitiesCache | undefined;
   let proxies: ProxyService | undefined;
+  // 6C Task 18: the pcm48 of an asset first used on an audio track, beside the proxy hook.
+  let pcm: PcmService | undefined;
   /** Projects opened (or committed to) before `start`: scanned whole once the service runs. */
   const early = new Set<string>();
   return {
@@ -55,8 +62,14 @@ export function mediaWiring(mediaCache: MediaCacheService, tickets: Pick<Tickets
     onOpened: (id) => {
       if (proxies === undefined) early.add(id);
       else void proxies.used(id);
+      if (pcm !== undefined) void pcm.used(id);
     },
     onCommitted: (id, committed) => {
+      const items = itemsOf(committed);
+      if (items.length > 0) {
+        if (pcm === undefined) early.add(id);
+        else void pcm.used(id, items);
+      }
       const added = committed.diff.changes.filter((c) => c.kind === "asset" && c.change === "added").map((c) => c.id);
       if (added.length === 0) return;
       if (proxies === undefined) early.add(id);
@@ -75,16 +88,24 @@ export function mediaWiring(mediaCache: MediaCacheService, tickets: Pick<Tickets
       });
       caps = capabilities;
       // The pins of a look or thumbnails job on the proxies its manifest lists (6B-1 Tasks 16 and
-      // 15) end with the job, however it ends.
+      // 15), and of a listen on its pcm48 entries (6C Task 21), end with the job, however it ends.
       engine.onDone((job) => {
-        if (job.kind === MEDIA_LOOK || job.kind === MEDIA_THUMBS) void mediaCache.cache?.release(`job:${job.id}`).catch(() => undefined);
+        if (job.kind === MEDIA_LOOK || job.kind === MEDIA_THUMBS || job.kind === MEDIA_LISTEN) void mediaCache.cache?.release(`job:${job.id}`).catch(() => undefined);
       });
       const delay = testHooks === undefined ? 0 : Number(process.env.FIN_TEST_PROXY_DELAY_MS ?? 0);
       proxies = makeProxyService({ registry: projects, engine, capabilities, cache: () => mediaCache.cache, log, ...(Number.isFinite(delay) && delay > 0 ? { testDelayMs: delay } : {}) });
       if (library.registry.list().length > 0) void Effect.runPromise(Effect.ignore(capabilities(MEDIA_SYSTEM_OWNER)));
-      for (const id of early) void proxies.used(id);
+      // 6C Task 19: the waveform of a first-use pcm48 follows its commit (the service needs the PCM one, which calls back).
+      let wave: WaveService | undefined;
+      pcm = makePcmService({ registry: projects, engine, cache: () => mediaCache.cache, log, afterPcm48: (p, job) => wave?.afterPcm48(p, job) });
+      wave = makeWaveService({ registry: projects, pcm, engine, cache: () => mediaCache.cache, log });
+      library.registerStage(pcm16mStage({ cache: () => mediaCache.cache }));
+      for (const id of early) {
+        void proxies.used(id);
+        void pcm.used(id);
+      }
       early.clear();
-      return { capabilities, proxies, thumbs: makeThumbsService({ engine, capabilities, proxies, cache: () => mediaCache.cache }) };
+      return { capabilities, proxies, thumbs: makeThumbsService({ engine, capabilities, proxies, cache: () => mediaCache.cache }), pcm, wave };
     },
   };
 }

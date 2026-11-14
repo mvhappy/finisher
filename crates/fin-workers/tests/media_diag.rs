@@ -50,7 +50,9 @@ fn decodes(run: &Run) {
         support::Ev::Diag(k, v) => Some((k, v)),
         _ => None,
     }) {
-        let spec = kind(k, 1).unwrap_or_else(|| panic!("{k} is not a v1 kind"));
+        // `media.capabilities` is `kv` 2 (6B-1 Task 19); `render.stats` is 1.
+        let kv = if k == "media.capabilities" { 2 } else { 1 };
+        let spec = kind(k, kv).unwrap_or_else(|| panic!("{k} is not a v{kv} kind"));
         decode_payload(spec, v).unwrap_or_else(|e| panic!("{k}: {e}: {v}"));
     }
 }
@@ -190,27 +192,42 @@ fn capabilities_name_the_gpu_by_numbers_only() {
     assert_eq!(event["copyPath"], "copy");
     assert_eq!(event["sandbox"], "none");
     assert_eq!(event["renderVersion"], answer.worker.render_version);
-    let av1 = event["codecs"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|c| c["codec"] == "av1")
-        .unwrap();
-    assert_eq!(
-        (&av1["decode"], &av1["encode"]),
-        (&json!("sw"), &json!("sw"))
-    );
-    assert_eq!(
-        av1["backends"],
-        json!([{ "name": "dav1d", "class": "software" }, { "name": "svt-av1", "class": "software" }])
-    );
-    let h264 = event["codecs"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|c| c["codec"] == "h264")
-        .unwrap();
+    // v2: a row per codec, profile and bit depth, each backend with its direction.
+    let rows = event["codecs"].as_array().unwrap();
+    let av1: Vec<_> = rows.iter().filter(|c| c["codec"] == "av1").collect();
+    assert_eq!(av1.len(), 2, "{rows:?}");
+    for row in av1 {
+        assert_eq!(row["profile"], "main");
+        assert_eq!(
+            (&row["decode"], &row["encode"]),
+            (&json!("sw"), &json!("sw"))
+        );
+        assert_eq!(
+            row["backends"],
+            json!([
+                { "name": "dav1d", "class": "software", "direction": "decode", "hw": false },
+                { "name": "svt-av1", "class": "software", "direction": "encode", "hw": false },
+            ])
+        );
+    }
+    let h264 = rows.iter().find(|c| c["codec"] == "h264").unwrap();
     assert_eq!(h264["decode"], "none");
+    if cfg!(target_os = "linux") {
+        assert_eq!(
+            h264["guidance"],
+            json!([{ "code": "laterBatch", "batch": "6B-2" }])
+        );
+    }
+    assert_eq!(
+        event["encoders"],
+        json!([{ "backend": "svt-av1", "class": "software", "codec": "av1", "hw": false,
+                 "intraOnly": false }])
+    );
+    assert_eq!(
+        event["audio"],
+        json!([{ "codec": "aac", "decode": "none", "encode": "none", "backends": [],
+                 "guidance": [{ "code": "laterBatch", "batch": "6C" }] }])
+    );
     // Neither the adapter's name nor a path is in anything the family sent.
     let text = event.to_string();
     assert!(!text.contains(&gpu.name), "{text}");

@@ -1,4 +1,4 @@
-//! `media.capabilities` v1 (plan 6A Task 13): what this machine decodes and encodes, the GPU a
+//! `media.capabilities` v1 (plan 6A Task 13; the journal's event is v2, 6B-1 Task 19): what this machine decodes and encodes, the GPU a
 //! render would use and the worker's versions. A warm worker answers from what it already
 //! holds: the codec table is fixed per build and the GPU is the one `media.look` opens (made
 //! here when no look ran yet, and kept for the next job). A machine with no adapter, not even
@@ -10,13 +10,13 @@ use fin_jobs::{JobError, StartJob};
 use fin_media::RENDER_VERSION;
 use fin_media::jobs::{
     CapSupport, CapabilitiesParams, CodecCapabilities, LegacyCodecCaps, LegacyMediaCapabilities,
-    LegacyWorkerInfo,
+    LegacyWorkerInfo, WorkerSandbox,
 };
 use serde_json::Value;
 
-use super::diag;
 use super::look::{adapter, gpu};
 use super::{Warm, job_error};
+use super::{caps_report, diag};
 
 fn support(s: Support) -> CapSupport {
     match s {
@@ -32,6 +32,20 @@ fn codec(c: &CodecSupport) -> LegacyCodecCaps {
         decode: support(c.decode),
         encode: support(c.encode),
         backends: c.backends.clone(),
+    }
+}
+
+/// The sandbox in force (sp6 §3.5.1, §15): `landlock` once the worker profile's Landlock phase
+/// restricted this process (Linux, no seccomp yet; Windows after the AppContainer token check),
+/// `worker` once the full profile did (macOS Seatbelt: files, no network, no process creation),
+/// else `none` (Landlock disabled, or the profile not ready).
+pub(crate) fn sandbox() -> WorkerSandbox {
+    if !fin_sandbox::self_apply::applied() {
+        WorkerSandbox::None
+    } else if cfg!(target_os = "macos") {
+        WorkerSandbox::Worker
+    } else {
+        WorkerSandbox::Landlock
     }
 }
 
@@ -51,12 +65,15 @@ pub fn run(job: &StartJob, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<Valu
         worker: LegacyWorkerInfo {
             version: env!("CARGO_PKG_VERSION").to_string(),
             render_version: RENDER_VERSION,
+            sandbox: sandbox(),
         },
     };
     // Once per server run in practice: the server caches the answer (Task 13). Built only
-    // when diagnostics are on.
+    // when diagnostics are on. The journal's kind is v2 (6B-1 Task 19), from the v2 report of the
+    // backends this worker has; the answer stays v1 until Task 8's probe answers v2.
     if ctx.diagnostics() {
-        let event = diag::capabilities_event(&result);
+        let report = caps_report::report(&warm.probe, result.gpu.clone(), sandbox());
+        let event = diag::capabilities_event(&report);
         ctx.diag(
             "media.capabilities",
             serde_json::to_value(event).expect("capabilities serialise"),

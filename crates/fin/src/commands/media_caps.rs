@@ -10,9 +10,11 @@ use fin_core::CoreError;
 use serde_json::{Value, json};
 
 use super::Globals;
+use super::media_pcm::{self, PcmArgs};
 use super::media_probe::{self, ProbeArgs};
 use super::media_proxy::{self, ProxyArgs, StatusArgs};
 use super::media_thumbs::{self, ThumbsArgs};
+use super::media_wave::{self, WaveArgs};
 use crate::backend::Backend;
 use crate::output::unavailable;
 
@@ -28,6 +30,10 @@ pub enum MediaCmd {
     Status(StatusArgs),
     /// Thumbnails at source times, or the filmstrip, of a video asset (6B-1).
     Thumbs(ThumbsArgs),
+    /// Make (or find) an asset's pcm48 or pcm16m feed (6C).
+    Pcm(PcmArgs),
+    /// Make (or find) an asset's waveform peaks (6C).
+    Wave(WaveArgs),
 }
 
 pub fn run(backend: &dyn Backend, globals: &Globals, cmd: &MediaCmd) -> Result<Value, CoreError> {
@@ -36,6 +42,8 @@ pub fn run(backend: &dyn Backend, globals: &Globals, cmd: &MediaCmd) -> Result<V
         MediaCmd::Proxy(a) => media_proxy::proxy(backend, globals, a),
         MediaCmd::Status(a) => media_proxy::status(backend, globals, a),
         MediaCmd::Thumbs(a) => media_thumbs::run(backend, globals, a),
+        MediaCmd::Pcm(a) => media_pcm::run(backend, globals, a),
+        MediaCmd::Wave(a) => media_wave::run(backend, globals, a),
         MediaCmd::Caps => {
             if backend.dry_run_only() {
                 return Err(unavailable(

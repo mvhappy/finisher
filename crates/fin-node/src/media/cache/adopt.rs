@@ -29,7 +29,7 @@ use super::evict::{entry_dir, remove_any, trash_dir};
 use super::index::{Index, cache_io};
 
 /// The largest `meta.json` read (a proxy's `MediaInfo` and its file list fit many times over).
-pub const META_CAP: u64 = 1 << 20;
+pub const META_CAP: u64 = fin_media::cache::MAX_META_BYTES;
 
 /// What the adoption did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

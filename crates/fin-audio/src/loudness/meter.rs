@@ -143,6 +143,12 @@ impl Meter {
             .fold(0.0f64, f64::max)
     }
 
+    /// The short-term (3 s) loudness now, LUFS (`None` for silence): `fin listen` reads it after
+    /// each 100 ms it pushes (plan 6C Task 21).
+    pub fn short_term(&self) -> Option<f64> {
+        self.ebu.loudness_shortterm().ok().and_then(finite)
+    }
+
     /// The measurements so far.
     pub fn measured(&self) -> Measured {
         let peak = |f: &dyn Fn(u32) -> Result<f64, ebur128::Error>| {

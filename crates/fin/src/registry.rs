@@ -4,7 +4,9 @@
 use schemars::JsonSchema;
 use serde_json::{Value, json};
 
-use crate::commands::{asset, branch, clip, drop, history, look, project, review, try_cmd, view};
+use crate::commands::{
+    asset, branch, clip, drop, history, listen, look, project, review, try_cmd, view,
+};
 
 pub struct Command {
     /// Dotted name, e.g. "clip.insert" (also the `batch` cmd and op-style name).
@@ -164,6 +166,14 @@ pub const COMMANDS: &[Command] = &[
         summary: "PNG frames of a timeline at times (server only; layers left out are in skipped)",
         write: false,
         schema: || schema_of::<look::LookArgs>("look"),
+    },
+    Command {
+        name: "listen",
+        group: "read",
+        args: "[--from <t>] [--to <t>] [--json] [--no-wait]",
+        summary: "loudness, peaks, clipping, silences and loudest moments of a range, per track and for the mix (server only)",
+        write: false,
+        schema: || schema_of::<listen::ListenArgs>("listen"),
     },
     Command {
         name: "view",

@@ -240,7 +240,7 @@ export class StagePump {
           rows.push({ fp: f.fp, stage: spec.name, version: spec.version, state: "skipped", code: "NOT_APPLICABLE", at: now });
           continue;
         }
-        if (spec.isDone !== undefined && (await Effect.runPromise(spec.isDone(f.fp).pipe(Effect.orElseSucceed(() => false))))) {
+        if (spec.isDone !== undefined && (await Effect.runPromise(spec.isDone(f.fp, file).pipe(Effect.orElseSucceed(() => false))))) {
           rows.push({ fp: f.fp, stage: spec.name, version: spec.version, state: "done", code: "CACHED", at: now });
           done.push(file);
           continue;

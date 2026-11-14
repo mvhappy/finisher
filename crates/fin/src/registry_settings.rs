@@ -224,6 +224,22 @@ pub const SETTINGS_COMMANDS: &[Command] = &[
         || schema_of::<crate::commands::media_thumbs::ThumbsArgs>("media.thumbs"),
     ),
     cmd(
+        "media.pcm",
+        "media",
+        "<asset> [--recipe pcm48|pcm16m] [--no-wait]",
+        "make or find an asset's PCM feed: pcm48 (48 kHz, mono kept mono) or pcm16m (16 kHz mono) (server only)",
+        false,
+        || schema_of::<crate::commands::media_pcm::PcmArgs>("media.pcm"),
+    ),
+    cmd(
+        "media.wave",
+        "media",
+        "<asset> [--no-wait]",
+        "make or find an asset's waveform peaks (5 levels of min/max pairs) and print their cache key (server only)",
+        false,
+        || schema_of::<crate::commands::media_wave::WaveArgs>("media.wave"),
+    ),
+    cmd(
         "fonts.ls",
         "fonts",
         "[--catalog|--cached|--pinned] [--detail]",

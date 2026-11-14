@@ -47,6 +47,8 @@ describe("item fates", () => {
 
   test("whole_job_failures_and_free_cancels", () => {
     expect(itemFates({ state: "failed", error: err("TEST_FAIL") } as Ended, ["a"], false).get("a")).toEqual({ fate: "failed", code: "TEST_FAIL", permanent: false });
+    // A name the worker sandbox cannot grant: no retry can help, so the attempts are spent at once.
+    expect(itemFates({ state: "failed", error: err("INVALID_PATH") } as Ended, ["a"], false).get("a")).toEqual({ fate: "failed", code: "INVALID_PATH", permanent: true });
     expect(itemFates({ state: "failed", error: err("RESOURCE_STUCK") } as Ended, ["a"], false).get("a")).toEqual({ fate: "pending", code: "RESOURCE_STUCK" });
     expect(itemFates({ state: "cancelled" } as Ended, ["a"], true).get("a")).toEqual({ fate: "pending", code: "JOB_CANCELLED" });
     // Cancelled by someone else: an attempt.
