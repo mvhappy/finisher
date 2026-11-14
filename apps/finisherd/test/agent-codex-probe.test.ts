@@ -346,6 +346,15 @@ describe("the probe", () => {
     expect(codexProbeFlagsHash("win32")).toMatch(/^[0-9a-f]{16}$/);
   });
 
+  test("host_launch_cwd_must_be_the_hosts_own_workspace", async () => {
+    const { binary } = install();
+    await withBox(sandboxDeps(), async (box) => {
+      const other = join(box.workspace, "..", "host-00000000000000000000000000");
+      expect(() => probeLaunch({ env: box.env, workspace: other }, OS, binary)).toThrow(/working directory is not its own workspace|session environment is wrong/);
+      expect(() => probeLaunch({ env: box.env, workspace: `${box.workspace}/` }, OS, binary)).toThrow(/working directory is not its own workspace|session environment is wrong/);
+    });
+  });
+
   withFake("version_other_than_pin_refused", async () => {
     const { binary, observed: obs } = install({}, "0.168.0");
     expect(await failure(probeCodex(probeDeps(binary)))).toMatchObject({ code: "PROVIDER_VERSION", version: "0.168.0", pinned: PIN });

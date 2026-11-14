@@ -237,8 +237,15 @@ function threadSandbox(probe: CodexProbe): Pick<Closed<ThreadStartParams>, "sand
  * own environment (absolute, normal): not merely a folder ending in `workspace/<sessionId>`.
  * Throws `INTERNAL`.
  */
-function workspaceCwd(s: Session, cwd: string, env: Readonly<Record<string, string>>, os: NodeJS.Platform): string {
+function workspaceCwd(s: Session, cwd: string, env: Readonly<Record<string, string>>, os: NodeJS.Platform, host = false): string {
   const path = os === "win32" ? win32 : posix;
+  // A host sandbox (the probe) has no project: its cwd is the host's own `.../<host-id>` workspace.
+  if (host) {
+    if (!path.isAbsolute(cwd) || path.normalize(cwd) !== cwd || path.basename(cwd) !== s.id || !/^host-/.test(s.id)) {
+      throw finError("INTERNAL", "the host sandbox's working directory is not its own workspace", { sessionId: s.id });
+    }
+    return cwd;
+  }
   const project = env.FIN_PROJECT_DIR;
   if (project === undefined || !path.isAbsolute(project) || !path.isAbsolute(cwd) || path.normalize(cwd) !== cwd || cwd !== path.join(project, "workspace", s.id)) {
     throw finError("INTERNAL", "the session's working directory is not its own workspace", { sessionId: s.id });
@@ -259,7 +266,7 @@ export function codexLaunch(s: Session, spec: SessionSpec, probe: CodexProbe, os
   if (probe.version !== pinned) {
     throw finError("PROVIDER_VERSION", `Codex ${probe.version} is not the pinned ${pinned}`, { harness: "codex", version: probe.version, pinned }, "reinstall Finisher");
   }
-  const cwd = workspaceCwd(s, spec.cwd, spec.env, os);
+  const cwd = workspaceCwd(s, spec.cwd, spec.env, os, o.host === true);
   const tools = codexTools(spec.tools);
   const thread = threadSandbox(probe);
   // The session environment (Decision 5: `CODEX_HOME` = `provider/`, `HOME` = `tmp/home`, `SHELL`)
