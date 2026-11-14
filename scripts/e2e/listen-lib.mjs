@@ -110,8 +110,3 @@ export function checkGolden(listen, log) {
 
 /** Absolute paths (POSIX or Windows) or file names inside `text`: what no diagnostics payload may hold. */
 export const PATH_LIKE = /(?:^|[\s"'])(?:\/(?:Users|home|tmp|var|private|Volumes)\/|[A-Za-z]:[\\/])|\.(?:wav|mp4|opus|m4a)\b/i;
-
-/** The pcm and wave entries `fin cache status` counts (its `entries`). */
-export const cacheEntries = (status) => status.entries ?? 0;
-
-export { join };

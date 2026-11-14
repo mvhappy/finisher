@@ -1,6 +1,6 @@
 // The "listen" scenario (6C Task 22, spec §8): audio end to end through the real finisherd and its
 // `media` worker. A WAV of two tones around a digital silence and an MP4 with Opus audio (the
-// `make_audio_fixture` example: Task 13's encoder; on Linux a second one with AAC-LC) go on two
+// `make_audio_fixture` example: Task 13's encoder; and a second clip, AAC-LC on Linux and Opus elsewhere, for a cross-codec loudness check) go on two
 // audio tracks with an EQ, a compressor and a fade; `fin media pcm` and `fin media wave` make both
 // assets' feeds (they appear in `fin cache status`); `fin listen --json` is checked against
 // `listen-golden/listen.json` (loudness ±0.2 LU, true peak ±0.2 dB, silence edges exact at the
@@ -47,7 +47,9 @@ export async function run() {
     fin(sd, tmp, ["project", "create", project, "--name", "Listen"]);
     const wavSeconds = writeWav(join(project, "tones.wav"));
     makeAudioMp4(join(project, "voice.mp4"), "opus");
-    const aac = process.platform === "linux" ? makeAudioMp4(join(project, "voice-aac.mp4"), "aac") : undefined;
+    // The cross-codec check's second clip: AAC-LC where vo-aacenc builds (Linux), a second Opus file elsewhere.
+    const otherCodec = process.platform === "linux" ? "aac" : "opus";
+    makeAudioMp4(join(project, `voice-${otherCodec}.mp4`), otherCodec);
 
     step(2, "two audio tracks; the WAV on A1 with an EQ, a compressor and a fade; the Opus clip on A2");
     const track = f(["track", "add", "--kind", "audio"]).bindings.$track;
@@ -81,14 +83,21 @@ export async function run() {
     checkGolden(listen, log);
     assertEqual(listen.mix.silences.length >= 1, true, "the WAV's silence is reported");
     assertEqual(listen.tracks.map((t) => t.track), ["t2", "t3"], "tracks");
-    if (aac) {
-      const clip = f(["clip", "insert", "--track", "t3", "--asset", (f(["asset", "add", aac]), "a3"), "--at", "7s", "--dur", "3s"]).bindings.$clip;
-      const [o, a] = [f(["listen", "--from", "3s", "--to", "6s"]).tracks.find((t) => t.track === "t3"), f(["listen", "--from", "7s", "--to", "10s"]).tracks.find((t) => t.track === "t3")];
-      if (Math.abs(o.stats.integrated - a.stats.integrated) > 0.5) throw new Error(`AAC-LC ${a.stats.integrated} LUFS vs Opus ${o.stats.integrated} LUFS for the same tone (${clip})`);
+    // The two pcm feeds of a1 and a2, before the cross-codec asset adds a third.
+    const pcm = await jobsDone(server, "media.pcm", 2);
+    // Cross-codec: the same tone as a clean Opus clip (no effects, no fade) and as `other`, each alone
+    // on A2 after the golden's range, read by `fin listen --json` over its own 3 s.
+    {
+      const otherAsset = f(["asset", "add", `voice-${otherCodec}.mp4`]).bindings.$asset;
+      f(["clip", "insert", "--track", "t3", "--asset", "a2", "--at", "7s", "--dur", "3s"]);
+      f(["clip", "insert", "--track", "t3", "--asset", otherAsset, "--at", "11s", "--dur", "3s"]);
+      const t3 = (from, to) => f(["listen", "--json", "--from", from, "--to", to]).tracks.find((t) => t.track === "t3").stats.integrated;
+      const [o, a] = [t3("7s", "10s"), t3("11s", "14s")];
+      if (!Number.isFinite(o) || !Number.isFinite(a) || Math.abs(o - a) > 0.5) throw new Error(`${otherCodec} ${a} LUFS vs Opus ${o} LUFS for the same tone`);
+      log(`cross-codec: opus ${o.toFixed(2)} LUFS, ${otherCodec} ${a.toFixed(2)} LUFS`);
     }
 
     step(5, "the journal: job.done carries the audio media object; render.stats names the audio phases; no path anywhere");
-    const pcm = await jobsDone(server, "media.pcm", 2);
     for (const kind of ["media.pcm", "media.waveform", "media.listen"]) {
       for (const e of await jobsDone(server, kind, 1)) {
         const m = e.payload.media;

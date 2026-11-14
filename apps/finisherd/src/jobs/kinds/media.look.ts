@@ -262,7 +262,7 @@ export function mediaLookKind(deps: MediaKindDeps): KindSpec<LookJobParams, Look
       { name: "out/", mode: "write" },
     ],
     dedupe: lookDedupe,
-    journal: lookJournal,
+    journal: mediaJournal,
     prepare: (ctx) =>
       Effect.gen(function* () {
         const p = ctx.job.params;
@@ -338,7 +338,6 @@ export function mediaLookKind(deps: MediaKindDeps): KindSpec<LookJobParams, Look
 }
 
 /** `job.done`'s `media` object (Task 14): see `media.journal.ts`. */
-export const lookJournal = mediaJournal;
 
 /** The plan hashes `prepare` computed, in `at` order (`extra.planSamples`). */
 /** Each existing path resolved (a missing one is left out: the worker reports it missing). */

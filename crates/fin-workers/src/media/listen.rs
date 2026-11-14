@@ -542,6 +542,9 @@ pub fn run(job: &StartJob, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<Valu
     };
     if ctx.diagnostics() {
         let micros = u64::try_from(mixing.elapsed().as_micros()).unwrap_or(u64::MAX);
+        // The whole pass (lazy decodes included) is one `Mix` sample, filed under the first source
+        // that was decoded rather than read from pcm48 (`none` when every source was cached): a
+        // render.stats row has one backend, and a multi-codec mix has no better single one.
         let (codec, backend) = opener.decoded_via.unwrap_or(("pcm", "none"));
         warm.render_stats.record(RenderPhase::Mix, backend, micros);
         stats.media = Some(audio_media(&AudioFacts {
