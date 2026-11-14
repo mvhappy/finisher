@@ -138,5 +138,9 @@
   {
     "path": "crates/fin-workers/tests/media_wave.rs",
     "reason": "Tests write fixture WAV files and a pcm48 entry into temporary directories and read the worker's outputs by path; never a library path."
+  },
+  {
+    "path": "crates/fin-workers/src/media/proxy_audio_tests.rs",
+    "reason": "Unit tests check the proxy audio's scratch file in a temporary job directory by path; never a library path."
   }
 ]

@@ -15731,6 +15731,53 @@
       ],
       "type": "object"
     },
+    "ProxyAudio": {
+      "additionalProperties": false,
+      "description": "The proxy's audio track (recipe v2, 6C plan Task 20): the source's audio at 48 kHz in its\ncanonical layout (a mono source stays one channel), as Opus at 128 kb/s stereo or 64 kb/s\nmono; its edit list presents exactly the source's samples after `priming`.",
+      "properties": {
+        "bitrate": {
+          "description": "Bits a second.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "codec": {
+          "$ref": "#/$defs/ProxyAudioCodec"
+        },
+        "priming": {
+          "description": "The encoder's delay in samples (the edit list's media time, `dOps` pre-skip).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "codec",
+        "bitrate",
+        "priming"
+      ],
+      "type": "object"
+    },
+    "ProxyAudioCodec": {
+      "description": "The codec of a proxy's audio (spec §7.1).",
+      "enum": [
+        "opus"
+      ],
+      "type": "string"
+    },
+    "ProxyAudioSkipped": {
+      "additionalProperties": false,
+      "description": "Why a source's audio track is not in its proxy (6C Task 20 review): the decode's error code\n(`CODEC_UNAVAILABLE`, `UNSUPPORTED_CONTAINER`, `MEDIA_LIMIT`, `MEDIA_CORRUPT`,\n`DECODE_FAILED`). The mix reads `pcm48`, which reports the same failure as its own.",
+      "properties": {
+        "code": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code"
+      ],
+      "type": "object"
+    },
     "ProxyCodec": {
       "description": "The codec of a proxy (Decision 5).",
       "oneOf": [
@@ -15807,6 +15854,14 @@
           "description": "A project asset, through the job's `in/manifest.json` (the asset's fingerprint there\nmust equal `fingerprint`, else `ASSET_CHANGED`).",
           "type": "string"
         },
+        "audio": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/ProxySourceAudio"
+            }
+          ],
+          "description": "What the host expects of the original's audio ([`source_audio`], part of the key)."
+        },
         "branch": {
           "description": "The branch whose head names the asset (`main` when absent). Host only.",
           "type": "string"
@@ -15857,6 +15912,7 @@
         "tier",
         "codec",
         "decoderClass",
+        "audio",
         "key"
       ],
       "type": "object"
@@ -15865,6 +15921,22 @@
       "additionalProperties": false,
       "description": "What `media.proxy` v1 answers for its item (the fingerprint).",
       "properties": {
+        "audio": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/ProxyAudio"
+            }
+          ],
+          "description": "The audio track; absent when the source has none or its audio could not be read (then\n`audioSkipped` says why): the proxy is then video only."
+        },
+        "audioSkipped": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/ProxyAudioSkipped"
+            }
+          ],
+          "description": "The source has an audio track the proxy does not carry, and why."
+        },
         "backend": {
           "description": "The encoder's backend (`svt-av1`, `videotoolbox`, `mf-hw`, …) and its vendor class.",
           "type": "string"
@@ -15927,6 +15999,34 @@
         "size"
       ],
       "type": "object"
+    },
+    "ProxySourceAudio": {
+      "description": "What a proxy's key says of the source's audio (6C Task 20 review): none, one this build\nhas no decoder for, or one a decoder of a class decodes. It is read from this build's static\ntables ([`audio_decoder_for_proxy`] over [`AUDIO_BACKENDS`]), not from what the machine can do\nat run time. So a **build** whose tables gain a decoder for the codec or container (AAC on\nmacOS and Windows with 6C Tasks 15–16; WebM audio) changes the key, and a video-only entry\nmade without it is made again. What does **not** change the key: a decoder the tables list\nbut the machine lacks or refuses at run time (Media Foundation's AAC on Windows N without the\nMedia Feature Pack; a profile such as HE-AAC that the listed decoder refuses), and a corrupt\ntrack. Those key as decodable, their proxy is video only (`audioSkipped`), and a plugin or\nfeature pack installed later does not refresh it. Keying on the capability report's audio\ndecode rows instead is 6C Task 17's.",
+      "oneOf": [
+        {
+          "const": "none",
+          "description": "The source has no audio track.",
+          "type": "string"
+        },
+        {
+          "const": "unavailable",
+          "description": "It has one this build reads no audio of (its codec, or its container).",
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "description": "It has one a backend of this class decodes.",
+          "properties": {
+            "decoded": {
+              "$ref": "#/$defs/VendorClass"
+            }
+          },
+          "required": [
+            "decoded"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "ProxyStatus": {
       "additionalProperties": false,

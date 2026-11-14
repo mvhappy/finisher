@@ -47,16 +47,16 @@ impl Recipe {
     }
 }
 
-/// The scrub tier (Decision 6: fits 960 × 540). v1 is video only (Decision 4; 6C's Opus audio
-/// is v2).
+/// The scrub tier (Decision 6: fits 960 × 540). v1 was video only (Decision 4); v2 carries
+/// the source's audio as Opus (6C plan Task 20), so v1 entries are other keys.
 pub const PROXY_540: Recipe = Recipe {
     name: "proxy-540",
-    version: 1,
+    version: 2,
 };
-/// The default preview tier (fits 1920 × 1080). v1 is video only, as `proxy-540`.
+/// The default preview tier (fits 1920 × 1080). v2 carries Opus audio, as `proxy-540`.
 pub const PROXY_1080: Recipe = Recipe {
     name: "proxy-1080",
-    version: 1,
+    version: 2,
 };
 /// Thumbnails at requested times (Decision 17).
 pub const THUMBS: Recipe = Recipe {

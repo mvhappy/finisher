@@ -2449,6 +2449,35 @@ export type Placeholder =
  */
 export type Severity = "low" | "medium" | "high" | "critical";
 /**
+ * The codec of a proxy's audio (spec §7.1).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProxyAudioCodec".
+ */
+export type ProxyAudioCodec = "opus";
+/**
+ * What a proxy's key says of the source's audio (6C Task 20 review): none, one this build
+ * has no decoder for, or one a decoder of a class decodes. It is read from this build's static
+ * tables ([`audio_decoder_for_proxy`] over [`AUDIO_BACKENDS`]), not from what the machine can do
+ * at run time. So a **build** whose tables gain a decoder for the codec or container (AAC on
+ * macOS and Windows with 6C Tasks 15–16; WebM audio) changes the key, and a video-only entry
+ * made without it is made again. What does **not** change the key: a decoder the tables list
+ * but the machine lacks or refuses at run time (Media Foundation's AAC on Windows N without the
+ * Media Feature Pack; a profile such as HE-AAC that the listed decoder refuses), and a corrupt
+ * track. Those key as decodable, their proxy is video only (`audioSkipped`), and a plugin or
+ * feature pack installed later does not refresh it. Keying on the capability report's audio
+ * decode rows instead is 6C Task 17's.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProxySourceAudio".
+ */
+export type ProxySourceAudio =
+  | "none"
+  | "unavailable"
+  | {
+      decoded: VendorClass;
+    };
+/**
  * What to purge (`fin diagnostics purge`, `diagnostics.purge`).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -9084,6 +9113,36 @@ export interface ProjectViewText {
   text: string;
 }
 /**
+ * The proxy's audio track (recipe v2, 6C plan Task 20): the source's audio at 48 kHz in its
+ * canonical layout (a mono source stays one channel), as Opus at 128 kb/s stereo or 64 kb/s
+ * mono; its edit list presents exactly the source's samples after `priming`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProxyAudio".
+ */
+export interface ProxyAudio {
+  /**
+   * Bits a second.
+   */
+  bitrate: number;
+  codec: ProxyAudioCodec;
+  /**
+   * The encoder's delay in samples (the edit list's media time, `dOps` pre-skip).
+   */
+  priming: number;
+}
+/**
+ * Why a source's audio track is not in its proxy (6C Task 20 review): the decode's error code
+ * (`CODEC_UNAVAILABLE`, `UNSUPPORTED_CONTAINER`, `MEDIA_LIMIT`, `MEDIA_CORRUPT`,
+ * `DECODE_FAILED`). The mix reads `pcm48`, which reports the same failure as its own.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProxyAudioSkipped".
+ */
+export interface ProxyAudioSkipped {
+  code: string;
+}
+/**
  * One move of the encode to another encoder (`ENCODER_HUNG`'s fallback, an encoder that did
  * not open), as the result records it.
  *
@@ -9111,6 +9170,10 @@ export interface ProxyParams {
    * must equal `fingerprint`, else `ASSET_CHANGED`).
    */
   asset?: string;
+  /**
+   * What the host expects of the original's audio ([`source_audio`], part of the key).
+   */
+  audio: ProxySourceAudio;
   /**
    * The branch whose head names the asset (`main` when absent). Host only.
    */
@@ -9151,6 +9214,15 @@ export interface ProxyParams {
  * via the `definition` "ProxyResult".
  */
 export interface ProxyResult {
+  /**
+   * The audio track; absent when the source has none or its audio could not be read (then
+   * `audioSkipped` says why): the proxy is then video only.
+   */
+  audio?: ProxyAudio;
+  /**
+   * The source has an audio track the proxy does not carry, and why.
+   */
+  audioSkipped?: ProxyAudioSkipped;
   /**
    * The encoder's backend (`svt-av1`, `videotoolbox`, `mf-hw`, …) and its vendor class.
    */
