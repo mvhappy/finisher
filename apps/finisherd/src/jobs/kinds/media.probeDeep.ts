@@ -20,6 +20,7 @@ import type { ProjectRegistryShape } from "../../projects.ts";
 import { jobDirs } from "../files.ts";
 import { mkdirSafe } from "../fsafe.ts";
 import type { KindSpec } from "../kinds.ts";
+import { mediaJournal } from "./media.journal.ts";
 
 export const MEDIA_PROBE_DEEP = "media.probeDeep";
 
@@ -89,6 +90,7 @@ export function mediaProbeDeepKind(deps: ProbeDeepKindDeps): KindSpec<ProbeDeepP
     files: [{ name: "in/manifest.json", mode: "read" }],
     memory: (p) => mediaBatchMemory(p.display ?? undefined),
     dedupe: probeDeepDedupe,
+    journal: mediaJournal,
     prepare: (ctx) =>
       Effect.gen(function* () {
         const p = ctx.job.params;

@@ -11,6 +11,20 @@ fn repo() -> &'static Path {
     Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
 }
 
+/// The bytes with CRLF line ends read as LF: the hash is of the text as the submodule has it,
+/// and a Windows checkout (`core.autocrlf=true`, which a parent `.gitattributes` does not reach
+/// inside a submodule) has the same text with CRLF ends (`scripts/check-native-deps.mjs` does the
+/// same).
+fn lf(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len());
+    for (i, &b) in bytes.iter().enumerate() {
+        if !(b == b'\r' && bytes.get(i + 1) == Some(&b'\n')) {
+            out.push(b);
+        }
+    }
+    out
+}
+
 #[test]
 fn native_gate_lists_libopus() {
     let text = std::fs::read_to_string(repo().join("third_party/native.json")).unwrap();
@@ -28,7 +42,7 @@ fn native_gate_lists_libopus() {
     let copying = std::fs::read(repo().join("third_party/opus/COPYING")).unwrap();
     assert_eq!(
         l["files"]["COPYING"],
-        blake3::hash(&copying).to_hex().as_str(),
+        blake3::hash(&lf(&copying)).to_hex().as_str(),
         "the licence text changed: re-review it and update the hash"
     );
     // The gitlink the gate compares against (git is there in every checkout that builds this).

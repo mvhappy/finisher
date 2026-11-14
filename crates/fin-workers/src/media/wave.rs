@@ -70,7 +70,7 @@ pub fn run(job: &StartJob, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<Valu
                 wall_micros: micros,
                 cache_hit: result.from == WaveFrom::Pcm48,
             });
-            Ok(json!({ "made": 1, "stats": { "media": media } }))
+            Ok(json!({ "made": 1, "media": media }))
         }
         Err(Fail::Item(e)) => {
             ctx.item_failed(&fp, e);

@@ -32,8 +32,11 @@ use serde_json::Value;
 
 mod audio_src;
 mod caps;
+mod caps_report;
 mod diag;
 mod encode_pipeline;
+#[cfg(feature = "test-hooks")]
+mod escape;
 mod fonts;
 mod inputs;
 mod listen;
@@ -52,6 +55,8 @@ mod thumbs;
 mod thumbs_source;
 mod wave;
 
+/// The kinds `hello` lists. The escape suite's probe (`escape.rs`, `test-hooks` builds only) is
+/// not one of them: it is no fin-core kind and no host ever submits it.
 static KINDS: &[KindVersion] = &[
     KindVersion::new("media.look", 1),
     KindVersion::new("media.capabilities", 1),
@@ -140,6 +145,8 @@ impl Family for MediaFamily {
             ("media.probeDeep", 1) => probe_deep::run(job, ctx, &mut self.state),
             ("media.proxy", 1) => proxy::run(job, ctx, &mut self.state),
             ("media.thumbs", 1) => thumbs::run(job, ctx, &mut self.state),
+            #[cfg(feature = "test-hooks")]
+            (escape::KIND, 1) => escape::run(job),
             ("media.pcm", 1) => pcm::run(job, ctx, &mut self.state),
             ("media.waveform", 1) => wave::run(job, ctx, &mut self.state),
             ("media.listen", 1) => listen::run(job, ctx, &mut self.state),

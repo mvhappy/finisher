@@ -1,6 +1,7 @@
 //! The media engine's name tables (sub-project 6, 6A Task 14), referenced from
 //! [`super::names::TABLES`]: the codecs and backends the `job.done` media object, the
-//! `media.capabilities` event and `render.stats` name. A value outside a table reads as
+//! `media.capabilities` event and `render.stats` name (and the event's profiles and audio
+//! codecs, 6B-1 Task 19). A value outside a table reads as
 //! `"other"`; the tables grow with the backends (6B–6G) without a version bump.
 //!
 //! Backend names are the static names of `fin-codecs`' backends and `wgpu`'s API names;
@@ -11,13 +12,40 @@ use serde::{Deserialize, Deserializer, Serialize};
 use super::class::Name;
 use super::names::NameTable;
 
-/// Video codecs (`fin-media`'s `VideoCodec`, camel case), audio codecs (`fin-media`'s
-/// `AudioCodec`, 6C Decision 24) and `none` (a job that decoded nothing).
+/// Video codecs (`fin-media`'s `VideoCodec`, camel case) and `none` (a job that decoded
+/// nothing): a capability row's and an encoder's `codec`. An audio job's `job.done.media.codec`
+/// is in [`MEDIA_AUDIO_CODECS`] instead ([`job_media_codec`]).
 pub static MEDIA_CODECS: NameTable = NameTable::new(
     "MEDIA_CODECS",
+    &["av1", "h264", "hevc", "vp9", "vp8", "prores", "none"],
+);
+
+/// Video codec profiles (`fin-media`'s `jobs::Profile`, camel case): a capability row's
+/// `profile` (`other` is the table's own fallback).
+pub static MEDIA_PROFILES: NameTable = NameTable::new(
+    "MEDIA_PROFILES",
     &[
-        "av1", "h264", "hevc", "vp9", "vp8", "prores", "aac", "opus", "mp3", "flac", "alac",
-        "vorbis", "pcm", "none",
+        "baseline",
+        "main",
+        "high",
+        "main10",
+        "profile0",
+        "profile2",
+        "high10",
+        "high422",
+        "main422_10",
+        "proRes422",
+        "proRes4444",
+    ],
+);
+
+/// Audio codecs (`fin-media`'s `AudioCodec`, camel case): the capability report's audio rows
+/// and an audio job's (`media.pcm`, `media.waveform`, `media.listen`) `job.done.media.codec`
+/// (6C plan Task 22; `pcm` also for a feed read back from the cache).
+pub static MEDIA_AUDIO_CODECS: NameTable = NameTable::new(
+    "MEDIA_AUDIO_CODECS",
+    &[
+        "aac", "opus", "mp3", "flac", "alac", "pcm", "ac3", "eac3", "vorbis",
     ],
 );
 
@@ -92,4 +120,21 @@ pub fn media_codec<'de, D: Deserializer<'de>>(d: D) -> Result<Name, D::Error> {
 
 pub fn media_backend<'de, D: Deserializer<'de>>(d: D) -> Result<Name, D::Error> {
     Ok(MEDIA_BACKENDS.get_or_other(&String::deserialize(d)?))
+}
+
+/// `job.done.media.codec`: a video codec ([`MEDIA_CODECS`], `none` included) or an audio one
+/// ([`MEDIA_AUDIO_CODECS`]); the two tables share no name.
+pub fn job_media_codec<'de, D: Deserializer<'de>>(d: D) -> Result<Name, D::Error> {
+    let s = String::deserialize(d)?;
+    Ok(MEDIA_CODECS
+        .get(&s)
+        .unwrap_or_else(|| MEDIA_AUDIO_CODECS.get_or_other(&s)))
+}
+
+pub fn media_audio_codec<'de, D: Deserializer<'de>>(d: D) -> Result<Name, D::Error> {
+    Ok(MEDIA_AUDIO_CODECS.get_or_other(&String::deserialize(d)?))
+}
+
+pub fn opt_media_profile<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Name>, D::Error> {
+    Ok(Option::<String>::deserialize(d)?.map(|s| MEDIA_PROFILES.get_or_other(&s)))
 }

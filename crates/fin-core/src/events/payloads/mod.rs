@@ -55,8 +55,9 @@ pub use journal::JournalDropped;
 pub use library::{LibraryScan, LibraryStorageName, ScanTrigger};
 pub use log::{CommitOutcome, CommitRecord, IntentOmitted, LogCommit};
 pub use media::{
-    AdapterType, BackendEntry, CodecEntry, CopyPath, GpuEntry, JobMedia, MediaCapabilitiesEvent,
-    RenderPhase, RenderStats, ResolutionBucket, Sandbox, SupportClass,
+    AdapterIds, AdapterType, AudioCodecEntry, BackendEntry, CodecDirection, CodecEntry, CopyPath,
+    EncoderEntry, GapCode, GpuEntry, GuidanceBatch, GuidanceEntry, JobMedia,
+    MediaCapabilitiesEvent, RenderPhase, RenderStats, ResolutionBucket, Sandbox, SupportClass,
 };
 pub use plugin::{
     PluginKindName, PluginLifecycle, PluginOutcome, PluginRef, PluginSourceName, RegistryRefresh,

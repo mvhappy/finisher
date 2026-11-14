@@ -14,6 +14,8 @@ export const FREE_CODES: ReadonlySet<string> = new Set(["LIBRARY_OFFLINE", "RESO
 /** Item codes that say the catalog is behind the file: no attempt, and its directory is rescanned. */
 export const RESCAN_CODES: ReadonlySet<string> = new Set(["FILE_CHANGED", "FILE_NOT_FOUND", "FILE_CLOUD_ONLY"]);
 export const POISON = "POISON_ITEM";
+/** Whole-job codes no retry can change (a name the worker sandbox cannot grant): spent at once. */
+export const PERMANENT_CODES: ReadonlySet<string> = new Set([POISON, "INVALID_PATH"]);
 
 export type ItemFate =
   | { readonly fate: "done" }
@@ -41,13 +43,13 @@ export function itemFates(job: Pick<JobView, "state" | "result" | "error" | "ite
       out.set(item, { fate: "done" });
     } else if (code !== undefined) {
       if (FREE_CODES.has(code) || RESCAN_CODES.has(code)) out.set(item, { fate: "pending", code });
-      else out.set(item, { fate: "failed", code, permanent: code === POISON });
+      else out.set(item, { fate: "failed", code, permanent: PERMANENT_CODES.has(code) });
     } else if (job.state === "succeeded") {
       out.set(item, { fate: "failed", code: "STAGE_ITEM_UNANSWERED", permanent: false });
     } else if (wholeFree) {
       out.set(item, { fate: "pending", code: jobCode });
     } else {
-      out.set(item, { fate: "failed", code: jobCode, permanent: false });
+      out.set(item, { fate: "failed", code: jobCode, permanent: PERMANENT_CODES.has(jobCode) });
     }
   }
   return out;

@@ -26,7 +26,7 @@ import type { ProjectRegistryShape } from "../../projects.ts";
 import { jobDirs } from "../files.ts";
 import { mkdirSafe } from "../fsafe.ts";
 import type { KindSpec } from "../kinds.ts";
-import { combineWithStats, mediaJournal } from "./media.journal.ts";
+import { mediaCombine, mediaJournal } from "./media.journal.ts";
 import { outcomeOf } from "./media.proxy.ts";
 
 export const MEDIA_WAVEFORM = "media.waveform";
@@ -101,7 +101,7 @@ export function mediaWaveformKind(deps: WaveKindDeps): KindSpec<WaveParams, unkn
     timeoutS: WAVE_TIMEOUT_S,
     stallS: 600,
     maxAttempts: 2,
-    batch: { items: (p) => [p.fingerprint], restrict: (p) => p, combine: combineWithStats },
+    batch: { items: (p) => [p.fingerprint], restrict: (p) => p, combine: mediaCombine },
     dedupe: waveDedupe,
     journal: mediaJournal,
     rememberPoison: true,

@@ -19,6 +19,7 @@
 use fin_codecs::{DecodeThreads, FrameReader};
 use fin_container::{Demuxer, Limits};
 use fin_core::CoreError;
+use fin_core::events::payloads::RenderPhase;
 use fin_jobs::worker::JobCtx;
 use fin_jobs::{JobError, StartJob};
 use fin_media::backend::backend;
@@ -27,8 +28,10 @@ use fin_media::jobs::{
 };
 use serde_json::{Value, json};
 
+use super::diag::{self, RunFacts};
 use super::inputs::{self, MANIFEST_CAP};
 use super::open_cache::{WORKER_MAX_PIXELS, open_original_in};
+use super::sources::micros_since;
 use super::{Warm, job_error};
 
 fn input_invalid(message: String, details: Value) -> JobError {
@@ -119,7 +122,9 @@ pub fn run(job: &StartJob, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<Valu
         hdr_source,
         first_frame: None,
         failure: None,
+        media: None,
     };
+    let started = std::time::Instant::now();
     let decoded = FrameReader::open_with_limit(
         decode_handle,
         &limits,
@@ -132,6 +137,26 @@ pub fn run(job: &StartJob, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<Valu
         let frame = reader.frame(0)?;
         Ok((name, frame.hw, frame.size, frame.format))
     });
+    let decode_micros = micros_since(started);
+    if ctx.diagnostics() {
+        // 6B-1 Task 19: the first frame's decode (opening the decoder included) is the probe's
+        // one stage; a probe that decoded nothing says `none`.
+        let facts = match &decoded {
+            Ok((name, hw, size, _)) => {
+                warm.render_stats
+                    .record(RenderPhase::Decode, name, decode_micros);
+                RunFacts {
+                    decode: Some((info.codec, name)),
+                    hw: *hw,
+                    largest: Some((size.width, size.height)),
+                    frames: 1,
+                    rt_factor_milli: 0,
+                }
+            }
+            Err(_) => RunFacts::default(),
+        };
+        result.media = Some(diag::run_media(&facts));
+    }
     match decoded {
         Ok((name, hw, size, format)) => {
             result.decodable = true;

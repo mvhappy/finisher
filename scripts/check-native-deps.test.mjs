@@ -115,6 +115,10 @@ test("the gate script runs on a fake metadata document", () => {
   const r = runGate("./check-native-deps.mjs", ["--root", root, "--metadata", meta]);
   assert.equal(r.code, 1);
   assert.match(r.out, /NATIVE_LICENSE_FILE/);
+  // A Windows checkout (`core.autocrlf=true`, which a parent `.gitattributes` does not reach
+  // inside a submodule) has the same text with CRLF line ends: the hash is of the LF text.
+  writeFileSync(join(root, "LICENSE-foo"), LIC.replace(/\n/g, "\r\n"));
+  assert.equal(runGate("./check-native-deps.mjs", ["--root", root, "--metadata", meta]).code, 0, "CRLF line ends hash as LF");
 });
 
 test("more build tools, build scripts that run a compiler, and listed versions are checked", () => {

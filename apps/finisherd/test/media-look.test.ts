@@ -194,7 +194,8 @@ describe("media.capabilities", () => {
     const c: MediaCapabilities = first;
     expect(c.codecs.video.find((v) => v.codec === "av1")).toMatchObject({ decode: "software", encode: "software", backends: ["dav1d", "svt-av1"] });
     expect(c.codecs.video.find((v) => v.codec === "hevc")).toMatchObject({ decode: "none", encode: "none" });
-    expect(c.worker).toEqual({ version: expect.stringMatching(/^\d+\.\d+\.\d+/), renderVersion: 2 });
+    // No profile is applied here (the worker profile is not ready by default): `none` (6B-1 Task 18).
+    expect(c.worker).toEqual({ version: expect.stringMatching(/^\d+\.\d+\.\d+/), renderVersion: 2, sandbox: "none" });
     expect(c.gpu === null || typeof c.gpu?.vendor === "number").toBe(true);
     const jobs = s.t.engine.list({}).jobs.filter((j) => j.kind === "media.capabilities").length;
     expect(await Effect.runPromise(caps(OWNER))).toEqual(first);
@@ -250,6 +251,12 @@ describe("media diagnostics (Task 14)", () => {
     expect(s.t.sink.forwarded.filter((f) => f.kind === "media.capabilities")).toHaveLength(1);
     const event = sent[0]?.payload as { gpu?: Record<string, unknown>; sandbox: string; copyPath: string };
     expect(event).toMatchObject({ sandbox: "none", copyPath: "copy" });
+    // v2 (6B-1 Task 19): rows per codec, profile and bit depth; the encoders; the audio rows.
+    expect(event).toMatchObject({
+      codecs: expect.arrayContaining([expect.objectContaining({ codec: "av1", profile: "main", bitDepth: 10, decode: "sw" })]),
+      encoders: [expect.objectContaining({ backend: "svt-av1", class: "software", codec: "av1" })],
+      audio: [expect.objectContaining({ codec: "aac", decode: "none" })],
+    });
     const gpu = first.gpu;
     if (gpu != null) {
       expect(event.gpu).toMatchObject({ vendorId: gpu.vendor, deviceId: gpu.device, software: gpu.software });

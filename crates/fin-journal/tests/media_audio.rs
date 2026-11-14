@@ -6,7 +6,7 @@ mod support;
 
 use fin_core::events::Source;
 use fin_core::events::names_jobs::{JOB_KINDS, WORKER_FAMILIES};
-use fin_core::events::names_media::{MEDIA_BACKENDS, MEDIA_CODECS};
+use fin_core::events::names_media::{MEDIA_AUDIO_CODECS, MEDIA_BACKENDS};
 use fin_core::events::payloads::{
     CopyPath, JobDone, JobMedia, JobOutcome, JobPriority, ResolutionBucket,
 };
@@ -29,7 +29,7 @@ fn done() -> JobDone {
         isolated: true,
         helpers: 0,
         media: Some(JobMedia {
-            codec: MEDIA_CODECS.get("aac").unwrap(),
+            codec: MEDIA_AUDIO_CODECS.get("aac").unwrap(),
             backend: MEDIA_BACKENDS.get("symphonia").unwrap(),
             hw: false,
             resolution: ResolutionBucket::Sd,
