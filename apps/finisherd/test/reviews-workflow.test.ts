@@ -7,9 +7,9 @@ import { join } from "node:path";
 import type { CredentialFile, ReviewItem, ReviewView, Snapshot } from "@finisher/contracts";
 import type { BranchView, CommittedTx, MergeReport, ReviewPlan } from "@finisher/core-types";
 import { Effect, Fiber } from "effect";
-import { afterEach, beforeEach, describe, expect, onTestFinished, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { b64u, canonicalEndpoint, proveMac } from "../src/auth/crypto.ts";
-import { openControlStore } from "../src/control/db.ts";
+import { type ControlStore, openControlStore } from "../src/control/db.ts";
 import { serve, StderrLogger } from "../src/main.ts";
 import { LOCAL } from "../src/principal.ts";
 import { mergeReview } from "../src/reviews/merge.ts";
@@ -35,8 +35,13 @@ beforeEach(async () => {
   local = await connect("local");
 });
 
+/** Control stores the fake-engine tests open: closed before the folder goes (`onTestFinished`
+ * runs after `afterEach`, and Windows cannot delete an open `control.db`). */
+const controls: ControlStore[] = [];
+
 afterEach(async () => {
   await Promise.all(clients.splice(0).map((c) => c.close().catch(() => undefined)));
+  for (const c of controls.splice(0)) await c.close();
   if (running !== undefined) await Effect.runPromise(Fiber.interrupt(running.fiber));
   running = undefined;
   rmSync(tmp, { recursive: true, force: true });
@@ -598,7 +603,7 @@ describe("the workflow on a fake engine", () => {
   function setup(plan: ReviewPlan, failDecisions = false) {
     mkdirSync(join(tmp, "control"), { recursive: true, mode: 0o700 });
     const control = openControlStore(join(tmp, "control"), { serverId: "sid-1", checkpoint: false });
-    onTestFinished(() => control.close());
+    controls.push(control);
     const store = new ReviewStore(control);
     const writes: string[] = [];
     const engine: ReviewEngine = {
