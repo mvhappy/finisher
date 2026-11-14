@@ -81,7 +81,7 @@ export function writeCredentialFile(path, file) {
 export function currentUserSid() {
   const r = spawnSync("whoami", ["/user", "/fo", "csv", "/nh"], { encoding: "utf8" });
   const sid = /"(S-1-[0-9-]+)"/.exec(r.stdout ?? "")?.[1];
-  if (r.status !== 0 || sid === undefined) throw new Error(`whoami /user failed: ${r.stdout}${r.stderr}`);
+  if (r.status !== 0 || sid === undefined) throw new Error(`whoami /user failed: ${r.error?.message ?? ""}${r.stdout ?? ""}${r.stderr ?? ""}`);
   return sid;
 }
 

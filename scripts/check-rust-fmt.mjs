@@ -16,13 +16,23 @@ function packages() {
 
 // `--per-package` takes the Windows path on any OS (its test).
 const perPackage = process.platform === "win32" || process.argv.includes("--per-package");
-const runs = perPackage ? packages().map((p) => ["-p", p]) : [["--all"]];
+let runs;
+try {
+  runs = perPackage ? packages().map((p) => ["-p", p]) : [["--all"]];
+} catch (e) {
+  console.log(`RUST_FMT_DRIFT: ${e.message}`);
+  process.exit(1);
+}
+let error;
 for (const which of runs) {
   const r = spawnSync("cargo", ["fmt", ...which, "--check", "--manifest-path", manifest], { encoding: "utf8" });
   if (r.error || r.status !== 0) {
     process.stdout.write(r.stdout ?? "");
     process.stderr.write(r.stderr ?? "");
-    console.log(`RUST_FMT_DRIFT: run \`cargo fmt --all\`${r.error ? ` (${r.error.message})` : ""}`);
-    process.exitCode = 1;
+    error ??= r.error?.message ?? "";
   }
+}
+if (error !== undefined) {
+  console.log(`RUST_FMT_DRIFT: run \`cargo fmt --all\`${error ? ` (${error})` : ""}`);
+  process.exitCode = 1;
 }
