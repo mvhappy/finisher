@@ -940,9 +940,12 @@ expression in their `Cargo.toml`, with the count; each crate's licence text is i
 `LICENSE-*` file in its package on crates.io. Where the expression has an `OR`, Finisher uses the
 crate under an alternative `deny.toml` allows.
 `objc2-core-media`, `objc2-core-video` and `objc2-video-toolbox` (macOS only) are declared by
-`fin-codecs` for VideoToolbox (sub-project 6B-1 plan Task 1) but no code calls them yet: the
+`fin-codecs` for VideoToolbox (sub-project 6B-1 plan Task 1), as are the Media Foundation features
+of the `windows` crate (`Win32_Media_MediaFoundation`), but no code calls them yet: the
 VideoToolbox and Media Foundation backends (plan Tasks 4–7) are not built. No OS framework is
-listed here; none is distributed.
+listed here; none is distributed. The OS components (VideoToolbox, CoreMedia, Media Foundation)
+are listed with `provider: os` in `third_party/runtime.json` instead (a deviation from 6B-1 plan
+Task 22, which named them for this file).
 
 - MIT OR Apache-2.0 (134):
   `allocator-api2` 0.2.21, `anstyle` 1.0.14, `arrayvec` 0.7.8, `ash` 0.38.0+1.3.281,
