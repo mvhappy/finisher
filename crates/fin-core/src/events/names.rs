@@ -149,6 +149,7 @@ pub static CLI_COMMANDS: NameTable = NameTable::new(
         "media.proxy",
         "media.status",
         "media.thumbs",
+        "media.wave",
         "merge",
         "param.set",
         "plugin.commands",

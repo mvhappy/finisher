@@ -331,6 +331,8 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   "media.thumbs": { scopes: ["project.read", "jobs.submit"], resolve: BRANCH },
   // 6C Task 18: an asset's PCM feed reads the project and may submit a job.
   "media.pcm": { scopes: ["project.read", "jobs.submit"], resolve: BRANCH },
+  // 6C Task 19: an asset's waveform peaks, the same.
+  "media.waveform": { scopes: ["project.read", "jobs.submit"], resolve: BRANCH },
   // 6B-1 Task 11: a write of the branch (one `asset.reprobe` record); `deep` also runs a job.
   "asset.reprobe": {
     scopes: ["project.write"],

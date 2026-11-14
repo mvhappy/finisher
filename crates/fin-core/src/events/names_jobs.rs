@@ -42,6 +42,7 @@ pub static JOB_KINDS: NameTable = NameTable::new(
         "media.proxy",
         "media.thumbs",
         "media.pcm",
+        "media.waveform",
     ],
 );
 

@@ -1635,6 +1635,22 @@
     },
     {
       "argKinds": {},
+      "group": "media",
+      "identity": [
+        "projectId",
+        "branch",
+        "asset"
+      ],
+      "name": "media.wave",
+      "rpcs": [
+        {
+          "method": "media.waveform"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
       "group": "fonts",
       "identity": [],
       "name": "fonts.ls",

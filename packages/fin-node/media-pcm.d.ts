@@ -18,3 +18,16 @@ export interface MediaPcmPlanRequest {
  * `ASSET_TYPE_UNSUPPORTED` for no channel, `INVALID_REQUEST` for a request that does not parse.
  */
 export declare function mediaPcmPlan(request: MediaPcmPlanRequest): { key: string; decoder: string; decoderClass: "os" | "gpu" | "software" | "plugin"; layout: "mono" | "stereo" };
+
+/** What `mediaWavePlan` is asked. */
+export interface MediaWavePlanRequest {
+  readonly fingerprint: string;
+  /** The `decoderClass` `mediaPcmPlan` returned for the same source. */
+  readonly decoderClass: "os" | "gpu" | "software" | "plugin";
+}
+
+/**
+ * 6C Task 19: the cache key a `media.waveform` job of the source will commit under (its decoder
+ * class is that of the source's `pcm48` plan) and the samples per peak of the levels of `peaks.bin`.
+ */
+export declare function mediaWavePlan(request: MediaWavePlanRequest): { key: string; levels: number[] };

@@ -60,7 +60,8 @@ fn hello_lists_the_media_kinds() {
             "media.probeDeep",
             "media.proxy",
             "media.thumbs",
-            "media.pcm"
+            "media.pcm",
+            "media.waveform"
         ]
     );
     assert!(WORKER_FAMILIES.get("media").is_some());

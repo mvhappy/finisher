@@ -35,6 +35,7 @@ pub mod media_pcm;
 pub mod media_probe;
 pub mod media_proxy;
 pub mod media_thumbs;
+pub mod media_wave;
 pub mod param;
 pub mod plugin;
 pub mod plugin_args;

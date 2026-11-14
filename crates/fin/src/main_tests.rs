@@ -104,6 +104,7 @@ fn every_registry_command_parses() {
         "media status a1",
         "media thumbs a1 --at 0,1.5s --max-side 128 --no-wait",
         "media pcm a1 --recipe pcm16m --no-wait",
+        "media wave a1 --no-wait",
         "fonts ls --cached --detail",
         "fonts fetch noto-sans",
         "fonts status",

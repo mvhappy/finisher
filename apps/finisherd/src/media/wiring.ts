@@ -7,6 +7,7 @@
 // URLs of Task 17: the tokens (dropped with their principal's tickets) and each listener's
 // media route. 6C Task 18: the PCM service, its first-use hook (an asset on an audio track gets a
 // background pcm48) and the pcm16m stage, registered at start (it needs no capability report).
+// 6C Task 19: the waveform service, whose background waveform follows a first-use pcm48's commit.
 import type { CommittedTx } from "@finisher/core-types";
 import { testHooks } from "@finisher/fin-node";
 import { Effect } from "effect";
@@ -25,6 +26,7 @@ import { type CapabilitiesCache, mediaCapabilities } from "./caps.ts";
 import { itemsOf, makePcmService, type PcmService, pcm16mStage } from "./pcm.ts";
 import { MEDIA_SYSTEM_OWNER, type ProxyService, makeProxyService } from "./proxy.ts";
 import { type ThumbsService, makeThumbsService } from "./thumbs.ts";
+import { type WaveService, makeWaveService } from "./wave.ts";
 import { proxy540Stage } from "./stages.ts";
 
 export interface MediaWiring {
@@ -41,7 +43,7 @@ export interface MediaWiring {
     engine: JobEngine,
     library: Pick<LibraryService, "registerStage" | "registry">,
     projects: Pick<ProjectRegistryShape, "ensure" | "snapshot" | "resolveBranch" | "dirOf">,
-  ) => { readonly capabilities: CapabilitiesCache; readonly proxies: ProxyService; readonly thumbs: ThumbsService; readonly pcm: PcmService };
+  ) => { readonly capabilities: CapabilitiesCache; readonly proxies: ProxyService; readonly thumbs: ThumbsService; readonly pcm: PcmService; readonly wave: WaveService };
 }
 
 export function mediaWiring(mediaCache: MediaCacheService, tickets: Pick<Tickets, "onDrop">, log: (message: string) => void): MediaWiring {
@@ -92,14 +94,17 @@ export function mediaWiring(mediaCache: MediaCacheService, tickets: Pick<Tickets
       const delay = testHooks === undefined ? 0 : Number(process.env.FIN_TEST_PROXY_DELAY_MS ?? 0);
       proxies = makeProxyService({ registry: projects, engine, capabilities, cache: () => mediaCache.cache, log, ...(Number.isFinite(delay) && delay > 0 ? { testDelayMs: delay } : {}) });
       if (library.registry.list().length > 0) void Effect.runPromise(Effect.ignore(capabilities(MEDIA_SYSTEM_OWNER)));
-      pcm = makePcmService({ registry: projects, engine, cache: () => mediaCache.cache, log });
+      // 6C Task 19: the waveform of a first-use pcm48 follows its commit (the service needs the PCM one, which calls back).
+      let wave: WaveService | undefined;
+      pcm = makePcmService({ registry: projects, engine, cache: () => mediaCache.cache, log, afterPcm48: (p, job) => wave?.afterPcm48(p, job) });
+      wave = makeWaveService({ registry: projects, pcm, engine, cache: () => mediaCache.cache, log });
       library.registerStage(pcm16mStage({ cache: () => mediaCache.cache }));
       for (const id of early) {
         void proxies.used(id);
         void pcm.used(id);
       }
       early.clear();
-      return { capabilities, proxies, thumbs: makeThumbsService({ engine, capabilities, proxies, cache: () => mediaCache.cache }), pcm };
+      return { capabilities, proxies, thumbs: makeThumbsService({ engine, capabilities, proxies, cache: () => mediaCache.cache }), pcm, wave };
     },
   };
 }

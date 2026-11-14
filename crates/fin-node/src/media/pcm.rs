@@ -7,7 +7,7 @@
 use fin_core::CoreError;
 use fin_media::AudioCodec;
 use fin_media::backend::VendorClass;
-use fin_media::jobs::{PcmLayout, PcmRecipe, pcm_plan_key};
+use fin_media::jobs::{PcmLayout, PcmRecipe, WAVE_LEVELS, pcm_plan_key, wave_key};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use serde::{Deserialize, Serialize};
@@ -54,5 +54,39 @@ pub fn media_pcm_plan(request_json: String) -> Result<String> {
         decoder: p.decoder.to_string(),
         decoder_class: p.decoder_class,
         layout: p.layout,
+    })
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WavePlanRequest {
+    fingerprint: String,
+    /// The vendor class of the decoder `mediaPcmPlan` planned for the source.
+    decoder_class: VendorClass,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WavePlan {
+    key: String,
+    /// Samples per peak of each level of `peaks.bin`.
+    levels: [u32; 5],
+}
+
+/// `{fingerprint, decoderClass}` JSON → `{key, levels}` JSON: the cache key a `media.waveform`
+/// job (6C Task 19) will commit under. The decoder class is the one `mediaPcmPlan` returned for
+/// the same source (the waveform is of the same decode as its `pcm48`), which also refused the
+/// sources nothing here decodes.
+#[napi(catch_unwind)]
+pub fn media_wave_plan(request_json: String) -> Result<String> {
+    let req: WavePlanRequest = serde_json::from_str(&request_json).map_err(|e| {
+        reject(CoreError::new(
+            "INVALID_REQUEST",
+            format!("mediaWavePlan: {e}"),
+        ))
+    })?;
+    encode(&WavePlan {
+        key: wave_key(&req.fingerprint, req.decoder_class).to_string(),
+        levels: WAVE_LEVELS,
     })
 }

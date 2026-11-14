@@ -121,6 +121,9 @@ fn main() {
         // `media.pcm` (6C Task 18): params and an item's value.
         g.subschema_for::<fin_media::jobs::PcmParams>();
         g.subschema_for::<fin_media::jobs::PcmResult>();
+        // `media.waveform` (6C Task 19): params and an item's value.
+        g.subschema_for::<fin_media::jobs::WaveParams>();
+        g.subschema_for::<fin_media::jobs::WaveResult>();
         g.subschema_for::<fin_library::RawRel>();
         g.subschema_for::<fin_library::Expect>();
         g.subschema_for::<fin_library::ScanEntry>();

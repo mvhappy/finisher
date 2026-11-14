@@ -20839,6 +20839,103 @@
       ],
       "type": "object"
     },
+    "WaveFrom": {
+      "description": "Where the peaks were made from.",
+      "oneOf": [
+        {
+          "const": "pcm48",
+          "description": "The source's `pcm48` entry.",
+          "type": "string"
+        },
+        {
+          "const": "decode",
+          "description": "The decoded original.",
+          "type": "string"
+        }
+      ]
+    },
+    "WaveParams": {
+      "additionalProperties": false,
+      "description": "`media.waveform` v1: the peaks of the asset whose content is `fingerprint`, which the cache\nknows as `key`. A batch kind of one item, the fingerprint.",
+      "properties": {
+        "asset": {
+          "description": "A project asset, through the job's `in/manifest.json`.",
+          "type": "string"
+        },
+        "branch": {
+          "description": "The branch whose head names the asset (`main` when absent). Host only.",
+          "type": "string"
+        },
+        "decoderClass": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/VendorClass"
+            }
+          ],
+          "description": "The vendor class the host expects the source's decoder to have (part of the key)."
+        },
+        "fingerprint": {
+          "type": "string"
+        },
+        "key": {
+          "description": "[`wave_key`] of the fields above: the worker writes `out/<key>/`.",
+          "type": "string"
+        },
+        "pcmKey": {
+          "description": "The source's `pcm48` entry the host found (its directory is in `in/pcm.json`).",
+          "type": "string"
+        },
+        "projectId": {
+          "description": "The project that asked (host only).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "fingerprint",
+        "decoderClass",
+        "key",
+        "asset"
+      ],
+      "type": "object"
+    },
+    "WaveResult": {
+      "additionalProperties": false,
+      "description": "What `media.waveform` v1 answers for its item (the fingerprint).",
+      "properties": {
+        "bytes": {
+          "description": "`peaks.bin`'s size.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "frames": {
+          "description": "Frames of the 48 kHz signal the peaks cover.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "from": {
+          "$ref": "#/$defs/WaveFrom"
+        },
+        "key": {
+          "type": "string"
+        },
+        "levels": {
+          "description": "Levels in `peaks.bin` (5).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "key",
+        "levels",
+        "frames",
+        "bytes",
+        "from"
+      ],
+      "type": "object"
+    },
     "Weights": {
       "description": "The model's weights class, from the catalogue at the time (§12.7).",
       "enum": [

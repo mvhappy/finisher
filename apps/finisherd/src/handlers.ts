@@ -474,6 +474,9 @@ export const HandlersLive = FinRpcs.toLayer(
       // 6C Task 18: an asset's pcm48 or pcm16m feed.
       "media.pcm": (req, options) =>
         guard("media.pcm", mediaProxy?.pcm === undefined ? Effect.fail(finError("SERVER_UNAVAILABLE", "PCM feeds are not served here", { feature: "mediaPcm" })) : mediaProxy.pcm.request(ownerOf(options), req)),
+      // 6C Task 19: an asset's waveform peaks.
+      "media.waveform": (req, options) =>
+        guard("media.waveform", mediaProxy?.wave === undefined ? Effect.fail(finError("SERVER_UNAVAILABLE", "waveforms are not served here", { feature: "mediaWaveform" })) : mediaProxy.wave.request(ownerOf(options), req)),
       "asset.reprobe": (req, options) =>
         guard(
           "asset.reprobe",

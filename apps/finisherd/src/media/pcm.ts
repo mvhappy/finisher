@@ -14,6 +14,8 @@
 //   here (or was open before the service started), the items a commit adds or moves otherwise. An
 //   asset counts as asked for once its feed was submitted or found, or it failed for good; a
 //   transient failure is tried again at the next open or commit.
+// - **After the commit** (6C Task 19) the waveform of the asset is made in the background (`afterPcm48`,
+//   `media/wave.ts`), from the entry just committed.
 // - **The `pcm16m` stage** (after `probe`): every library media file with an audio track this
 //   build decodes; its version is `<recipe version>.<RENDER_VERSION>.<AUDIO_VERSION>`, so either
 //   version moving makes every feed again (their keys move too).
@@ -62,6 +64,11 @@ export interface PcmServiceDeps {
   /** fin-node's `probe` (JSON); tests replace it. */
   readonly probe?: (path: string) => Promise<string>;
   readonly log?: (message: string) => void;
+  /**
+   * 6C Task 19: a `pcm48` feed of `p` is in the cache or was just submitted as `job` (first use);
+   * called once it is there to read, which the waveform builds on (`media/wave.ts`). Never awaited.
+   */
+  readonly afterPcm48?: (p: PcmParams, job?: string) => void;
 }
 
 export interface PcmService {
@@ -71,6 +78,8 @@ export interface PcmService {
    * `pcm48` of each asset of `main` used on an audio track, not asked for yet this run.
    */
   readonly used: (projectId: string, items?: ReadonlyArray<string>) => Promise<void>;
+  /** The `pcm48` plan of an asset (6C Task 19: the waveform's key and decoder class follow it). */
+  readonly planFeed: (projectId: string, branch: string, asset: string) => Effect.Effect<PcmParams, FinError>;
 }
 
 interface AssetJson {
@@ -112,13 +121,13 @@ export function audioAssetsOf(project: ProjectJson, only?: ReadonlySet<string>):
   return out;
 }
 
-function errorOf(job: JobView): FinError {
+export function errorOf(job: JobView): FinError {
   const e = job.error;
   return e === undefined || e === null ? finError("JOB_FAILED", `the PCM job ended ${job.state}`, { job: job.id, state: job.state }) : finError(e.code, e.message, e.details, e.fix);
 }
 
 const MAKING = new Set(["queued", "running", "paused"]);
-const endedWithout = (job: JobView): boolean => !MAKING.has(job.state) && job.state !== "succeeded";
+export const endedWithout = (job: JobView): boolean => !MAKING.has(job.state) && job.state !== "succeeded";
 
 /** The item's `PcmResult` of a succeeded job. */
 function resultOf(job: JobView, fingerprint: string): PcmResult | undefined {
@@ -225,8 +234,9 @@ export function makePcmService(deps: PcmServiceDeps): PcmService {
           const asked = yield* Effect.result(
             Effect.gen(function* () {
               const p = yield* plan(projectId, "main", id, a, "pcm48");
-              if ((yield* hit(p.key, projectId)) !== undefined) return;
-              yield* submit(MEDIA_SYSTEM_OWNER, p);
+              if ((yield* hit(p.key, projectId)) !== undefined) return deps.afterPcm48?.(p);
+              const job = yield* submit(MEDIA_SYSTEM_OWNER, p);
+              deps.afterPcm48?.(p, job.id);
             }),
           );
           asking.delete(seen);
@@ -237,7 +247,13 @@ export function makePcmService(deps: PcmServiceDeps): PcmService {
       }),
     ).catch(() => undefined);
 
-  return { request, used: usedHere };
+  const planFeed = (projectId: string, branch: string, asset: string): Effect.Effect<PcmParams, FinError> =>
+    Effect.gen(function* () {
+      const assets = (yield* assetsOf(projectId, branch)).assets ?? {};
+      return yield* plan(projectId, branch, asset, Object.hasOwn(assets, asset) ? assets[asset] : undefined, "pcm48");
+    });
+
+  return { request, used: usedHere, planFeed };
 }
 
 /** The stored probe's audio channels and codec (`probe.audio`, `probe.media.audio`), when the file has audio. */

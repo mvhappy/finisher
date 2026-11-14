@@ -6,3 +6,8 @@ export function mediaPcmPlan(request) {
   const { sourceCodec, ...rest } = request;
   return JSON.parse(sync(() => native.mediaPcmPlan(JSON.stringify(sourceCodec === undefined ? rest : request))));
 }
+
+/** A waveform's cache key before its job is submitted; see `media-pcm.d.ts`. */
+export function mediaWavePlan(request) {
+  return JSON.parse(sync(() => native.mediaWavePlan(JSON.stringify(request))));
+}
