@@ -21,8 +21,8 @@ function deps(over: Partial<PinDeps> & { files?: string[] }): PinDeps {
     ...over,
   };
 }
-const RES = `/app/resources/codex/linux-x64/${BIN}`;
-const CACHE = `/repo/.cache/codex/0.167.0/linux-x64/${BIN}`;
+const RES = join("/app/resources", "codex", "linux-x64", BIN);
+const CACHE = join("/repo/.cache/codex", "0.167.0", "linux-x64", BIN);
 
 describe("binary_path_order", () => {
   it("FIN_CODEX_BIN wins only in a test-hooks build", () => {
@@ -34,14 +34,17 @@ describe("binary_path_order", () => {
   it("a set FIN_CODEX_BIN that does not exist is not silently skipped in a test-hooks build", () => {
     expect(() => codexBinary(deps({ env: { FIN_CODEX_BIN: "/nope" }, testHooks: true, files: [RES] }))).toThrow(/FIN_CODEX_BIN/);
   });
+  it("FIN_CODEX_BIN must be absolute (the spawn's cwd is the workspace, not the server's)", () => {
+    expect(() => codexBinary(deps({ env: { FIN_CODEX_BIN: "fake/codex" }, testHooks: true, files: ["fake/codex", RES] }))).toThrow(/absolute/);
+  });
   it("resources beside finisherd, then the dev cache (a development checkout or a test-hooks build)", () => {
     expect(codexBinary(deps({ files: [RES, CACHE] }))).toBe(RES);
     expect(codexBinary(deps({ devCheckout: true, files: [CACHE] }))).toBe(CACHE);
     expect(codexBinary(deps({ testHooks: true, files: [CACHE] }))).toBe(CACHE);
   });
   it("Windows names are codex.exe under the win32 target", () => {
-    const d = deps({ platform: "win32", arch: "arm64", files: ["/app/resources/codex/win32-arm64/codex.exe"] });
-    expect(codexBinary(d)).toBe("/app/resources/codex/win32-arm64/codex.exe");
+    const exe = join("/app/resources", "codex", "win32-arm64", "codex.exe");
+    expect(codexBinary(deps({ platform: "win32", arch: "arm64", files: [exe] }))).toBe(exe);
   });
   it("none: PROVIDER_UNAVAILABLE notBundled", () => {
     try {
@@ -62,7 +65,7 @@ describe("binary_path_order", () => {
 });
 
 describe("binary_path_production_default", () => {
-  const EVIL = "/evil/res/codex/linux-x64/codex";
+  const EVIL = join("/evil/res", "codex", "linux-x64", "codex");
   it("an installed build reads neither FIN_RESOURCES_DIR nor the dev cache", () => {
     const env = { FIN_RESOURCES_DIR: "/evil/res" };
     expect(codexBinary(deps({ env, files: [EVIL, RES, CACHE] }))).toBe(RES);
@@ -87,6 +90,9 @@ describe("binary_path_production_default", () => {
       expect(d.cacheRoot).toBe(join(root, ".cache", "codex"));
       // This repository is a checkout (its `.git` beside the module tree), not an installation.
       expect(d.devCheckout).toBe(existsSync(join(root, ".git")));
+      // The module tree's root is the one holding the pin (pin.ts resolves it a fixed depth up).
+      expect(existsSync(join(root, "vendor", "codex", "pin.json"))).toBe(true);
+      expect(d.version).toBeTruthy();
     } finally {
       if (saved === undefined) delete process.env.FIN_RESOURCES_DIR;
       else process.env.FIN_RESOURCES_DIR = saved;

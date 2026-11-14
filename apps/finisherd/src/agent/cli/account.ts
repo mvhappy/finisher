@@ -309,7 +309,8 @@ export class CliAccounts {
    * record (a cached or in-flight read). It only ever keeps a refusal: while a change waits, an
    * answer asked no later than that change's answer arrived is **stale** and leaves it waiting
    * (a stale read of the recorded account never clears it); an answer naming another account is
-   * never dropped, however old (it becomes, or stays, a waiting change: fail closed). An
+   * not made the recorded account, however old (it becomes, or stays, a waiting change: fail
+   * closed; a third account read before the waiting one arrived leaves that one waiting). An
    * expectation (`expectNext`) is taken only by a read asked after it was set. `at` is always
    * when the answer arrived.
    */
@@ -337,7 +338,12 @@ export class CliAccounts {
       audits.get(keyOf(this.#serverData))?.(s.expectBy ?? { kind: "local", id: "server" }, { accountHash: hash, previousHash: s.current.hash }, this.#harness);
       return { hash, changed: false };
     }
-    if (s.pending?.hash !== hash || s.expectUntil !== undefined) this.#write({ v: 1, current: s.current, pending: this.#seen(hash, authMethod) });
+    // A timed sighting (`readAt`) that got past the staleness check above is the latest: its
+    // arrival is the time a switch back must be asked after, so the same account seen again moves
+    // it forward. An untimed one (an instance's own read) keeps 7D's record as it was.
+    if (s.pending?.hash !== hash || s.expectUntil !== undefined || readAt !== undefined) {
+      this.#write({ v: 1, current: s.current, pending: this.#seen(hash, authMethod) });
+    }
     return { hash, changed: true };
   }
 

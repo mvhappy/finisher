@@ -13,8 +13,13 @@
 // **What an installed build trusts** (review of Task 2): only (2). `FIN_RESOURCES_DIR` (which
 // replaces (2)'s directory, and must be absolute) and the dev cache (3) are read only when the
 // run is a development one: fin-node is a `test-hooks` build, or the module tree is a repository
-// checkout (a `.git` entry at its root, which an installation never has). So a production
-// server's environment cannot point it at another binary; a checkout's developer can.
+// checkout (a `.git` entry at its root, which an installation never has). So neither variable
+// redirects an installed build — but this rests on fin-node's own `testHooks`, and fin-node
+// loads its native binding from `FIN_NODE_BINARY_DIR` in any build (a `test-hooks` binding
+// there turns (1) on). That variable, like `NODE_OPTIONS`, already means arbitrary native code
+// in finisherd; gating it is a follow-up (TASKS.md 7E). `REPO` below assumes the installed tree
+// keeps this module five levels under the root that holds `resources/` and `vendor/codex/`
+// (sub-project 9's packaging must keep it, or pass the root in).
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -79,6 +84,7 @@ const notBundled = (why: string) =>
 export function codexBinary(deps: PinDeps = defaultPinDeps()): string {
   const override = deps.testHooks ? deps.env.FIN_CODEX_BIN : undefined;
   if (override !== undefined && override !== "") {
+    if (!isAbsolute(override)) throw notBundled(`FIN_CODEX_BIN must be an absolute path, not ${override}`);
     if (!deps.exists(override)) throw notBundled(`FIN_CODEX_BIN names ${override}, which does not exist`);
     return override;
   }

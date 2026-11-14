@@ -138,6 +138,45 @@ describe("the account record", () => {
     expect(accounts.pending()).toBe(b);
   });
 
+  test("a_later_sighting_of_the_waiting_change_moves_its_time", () => {
+    const data = serverData();
+    const key = accountKey(data);
+    let now = T0;
+    const accounts = new CliAccounts(data, { harness: "claudeCode", now: () => new Date(now) });
+    const a = accounts.observe(A, key).hash;
+    const b = accounts.hashOf(B, key);
+    now = T0 + 3_000;
+    expect(accounts.record(b, "claude.ai", { readAt: T0 + 2_500 }).changed).toBe(true);
+    // B seen again by a read asked at T0+5500 (answer at T0+6000).
+    now = T0 + 6_000;
+    expect(accounts.record(b, "claude.ai", { readAt: T0 + 5_500 })).toEqual({ hash: b, changed: true });
+    // A read of A asked at T0+4500 is older than that sighting: B still waits.
+    now = T0 + 7_000;
+    expect(accounts.record(a, "claude.ai", { readAt: T0 + 4_500 })).toEqual({ hash: b, changed: true });
+    expect(accounts.pending()).toBe(b);
+  });
+
+  test("an_expectation_is_taken_only_by_a_read_asked_after_it", () => {
+    const data = serverData();
+    const key = accountKey(data);
+    let now = T0;
+    const accounts = new CliAccounts(data, { harness: "claudeCode", now: () => new Date(now) });
+    accounts.observe(A, key);
+    const b = accounts.hashOf(B, key);
+    now = T0 + 10_000;
+    accounts.expectNext({ kind: "local", id: "server" });
+    // A cached answer asked before the expectation was set: B waits for a confirm.
+    expect(accounts.record(b, "claude.ai", { readAt: T0 + 9_000 })).toEqual({ hash: b, changed: true });
+    expect(accounts.pending()).toBe(b);
+    // With a fresh expectation, a read asked after it takes it.
+    expect(accounts.confirm(b).confirmed).toBe(true);
+    now = T0 + 20_000;
+    accounts.expectNext({ kind: "local", id: "server" });
+    const c = accounts.hashOf({ signedIn: true, authMethod: "claude.ai", label: "c@example.com" }, key);
+    expect(accounts.record(c, "claude.ai", { readAt: T0 + 20_500 })).toEqual({ hash: c, changed: false });
+    expect(accounts.pending()).toBeUndefined();
+  });
+
   test("switch_back_needs_a_read_begun_after_the_change_arrived", () => {
     const data = serverData();
     const key = accountKey(data);
