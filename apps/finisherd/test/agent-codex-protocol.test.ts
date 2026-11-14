@@ -5,10 +5,10 @@
 import { spawnSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { PassThrough } from "node:stream";
+import { PassThrough, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { FinError } from "@finisher/contracts";
-import { Cause, Effect, Exit, Fiber, Stream } from "effect";
+import { Cause, Effect, Exit, Fiber, Schema, Stream } from "effect";
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import {
@@ -16,6 +16,7 @@ import {
   CLIENT_REQUESTS,
   SERVER_NOTIFICATIONS,
   SERVER_REQUESTS,
+  ReasoningEffort,
   type TurnStatus,
   UnknownMember,
 } from "../src/agent/codex/generated/protocol.ts";
@@ -71,6 +72,9 @@ interface Harness {
   readonly feed: (chunk: string | Buffer) => void;
   readonly line: (msg: unknown) => void;
   readonly eof: () => void;
+  /** The server's stdout destroyed (its `close` without an `end`, as after a kill). */
+  readonly destroy: () => void;
+  readonly stdin: PassThrough;
 }
 
 function harness(): Harness {
@@ -98,6 +102,8 @@ function harness(): Harness {
     feed: (c) => stdout.write(c),
     line: (msg) => stdout.write(`${JSON.stringify(msg)}\n`),
     eof: () => stdout.end(),
+    destroy: () => stdout.destroy(),
+    stdin,
   };
 }
 
@@ -541,6 +547,196 @@ describe("client", () => {
     expect((await got).error?.code).toBe("PROVIDER_PROTOCOL");
     expect(await h.sentAtLeast(1)).toEqual([{ id: 1, error: { code: -32602, message: expect.stringContaining("item/tool/call") } }]);
     expect(asked).toEqual([]);
+  });
+});
+
+describe("client: exactly one answer, and every end", () => {
+  const tick = (ms = 20) => new Promise((r) => setTimeout(r, ms));
+  const approval = (id: number | string) => ({ id, method: "item/fileChange/requestApproval", params: { threadId: T, turnId: U, itemId: "fc", startedAtMs: 1 } });
+  const decline: ServerReply = { method: "item/fileChange/requestApproval", result: { decision: "decline" } };
+
+  it("stdout_close_without_end_is_eof", async () => {
+    const h = harness();
+    const got = drain(h.rpc);
+    const p = failure(h.rpc.request("model/list", {}));
+    await h.sentAtLeast(1);
+    h.line({ method: "thread/closed", params: { threadId: T } });
+    await tick();
+    h.destroy();
+    const e = await p;
+    expect(e.code).toBe("PROVIDER_EXITED");
+    expect(e.details).toEqual({ method: "model/list", reason: "eof" });
+    expect(await got).toEqual({ items: [{ method: "thread/closed", params: { threadId: T } }], error: null });
+  });
+
+  it("notify_refuses_any_other_method_at_run_time", async () => {
+    const h = harness();
+    for (const m of ["account/logout", "initialize", "Initialized", ""]) {
+      const e = await failure(h.rpc.notify(m as never));
+      expect(e.code, m).toBe("PROVIDER_PROTOCOL");
+      expect(e.details, m).toMatchObject({ reason: "methodNotAllowed" });
+    }
+    await tick();
+    expect(h.sent()).toEqual([]);
+    await run(h.rpc.notify("initialized"));
+    expect(await h.sentAtLeast(1)).toEqual([{ method: "initialized" }]);
+  });
+
+  it("a_handler_that_fails_dies_or_interrupts_itself_is_answered_32603", async () => {
+    const h = harness();
+    h.rpc.serve({
+      request: (r): Effect.Effect<ServerReply> =>
+        r.id === 1 ? (Effect.fail(new Error("typed")) as never) : r.id === 2 ? Effect.die(new Error("defect")) : r.id === 3 ? Effect.interrupt : Effect.succeed(decline),
+    });
+    for (const id of [1, 2, 3, 4]) h.line(approval(id));
+    const sent = await h.sentAtLeast(4);
+    const byId = new Map(sent.map((s) => [s.id, s]));
+    for (const id of [1, 2, 3]) expect(byId.get(id), String(id)).toEqual({ id, error: { code: -32603, message: expect.any(String) } });
+    expect(byId.get(4)).toEqual({ id: 4, result: { decision: "decline" } });
+    await tick();
+    expect(h.sent()).toHaveLength(4);
+  });
+
+  it("a_resolved_request_stops_its_handler_before_any_end", async () => {
+    const h = harness();
+    let interrupted = false;
+    h.rpc.serve({ request: () => Effect.never.pipe(Effect.onInterrupt(() => Effect.sync(() => void (interrupted = true)))) });
+    h.line(approval(11));
+    await tick();
+    expect(interrupted).toBe(false);
+    h.line({ method: "serverRequest/resolved", params: { threadId: T, requestId: 11 } });
+    await tick();
+    expect(interrupted).toBe(true);
+    expect(h.sent()).toEqual([]);
+    // the client is still open: a later request is served and answered
+    h.rpc.serve({ request: () => Effect.succeed(decline) });
+    h.line(approval(12));
+    expect(await h.sentAtLeast(1)).toEqual([{ id: 12, result: { decision: "decline" } }]);
+  });
+
+  it("a_resolved_handler_that_still_succeeds_is_not_answered", async () => {
+    const h = harness();
+    h.rpc.serve({ request: () => Effect.uninterruptible(Effect.as(Effect.sleep("30 millis"), decline)) });
+    h.line(approval(13));
+    await tick(5);
+    h.line({ method: "serverRequest/resolved", params: { threadId: T, requestId: 13 } });
+    await tick(60);
+    expect(h.sent()).toEqual([]);
+  });
+
+  it("a_held_request_resolved_before_serve_is_dropped", async () => {
+    const h = harness();
+    const asked: ServerRequest[] = [];
+    h.line(approval(21));
+    h.line(approval(22));
+    h.line({ method: "serverRequest/resolved", params: { threadId: T, requestId: 21 } });
+    await tick();
+    h.rpc.serve({ request: (r) => (asked.push(r), Effect.succeed(decline)) });
+    expect(await h.sentAtLeast(1)).toEqual([{ id: 22, result: { decision: "decline" } }]);
+    await tick();
+    expect(asked.map((r) => r.id)).toEqual([22]);
+    expect(h.sent()).toHaveLength(1);
+  });
+
+  it("a_duplicate_id_while_open_is_protocol_and_never_answered_twice", async () => {
+    const h = harness();
+    let interrupted = 0;
+    h.rpc.serve({ request: () => Effect.never.pipe(Effect.onInterrupt(() => Effect.sync(() => void interrupted++))) });
+    const got = drain(h.rpc);
+    h.line(approval(31));
+    h.line(approval(31));
+    const { error } = await got;
+    expect(error?.code).toBe("PROVIDER_PROTOCOL");
+    expect(error?.details).toMatchObject({ reason: "duplicateRequestId" });
+    await tick();
+    expect(interrupted).toBe(1);
+    expect(h.sent()).toEqual([]);
+    // an id reused once its request was answered is a new request
+    const h2 = harness();
+    h2.rpc.serve({ request: () => Effect.succeed(decline) });
+    h2.line(approval(41));
+    await h2.sentAtLeast(1);
+    h2.line(approval(41));
+    expect(await h2.sentAtLeast(2)).toEqual([
+      { id: 41, result: { decision: "decline" } },
+      { id: 41, result: { decision: "decline" } },
+    ]);
+  });
+
+  it("a_stop_interrupts_handlers_and_writes_nothing_after", async () => {
+    const h = harness();
+    let interrupted = false;
+    h.rpc.serve({
+      request: (r) =>
+        r.id === 51
+          ? Effect.never.pipe(Effect.onInterrupt(() => Effect.sync(() => void (interrupted = true))))
+          : Effect.uninterruptible(Effect.as(Effect.sleep("30 millis"), decline)),
+    });
+    const got = drain(h.rpc);
+    h.line(approval(51));
+    h.line(approval(52));
+    await tick(5);
+    h.feed("not json\n");
+    expect((await got).error?.code).toBe("PROVIDER_PROTOCOL");
+    await tick(60);
+    expect(interrupted).toBe(true);
+    expect(h.sent()).toEqual([]);
+  });
+
+  it("an_eof_writes_no_answer_for_interrupted_handlers", async () => {
+    const h = harness();
+    h.rpc.serve({ request: () => Effect.never });
+    h.line(approval(61));
+    await tick(5);
+    h.eof();
+    await tick();
+    expect(h.sent()).toEqual([]);
+  });
+
+  it("end_closes_stdin_and_later_requests_fail_stdin_closed", async () => {
+    const h = harness();
+    let finished = false;
+    let writes = 0;
+    const write = h.stdin.write.bind(h.stdin) as (...a: unknown[]) => boolean;
+    h.stdin.write = ((...a: unknown[]) => (writes++, write(...a))) as never;
+    h.stdin.on("finish", () => (finished = true));
+    h.rpc.end();
+    await tick();
+    expect(finished).toBe(true);
+    const e = await failure(h.rpc.request("account/read", {}));
+    expect(e.code).toBe("PROVIDER_EXITED");
+    expect(e.details).toEqual({ method: "account/read", reason: "stdinClosed" });
+    await run(h.rpc.notify("initialized"));
+    await tick();
+    // refused before any write: nothing is even tried after the end
+    expect(writes).toBe(0);
+    expect(h.sent()).toEqual([]);
+  });
+
+  it("a_failed_write_fails_its_request_at_once", async () => {
+    const stdout = new PassThrough();
+    const stdin = new Writable({ write: (_c, _e, cb) => cb(new Error("EPIPE")) });
+    const rpc = codexRpc({ stdin, stdout });
+    const e = await failure(rpc.request("account/read", {}));
+    expect(e.code).toBe("PROVIDER_EXITED");
+    expect(e.details).toEqual({ method: "account/read", reason: "stdinClosed" });
+  });
+
+  it("a_schema_min_length_is_decoded", () => {
+    // `ReasoningEffort` is `minLength: 1` in the pin: the generator keeps the constraint
+    expect(Schema.decodeUnknownResult(ReasoningEffort)("high")._tag).toBe("Success");
+    expect(Schema.decodeUnknownResult(ReasoningEffort)("")._tag).toBe("Failure");
+  });
+
+  it("an_error_response_for_no_request_says_so", async () => {
+    const h = harness();
+    const got = drain(h.rpc);
+    h.line({ id: null, error: { code: -32700, message: "Parse error" } });
+    const { error } = await got;
+    expect(error?.code).toBe("PROVIDER_PROTOCOL");
+    expect(error?.message).toMatch(/no request/);
+    expect(error?.message).not.toMatch(/never sent/);
+    expect(error?.details).toMatchObject({ rpcError: { code: -32700, message: "Parse error" } });
   });
 });
 

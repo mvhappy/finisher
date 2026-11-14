@@ -60,3 +60,30 @@ test("a method the schema lacks fails", () => {
     rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+test("a schema keyword the generator does not understand fails the generation", () => {
+  const version = readPinVersion(ROOT);
+  const bundle = `vendor/codex/${version}/schema/codex_app_server_protocol.schemas.json`;
+  for (const [what, add] of [
+    ["pattern", { pattern: "^[a-z]+$" }],
+    ["maximum", { maximum: 3 }],
+    ["const", { const: "high" }],
+    ["format", { format: "uri" }],
+  ]) {
+    const tmp = copyRoot([
+      bundle,
+      (t) => {
+        const j = JSON.parse(t);
+        const defs = j.definitions.v2?.ReasoningEffort ? j.definitions.v2 : j.definitions;
+        Object.assign(defs.ReasoningEffort, add);
+        return JSON.stringify(j);
+      },
+    ]);
+    try {
+      const f = findings(tmp);
+      assert.ok(f.some((x) => x.startsWith("CODEX_PROTOCOL_DRIFT") && x.includes("not understood")), `${what}: ${f.join("\n")}`);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  }
+});
