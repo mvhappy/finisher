@@ -104,6 +104,66 @@ fn frequency(bits: &mut Bits) -> Option<u32> {
     }
 }
 
+/// The object types whose specific config is a GASpecificConfig (14496-3 §1.6.2.1, Table 1.15).
+fn is_ga(object: u32) -> bool {
+    matches!(object, 1..=4 | 6 | 7 | 17 | 19..=23)
+}
+
+/// Skips a program_config_element (14496-3 §4.4.1.1, Table 4.2); `byte_alignment()` is relative
+/// to the start of the AudioSpecificConfig.
+fn skip_pce(bits: &mut Bits) -> Option<()> {
+    bits.take(4 + 2 + 4)?; // element_instance_tag, object_type, sampling_frequency_index
+    let (front, side, back) = (bits.take(4)?, bits.take(4)?, bits.take(4)?);
+    let (lfe, assoc, cc) = (bits.take(2)?, bits.take(3)?, bits.take(4)?);
+    if bits.take(1)? == 1 {
+        bits.take(4)?; // mono_mixdown_element_number
+    }
+    if bits.take(1)? == 1 {
+        bits.take(4)?; // stereo_mixdown_element_number
+    }
+    if bits.take(1)? == 1 {
+        bits.take(3)?; // matrix_mixdown_idx, pseudo_surround_enable
+    }
+    for _ in 0..front + side + back {
+        bits.take(5)?; // is_cpe, tag_select
+    }
+    for _ in 0..lfe + assoc {
+        bits.take(4)?;
+    }
+    for _ in 0..cc {
+        bits.take(5)?; // cc_element_is_ind_sw, valid_cc_element_tag_select
+    }
+    bits.take((8 - bits.1 % 8) % 8)?;
+    let comment = bits.take(8)?;
+    bits.take(8 * comment as usize)?;
+    Some(())
+}
+
+/// Reads a GASpecificConfig (14496-3 §4.4.1, Table 4.1) for `object` with `channels`.
+fn skip_ga(bits: &mut Bits, object: u32, channels: u32) -> Option<()> {
+    bits.take(1)?; // frameLengthFlag
+    if bits.take(1)? == 1 {
+        bits.take(14)?; // coreCoderDelay
+    }
+    let extension = bits.take(1)?;
+    if channels == 0 {
+        skip_pce(bits)?;
+    }
+    if matches!(object, 6 | 20) {
+        bits.take(3)?; // layerNr
+    }
+    if extension == 1 {
+        if object == 22 {
+            bits.take(5 + 11)?; // numOfSubFrame, layer_length
+        }
+        if matches!(object, 17 | 19 | 20 | 23) {
+            bits.take(3)?; // the three resilience flags
+        }
+        bits.take(1)?; // extensionFlag3
+    }
+    Some(())
+}
+
 /// Parses an AudioSpecificConfig far enough to choose a decoder; `None` when it is cut or
 /// malformed.
 pub(crate) fn parse_asc(asc: &[u8]) -> Option<Asc> {
@@ -117,15 +177,11 @@ pub(crate) fn parse_asc(asc: &[u8]) -> Option<Asc> {
         frequency(&mut bits)?; // extensionSamplingFrequency
         object = object_type(&mut bits)?;
     }
-    // Backward-compatible signalling (14496-3 §1.6.5.2): after an LC GASpecificConfig
-    // (frameLengthFlag, dependsOnCoreCoder, extensionFlag), a sync extension 0x2b7 naming SBR.
-    if object == AOT_LC && channels != 0 && !he_aac {
-        bits.take(1)?;
-        if bits.take(1)? == 1 {
-            bits.take(14)?;
-        }
-        bits.take(1)?;
-        if bits.left() >= 16 && bits.take(11)? == 0x2b7 {
+    // Backward-compatible signalling (14496-3 §1.6.2.1, §1.6.5.2): after the GASpecificConfig,
+    // a sync extension 0x2b7 naming SBR with sbrPresentFlag set (PS only comes with SBR).
+    if is_ga(object) {
+        skip_ga(&mut bits, object, channels)?;
+        if !he_aac && bits.left() >= 16 && bits.take(11)? == 0x2b7 {
             let ext = object_type(&mut bits)?;
             if ext == AOT_SBR && bits.take(1)? == 1 {
                 he_aac = true;
@@ -218,6 +274,80 @@ mod tests {
         // The same with sbrPresentFlag 0 is plain LC.
         let p = parse_asc(&[0x13, 0x10, 0x56, 0xE5, 0x18]).unwrap();
         assert!(!p.he_aac, "{p:?}");
+    }
+
+    /// A big-endian bit writer for hand-built configs.
+    #[derive(Default)]
+    struct W(Vec<bool>);
+
+    impl W {
+        fn put(&mut self, v: u32, n: usize) -> &mut Self {
+            self.0.extend((0..n).rev().map(|i| v >> i & 1 == 1));
+            self
+        }
+        fn align(&mut self) -> &mut Self {
+            while !self.0.len().is_multiple_of(8) {
+                self.0.push(false);
+            }
+            self
+        }
+        fn clone_bytes(&self) -> Vec<u8> {
+            W(self.0.clone()).bytes()
+        }
+        fn bytes(&mut self) -> Vec<u8> {
+            self.align();
+            self.0
+                .chunks(8)
+                .map(|c| c.iter().fold(0u8, |a, b| a << 1 | u8::from(*b)))
+                .collect()
+        }
+    }
+
+    /// The SBR sync extension: 0x2b7, SBR, sbrPresentFlag 1, extension index 3 (48 kHz).
+    fn sbr_sync(w: &mut W) -> &mut W {
+        w.put(0x2b7, 11).put(AOT_SBR, 5).put(1, 1).put(3, 4)
+    }
+
+    #[test]
+    fn extension_flag3_is_read_before_the_sync_extension() {
+        // LC 24 kHz stereo, GASpecificConfig 0 0 1 (extensionFlag) + extensionFlag3 0, then SBR.
+        let asc = [0x13, 0x11, 0x2b, 0x72, 0xcc];
+        let p = parse_asc(&asc).unwrap();
+        assert!(p.he_aac && p.object == AOT_LC, "{p:?}");
+        let mut w = W::default();
+        w.put(AOT_LC, 5).put(6, 4).put(2, 4).put(0b001, 3).put(0, 1);
+        assert_eq!(sbr_sync(&mut w).bytes(), asc);
+        // dependsOnCoreCoder with its 14-bit delay before extensionFlag.
+        let mut w = W::default();
+        w.put(AOT_LC, 5)
+            .put(6, 4)
+            .put(2, 4)
+            .put(0, 1)
+            .put(1, 1)
+            .put(0x1555, 14)
+            .put(1, 1)
+            .put(0, 1);
+        assert!(parse_asc(&sbr_sync(&mut w).bytes()).unwrap().he_aac);
+    }
+
+    #[test]
+    fn a_program_config_element_is_skipped_before_the_sync_extension() {
+        // channelConfiguration 0: a PCE (one front CPE, a 2-byte comment) follows extensionFlag.
+        let mut w = W::default();
+        w.put(AOT_LC, 5).put(6, 4).put(0, 4).put(0b000, 3);
+        w.put(0, 4).put(1, 2).put(6, 4); // element_instance_tag, object_type, sf index
+        w.put(1, 4)
+            .put(0, 4)
+            .put(0, 4)
+            .put(0, 2)
+            .put(0, 3)
+            .put(0, 4); // front … cc
+        w.put(0, 1).put(0, 1).put(0, 1); // no mixdowns
+        w.put(1, 1).put(0, 4); // the front CPE
+        w.align().put(2, 8).put(0x41, 8).put(0x42, 8); // comment
+        let plain = parse_asc(&w.clone_bytes()).unwrap();
+        assert!(!plain.he_aac && plain.channels == 0, "{plain:?}");
+        assert!(parse_asc(&sbr_sync(&mut w).bytes()).unwrap().he_aac);
     }
 
     #[test]

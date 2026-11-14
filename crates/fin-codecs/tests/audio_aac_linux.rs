@@ -274,9 +274,12 @@ fn open_esds(asc: &[u8]) -> Result<Box<dyn fin_codecs::AudioDecoder>, fin_core::
 #[test]
 fn he_aac_refused_with_plugin_fix() {
     // Explicit SBR: object type 5, core 24 kHz, stereo, extension 48 kHz, then AAC-LC.
+    // Then backward-compatible SBR after an LC GASpecificConfig, without and with
+    // extensionFlag (whose extensionFlag3 bit precedes the sync extension).
     for asc in [
         &[0x2B, 0x11, 0x88, 0x00][..],
         &[0x13, 0x10, 0x56, 0xE5, 0x98],
+        &[0x13, 0x11, 0x2b, 0x72, 0xcc],
     ] {
         let e = open_esds(asc).err().expect("HE-AAC is refused");
         assert_eq!(e.code, "CODEC_UNAVAILABLE", "{asc:?}");
@@ -309,7 +312,7 @@ fn aac_corrupt_typed() {
         ("CODEC_UNAVAILABLE", &"channels".into())
     );
     // Garbage and cut packets: typed, never a panic (a garbage packet may also parse, e.g. one
-    // whose first element is ID_END; at least the cut ones fail).
+    // whose first element is ID_END).
     let enc = encode(&stereo_sine(1000.0, -6.0, 4800), 2, 192_000);
     let mut seed = 0x2545_f491_u32;
     let mut garbage: Vec<Vec<u8>> = (0..64)
@@ -327,20 +330,29 @@ fn aac_corrupt_typed() {
         .map(|p| p.data[..p.data.len() / 2].to_vec())
         .collect();
     garbage.extend(cut.iter().cloned());
-    let mut failed = 0;
+    let typed = |bad: &[u8], e: &fin_core::CoreError| {
+        assert!(
+            matches!(e.code.as_str(), "DECODE_FAILED" | "CODEC_UNAVAILABLE"),
+            "{bad:?}: {e:?}"
+        );
+        assert_eq!(e.details["backend"], "symphonia");
+    };
     for bad in &garbage {
         let mut d = open_audio_decoder(&info(2), &AudioConfig::Record(enc.config.clone())).unwrap();
         if let Err(e) = d.send(bad, 0) {
-            failed += 1;
-            assert!(
-                matches!(e.code.as_str(), "DECODE_FAILED" | "CODEC_UNAVAILABLE"),
-                "{bad:?}: {e:?}"
-            );
-            assert_eq!(e.details["backend"], "symphonia");
+            typed(bad, &e);
         }
     }
-    assert!(failed >= cut.len(), "{failed} of {} failed", garbage.len());
-    // A cut packet inside a file, and a cut file: typed through the reader.
+    // Every truncated packet fails, each with a typed error.
+    for (i, bad) in cut.iter().enumerate() {
+        let mut d = open_audio_decoder(&info(2), &AudioConfig::Record(enc.config.clone())).unwrap();
+        let e = d
+            .send(bad, 0)
+            .err()
+            .unwrap_or_else(|| panic!("cut packet {i} decoded"));
+        typed(bad, &e);
+    }
+    // A cut packet inside a file: typed through the reader.
     let mut broken = encode(&stereo_sine(1000.0, -6.0, 4800), 2, 192_000);
     broken.packets[2].data = cut[1].clone();
     let e = read(mp4(&broken, 2)).unwrap_err();
@@ -348,17 +360,23 @@ fn aac_corrupt_typed() {
         matches!(e.code.as_str(), "DECODE_FAILED" | "CODEC_UNAVAILABLE"),
         "{e:?}"
     );
+    // A cut file (Task 12's contract): a typed error, never a panic and never a silent short
+    // read, at every cut point.
     let bytes = mp4(&enc, 2);
-    for cut in [bytes.len() / 3, bytes.len() / 2, bytes.len() - 9] {
-        if let Err(e) = read(bytes[..cut].to_vec()) {
-            assert!(
-                matches!(
-                    e.code.as_str(),
-                    "MEDIA_CORRUPT" | "DECODE_FAILED" | "UNSUPPORTED_CONTAINER"
-                ),
-                "{cut}: {e:?}"
-            );
-        }
+    for cut in (1..10)
+        .map(|k| bytes.len() * k / 10)
+        .chain([bytes.len() - 1])
+    {
+        let e = read(bytes[..cut].to_vec())
+            .err()
+            .unwrap_or_else(|| panic!("{cut} of {} bytes read without an error", bytes.len()));
+        assert!(
+            matches!(
+                e.code.as_str(),
+                "MEDIA_CORRUPT" | "DECODE_FAILED" | "UNSUPPORTED_CONTAINER"
+            ),
+            "{cut}: {e:?}"
+        );
     }
 }
 
