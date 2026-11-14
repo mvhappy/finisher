@@ -1,0 +1,31 @@
+{
+  "about": "What plan 7D Task 0 recorded about Claude Code 2.1.321 started under fin-sandbox-exec on Linux (Landlock enforced, no namespaces, 2026-11-13; raw logs in the maintainer's archive/). `deniedReads` are the reads the `agent` profile refused during that start, a trailing `/*` means every file below the directory (the names were not kept); `install` is the layout of the CLI's install tree. Home is written <home>. toolchain_list_is_minimal (tests/toolchain_claude.rs) holds data/linux/toolchain-claudeCode.txt to this file: every entry covers a recorded read, and a recorded read is either covered or named under `tolerated` with the reason it is not granted.",
+  "version": "2.1.321",
+  "deniedReads": [
+    "/usr/share/ca-certificates",
+    "/proc/stat",
+    "/proc/version",
+    "/proc/sys/vm/*",
+    "/sys/devices/system/cpu/online",
+    "/sys/kernel/mm/transparent_hugepage/*",
+    "/proc/self/statm",
+    "/proc/self/stat",
+    "/proc/self/cgroup",
+    "/proc/self/uid_map",
+    "/etc/machine-id",
+    "<home>/.gitconfig"
+  ],
+  "tolerated": {
+    "/proc/self/statm": "a per-process link: no Landlock root can name it (roots are opened without following links)",
+    "/proc/self/stat": "as /proc/self/statm",
+    "/proc/self/cgroup": "as /proc/self/statm",
+    "/proc/self/uid_map": "as /proc/self/statm",
+    "/etc/machine-id": "a host identifier; the CLI carries on without it",
+    "<home>/.gitconfig": "the user's git configuration; the session's own is GIT_CONFIG_GLOBAL"
+  },
+  "install": {
+    "link": "<home>/.local/bin/claude",
+    "target": "<home>/.local/share/claude/versions/2.1.321",
+    "note": "one file; a newer version is a new file beside it, so the readable directory is the target's parent"
+  }
+}

@@ -157,6 +157,7 @@ impl Runner {
         };
         let settings = Settings::load(args.str("--settings"));
         observed.set("settings", json!(settings.state));
+        super::loads::observe(&args, &mut observed);
         let mcp = mcp::Mcp::new(settings::mcp_servers(args.str("--mcp-config")));
         let mode = match args.str("--permission-mode") {
             None | Some("manual") => "default",

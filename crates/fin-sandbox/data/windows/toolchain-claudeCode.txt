@@ -1,0 +1,5 @@
+# Claude Code's own read list for Windows, on top of toolchain-base.txt (plan 7D Task 14).
+# Empty: nothing is proven. A Windows session runs the CLI's own tools with the project's
+# AppContainer; its reads are the base list, the install tree (`extraRead`) and the sign-in
+# store's capability grant (7D Task 13).
+# TODO(7D Task 18): record the AppContainer's denials on Windows 11 and list what a start needs.

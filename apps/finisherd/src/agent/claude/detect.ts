@@ -32,6 +32,7 @@ import { finError } from "../../errors.ts";
 import type { Capabilities } from "../adapter.ts";
 import { openHostSandbox, type SandboxedChild, type SessionSandbox, type SessionSandboxDeps } from "../sandbox.ts";
 import { type ClaudeCodeSettings, claudeCodeSettings } from "../settings.ts";
+import { installTreeRead } from "./install.ts";
 import { accountChanged, accountCheck, accountIdentified, accountKey, accountProblem, ClaudeAccounts, labelOfOutput } from "./account.ts";
 
 /**
@@ -247,7 +248,7 @@ async function finish(child: SandboxedChild, ms: number, step: string): Promise<
 /** Runs the CLI once in `box` (its folder readable), to its end. */
 function run(box: SessionSandbox, real: string, args: readonly string[], ms: number, platform: NodeJS.Platform): Effect.Effect<Ran, FinError> {
   const env = { DISABLE_AUTOUPDATER: "1", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" };
-  return box.spawn([real, ...args], { cwd: box.workspace, stdio: "pipe", env, extraRead: [pathOf(platform).dirname(real)] }).pipe(
+  return box.spawn([real, ...args], { cwd: box.workspace, stdio: "pipe", env, extraRead: installTreeRead(real, platform) }).pipe(
     Effect.flatMap((child) => Effect.tryPromise({ try: () => finish(child, ms, args.join(" ")), catch: (e) => e as FinError })),
   );
 }
