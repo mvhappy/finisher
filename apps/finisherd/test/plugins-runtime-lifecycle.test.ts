@@ -249,7 +249,10 @@ describe("crash loop", () => {
     expect((await run(r.engine.get(holder.id))).state).toBe("running");
     // The idle process of another key of the plugin is stopped too.
     expect(await alive(other)).toBe(false);
-    expect(plugin(r).filter((w) => w.key.startsWith(`${ID}@`))).toEqual([]);
+    // A retiring process leaves the table once it has exited (slower on Windows).
+    const mine = () => plugin(r).filter((w) => w.key.startsWith(`${ID}@`));
+    for (let i = 0; i < 100 && mine().length > 0; i++) await new Promise((x) => setTimeout(x, 20));
+    expect(mine()).toEqual([]);
     await run(r.engine.cancel(holder.id));
   });
 

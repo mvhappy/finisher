@@ -11,7 +11,7 @@
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, posix } from "node:path";
 import type { AclGrant, HookInput, HookRequest } from "@finisher/core-types";
 import { sandboxHookCheck, sandboxHookGrants, sandboxStatus } from "@finisher/fin-node";
 import { Effect } from "effect";
@@ -375,7 +375,7 @@ describe("modes (Decision 9)", () => {
 describe("the program (Decision 6)", () => {
   test("program_resolution: node, a declaring-folder path, an absolute path, a bare name", () => {
     expect(programOf("node", "/d", "linux")).toEqual({ path: process.execPath, node: true });
-    expect(programOf("./bin/check", "/d", "linux")).toEqual({ path: join("/d", "bin", "check") });
+    expect(programOf("./bin/check", "/d", "linux")).toEqual({ path: posix.join("/d", "bin", "check") });
     expect(programOf("/usr/bin/git", "/d", "linux")).toEqual({ path: "/usr/bin/git" });
     expect(programOf("git", "/d", "linux")).toEqual({ bare: "git" });
     // Windows: an `.exe`, or finisherd's own Node; nothing a shell runs.
@@ -418,14 +418,17 @@ describe("the program (Decision 6)", () => {
     const h = userHook(f, ["--reply", "allow"]);
     expect(h.program).toEqual({ path: process.execPath, node: true });
     expect(h.run[0]).toBe("node");
-    // A project hook's `run[0]` with a separator is the very path its hash binds.
-    writeFileSync(join(f.dir, "finisher.hooks.json"), JSON.stringify({ hooks: [{ id: "p", event: "PreCommand", run: ["./hooks/../fake-hook.mjs"] }] }));
+    // A project hook's `run[0]` with a separator is the very path its hash binds (on Windows an
+    // .exe: a script is never a program there).
+    const own = WIN ? "tool.exe" : "fake-hook.mjs";
+    if (WIN) writeFileSync(join(f.dir, own), "x");
+    writeFileSync(join(f.dir, "finisher.hooks.json"), JSON.stringify({ hooks: [{ id: "p", event: "PreCommand", run: [`./hooks/../${own}`] }] }));
     const listed = f.config.list("p1");
     f.trusts.set("p1", { projectId: "p1", rulesHash: "none", hooksHash: listed.hooksHash!, trustedAt: 0, by: "console:owner" });
     const p = cmd(f.config.hooks("p1").find((x) => x.layer === "project"));
-    expect(listed.projectHooksFiles).toEqual(["fake-hook.mjs"]);
+    expect(listed.projectHooksFiles).toEqual([own]);
     expect(p.program).toEqual({ path: join(f.dir, ...listed.projectHooksFiles![0]!.split("/")) });
-    expect(p.file).toBe(join(f.dir, "fake-hook.mjs"));
+    expect(p.file).toBe(join(f.dir, own));
   });
 
   test.skipIf(!WIN)("program_resolution: Windows refuses a .cmd at load (the layer is unreadable)", () => {
@@ -492,9 +495,10 @@ describe("the program (Decision 6)", () => {
       [fakeSpec("a", ["--read", join(f.dir, "secret.txt")]), /names the project folder/],
       [fakeSpec("b", ["--read", "sub/../fake-hook.mjs"]), /\.\. segment/],
       [fakeSpec("c", ["--read", "..\\up"]), /\.\. segment/],
-      [{ id: "d", event: "PreCommand", run: ["./fake-hook.mjs"], file: "data.json" }, /is the hook's own file/],
+      [{ id: "d", event: "PreCommand", run: [WIN ? "./tool.exe" : "./fake-hook.mjs"], file: "data.json" }, /is the hook's own file/],
     ];
     writeFileSync(join(f.dir, "data.json"), "{}");
+    if (WIN) writeFileSync(join(f.dir, "tool.exe"), "x");
     for (const [spec, why] of cases) {
       writeFileSync(join(f.dir, "finisher.hooks.json"), JSON.stringify({ hooks: [spec] }));
       const p = f.config.project("p1");

