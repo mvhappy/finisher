@@ -9,9 +9,11 @@
 //! 2. **Sources**, decided once per asset for the whole job: an asset with a `pcm48` entry in the
 //!    manifest's `pcm` that verifies (every chunk's size and BLAKE3) is read from it
 //!    ([`CachedSource`], one per mix: random access); otherwise its original is decoded
-//!    (`fin-library`'s no-follow opener, then `AudioReader` → canonical → 48 kHz), **one decoder
-//!    per item** (a [`DecodedSource`] reads forward only), opened at the item's first read and
-//!    closed when it ends. An asset with neither is silent and noted `missingSource {asset,
+//!    (`fin-library`'s no-follow opener, then `AudioReader` → canonical → 48 kHz) through a
+//!    **pool of decoders per asset** within a mix: a [`DecodedSource`] reads forward only, so an
+//!    item takes, at its first read, an idle decoder not past it (opening one only when none is
+//!    free), and gives it back when it ends. An entry that verified but no longer opens falls
+//!    back to the decode. An asset with neither is silent and noted `missingSource {asset,
 //!    reason}`.
 //! 3. **The mixes:** the master bus and one per track (that track's items alone; a nested
 //!    timeline's items count for the track their compound clip is on), each a `fin_audio::listen`
@@ -22,8 +24,10 @@
 //!
 //! Nothing is written to `out/`; the answer is the job's result ([`ListenResult`]).
 
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use fin_audio::channels::Canonical;
 use fin_audio::listen::{Pass, filter_plan, range, stretch_extreme};
@@ -125,16 +129,83 @@ enum Verdict {
     Missing(String),
 }
 
-/// An item's decoded original, opened on its first read (so a long plan does not hold a decoder
-/// and a file per item from the start; the mixer drops it once the item has ended).
-struct LazyDecoded {
+/// How much decoding the job did: decoders opened, and output frames decoded (each decoder
+/// decodes from frame 0 to the furthest end it was read to).
+#[derive(Default)]
+struct Counters {
+    opened: Cell<u32>,
+    decoded: Cell<u64>,
+}
+
+/// One decoder of a pool: the frame its next read may start at, the furthest end read, and
+/// whether a live item holds it.
+struct Pooled {
+    src: DecodedSource,
+    pos: i64,
+    furthest: i64,
+    busy: bool,
+}
+
+/// One asset's decoders within a mix. An item takes, at its first read, the idle decoder that is
+/// furthest along but not past that read (a `DecodedSource` reads forward only), and opens a new
+/// one only when every decoder is past it or held; it gives it back when the mixer drops it (its
+/// item has ended). So cuts of one original at increasing offsets walk one decoder forward: the
+/// decode work is about the source length times the backward jumps, not the sum of the offsets.
+struct Pool {
     original: OriginalFile,
     confine: Option<PathBuf>,
     layout: PcmLayout,
-    inner: Option<DecodedSource>,
+    decoders: Vec<Pooled>,
+    counters: Rc<Counters>,
 }
 
-impl PcmSource for LazyDecoded {
+impl Pool {
+    /// A decoder for a first read at `at`, marked held.
+    fn take(&mut self, at: i64) -> Result<usize, CoreError> {
+        let at = at.max(0);
+        let best = (0..self.decoders.len())
+            .filter(|&i| !self.decoders[i].busy && self.decoders[i].pos <= at)
+            .max_by_key(|&i| self.decoders[i].pos);
+        let i = match best {
+            Some(i) => i,
+            None => {
+                let file =
+                    open_original_in(&self.original, self.confine.as_deref()).map_err(|r| {
+                        CoreError::new("ORIGINALS_MISSING", r.message)
+                            .with_details(json!({ "reason": r.reason }))
+                    })?;
+                let src = DecodedSource::open(file, PcmRecipe::Pcm48)?;
+                if src.feed_layout() != self.layout {
+                    return Err(CoreError::new(
+                        "MEDIA_CORRUPT",
+                        "the original's channel layout changed during the listen",
+                    )
+                    .with_details(json!({ "reason": "channelsChange" })));
+                }
+                self.counters.opened.set(self.counters.opened.get() + 1);
+                self.decoders.push(Pooled {
+                    src,
+                    pos: 0,
+                    furthest: 0,
+                    busy: false,
+                });
+                self.decoders.len() - 1
+            }
+        };
+        self.decoders[i].busy = true;
+        Ok(i)
+    }
+}
+
+/// An item's decoded original: a decoder of its asset's pool, taken at the item's first read and
+/// given back when the mixer drops the source (once the item has ended).
+struct PooledSource {
+    pool: Rc<RefCell<Pool>>,
+    layout: PcmLayout,
+    slot: Option<usize>,
+}
+
+impl PcmSource for PooledSource {
     fn layout(&self) -> SourceLayout {
         match self.layout {
             PcmLayout::Mono => SourceLayout::Mono,
@@ -143,25 +214,37 @@ impl PcmSource for LazyDecoded {
     }
 
     fn read(&mut self, at: i64, frames: usize, out: &mut Canonical) -> Result<(), CoreError> {
-        if self.inner.is_none() {
-            let file = open_original_in(&self.original, self.confine.as_deref()).map_err(|r| {
-                CoreError::new("ORIGINALS_MISSING", r.message)
-                    .with_details(json!({ "reason": r.reason }))
-            })?;
-            let src = DecodedSource::open(file, PcmRecipe::Pcm48)?;
-            if src.feed_layout() != self.layout {
-                return Err(CoreError::new(
-                    "MEDIA_CORRUPT",
-                    "the original's channel layout changed during the listen",
-                )
-                .with_details(json!({ "reason": "channelsChange" })));
+        let mut pool = self.pool.borrow_mut();
+        let i = match self.slot {
+            Some(i) => i,
+            None => {
+                let i = pool.take(at)?;
+                self.slot = Some(i);
+                i
             }
-            self.inner = Some(src);
+        };
+        let counters = pool.counters.clone();
+        let d = &mut pool.decoders[i];
+        let end = at.saturating_add(frames as i64);
+        if end > d.furthest {
+            counters
+                .decoded
+                .set(counters.decoded.get() + (end - d.furthest) as u64);
+            d.furthest = end;
         }
-        self.inner
-            .as_mut()
-            .expect("opened above")
-            .read(at, frames, out)
+        d.src.read(at, frames, out)?;
+        d.pos = d.pos.max(at);
+        Ok(())
+    }
+}
+
+impl Drop for PooledSource {
+    fn drop(&mut self) {
+        if let Some(i) = self.slot
+            && let Ok(mut pool) = self.pool.try_borrow_mut()
+        {
+            pool.decoders[i].busy = false;
+        }
     }
 }
 
@@ -170,6 +253,7 @@ struct Opener<'a> {
     manifest: &'a RenderManifest,
     confine: Option<&'a Path>,
     verdicts: BTreeMap<String, Verdict>,
+    counters: Rc<Counters>,
 }
 
 impl Opener<'_> {
@@ -223,44 +307,84 @@ impl Opener<'_> {
         v
     }
 
+    /// The asset decided from its original (a cached entry that verified but no longer opens
+    /// falls back here): `Decoded` or `Missing`, recorded for the job.
+    fn decode_verdict(&mut self, asset: &str) -> Verdict {
+        let opened = self.original(asset).and_then(|o| {
+            let file =
+                open_original_in(o, self.confine).map_err(|_| "ORIGINALS_MISSING".to_string())?;
+            DecodedSource::open(file, PcmRecipe::Pcm48).map_err(|e| e.code)
+        });
+        let v = match opened {
+            Ok(src) => Verdict::Decoded(src.feed_layout()),
+            Err(reason) => Verdict::Missing(reason),
+        };
+        self.verdicts.insert(asset.to_string(), v.clone());
+        v
+    }
+
     /// `plan` as one mix reads it, and its sources: an asset's `pcm48` entry once (random
-    /// access), a decoded original once per item (each reads forward from its own offset: the
-    /// item's `asset` is renamed `<asset>#<k>` for its own source); an asset that cannot be read
-    /// is absent (silent).
+    /// access); a decoded original through its asset's [`Pool`], one source per item (the
+    /// item's `asset` is renamed `<asset>\0<k>` for it: a NUL is in no asset id); an asset that
+    /// cannot be read is absent (silent, and noted).
     fn sources(&mut self, plan: &AudioPlan) -> (AudioPlan, BTreeMap<String, Box<dyn PcmSource>>) {
         let mut plan = plan.clone();
         let mut out: BTreeMap<String, Box<dyn PcmSource>> = BTreeMap::new();
+        let mut pools: BTreeMap<String, Rc<RefCell<Pool>>> = BTreeMap::new();
         for (k, item) in plan.items.iter_mut().enumerate() {
-            match self.verdict(&item.asset) {
-                Verdict::Cached => {
-                    if out.contains_key(&item.asset) {
-                        continue;
-                    }
-                    let entry = &self.manifest.pcm[&item.asset];
-                    if let Ok(src) = CachedSource::open(Path::new(&entry.dir), &entry.key) {
+            let mut verdict = self.verdict(&item.asset);
+            if matches!(verdict, Verdict::Cached) {
+                if out.contains_key(&item.asset) {
+                    continue;
+                }
+                let entry = &self.manifest.pcm[&item.asset];
+                match CachedSource::open(Path::new(&entry.dir), &entry.key) {
+                    Ok(src) => {
                         out.insert(item.asset.clone(), Box::new(src));
-                    }
-                }
-                Verdict::Decoded(layout) => {
-                    let Ok(original) = self.original(&item.asset).cloned() else {
                         continue;
-                    };
-                    let key = format!("{}#{k}", item.asset);
-                    out.insert(
-                        key.clone(),
-                        Box::new(LazyDecoded {
-                            original,
-                            confine: self.confine.map(Path::to_path_buf),
-                            layout,
-                            inner: None,
-                        }),
-                    );
-                    item.asset = key;
+                    }
+                    Err(_) => verdict = self.decode_verdict(&item.asset),
                 }
-                Verdict::Missing(_) => {}
             }
+            let Verdict::Decoded(layout) = verdict else {
+                continue;
+            };
+            let Ok(original) = self.original(&item.asset).cloned() else {
+                continue;
+            };
+            let pool = pools.entry(item.asset.clone()).or_insert_with(|| {
+                Rc::new(RefCell::new(Pool {
+                    original,
+                    confine: self.confine.map(Path::to_path_buf),
+                    layout,
+                    decoders: Vec::new(),
+                    counters: self.counters.clone(),
+                }))
+            });
+            let key = format!("{}\0{k}", item.asset);
+            out.insert(
+                key.clone(),
+                Box::new(PooledSource {
+                    pool: pool.clone(),
+                    layout,
+                    slot: None,
+                }),
+            );
+            item.asset = key;
         }
         (plan, out)
+    }
+
+    /// Decoders opened so far, over every mix.
+    #[cfg(test)]
+    fn decoders_opened(&self) -> u32 {
+        self.counters.opened.get()
+    }
+
+    /// Output frames decoded so far, over every mix.
+    #[cfg(test)]
+    fn frames_decoded(&self) -> u64 {
+        self.counters.decoded.get()
     }
 
     fn missing(&self) -> BTreeMap<String, String> {
@@ -364,6 +488,7 @@ pub fn run(job: &StartJob, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<Valu
         manifest: &manifest,
         confine: warm.sources.confined(),
         verdicts: BTreeMap::new(),
+        counters: Rc::default(),
     };
     let (mix_plan, mix_sources) = opener.sources(&plan);
     let mut mix = Pass::new(&mix_plan, mix_sources).map_err(job_error)?;
@@ -416,3 +541,7 @@ pub fn run(job: &StartJob, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<Valu
     };
     Ok(serde_json::to_value(result).expect("a result serialises"))
 }
+
+#[cfg(test)]
+#[path = "listen_tests.rs"]
+mod tests;
