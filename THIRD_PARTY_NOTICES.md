@@ -727,6 +727,28 @@ status: planned
 ## Codex (Apache-2.0) — bundled agent CLI
 status: planned
 
+## OpenAI Codex CLI 0.167.0 (Apache-2.0) — the bundled `codex` and `rg` executables (sub-project 7E)
+status: used (sub-project 7E, Task 2), **unmodified, as separate executables** that Finisher
+starts as a child process (`finisherd` never links them): `codex` (`bin/codex[.exe]`) and the
+`rg` (ripgrep, Unlicense OR MIT) that ships beside it (`codex-path/rg[.exe]`), from the npm
+platform packages `@openai/codex@0.167.0-<target>` pinned by sha512 in `vendor/codex/pin.json`
+and fetched by `pnpm codex:pin` (never committed). **Never shipped:** the package's
+`codex-resources/bwrap` (LGPL-2.0-or-later, spec §17) and its code-mode host;
+`scripts/check-codex-pin.mjs` refuses either in the pin. `vendor/codex/0.167.0/` also holds the
+generated app-server JSON schema and the feature list of that binary (Apache-2.0 data), with
+`LICENSE` (the Apache License 2.0) and `NOTICE` taken from the `rust-v0.167.0` tag of
+github.com/openai/codex (the npm packages carry neither).
+
+### OpenAI Codex: the NOTICE (Apache-2.0 §4(d); the licence is `vendor/codex/0.167.0/LICENSE`)
+```text
+OpenAI Codex
+Copyright 2025 OpenAI
+
+This project includes code derived from [Ratatui](https://github.com/ratatui/ratatui), licensed under the MIT license.
+Copyright (c) 2016-2022 Florian Dehau
+Copyright (c) 2023-2025 The Ratatui Developers
+```
+
 ## cosmic-text (MIT OR Apache-2.0) and its shaping stack — `fin-text`
 status: used (sub-project 4C), as Cargo dependencies; no code is copied.
 - `cosmic-text` 0.19 (MIT OR Apache-2.0), built `no_std` without `swash`;
