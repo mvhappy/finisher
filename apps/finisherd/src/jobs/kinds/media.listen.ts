@@ -22,6 +22,7 @@ import type { ProjectRegistryShape } from "../../projects.ts";
 import { jobDirs } from "../files.ts";
 import { mkdirSafe } from "../fsafe.ts";
 import type { KindSpec } from "../kinds.ts";
+import { mediaJournal } from "./media.journal.ts";
 
 export const MEDIA_LISTEN = "media.listen";
 
@@ -84,6 +85,7 @@ export function mediaListenKind(deps: ListenKindDeps): KindSpec<ListenParams, Li
       { name: "in/manifest.json", mode: "read" },
     ],
     dedupe: listenDedupe,
+    journal: mediaJournal,
     prepare: (ctx) =>
       Effect.gen(function* () {
         const p = ctx.job.params;

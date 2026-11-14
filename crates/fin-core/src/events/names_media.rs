@@ -11,11 +11,14 @@ use serde::{Deserialize, Deserializer, Serialize};
 use super::class::Name;
 use super::names::NameTable;
 
-/// Video codecs (`fin-media`'s `VideoCodec`, camel case) and `none` (a job that decoded
-/// nothing).
+/// Video codecs (`fin-media`'s `VideoCodec`, camel case), audio codecs (`fin-media`'s
+/// `AudioCodec`, 6C Decision 24) and `none` (a job that decoded nothing).
 pub static MEDIA_CODECS: NameTable = NameTable::new(
     "MEDIA_CODECS",
-    &["av1", "h264", "hevc", "vp9", "vp8", "prores", "none"],
+    &[
+        "av1", "h264", "hevc", "vp9", "vp8", "prores", "aac", "opus", "mp3", "flac", "alac",
+        "vorbis", "pcm", "none",
+    ],
 );
 
 /// Decode and encode backends (spec §6.1; the vendor class of each is [`backend_class`])

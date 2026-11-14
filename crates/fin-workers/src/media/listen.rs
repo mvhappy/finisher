@@ -33,6 +33,7 @@ use fin_audio::channels::Canonical;
 use fin_audio::listen::{Pass, filter_plan, range, stretch_extreme};
 use fin_audio::{PcmSource, SourceLayout};
 use fin_core::eval::{AudioItem, AudioPlan, eval_audio};
+use fin_core::events::payloads::RenderPhase;
 use fin_core::{CoreError, Project, Rational};
 use fin_jobs::worker::JobCtx;
 use fin_jobs::{JobError, Progress, ProgressUnit, StartJob};
@@ -44,6 +45,7 @@ use fin_media::jobs::{
 use serde_json::{Value, json};
 
 use super::audio_src::{CachedSource, DecodedSource};
+use super::diag::{AudioFacts, audio_codec_name, audio_media};
 use super::inputs::{self, MANIFEST_CAP, SNAPSHOT_CAP};
 use super::open_cache::open_original_in;
 use super::{Warm, job_error};
@@ -254,6 +256,8 @@ struct Opener<'a> {
     confine: Option<&'a Path>,
     verdicts: BTreeMap<String, Verdict>,
     counters: Rc<Counters>,
+    /// The first decoded original's codec and backend (`job.done.media`).
+    decoded_via: Option<(&'static str, &'static str)>,
 }
 
 impl Opener<'_> {
@@ -299,7 +303,10 @@ impl Opener<'_> {
                 DecodedSource::open(file, PcmRecipe::Pcm48).map_err(|e| e.code)
             });
             match opened {
-                Ok(src) => Verdict::Decoded(src.feed_layout()),
+                Ok(src) => {
+                    self.note_decoder(&src);
+                    Verdict::Decoded(src.feed_layout())
+                }
                 Err(reason) => Verdict::Missing(reason),
             }
         };
@@ -316,11 +323,19 @@ impl Opener<'_> {
             DecodedSource::open(file, PcmRecipe::Pcm48).map_err(|e| e.code)
         });
         let v = match opened {
-            Ok(src) => Verdict::Decoded(src.feed_layout()),
+            Ok(src) => {
+                self.note_decoder(&src);
+                Verdict::Decoded(src.feed_layout())
+            }
             Err(reason) => Verdict::Missing(reason),
         };
         self.verdicts.insert(asset.to_string(), v.clone());
         v
+    }
+
+    fn note_decoder(&mut self, src: &DecodedSource) {
+        self.decoded_via
+            .get_or_insert((audio_codec_name(src.info().codec), src.backend()));
     }
 
     /// `plan` as one mix reads it, and its sources: an asset's `pcm48` entry once (random
@@ -489,6 +504,7 @@ pub fn run(job: &StartJob, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<Valu
         confine: warm.sources.confined(),
         verdicts: BTreeMap::new(),
         counters: Rc::default(),
+        decoded_via: None,
     };
     let (mix_plan, mix_sources) = opener.sources(&plan);
     let mut mix = Pass::new(&mix_plan, mix_sources).map_err(job_error)?;
@@ -501,6 +517,7 @@ pub fn run(job: &StartJob, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<Valu
     let (start, end) = range(&plan).map_err(job_error)?;
     let total = (end - start) as u64;
     let mut done = 0u64;
+    let mixing = std::time::Instant::now();
     while done < total {
         if ctx.cancelled().is_some() {
             return Err(JobError::cancelled());
@@ -518,10 +535,24 @@ pub fn run(job: &StartJob, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<Valu
         ctx.progress(pr);
     }
     let notes = notes_of(&plan, &mix, &opener.missing());
-    let stats = ListenJobStats {
+    let mut stats = ListenJobStats {
         sources_from_cache: opener.count(true),
         sources_decoded: opener.count(false),
+        media: None,
     };
+    if ctx.diagnostics() {
+        let micros = u64::try_from(mixing.elapsed().as_micros()).unwrap_or(u64::MAX);
+        let (codec, backend) = opener.decoded_via.unwrap_or(("pcm", "none"));
+        warm.render_stats.record(RenderPhase::Mix, backend, micros);
+        stats.media = Some(audio_media(&AudioFacts {
+            codec,
+            backend,
+            samples: total,
+            rate: 48_000,
+            wall_micros: micros,
+            cache_hit: stats.sources_decoded == 0 && stats.sources_from_cache > 0,
+        }));
+    }
     let result = ListenResult {
         timeline: p.timeline.clone(),
         rev: snapshot.rev,

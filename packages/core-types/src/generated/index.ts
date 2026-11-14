@@ -1038,7 +1038,7 @@ export type Sandbox = "none" | "landlock" | "worker";
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "RenderPhase".
  */
-export type RenderPhase = ("decode" | "composite" | "readback") | "encode";
+export type RenderPhase = ("decode" | "composite" | "readback") | "encode" | "decodeAudio" | "mix" | "encodeAudio";
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "ChangeKind".
@@ -8107,6 +8107,11 @@ export interface ListenClipped {
  * via the `definition` "ListenJobStats".
  */
 export interface ListenJobStats {
+  /**
+   * The `media` object of the job's `job.done` (6C Task 22): present when diagnostics were on
+   * at the worker; `finisherd` reads it when the job ends and it holds no path or name.
+   */
+  media?: JobMedia;
   /**
    * Assets decoded from their original (no entry, or one that did not verify).
    */

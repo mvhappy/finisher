@@ -26,6 +26,7 @@ use std::io::Write;
 use std::path::Path;
 
 use fin_core::CoreError;
+use fin_core::events::payloads::RenderPhase;
 use fin_jobs::worker::JobCtx;
 use fin_jobs::{JobError, ProgressUnit, StartJob};
 use fin_library::{Expect, OpenError, RawRel, open_for_read};
@@ -37,6 +38,7 @@ use fin_shm::JobDir;
 use serde_json::{Value, json};
 
 use super::audio_src::DecodedSource;
+use super::diag::{AudioFacts, audio_codec_name, audio_media};
 use super::proxy::{Fail, io_error, item, now_ms, open_asset};
 use super::{Warm, inputs, job_error};
 
@@ -46,13 +48,28 @@ pub fn run(job: &StartJob, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<Valu
     p.check().map_err(job_error)?;
     let fp = p.fingerprint.clone();
     ctx.begin(&fp);
+    let started = std::time::Instant::now();
     match make(&p, ctx, warm, job.attempt) {
-        Ok(result) => {
+        Ok((result, codec)) => {
             let value = serde_json::to_value(&result)
                 .map_err(|e| job_error(CoreError::new("INTERNAL", e.to_string())))?;
             ctx.item(&fp, Some(value));
             test_item_answered(&fp, job.attempt);
-            Ok(json!({ "made": 1 }))
+            if !ctx.diagnostics() {
+                return Ok(json!({ "made": 1 }));
+            }
+            let micros = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+            warm.render_stats
+                .record(RenderPhase::DecodeAudio, &result.decoder.backend, micros);
+            let media = audio_media(&AudioFacts {
+                codec,
+                backend: &result.decoder.backend,
+                samples: result.frames,
+                rate: p.recipe.rate(),
+                wall_micros: micros,
+                cache_hit: false,
+            });
+            Ok(json!({ "made": 1, "stats": { "media": media } }))
         }
         Err(Fail::Item(e)) => {
             ctx.item_failed(&fp, e);
@@ -180,7 +197,7 @@ fn make(
     ctx: &mut JobCtx<'_>,
     warm: &mut Warm,
     attempt: u32,
-) -> Result<PcmResult, Fail> {
+) -> Result<(PcmResult, &'static str), Fail> {
     let dir = inputs::job_dir(ctx).map_err(Fail::Job)?;
     inputs::out_dir(ctx, &dir).map_err(Fail::Job)?;
     let file = match &p.file {
@@ -206,6 +223,7 @@ fn make(
         ));
     }
     let (source_rate, source_channels) = (src.info().sample_rate, src.info().channels);
+    let codec = audio_codec_name(src.info().codec);
     let total = src.expected_frames();
     let out = dir.output().join(key.as_str());
     fin_shm::create_output_dir(&out)
@@ -261,7 +279,7 @@ fn make(
     let bytes = meta.bytes()?;
     let text = serde_json::to_vec(&meta).map_err(|e| CoreError::new("INTERNAL", e.to_string()))?;
     super::proxy::write_file(&dir, &out.join(META_FILE), &text)?;
-    Ok(PcmResult {
+    let result = PcmResult {
         key: key.to_string(),
         recipe: p.recipe,
         layout,
@@ -274,5 +292,6 @@ fn make(
         source_rate,
         source_channels,
         bytes,
-    })
+    };
+    Ok((result, codec))
 }

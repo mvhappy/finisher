@@ -155,6 +155,61 @@ pub fn job_media(f: &JobFacts<'_>) -> JobMedia {
     }
 }
 
+/// What an audio job (`media.pcm`, `media.waveform`, `media.listen`) knows about itself.
+pub struct AudioFacts<'a> {
+    /// The source's codec (`MEDIA_CODECS`; `pcm` for a feed read back from the cache).
+    pub codec: &'a str,
+    /// The decoder's backend (`MEDIA_BACKENDS`; `none` when nothing was decoded).
+    pub backend: &'a str,
+    /// Samples per channel the job produced or measured.
+    pub samples: u64,
+    /// Their rate.
+    pub rate: u32,
+    /// Decode + mix + measure (or write), in micros.
+    pub wall_micros: u64,
+    /// Every source was read from a cache entry.
+    pub cache_hit: bool,
+}
+
+/// The `media` object of an audio job's `job.done` (6C Task 22): `frames` is samples ÷ 1,024
+/// (the canonical block), `hw` is always false (no audio hardware path), the resolution `sd`
+/// (there is no picture) and `rtFactorMilli` the media seconds over the wall seconds.
+pub fn audio_media(f: &AudioFacts<'_>) -> JobMedia {
+    let rt_factor_milli = if f.wall_micros > 0 && f.rate > 0 {
+        let media_s = f.samples as f64 / f64::from(f.rate);
+        (media_s / (f.wall_micros as f64 / 1e6) * 1000.0)
+            .round()
+            .clamp(0.0, f64::from(u32::MAX)) as u32
+    } else {
+        0
+    };
+    JobMedia {
+        codec: MEDIA_CODECS.get_or_other(f.codec),
+        backend: MEDIA_BACKENDS.get_or_other(f.backend),
+        hw: false,
+        resolution: ResolutionBucket::Sd,
+        frames: u32::try_from(f.samples / 1024).unwrap_or(u32::MAX),
+        rt_factor_milli,
+        cache_hit: f.cache_hit,
+        copy_path: CopyPath::Copy,
+    }
+}
+
+/// `AudioCodec`'s name in `MEDIA_CODECS` (`other` for codecs the table lacks).
+pub fn audio_codec_name(codec: fin_media::AudioCodec) -> &'static str {
+    use fin_media::AudioCodec as A;
+    match codec {
+        A::Aac => "aac",
+        A::Opus => "opus",
+        A::Mp3 => "mp3",
+        A::Flac => "flac",
+        A::Alac => "alac",
+        A::Pcm => "pcm",
+        A::Vorbis => "vorbis",
+        A::Ac3 | A::Eac3 | A::Other => "other",
+    }
+}
+
 /// Whether the machine decodes `codec` in hardware.
 pub fn decodes_in_hardware(caps: &fin_codecs::Capabilities, codec: VideoCodec) -> bool {
     caps.get(codec)
@@ -295,5 +350,62 @@ mod tests {
             ("none", "none")
         );
         assert!(!none.cache_hit);
+    }
+
+    #[test]
+    fn audio_media_counts_samples_over_1024_and_real_time_over_wall_time() {
+        // One second of 48 kHz audio decoded in 10 ms: 100x real time.
+        let m = audio_media(&AudioFacts {
+            codec: "aac",
+            backend: "symphonia",
+            samples: 48_000,
+            rate: 48_000,
+            wall_micros: 10_000,
+            cache_hit: false,
+        });
+        assert_eq!((m.codec.as_str(), m.backend.as_str()), ("aac", "symphonia"));
+        assert_eq!(
+            (m.hw, m.resolution, m.frames, m.rt_factor_milli, m.cache_hit),
+            (false, ResolutionBucket::Sd, 46, 100_000, false)
+        );
+        // A feed read back from the cache decoded nothing; no measurable time reads 0.
+        let hit = audio_media(&AudioFacts {
+            codec: "pcm",
+            backend: "none",
+            samples: 16_000,
+            rate: 16_000,
+            wall_micros: 0,
+            cache_hit: true,
+        });
+        assert_eq!((hit.codec.as_str(), hit.backend.as_str()), ("pcm", "none"));
+        assert_eq!(
+            (hit.frames, hit.rt_factor_milli, hit.cache_hit),
+            (15, 0, true)
+        );
+        // A codec outside the table reads as `other`.
+        let odd = audio_media(&AudioFacts {
+            codec: "wavpack",
+            backend: "symphonia",
+            samples: 1,
+            rate: 48_000,
+            wall_micros: 1,
+            cache_hit: false,
+        });
+        assert_eq!(odd.codec.as_str(), "other");
+    }
+
+    #[test]
+    fn audio_phases_land_in_render_stats() {
+        let mut book = RenderBook::default();
+        for phase in [
+            RenderPhase::DecodeAudio,
+            RenderPhase::Mix,
+            RenderPhase::EncodeAudio,
+        ] {
+            book.record_at(WINDOW_MS, phase, "symphonia", 5);
+        }
+        let out = book.take();
+        assert_eq!(out.len(), 3);
+        assert!(out.iter().any(|s| s.phase == RenderPhase::Mix));
     }
 }

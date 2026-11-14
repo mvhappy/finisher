@@ -130,6 +130,7 @@ fn cuts_of_one_original_at_increasing_offsets_decode_it_about_once() {
         confine: None,
         verdicts: BTreeMap::new(),
         counters: Rc::default(),
+        decoded_via: None,
     };
     // 25 cuts of 0.7 s: 17.5 s of the original.
     let st = run_pass(&mut opener, &cuts(25, Rational::new(7, 10).unwrap()));
@@ -169,6 +170,7 @@ fn a_cached_entry_that_fails_to_open_falls_back_to_the_decode() {
         confine: None,
         verdicts: BTreeMap::from([("a1".to_string(), Verdict::Cached)]),
         counters: Rc::default(),
+        decoded_via: None,
     };
     let st = run_pass(&mut opener, &cuts(3, s(1)));
     assert!(st.integrated.is_some(), "the asset played silent");

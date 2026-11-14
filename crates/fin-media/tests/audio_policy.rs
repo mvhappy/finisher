@@ -1,5 +1,6 @@
 //! The audio encoder policy (6C plan Decision 10) and the audio backend table (Decision 24).
 
+use fin_core::events::names_media::{BackendClass, backend_class};
 use fin_media::AudioCodec;
 use fin_media::backend::{EncodePurpose, PolicyReason, VendorClass};
 use fin_media::backend_audio::{AUDIO_BACKENDS, audio_backend, audio_encoder_allowed};
@@ -57,6 +58,14 @@ fn symphonia_row() {
             "{}",
             b.name
         );
+        // ... and maps to the class the table's row declares.
+        let want = match b.class {
+            VendorClass::Software => BackendClass::Software,
+            VendorClass::Os => BackendClass::Os,
+            VendorClass::Gpu => BackendClass::Gpu,
+            VendorClass::Plugin => BackendClass::Plugin,
+        };
+        assert_eq!(backend_class(b.name), want, "{}", b.name);
     }
 }
 

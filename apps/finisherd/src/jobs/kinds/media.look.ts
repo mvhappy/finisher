@@ -24,6 +24,7 @@ import { jobDirs } from "../files.ts";
 import { mkdirSafe } from "../fsafe.ts";
 import { type KindRegistry, type KindSpec, type MemoryRule, projectOfJob } from "../kinds.ts";
 import { mediaCapabilitiesKind } from "./media.capabilities.ts";
+import { mediaJournal } from "./media.journal.ts";
 import { mediaListenKind } from "./media.listen.ts";
 import { mediaPcmKind } from "./media.pcm.ts";
 import { mediaProbeDeepKind } from "./media.probeDeep.ts";
@@ -336,16 +337,8 @@ export function mediaLookKind(deps: MediaKindDeps): KindSpec<LookJobParams, Look
   };
 }
 
-/**
- * `job.done`'s `media` object (Task 14): the worker's account of the job, `stats.media` of its
- * result (present only when diagnostics were on at the worker). It is passed on as it came; the
- * journal decodes it against the registered `job.done` kind, which has `meta` fields only, so
- * nothing else can reach an entry.
- */
-export function lookJournal(job: JobView): Readonly<Record<string, unknown>> {
-  const media = (job.result as { stats?: { media?: unknown } } | null | undefined)?.stats?.media;
-  return typeof media === "object" && media !== null && !Array.isArray(media) ? { media } : {};
-}
+/** `job.done`'s `media` object (Task 14): see `media.journal.ts`. */
+export const lookJournal = mediaJournal;
 
 /** The plan hashes `prepare` computed, in `at` order (`extra.planSamples`). */
 /** Each existing path resolved (a missing one is left out: the worker reports it missing). */

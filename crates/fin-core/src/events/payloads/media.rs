@@ -106,6 +106,12 @@ pub enum RenderPhase {
     Readback,
     /// No emitter before sub-project 6B (export).
     Encode,
+    /// Audio decode and resample into the canonical format (6C).
+    DecodeAudio,
+    /// The audio mixer: effects, gains, the master bus (6C).
+    Mix,
+    /// Audio encode (6C: Opus proxies, the export encoders).
+    EncodeAudio,
 }
 
 /// The `media` object of `job.done` `kv` 2: what a media job did. `codec`, `backend` and `hw`

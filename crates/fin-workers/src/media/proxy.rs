@@ -33,6 +33,7 @@ use std::path::{Path, PathBuf};
 use fin_codecs::{DecodeThreads, EncoderConfig, FrameReader, Gop, RateControl, RawFrame};
 use fin_container::Limits;
 use fin_core::CoreError;
+use fin_core::events::payloads::RenderPhase;
 use fin_jobs::worker::JobCtx;
 use fin_jobs::{JobError, ProgressUnit, StartJob};
 use fin_library::{Expect, OpenError, RawRel, open_for_read};
@@ -278,7 +279,15 @@ fn make(p: &ProxyParams, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<ProxyR
         ProxySourceAudio::Decoded(class) => {
             let file = open_source(p, ctx, &dir, warm)?;
             let scratch = dir.output().join(format!("{key}.audio"));
-            match proxy_audio::encode(file, class, &dir, &scratch, audio_progress(ctx, frames))? {
+            let encoding = std::time::Instant::now();
+            let outcome =
+                proxy_audio::encode(file, class, &dir, &scratch, audio_progress(ctx, frames))?;
+            if matches!(outcome, proxy_audio::Outcome::Track(_)) && ctx.diagnostics() {
+                let micros = u64::try_from(encoding.elapsed().as_micros()).unwrap_or(u64::MAX);
+                warm.render_stats
+                    .record(RenderPhase::EncodeAudio, "libopus", micros);
+            }
+            match outcome {
                 proxy_audio::Outcome::Track(a) => (Some(a), None),
                 proxy_audio::Outcome::Skipped(code) => (None, Some(code)),
                 proxy_audio::Outcome::Empty => (None, None),

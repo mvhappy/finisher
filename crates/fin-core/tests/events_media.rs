@@ -9,6 +9,7 @@ mod samples;
 use std::collections::BTreeSet;
 
 use fin_core::events::names::TABLES;
+use fin_core::events::names_jobs;
 use fin_core::events::names_media::{BackendClass, MEDIA_BACKENDS, MEDIA_CODECS, backend_class};
 use fin_core::events::payloads::*;
 use fin_core::events::*;
@@ -208,4 +209,58 @@ fn adapter_types_read_wgpus_names() {
     ] {
         assert_eq!(AdapterType::from_wgpu(name), want, "{name}");
     }
+}
+
+#[test]
+fn audio_codecs_and_phases_are_in_the_closed_schema() {
+    for c in ["aac", "opus", "mp3", "flac", "alac", "vorbis", "pcm"] {
+        assert!(MEDIA_CODECS.get(c).is_some(), "MEDIA_CODECS lacks {c}");
+    }
+    for (phase, name) in [
+        (RenderPhase::DecodeAudio, "decodeAudio"),
+        (RenderPhase::Mix, "mix"),
+        (RenderPhase::EncodeAudio, "encodeAudio"),
+    ] {
+        assert_eq!(serde_json::to_value(phase).unwrap(), json!(name));
+        // One `render.stats` entry per phase round-trips through the registered kind.
+        let stats = RenderStats {
+            phase,
+            backend: MEDIA_BACKENDS.get("symphonia").unwrap(),
+            histogram: samples::hist(),
+        };
+        let any: AnyPayload = stats.into();
+        let v = serde_json::to_value(&any).unwrap();
+        assert_eq!(v["phase"], json!(name));
+        assert_eq!(decode_payload(any.kind(), &v).unwrap(), any, "{name}");
+        let schema = (kind("render.stats", 1).unwrap().schema)().to_string();
+        assert!(schema.contains(name), "render.stats schema lacks {name}");
+    }
+}
+
+#[test]
+fn job_done_with_an_audio_media_object_round_trips() {
+    let done = JobDone {
+        kind: names_jobs::JOB_KINDS.get("media.listen").unwrap(),
+        family: names_jobs::WORKER_FAMILIES.get("media").unwrap(),
+        outcome: JobOutcome::Succeeded,
+        code: None,
+        media: Some(JobMedia {
+            codec: MEDIA_CODECS.get("opus").unwrap(),
+            backend: MEDIA_BACKENDS.get("libopus").unwrap(),
+            hw: false,
+            resolution: ResolutionBucket::Sd,
+            frames: 469,
+            rt_factor_milli: 250_000,
+            cache_hit: true,
+            copy_path: CopyPath::Copy,
+        }),
+        ..samples::job_done_failed()
+    };
+    let any: AnyPayload = done.into();
+    let v = serde_json::to_value(&any).unwrap();
+    assert_eq!(v["media"]["codec"], json!("opus"));
+    assert_eq!(v["media"]["backend"], json!("libopus"));
+    assert_eq!(decode_payload(any.kind(), &v).unwrap(), any);
+    // A codec outside the table still reads as `other`.
+    assert_eq!(MEDIA_CODECS.get_or_other("wavpack"), Name::OTHER);
 }

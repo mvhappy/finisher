@@ -10421,6 +10421,14 @@
     "ListenJobStats": {
       "description": "Where the sources were read from.",
       "properties": {
+        "media": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/JobMedia"
+            }
+          ],
+          "description": "The `media` object of the job's `job.done` (6C Task 22): present when diagnostics were on\nat the worker; `finisherd` reads it when the job ends and it holds no path or name."
+        },
         "sourcesDecoded": {
           "description": "Assets decoded from their original (no entry, or one that did not verify).",
           "format": "uint32",
@@ -17221,6 +17229,21 @@
         {
           "const": "encode",
           "description": "No emitter before sub-project 6B (export).",
+          "type": "string"
+        },
+        {
+          "const": "decodeAudio",
+          "description": "Audio decode and resample into the canonical format (6C).",
+          "type": "string"
+        },
+        {
+          "const": "mix",
+          "description": "The audio mixer: effects, gains, the master bus (6C).",
+          "type": "string"
+        },
+        {
+          "const": "encodeAudio",
+          "description": "Audio encode (6C: Opus proxies, the export encoders).",
           "type": "string"
         }
       ]

@@ -27,6 +27,7 @@ import type { ProjectRegistryShape } from "../../projects.ts";
 import { jobDirs } from "../files.ts";
 import { mkdirSafe } from "../fsafe.ts";
 import type { KindSpec } from "../kinds.ts";
+import { combineWithStats, mediaJournal } from "./media.journal.ts";
 import { outcomeOf } from "./media.proxy.ts";
 
 export const MEDIA_PCM = "media.pcm";
@@ -84,8 +85,9 @@ export function mediaPcmKind(deps: PcmKindDeps): KindSpec<PcmParams, unknown> {
     timeoutS: PCM_TIMEOUT_S,
     stallS: 600,
     maxAttempts: 2,
-    batch: { items: (p) => [p.fingerprint], restrict: (p) => p },
+    batch: { items: (p) => [p.fingerprint], restrict: (p) => p, combine: combineWithStats },
     dedupe: pcmDedupe,
+    journal: mediaJournal,
     rememberPoison: true,
     crashRestarts: true,
     memory: BATCH_MEMORY,

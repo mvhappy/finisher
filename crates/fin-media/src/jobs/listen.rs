@@ -13,6 +13,7 @@
 //!   minus infinity (silence) are absent, never NaN. Times are rational seconds on the timeline.
 
 use fin_core::eval::{AudioPlan, eval_audio};
+use fin_core::events::payloads::JobMedia;
 use fin_core::{CoreError, Project, Rational};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -228,6 +229,11 @@ pub struct ListenJobStats {
     pub sources_from_cache: u32,
     /// Assets decoded from their original (no entry, or one that did not verify).
     pub sources_decoded: u32,
+    /// The `media` object of the job's `job.done` (6C Task 22): present when diagnostics were on
+    /// at the worker; `finisherd` reads it when the job ends and it holds no path or name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "JobMedia")]
+    pub media: Option<JobMedia>,
 }
 
 /// What `media.listen` v1 answers.

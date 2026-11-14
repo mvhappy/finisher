@@ -23,6 +23,7 @@ use std::path::Path;
 use fin_audio::channels::Canonical;
 use fin_audio::{PcmSource, Peaks, Stereo};
 use fin_core::CoreError;
+use fin_core::events::payloads::RenderPhase;
 use fin_jobs::worker::JobCtx;
 use fin_jobs::{JobError, ProgressUnit, StartJob};
 use fin_media::backend::VendorClass;
@@ -34,6 +35,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::audio_src::{CachedSource, DecodedSource};
+use super::diag::{AudioFacts, audio_codec_name, audio_media};
 use super::proxy::{Fail, entry_file, item, manifest_asset, now_ms, open_asset, write_file};
 use super::{Warm, inputs, job_error};
 
@@ -48,12 +50,27 @@ pub fn run(job: &StartJob, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<Valu
     p.check().map_err(job_error)?;
     let fp = p.fingerprint.clone();
     ctx.begin(&fp);
+    let started = std::time::Instant::now();
     match make(&p, ctx, warm, job.attempt) {
-        Ok(result) => {
+        Ok((result, (codec, backend))) => {
             let value = serde_json::to_value(&result)
                 .map_err(|e| job_error(CoreError::new("INTERNAL", e.to_string())))?;
             ctx.item(&fp, Some(value));
-            Ok(json!({ "made": 1 }))
+            if !ctx.diagnostics() {
+                return Ok(json!({ "made": 1 }));
+            }
+            let micros = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+            warm.render_stats
+                .record(RenderPhase::DecodeAudio, backend, micros);
+            let media = audio_media(&AudioFacts {
+                codec,
+                backend,
+                samples: result.frames,
+                rate: 48_000,
+                wall_micros: micros,
+                cache_hit: result.from == WaveFrom::Pcm48,
+            });
+            Ok(json!({ "made": 1, "stats": { "media": media } }))
         }
         Err(Fail::Item(e)) => {
             ctx.item_failed(&fp, e);
@@ -165,7 +182,7 @@ fn make(
     ctx: &mut JobCtx<'_>,
     warm: &mut Warm,
     attempt: u32,
-) -> Result<WaveResult, Fail> {
+) -> Result<(WaveResult, (&'static str, &'static str)), Fail> {
     let dir = inputs::job_dir(ctx).map_err(Fail::Job)?;
     inputs::out_dir(ctx, &dir).map_err(Fail::Job)?;
     manifest_asset(ctx, &dir, &p.asset, &p.fingerprint)?;
@@ -202,6 +219,8 @@ fn make(
             builder = Builder::default();
         }
     }
+    // What served the peaks: a feed read back from the cache decoded nothing.
+    let mut served = ("pcm", "none");
     let (class, from) = if let Some(class) = entry {
         (class, WaveFrom::Pcm48)
     } else {
@@ -209,6 +228,7 @@ fn make(
         let mut src = DecodedSource::open(file, PcmRecipe::Pcm48)?;
         let class = src.decoder_class();
         check_key(p, class)?;
+        served = (audio_codec_name(src.info().codec), src.backend());
         let total = src.expected_frames();
         let mut done = 0u64;
         let channels = src.feed_layout().channels();
@@ -263,13 +283,14 @@ fn make(
     let text =
         serde_json::to_vec_pretty(&meta).map_err(|e| CoreError::new("INTERNAL", e.to_string()))?;
     write_file(&dir, &out.join(META_FILE), &text)?;
-    Ok(WaveResult {
+    let result = WaveResult {
         key: p.key.clone(),
         levels: peaks.levels.len() as u32,
         frames: peaks.frames,
         bytes: bytes.len() as u64,
         from,
-    })
+    };
+    Ok((result, served))
 }
 
 /// `PLAN_MISMATCH {reason: cacheKey}` when `class` is not the decoder the host planned.

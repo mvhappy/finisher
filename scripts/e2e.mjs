@@ -6,7 +6,7 @@
 // through the `fin` binary, and asserts the subscriber saw every committed rev in order and
 // that its last rev equals `snapshot.get`'s. The server and the temp dir are always cleaned up.
 //
-// Usage: node scripts/e2e.mjs [--skip-build] [basic|storage|history|reel|diagnostics|plugins|plugin-code|auth|look|agent|library|sandbox|remote|review|subagents|hooks|claude ...]  (default: every scenario)
+// Usage: node scripts/e2e.mjs [--skip-build] [basic|storage|history|reel|diagnostics|plugins|plugin-code|auth|look|listen|agent|library|sandbox|remote|review|subagents|hooks|claude ...]  (default: every scenario)
 //
 // Builds go to `CARGO_TARGET_DIR` when it is set (else `target/`), and so does the run's
 // `fin` and `fin-plugin`. Scenario temp dirs fall back to `/tmp` when `TMPDIR` is so deep that the
@@ -59,6 +59,14 @@
 // per fixture set), `fin-workers media --replay`, `skipped`, and a worker killed mid-job and
 // retried (`E2E_LOOK_BLESS=1` rewrites the goldens, refused under CI). It needs a GPU adapter
 // (`FIN_GPU=software` on lavapipe) and is skipped without one unless `FIN_REQUIRE_GPU=1`.
+//
+// The "listen" scenario (scripts/e2e/listen*.mjs) puts a WAV (two tones around a silence) and an MP4
+// with Opus audio (on Linux also AAC-LC) on two audio tracks with an EQ, a compressor and a fade,
+// makes their `media.pcm` and `media.waveform` entries (`fin cache status`), checks `fin listen
+// --json` against `listen-golden/listen.json` (±0.2 LU, ±0.2 dB, silence edges exact at the
+// detector's 10 ms), `fin view`, the audio `media` of the journal's `job.done`, the audio phases of
+// `render.stats` and that no payload names a path (`E2E_LISTEN_BLESS=1` rewrites the golden,
+// refused under CI; plan 6C Task 22).
 //
 // The "agent" scenario (scripts/e2e/agent*.mjs) runs a built-in agent session against a scripted model
 // server on loopback (the local preset, no key, no network): from the prompt to the merged verdict
@@ -132,6 +140,7 @@ import { run as runPlugins } from "./e2e/plugins.mjs";
 import { run as runPluginCode } from "./e2e/plugin-code.mjs";
 import { run as runAuth } from "./e2e/auth.mjs";
 import { run as runLook } from "./e2e/look.mjs";
+import { run as runListen } from "./e2e/listen.mjs";
 import { run as runAgent } from "./e2e/agent.mjs";
 import { run as runLibrary } from "./e2e/library.mjs";
 import { run as runSandbox } from "./e2e/sandbox.mjs";
@@ -148,7 +157,7 @@ export { parseFrames } from "./e2e/lib.mjs";
 export { checkRevs };
 
 const DEADLINE_MS = Number(process.env.E2E_DEADLINE_MS ?? 180_000);
-const SCENARIOS = { basic: runBasic, storage: runStorage, history: runHistory, reel: runReel, diagnostics: runDiagnostics, plugins: runPlugins, "plugin-code": runPluginCode, auth: runAuth, look: runLook, agent: runAgent, library: runLibrary, sandbox: runSandbox, remote: runRemote, review: runReview, subagents: runSubagents, hooks: runHooks, claude: runClaude };
+const SCENARIOS = { basic: runBasic, storage: runStorage, history: runHistory, reel: runReel, diagnostics: runDiagnostics, plugins: runPlugins, "plugin-code": runPluginCode, auth: runAuth, look: runLook, listen: runListen, agent: runAgent, library: runLibrary, sandbox: runSandbox, remote: runRemote, review: runReview, subagents: runSubagents, hooks: runHooks, claude: runClaude };
 
 async function main(argv) {
   const names = argv.filter((a) => !a.startsWith("--"));
@@ -160,6 +169,8 @@ async function main(argv) {
     build("pnpm", ["--filter", "@finisher/fin-node", "build:test"]);
     // The fake Claude Code CLI the claude scenario runs as `agents.claudeCode.path`.
     if (names.length === 0 || names.includes("claude")) build("cargo", ["build", "--release", "-p", "fin-agent-fakes", "--bin", "fake-claude"]);
+    // The listen scenario's Opus (and, on Linux, AAC-LC) MP4 writer.
+    if (names.length === 0 || names.includes("listen")) build("cargo", ["build", "--release", "-p", "fin-codecs", "--features", "testing", "--example", "make_audio_fixture"]);
     if (names.length === 0 || names.includes("look") || names.includes("sandbox")) {
       // The look scenario's fixture writer and CPU oracle (it runs them with `cargo run`, which finds them built); the sandbox scenario's AV1 clips.
       build("cargo", ["build", "--release", "-p", "fin-codecs", "--features", "testing", "--example", "make_fixture"]);

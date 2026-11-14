@@ -59,3 +59,7 @@ testing = ["fin-media/testing", "fin-container/testing"]
 [[example]]
 name = "make_fixture"
 required-features = ["testing"]
+
+[[example]]
+name = "make_audio_fixture"
+required-features = ["testing"]

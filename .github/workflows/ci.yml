@@ -121,6 +121,9 @@ jobs:
           target/release/fin-plugin$exe test examples/plugins/ts-tools --profile command
       - name: Codecs (the fixture writers behind the `testing` feature; needs cmake, nasm on x86_64, the submodules)
         run: cargo test --release -p fin-codecs --features testing
+      - name: Audio codecs (libopus built from source with cc, run by name on all three OSes)
+        # Part of the step above too; named here so a libopus failure shows by its own name.
+        run: cargo test --release -p fin-codecs --features testing --test audio_opus
       - name: Encode golden of this machine class (informational, prints whether SVT-AV1's bytes match and the entry to record)
         # The test asserts only with FIN_ENCODE_GOLDEN=1. A class without an entry in
         # crates/fin-codecs/tests/golden/encode.json (Windows, until one is recorded from this
