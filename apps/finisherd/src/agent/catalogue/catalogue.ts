@@ -220,9 +220,11 @@ export class Catalogue {
       weights: (family?.weights ?? (builtin ? "unknown" : "closed")) as WeightsClass,
     };
     const caps = (tools: boolean, thinking = false, images = false) => ({ tools, thinking, images, caching: family?.caching ?? ("none" as Caching) });
-    const x = builtin ? this.extra.get(`${provider}/${id}`) : undefined;
+    // Codex's `openai` models are priced by OpenRouter's `openai/<id>`; the owner prices one the
+    // same way (`agents.models` id `openai/<id>`, 7E Task 9).
+    const x = builtin ? this.extra.get(`${provider}/${id}`) : provider === "openai" ? this.extra.get(`openrouter/openai/${id}`) : undefined;
     if (x) {
-      const price = x.price ?? (provider === "local" ? ZERO_PRICE : this.prices?.get(id)?.price);
+      const price = x.price ?? (provider === "local" ? ZERO_PRICE : this.prices?.get(provider === "openai" ? `openai/${id}` : id)?.price);
       return {
         ...base,
         weights: x.weights ?? base.weights,
