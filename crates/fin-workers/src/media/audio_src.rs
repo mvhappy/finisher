@@ -36,7 +36,7 @@ use fin_media::jobs::{MAX_PCM_SECONDS, PcmEntry, PcmLayout, PcmRecipe};
 use serde_json::json;
 
 /// The most `meta.json` a worker reads for a PCM entry (its chunk list is long for long sources).
-const META_CAP: u64 = 4 << 20;
+const META_CAP: u64 = fin_media::cache::MAX_META_BYTES;
 
 fn internal(message: impl Into<String>) -> CoreError {
     CoreError::new("INTERNAL", message)
