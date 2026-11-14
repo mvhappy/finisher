@@ -817,3 +817,55 @@ fn agent_detect_host_reads_the_sign_in_home_and_writes_only_its_store() {
         "signInHome",
     );
 }
+
+const CODEX_STORE: &str = "data/providers/codex/home/auth.json";
+
+#[test]
+fn detect_host_reads_store_never_writes() {
+    // Plan 7E Task 5: Codex's detection reads the sign-in store through the link in its own
+    // `provider/` and never writes it (a refresh happens in a session, never in detection).
+    let p = agent(&host(Harness::Codex, CODEX_STORE, None)).unwrap();
+    let store = abs(CODEX_STORE);
+    assert!(p.readable(&store), "the store is not readable");
+    assert!(!p.writable(&store), "the store is writable");
+    assert!(!p.write.contains(&store));
+    // Its own throwaway `provider/` stays writable (Codex keeps its state there).
+    let own = abs("data/agents/host-01JQ0000000000000000000000/provider/installation_id");
+    assert!(p.writable(&own));
+    // Nothing else of the sign-in home.
+    assert!(!p.readable(&abs("data/providers/codex/home/config.toml")));
+    // A session's store stays read-write: its CLI refreshes the sign-in in place.
+    let s = agent(&session(Harness::Codex, AgentMode::Draft)).unwrap();
+    assert!(s.readable(&store) && s.writable(&store));
+    // Claude Code's detection still writes its store (plan 7D Decision 19).
+    let claude = agent(&host(Harness::ClaudeCode, CLAUDE_STORE, Some(CLAUDE_HOME))).unwrap();
+    assert!(claude.writable(&abs(&format!("{CLAUDE_STORE}/.credentials.json"))));
+}
+
+#[cfg(unix)]
+#[test]
+fn codex_etc_codex_reach_per_os() {
+    // Plan 7E Task 0 (unsigned): Codex probes `/etc/codex/{config.toml, managed_config.toml,
+    // requirements.toml, rules, skills, agents}`. The base toolchain decides whether the
+    // `agent` profile lets it read them. Recorded, not widened or narrowed here (Task 16).
+    use fin_sandbox::Os;
+    use fin_sandbox::data::toolchain_base;
+    use fin_sandbox::profile::for_os;
+    let with_base = |os: Os| AgentInput {
+        toolchains: toolchain_base(os).into_iter().map(PathBuf::from).collect(),
+        ..session(Harness::Codex, AgentMode::Draft)
+    };
+    let linux = for_os::agent(Os::Linux, &with_base(Os::Linux)).unwrap();
+    for f in [
+        "config.toml",
+        "managed_config.toml",
+        "requirements.toml",
+        "skills/x/SKILL.md",
+    ] {
+        assert!(!linux.readable(&PathBuf::from("/etc/codex").join(f)), "{f}");
+    }
+    assert!(linux.readable(&PathBuf::from("/etc/ssl/certs/ca.pem")));
+    // macOS lists `/private/etc` whole (`/etc` is its link): `/etc/codex` is readable there.
+    let mac = for_os::agent(Os::Macos, &with_base(Os::Macos)).unwrap();
+    assert!(mac.readable(&PathBuf::from("/private/etc/codex/config.toml")));
+}

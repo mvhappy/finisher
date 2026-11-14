@@ -1,0 +1,17 @@
+{
+  "turns": [
+    {
+      "steps": [
+        {
+          "dynamicTool": {
+            "tool": "shell",
+            "arguments": { "command": "ls", "timeoutMs": 10000 },
+            "onSuccess": [{ "method": "warning", "params": { "threadId": "$threadId", "message": "listed" } }]
+          }
+        },
+        { "say": "Listed the workspace." },
+        { "usage": { "last": { "inputTokens": 900, "outputTokens": 40 } } }
+      ]
+    }
+  ]
+}

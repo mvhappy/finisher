@@ -126,6 +126,7 @@ describe("5B kinds (Task 1)", () => {
     expect(auditDetailsValid("settings.write", { value: "0.0.0.0:7311" })).toBe(false);
     // 7D Task 11: Claude Code's keyed account hashes, never a label.
     expect(auditDetailsValid("settings.write", { rpc: "agent.account.confirm", value: "claudeCode.taken", accountHash: "0a1b2c3d", previousHash: "4e5f6a7b" })).toBe(true);
+    for (const value of ["codex", "codex.next", "codex.taken"]) expect(auditDetailsValid("settings.write", { rpc: "agent.account.confirm", value, accountHash: "0a1b2c3d" }), value).toBe(true);
     expect(auditDetailsValid("settings.write", { accountHash: "person@example.invalid" })).toBe(false);
     expect(auditDetailsValid("pair.redeem", { deviceName: "Studio tablet", platform: "ios", address: "127.0.0.1" })).toBe(true);
     expect(auditDetailsValid("pair.redeem", { platform: "amiga" })).toBe(false);

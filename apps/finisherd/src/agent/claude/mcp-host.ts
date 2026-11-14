@@ -45,7 +45,7 @@ import type { RuntimeAnswer } from "../adapter.ts";
 import { MCP_SERVER, SHELL_TOOL } from "./launch.ts";
 import { type CliRequest, encodeAnswer, type McpReply } from "./protocol.ts";
 import type { RequestPort } from "./session.ts";
-import { type ShellResult, type ShellTool, shellInput } from "./shell-tool.ts";
+import { type ShellResult, type ShellTool, shellInput } from "../cli/shell-tool.ts";
 
 /** An MCP `tools/call`: a CLI request like `can_use_tool`, never part of the handshake. */
 export const isMcpToolCall = (message: unknown): boolean => typeof message === "object" && message !== null && (message as { method?: unknown }).method === "tools/call";

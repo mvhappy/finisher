@@ -4,7 +4,39 @@ This file records third-party code, content, and models used by Finisher. Each e
 is filled in with its licence text and copied paths when the material is actually used.
 
 ## T3 Code (MIT) — vendored slices
-status: planned
+status: used (sub-project 7E, Task 3), one slice: the Codex app-server JSON-RPC transport of
+`packages/effect-codex-app-server` (`src/protocol.ts`, `src/_internal/shared.ts`) at
+github.com/pingdotgg/t3code revision `5f85768394f417f5bd098ca7fe4fc41ef07a7cda`, adapted (Effect
+4.0.6, Finisher's errors and framing, its own generated schemas) into
+`apps/finisherd/src/agent/codex/rpc.ts`, which carries the notice below. T3's generated schema
+(`src/_generated/`) is not used: `scripts/gen-codex-protocol.mjs` generates Finisher's from the
+pinned Codex schema. The package has no licence of its own; the repository's root `LICENSE`
+applies.
+
+### T3 Code: MIT (`LICENSE`)
+```text
+MIT License
+
+Copyright (c) 2026 T3 Tools Inc.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
 
 ## Uncut (MIT) — skills and critic rubrics
 status: planned
@@ -727,6 +759,28 @@ status: planned
 
 ## Codex (Apache-2.0) — bundled agent CLI
 status: planned
+
+## OpenAI Codex CLI 0.167.0 (Apache-2.0) — the bundled `codex` and `rg` executables (sub-project 7E)
+status: used (sub-project 7E, Task 2), **unmodified, as separate executables** that Finisher
+starts as a child process (`finisherd` never links them): `codex` (`bin/codex[.exe]`) and the
+`rg` (ripgrep, Unlicense OR MIT) that ships beside it (`codex-path/rg[.exe]`), from the npm
+platform packages `@openai/codex@0.167.0-<target>` pinned by sha512 in `vendor/codex/pin.json`
+and fetched by `pnpm codex:pin` (never committed). **Never shipped:** the package's
+`codex-resources/bwrap` (LGPL-2.0-or-later, spec §17) and its code-mode host;
+`scripts/check-codex-pin.mjs` refuses either in the pin. `vendor/codex/0.167.0/` also holds the
+generated app-server JSON schema and the feature list of that binary (Apache-2.0 data), with
+`LICENSE` (the Apache License 2.0) and `NOTICE` taken from the `rust-v0.167.0` tag of
+github.com/openai/codex (the npm packages carry neither).
+
+### OpenAI Codex: the NOTICE (Apache-2.0 §4(d); the licence is `vendor/codex/0.167.0/LICENSE`)
+```text
+OpenAI Codex
+Copyright 2025 OpenAI
+
+This project includes code derived from [Ratatui](https://github.com/ratatui/ratatui), licensed under the MIT license.
+Copyright (c) 2016-2022 Florian Dehau
+Copyright (c) 2023-2025 The Ratatui Developers
+```
 
 ## cosmic-text (MIT OR Apache-2.0) and its shaping stack — `fin-text`
 status: used (sub-project 4C), as Cargo dependencies; no code is copied.

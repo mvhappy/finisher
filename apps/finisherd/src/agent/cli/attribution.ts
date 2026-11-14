@@ -1,5 +1,6 @@
 // Inferred attribution of a CLI agent's own shell calls (plan 7D Task 12, Decision 20; spec
-// §12.3). Harness-neutral: Claude Code's `Bash` today, 7E's Codex shell through the same class.
+// §12.3). Harness-neutral: Claude Code's `Bash` today, 7E's Codex shell through the same class
+// (`shellToolsOf(harness)`, `permissions.ts`).
 //
 // A CLI's shell cannot be given `FIN_CALL` per tool call, so a commit its `fin` makes arrives
 // with no call. The runtime ties it to a call by what it saw:
@@ -25,6 +26,7 @@
 import type { Attribution } from "@finisher/core-types";
 import { blake3Hex } from "@finisher/fin-node";
 import type { FinCommand, FinFlag, FinIndex } from "../builtin/fin-tool.ts";
+import { shellToolsOf } from "../permissions.ts";
 import type { RuntimeJournal } from "../runtime-deps.ts";
 import { finRuns } from "./shell-words.ts";
 
@@ -32,8 +34,8 @@ import { finRuns } from "./shell-words.ts";
 export const ARGS_HASH_HEADER = "fin-args-hash";
 const HASH = /^blake3:[0-9a-f]{64}$/;
 
-/** Shell tools whose commands are matched, by harness tool name (Claude Code's `Bash`). */
-export const SHELL_TOOLS: ReadonlySet<string> = new Set(["Bash"]);
+/** Shell tools whose commands are matched by default: Claude Code's (`shellToolsOf`, per harness). */
+export const SHELL_TOOLS: ReadonlySet<string> = shellToolsOf("claudeCode");
 
 /** What `fin`'s `describe` hashes: the command, the long flags given with their raw values, the positionals. */
 export interface ParsedArgs {

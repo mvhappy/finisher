@@ -44,11 +44,12 @@ export const CLAUDE_CODE_ENV: ReadonlyArray<string> = [
 
 /**
  * The names a harness's adapter may add to one process (`SpawnOptions.env`, the `extra` of
- * `assertSessionEnv`): Claude Code's switches, and for every harness `FIN_CALL` (a per-call
- * process's call id, spec §12.3). Nothing else.
+ * `assertSessionEnv`): Claude Code's switches, Codex's `NO_COLOR` (plan 7E Decision 5), and for
+ * every harness `FIN_CALL` (a per-call process's call id, spec §12.3). Nothing else.
  */
 export function harnessExtra(harness: Harness): ReadonlyArray<string> {
-  return harness === "claudeCode" ? [...CLAUDE_CODE_ENV, "FIN_CALL"] : ["FIN_CALL"];
+  if (harness === "claudeCode") return [...CLAUDE_CODE_ENV, "FIN_CALL"];
+  return harness === "codex" ? ["NO_COLOR", "FIN_CALL"] : ["FIN_CALL"];
 }
 
 /** A call id as `fin` takes it from `FIN_CALL` (`agent/reach.ts`, `crates/fin/src/agent_env.rs`). */
@@ -67,6 +68,7 @@ const EXTRA_VALUES: Readonly<Record<string, (v: string, env: Readonly<Record<str
   CLAUDE_CODE_DISABLE_CLAUDE_MDS: (v) => v === "1",
   CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: (v) => v === "1",
   BASH_DEFAULT_TIMEOUT_MS: (v) => /^\d+$/.test(v),
+  NO_COLOR: (v) => v === "1",
   FIN_CALL: (v) => CALL_ID.test(v),
 };
 
@@ -85,9 +87,11 @@ export function sessionShell(exists: (p: string) => boolean = existsSync): strin
 /**
  * The harnesses whose sessions get their own `HOME` (`tmp/home`, Windows `USERPROFILE` too) and,
  * off Windows, an explicit `SHELL` (plan 7D Decision 5, Task 0 signed in): with the server's
- * `HOME` Claude Code's Bash sourced the user's rc files and the CLI read `~/.claude/`.
+ * `HOME` Claude Code's Bash sourced the user's rc files and the CLI read `~/.claude/`. Codex too
+ * (plan 7E Decision 5): it discovers skills under `~/.agents/skills` and its `shell_snapshot`
+ * sources the user's shell.
  */
-const OWN_HOME: ReadonlySet<Harness> = new Set(["claudeCode"]);
+const OWN_HOME: ReadonlySet<Harness> = new Set(["claudeCode", "codex"]);
 
 /** The variable naming `harness`'s sign-in store directory, when its store is one (Claude Code). */
 export function storeEnvName(harness: Harness): string | undefined {
@@ -173,7 +177,7 @@ export interface HostEnvInput {
  * the sign-in home instead of the throwaway `provider/`. `HOME` (and Windows'
  * `USERPROFILE`) is the throwaway `SessionDirs.home`, never the server's: what a CLI reads under the
  * user's home (`$HOME/.config/anthropic/…`) cannot sign the probe in. Sessions keep the server's,
- * but for Claude Code's (`OWN_HOME`).
+ * but for Claude Code's and Codex's (`OWN_HOME`).
  */
 export function hostEnv(i: HostEnvInput): Record<string, string> {
   const platform = i.platform ?? process.platform;
@@ -217,10 +221,36 @@ function ownDirs(env: Record<string, string>, harness: Harness, dirs: SessionDir
 
 /**
  * Never in a session's environment (§8.5), whatever an adapter adds: `NEVER_PASSED`, Claude
- * Code's token and `FIN_CALL_IDEM` (a shell runs several `fin`s, §3.4); with `secretName`, what
- * `assertSessionEnv` holds an adapter's own environment to.
+ * Code's token, `FIN_CALL_IDEM` (a shell runs several `fin`s, §3.4), Codex's and OpenAI's
+ * sign-in, endpoint and account variables, and `RUST_LOG` (Codex's log level: plan 7E Decision 5
+ * leaves it unset); with `NEVER_IN_SESSION_PREFIXES` and `secretName`, what `assertSessionEnv`
+ * holds an adapter's own environment to.
  */
-export const NEVER_IN_SESSION: ReadonlyArray<string> = [...NEVER_PASSED, "CLAUDE_CODE_OAUTH_TOKEN", "FIN_CALL_IDEM"];
+export const NEVER_IN_SESSION: ReadonlyArray<string> = [
+  ...NEVER_PASSED,
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "FIN_CALL_IDEM",
+  "CODEX_ACCESS_TOKEN",
+  "CODEX_API_KEY",
+  "OPENAI_API_KEY",
+  "OPENAI_BASE_URL",
+  "OPENAI_ORG_ID",
+  "OPENAI_PROJECT_ID",
+  "RUST_LOG",
+];
+
+/**
+ * Name prefixes never in a session's environment (plan 7E Decision 5): the markers Codex sets
+ * for the commands it sandboxes itself (`CODEX_SANDBOX`, `CODEX_SANDBOX_NETWORK_DISABLED`), which
+ * a session's Codex must never inherit, and its internal switches (`CODEX_INTERNAL_*`).
+ */
+export const NEVER_IN_SESSION_PREFIXES: ReadonlyArray<string> = ["CODEX_SANDBOX", "CODEX_INTERNAL_"];
+
+/** `k` (any case) never passes into a session: `NEVER_IN_SESSION` or a prefix of `NEVER_IN_SESSION_PREFIXES`. */
+export function neverInSession(k: string): boolean {
+  const u = k.toUpperCase();
+  return hasFolded(NEVER_IN_SESSION, k) || NEVER_IN_SESSION_PREFIXES.some((p) => u.startsWith(p));
+}
 
 export interface AssertOptions {
   /**
@@ -230,7 +260,9 @@ export interface AssertOptions {
   readonly expect?: Readonly<Record<string, string>>;
   /**
    * Names the adapter may add beyond the session's (a CLI's own documented switches, Claude
-   * Code's non-secret `CLAUDE_CODE_*` among them). Never a name of `NEVER_IN_SESSION` or a key.
+   * Code's non-secret `CLAUDE_CODE_*` among them). Never a name of `NEVER_IN_SESSION`, one
+   * starting with a `NEVER_IN_SESSION_PREFIXES` prefix (`neverInSession`, any case) or a key
+   * (`secretName`): those are refused even when listed here.
    */
   readonly extra?: ReadonlyArray<string>;
   /**
@@ -262,8 +294,8 @@ const isKey = (k: string) => /_API_KEY$/i.test(k);
  * Throws `SANDBOX_ENV` (a `FinError`) unless `env` is a session environment of `s` (§8.5):
  * every name `sessionEnv` sets is present; `FIN_SESSION` is the session's id; the credential,
  * `TMPDIR`, the provider directory, the git configuration and `GNUPGHOME` are the session's own
- * paths under `agents/<id>/` (absolute), and for Claude Code `HOME` (Windows `USERPROFILE`) its
- * `tmp/home` and `SHELL` one of `SESSION_SHELLS`; the git settings are exactly `GIT_OVERRIDES` with
+ * paths under `agents/<id>/` (absolute), and for Claude Code and Codex `HOME` (Windows
+ * `USERPROFILE`) its `tmp/home` and `SHELL` one of `SESSION_SHELLS`; the git settings are exactly `GIT_OVERRIDES` with
  * `GIT_CONFIG_NOSYSTEM=1`; `FIN_PROJECT_DIR` is absolute; no name of `NEVER_IN_SESSION` and no
  * key (names in any case); nothing outside the allow-list, `LC_*`, the session's names,
  * `FIN_CALL` and `opts.extra`; `FIN_CALL` and the extra names with their fixed values
@@ -288,7 +320,7 @@ export function assertSessionEnv(env: Readonly<Record<string, string | undefined
   const extra = new Set(opts.extra ?? []);
   for (const [k, v] of Object.entries(env)) {
     if (v === undefined) continue;
-    if (hasFolded(NEVER_IN_SESSION, k)) fail("a variable that never passes", k);
+    if (neverInSession(k)) fail("a variable that never passes", k);
     if (isKey(k)) fail("a secret", k);
     if (host && hasFolded(SESSION_ONLY, k) && !(withStore && k === storeName)) fail("a session variable in a host sandbox", k);
     if (!host && storeName !== undefined && !withStore && k.toUpperCase() === storeName) fail("a sign-in store without one", k);
@@ -372,7 +404,7 @@ export function assertSpawnEnv(add: Readonly<Record<string, string>>, s: Pick<Se
   const allowed = harnessExtra(s.harness);
   for (const k of Object.keys(add)) {
     // Names in any case: Windows reads `fin_session` as `FIN_SESSION`.
-    if (hasFolded(NEVER_IN_SESSION, k)) fail("a variable that never passes", k);
+    if (neverInSession(k)) fail("a variable that never passes", k);
     if (isKey(k)) fail("a secret", k);
     if (hasFolded(session, k) || hasFolded(SESSION_ONLY, k)) fail("a session variable", k);
     if (!allowed.includes(k)) fail("a variable outside the harness's", k);

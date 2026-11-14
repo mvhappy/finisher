@@ -5,7 +5,8 @@
 //! session directory's `credential.json`, `settings/`, `tmp/`, `provider/` and `git/`, and the
 //! harness's sign-in store (detection's host sandbox also reads the whole sign-in home, plan 7D
 //! Decision 19). Writes: the session's workspace, `workspace/shared/` (not in
-//! `plan`), `tmp/`, `provider/` and the sign-in store file. Protected: the project's state
+//! `plan`), `tmp/`, `provider/` and the sign-in store file (not Codex's detection, which only
+//! reads it: plan 7E Task 5). Protected: the project's state
 //! (`.finisher/`, `assets/`, `finisher.project.json`, `finisher.rules.json`) and the session's
 //! credential and settings. Denied as a second layer: server data (the session directory's
 //! listed files and the store file are holes in it), the sensitive home paths and, for Claude
@@ -132,7 +133,9 @@ pub fn agent_on(os: Os, i: &AgentInput) -> Result<SandboxPolicy, PolicyError> {
     if i.mode != AgentMode::Plan {
         write.extend(i.shared_dir.iter().cloned());
     }
-    write.extend(i.sign_in_store.iter().cloned());
+    if !store_read_only(i) {
+        write.extend(i.sign_in_store.iter().cloned());
+    }
 
     let mut protect: Vec<PathBuf> = PROJECT_STATE
         .iter()
@@ -182,6 +185,16 @@ fn harness_reads(os: Os, h: Harness) -> Vec<PathBuf> {
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
         .collect()
+}
+
+/// Codex's detection (plan 7E Task 5): a Codex host sandbox reads the sign-in store and never
+/// writes it (a token refresh is a session's). Only detection's host sandbox has a store (the
+/// probe never, Decision 8), so any `host-` id of a Codex input with one is detection's; the
+/// prefix alone decides, failing closed. Windows grants the store to the harness's sign-in
+/// capability, which every session holds (TODO(7E Task 15)): the policy is read-only there too,
+/// the grant is not.
+fn store_read_only(i: &AgentInput) -> bool {
+    i.harness == Harness::Codex && i.session_id.starts_with(HOST_PREFIX)
 }
 
 /// A ULID: 26 characters of Crockford's base 32, upper case, the first at most `7`.

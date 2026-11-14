@@ -25,6 +25,10 @@ const steps = [
   // Workers never start processes (5C-1 plan Decision 24).
   ["node", ["scripts/check-worker-spawn.mjs"]],
   ["node", ["scripts/check-agent-spawn.mjs"]],
+  // The pinned Codex keeps only Apache-2.0 files (never bwrap) and its committed schema is the pin's (7E Task 2).
+  ["node", ["scripts/check-codex-pin.mjs"]],
+  // The Codex protocol's Effect Schemas are the pinned schema's, and rpc.ts sends only its allow-list (7E Task 3).
+  ["node", ["scripts/check-codex-protocol.mjs"]],
   // No hand-loaded `fs`/`child_process` under apps/finisherd/src (the store spy's blind spot, 7D Task 11).
   ["node", ["scripts/check-module-escapes.mjs"]],
   // One function decides which encoder a purpose may use; encoders open only through

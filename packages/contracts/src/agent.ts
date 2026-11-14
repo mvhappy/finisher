@@ -444,7 +444,11 @@ export const ProviderInfo = Schema.Struct({
   authMethod: Schema.optionalKey(Schema.String),
   /** A keyed hash of the signed-in account (8 hex characters, plan 7D Task 11): never the label. */
   accountHash: Schema.optionalKey(Schema.String.check(Schema.isPattern(/^[0-9a-f]{8}$/))),
-  /** Whether sessions may start on the harness (`agents.claudeCode.enabled`, default off). */
+  /** A ChatGPT sign-in's plan (`plus`, `pro`, …; plan 7E Task 6): one word, never the account. */
+  planType: Schema.optionalKey(Schema.String),
+  /** Facts about the sign-in that are not failures (`accountUnidentified`, 7E Owner Q7a). */
+  warnings: Schema.optionalKey(Schema.Array(AgentWarning)),
+  /** Whether sessions may start on the harness (`agents.<harness>.enabled`, default off). */
   enabled: Schema.optionalKey(Schema.Boolean),
   /** Why detection failed, as `{code, message, details, fix?}`. */
   problem: Schema.optionalKey(Schema.Struct({ code: Schema.String, message: Schema.String, fix: Schema.optionalKey(Schema.String) })),

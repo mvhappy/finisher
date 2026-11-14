@@ -77,7 +77,8 @@ const AccountHash = Schema.String.check(Schema.isPattern(/^[0-9a-f]{8}$/));
  * account as the one sessions run on (`next`: the next change, for `provider signin --confirm`).
  */
 export const AgentAccountConfirmPayload = Schema.Struct({
-  harness: Schema.Literal("claudeCode"),
+  /** The CLI whose account record is confirmed (each harness keeps its own, 7E Task 1). */
+  harness: Schema.Literals(["claudeCode", "codex"]),
   next: Schema.optionalKey(Schema.Boolean),
   /** The waiting account the person was shown (required unless `next`): another is `ACCOUNT_CONFIRM_STALE`. */
   accountHash: Schema.optionalKey(AccountHash),

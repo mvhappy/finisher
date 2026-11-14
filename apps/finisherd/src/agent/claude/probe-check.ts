@@ -23,6 +23,7 @@
 //   CLI's validation is dropped whole and silently, Task 0).
 import type { FinError, ProviderEvent } from "@finisher/contracts";
 import { finError } from "../../errors.ts";
+import { type GateStep as CliGateStep, eventGate } from "../cli/gate.ts";
 import { type CliModel, parseClaudeInitialize } from "../catalogue/cli-models.ts";
 import { type LaunchPlan, MCP_SERVER } from "./launch.ts";
 import { CANARY_STYLE } from "./probe-types.ts";
@@ -206,18 +207,8 @@ export function initChanged(first: SystemInit, later: SystemInit): FinError | nu
   return null;
 }
 
-/** What the caller does with a line: pass these on, nothing yet, or stop the instance. */
-export type GateStep =
-  | { readonly kind: "forward"; readonly lines: readonly CliLine[] }
-  | { readonly kind: "hold" }
-  /**
-   * The init failed: fail the turn with `error` and kill the instance at once (SIGKILL of its
-   * process group through the sandbox, `SandboxedChild.kill`); an `interrupt` control request
-   * only where no kill is possible. An interrupt lets the turn play on, a kill does not.
-   */
-  | { readonly kind: "refuse"; readonly error: FinError; readonly kill: true }
-  /** After a refusal: the line is dropped. */
-  | { readonly kind: "drop" };
+/** What the caller does with a line (`cli/gate.ts`): pass these on, nothing yet, or stop the instance. */
+export type GateStep = CliGateStep<CliLine>;
 
 export interface FirstTurnGate {
   /** Feed every decoded line of the instance, in order. */
@@ -247,45 +238,31 @@ const passes = (l: CliLine): boolean => (l.kind === "controlRequest" && l.reques
  * later line).
  */
 export function firstTurnGate(plan: Pick<LaunchPlan, "argv" | "tools" | "mcpTools">, opts: CheckOptions = {}): FirstTurnGate {
-  let state: FirstTurnGate["state"] = "waiting";
-  let held: CliLine[] = [];
   let first: SystemInit | undefined;
-  const refuse = (error: FinError): GateStep => {
-    state = "refused";
-    held = [];
-    return { kind: "refuse", error, kill: true };
-  };
+  // The Claude predicate: every init checked, and each later one against the instance's first.
+  const gate = eventGate<CliLine>((line) => {
+    const init = line as SystemInit & CliLine;
+    const e = checkInit(init, plan, opts) ?? (first === undefined ? null : initChanged(first, init));
+    if (e === null) first ??= init;
+    return e;
+  });
   return {
     get state() {
-      return state;
+      return gate.state;
     },
     push(line) {
       if (passes(line)) return { kind: "forward", lines: [line] };
-      if (state === "refused") return line.kind === "controlRequest" ? { kind: "forward", lines: [line] } : { kind: "drop" };
+      if (gate.state === "refused") return line.kind === "controlRequest" ? { kind: "forward", lines: [line] } : { kind: "drop" };
       if (line.kind === "controlCancel") {
-        const i = held.findIndex((h) => h.kind === "controlRequest" && h.request_id === line.request_id);
-        if (i < 0) return { kind: "forward", lines: [line] };
-        held.splice(i, 1);
-        return { kind: "drop" };
+        return gate.withdraw((h) => h.kind === "controlRequest" && h.request_id === line.request_id) ? { kind: "drop" } : { kind: "forward", lines: [line] };
       }
-      if (line.kind === "init") {
-        const e = checkInit(line, plan, opts) ?? (first === undefined ? null : initChanged(first, line));
-        if (e !== null) return refuse(e);
-        first ??= line;
-        if (state === "open") return { kind: "forward", lines: [line] };
-        state = "open";
-        const lines = [...held, line];
-        held = [];
-        return { kind: "forward", lines };
-      }
-      if (state === "open") return { kind: "forward", lines: [line] };
-      if (line.kind === "result") {
-        if (!line.is_error) return refuse(versionError("init", "the Claude Code instance ended a turn without its init", { item: "system/init" }));
-        held = [];
+      if (line.kind === "init") return gate.verify(line);
+      if (gate.state === "waiting" && line.kind === "result") {
+        if (!line.is_error) return gate.refuse(versionError("init", "the Claude Code instance ended a turn without its init", { item: "system/init" }));
+        gate.discard();
         return { kind: "forward", lines: [line] };
       }
-      held.push(line);
-      return { kind: "hold" };
+      return gate.push(line);
     },
   };
 }

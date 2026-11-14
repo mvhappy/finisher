@@ -14,7 +14,7 @@ import { Effect } from "effect";
 import { finError } from "../errors.ts";
 import type { SecretStore } from "../secrets/store.ts";
 import type { ProviderAdapter } from "./adapter.ts";
-import { ClaudeAccounts, registerAccountAudit } from "./claude/account.ts";
+import { accountsOf, type CliHarness, registerAccountAudit } from "./cli/account.ts";
 import { closedTargets, type LocalEndpoint, localEndpoint, parseEndpoint, setClosedTargets, setLocalEndpoint } from "./settings.ts";
 import { agentWarnings } from "./warnings.ts";
 
@@ -38,6 +38,8 @@ export interface AdminDeps {
    * adapter's own detection once one is registered.
    */
   readonly claudeCode?: () => Effect.Effect<ProviderInfo>;
+  /** Codex's line (`codex/detect.ts` `codexProviderInfo`, plan 7E Task 6): the pin, sign-in method and plan, never a label or token. */
+  readonly codex?: () => Effect.Effect<ProviderInfo>;
 }
 
 /** What an API key looks like (the console checks the same before it asks for a confirmation). */
@@ -77,8 +79,8 @@ export class AgentAdmin {
 
   constructor(deps: AdminDeps) {
     this.deps = deps;
-    // An expected Claude Code account change taken by detection is audited under the person who expected it.
-    registerAccountAudit(deps.serverData, (by, d) => deps.audit({ kind: by.kind, id: by.id } as Principal, { rpc: "agent.account.confirm", value: "claudeCode.taken", ...d }));
+    // An expected CLI account change taken by detection is audited under the person who expected it.
+    registerAccountAudit(deps.serverData, (by, d, harness) => deps.audit({ kind: by.kind, id: by.id } as Principal, { rpc: "agent.account.confirm", value: `${harness}.taken`, ...d }));
   }
 
   /** Whether an OpenRouter key would be used for `projectId`: its own, else the server's default. */
@@ -190,7 +192,7 @@ export class AgentAdmin {
     return this.closedTargets();
   }
 
-  // Claude Code's account (plan 7D Decision 19, `claude/account.ts`) ---------------------------
+  // A CLI's account (plan 7D Decision 19, 7E Task 1, `cli/account.ts`) -------------------------
 
   /**
    * `agent.account.confirm`: the account change waiting for a person becomes the account sessions
@@ -199,18 +201,18 @@ export class AgentAdmin {
    * signin --confirm`; refused while a change waits). The scope chain lets only the console's
    * principal here; audited with words and hashes only.
    */
-  accountConfirm(by: Principal, req: { harness: "claudeCode"; next?: boolean; accountHash?: string }): { confirmed: boolean; expecting?: boolean; accountHash?: string; previous?: string } {
-    const accounts = new ClaudeAccounts(this.deps.serverData);
+  accountConfirm(by: Principal, req: { harness: CliHarness; next?: boolean; accountHash?: string }): { confirmed: boolean; expecting?: boolean; accountHash?: string; previous?: string } {
+    const accounts = accountsOf(this.deps.serverData, req.harness);
     if (req.next === true) {
       accounts.expectNext(by);
-      this.deps.audit(by, { rpc: "agent.account.confirm", value: "claudeCode.next" });
+      this.deps.audit(by, { rpc: "agent.account.confirm", value: `${req.harness}.next` });
       return { confirmed: false, expecting: true };
     }
     if (req.accountHash === undefined) {
       throw finError("INVALID_REQUEST", "agent.account.confirm names the account it confirms", { field: "accountHash" }, "send the accountHash agent.providers showed");
     }
     const r = accounts.confirm(req.accountHash);
-    if (r.confirmed) this.deps.audit(by, { rpc: "agent.account.confirm", value: "claudeCode", accountHash: r.accountHash!, ...(r.previous === undefined ? {} : { previousHash: r.previous }) });
+    if (r.confirmed) this.deps.audit(by, { rpc: "agent.account.confirm", value: req.harness, accountHash: r.accountHash!, ...(r.previous === undefined ? {} : { previousHash: r.previous }) });
     return r;
   }
 
@@ -229,7 +231,7 @@ export class AgentAdmin {
     return Effect.promise(async () => {
       const providers: ProviderInfo[] = [];
       for (const [harness, adapter] of adapters) {
-        if (harness === "claudeCode" && this.deps.claudeCode !== undefined) continue;
+        if ((harness === "claudeCode" && this.deps.claudeCode !== undefined) || (harness === "codex" && this.deps.codex !== undefined)) continue;
         const exit = await Effect.runPromiseExit(adapter.detect());
         if (exit._tag === "Success") {
           const d = exit.value;
@@ -253,6 +255,7 @@ export class AgentAdmin {
         }
       }
       if (this.deps.claudeCode !== undefined) providers.push(await Effect.runPromise(this.deps.claudeCode()));
+      if (this.deps.codex !== undefined) providers.push(await Effect.runPromise(this.deps.codex()));
       const l = this.local();
       let reachable: boolean | undefined;
       if (l !== undefined) reachable = await listLocalModels(l.baseUrl, this.deps.fetch, this.deps.probeMs).then(() => true, () => false);

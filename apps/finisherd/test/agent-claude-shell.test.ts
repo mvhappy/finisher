@@ -24,7 +24,7 @@ import { claudePermissions } from "../src/agent/claude/permissions.ts";
 import type { ProbeResult } from "../src/agent/claude/probe-types.ts";
 import { type CliRequest, decodeLine } from "../src/agent/claude/protocol.ts";
 import type { RequestPort } from "../src/agent/claude/session.ts";
-import { capOutput, PWSH, SH, SHELL_DEFAULT_TIMEOUT_MS, SHELL_MAX_TIMEOUT_MS, SHELL_OUTPUT_MAX, type ShellBox, shellFor, shellInput, shellTool } from "../src/agent/claude/shell-tool.ts";
+import { capOutput, PWSH, SH, SHELL_DEFAULT_TIMEOUT_MS, SHELL_MAX_TIMEOUT_MS, SHELL_OUTPUT_MAX, type ShellBox, shellFor, shellInput, shellTool } from "../src/agent/cli/shell-tool.ts";
 import type { SpawnOptions } from "../src/agent/sandbox.ts";
 import { toolNames } from "../src/agent/permissions.ts";
 import { resolveFinPath } from "../src/agent/settings.ts";

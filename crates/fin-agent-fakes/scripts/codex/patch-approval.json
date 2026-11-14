@@ -1,0 +1,16 @@
+{
+  "turns": [
+    {
+      "steps": [
+        {
+          "patch": {
+            "changes": [
+              { "path": "notes.txt", "kind": { "type": "add" }, "diff": "written by an accepted patch\n" }
+            ]
+          }
+        },
+        { "say": "Patched (or not)." }
+      ]
+    }
+  ]
+}

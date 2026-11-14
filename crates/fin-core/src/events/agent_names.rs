@@ -56,6 +56,12 @@ pub static AGENT_MODELS: NameTable = NameTable::new(
         "haiku",
         "fable",
         "claude-fable-5-2",
+        // Codex 0.167.0's unsigned `model/list` (7E Task 0): the ids the gpt-6* rows above do
+        // not already name.
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "gpt-5.5",
         "other",
     ],
 );

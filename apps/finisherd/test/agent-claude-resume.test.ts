@@ -16,7 +16,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } fr
 import { sessionUuid } from "../src/agent/claude/adapter.ts";
 import { claudePermissions } from "../src/agent/claude/permissions.ts";
 import { decodeLine } from "../src/agent/claude/protocol.ts";
-import { interruptedNote, resumeState, toldIds } from "../src/agent/claude/resume.ts";
+import { interruptedNote, resumeState, toldIds } from "../src/agent/cli/resume.ts";
 import * as fs from "node:fs";
 import type { KeyFs } from "../src/auth/keys.ts";
 import { aliveProcesses, forgetProcess, lastBaseline, lastEnd, noteResult, PROVIDER_PID, recordProcess, sweepProviderProcesses } from "../src/agent/provider-pid.ts";

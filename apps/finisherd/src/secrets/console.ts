@@ -4,13 +4,16 @@
 // `y`; removing a key its id's first 8 characters typed back, removing the endpoint the word `local`. **The key is read from the
 // terminal without echo, never from the command line**: `provider key set openrouter <key>` is
 // refused before anything is read or sent, so a key never lands in shell history or `ps`.
-// Listing names keys by id, label and project only. `provider signin|signout claudeCode` prints
-// the CLI's own sign-in commands and runs nothing (plan 7D Decision 23, `agent/claude/detect.ts`);
-// `signin --confirm` also lets the next account change through, and `provider account confirm
-// claudeCode` takes a changed account (Decision 19, `agent/claude/account.ts`): both y/N.
+// Listing names keys by id, label and project only. `provider signin|signout <harness>` prints
+// the CLI's own sign-in commands and runs nothing (plan 7D Decision 23, `agent/claude/detect.ts`;
+// Codex's: 7E Task 6, `agent/codex/detect.ts`); `signin --confirm` also lets the next account change through,
+// and `provider account confirm <harness>` takes a changed account (Decision 19,
+// `agent/cli/account.ts`, one record per harness): both y/N.
 import { type AgentWarning, FinError, type ProviderKey } from "@finisher/contracts";
 import { KEY_RULE, KEY_RULE_TEXT } from "../agent/admin.ts";
+import { type CliHarness, HARNESS_NAMES } from "../agent/cli/account.ts";
 import { signinLines } from "../agent/claude/detect.ts";
+import { codexSigninLines } from "../agent/codex/detect.ts";
 import { projectArg } from "../agent/console.ts";
 import { type ConsoleConnection, consoleError, valueOf } from "../console/client.ts";
 import { type CommandContext, withConnection } from "../console/commands/context.ts";
@@ -45,31 +48,40 @@ export async function provider(ctx: CommandContext): Promise<number> {
 
 type ProviderLine = { harness: string; accountHash?: string; problem?: { code: string; message: string; fix?: string } };
 
-/** `provider account confirm claudeCode`: the account the CLI is signed in to now becomes the one sessions run on. */
+/** The CLI harnesses with an account record, as the console names them. */
+const ACCOUNT_HARNESSES: readonly CliHarness[] = ["claudeCode", "codex"];
+const isAccountHarness = (h: string | undefined): h is CliHarness => ACCOUNT_HARNESSES.includes(h as CliHarness);
+
+/** `provider account confirm <harness>`: the account the CLI is signed in to now becomes the one sessions run on. */
 async function accountConfirm(ctx: CommandContext, rest: ReadonlyArray<string>): Promise<number> {
   onlyFlags(ctx.args, "provider account confirm", []);
-  if (rest.length !== 1 || rest[0] !== "claudeCode") usage("provider account confirm takes claudeCode");
+  const harness = rest[0];
+  if (rest.length !== 1 || !isAccountHarness(harness)) usage(`provider account confirm takes ${ACCOUNT_HARNESSES.join(" or ")}`);
+  const name = HARNESS_NAMES[harness];
   requireTty(ctx.prompt, "provider account confirm");
   const r = await withConnection(ctx, async (c) => {
     const { providers } = await call<{ providers: ProviderLine[] }>(c, "agent.providers", {});
-    const line = providers.find((p) => p.harness === "claudeCode");
+    const line = providers.find((p) => p.harness === harness);
     if (line?.problem?.code !== "PROVIDER_ACCOUNT_CHANGED") return undefined;
     // No account to show (none named, or the record unreadable): nothing a confirmation can take.
-    if (line.accountHash === undefined) throw consoleError(line.problem.code, line.problem.message, { harness: "claudeCode" }, line.problem.fix);
+    if (line.accountHash === undefined) throw consoleError(line.problem.code, line.problem.message, { harness }, line.problem.fix);
     // The server takes this account only if it is still the one waiting (else ACCOUNT_CONFIRM_STALE).
     return confirmed<{ confirmed: boolean; accountHash?: string; previous?: string }>(
       c,
       ctx.prompt,
-      `Claude Code is signed in to another account (${safe(line.accountHash)}) than the one this server's sessions ran on. This makes it the account new sessions run on.`,
+      `${name} is signed in to another account (${safe(line.accountHash)}) than the one this server's sessions ran on. This makes it the account new sessions run on.`,
       proceed,
       "agent.account.confirm",
-      { harness: "claudeCode", accountHash: line.accountHash },
+      { harness, accountHash: line.accountHash },
     );
   });
-  if (r === undefined || !r.confirmed) ctx.output.out("No Claude Code account change waits for a confirmation.");
-  else ctx.output.out(`Claude Code sessions now run on account ${r.accountHash}${r.previous === undefined ? "" : ` (was ${r.previous})`}.`);
+  if (r === undefined || !r.confirmed) ctx.output.out(`No ${name} account change waits for a confirmation.`);
+  else ctx.output.out(`${name} sessions now run on account ${r.accountHash}${r.previous === undefined ? "" : ` (was ${r.previous})`}.`);
   return 0;
 }
+
+/** Each CLI's sign-in commands. */
+const SIGNIN_PRINTERS: Partial<Record<CliHarness, (serverData: string, verb: "login" | "logout") => string[]>> = { claudeCode: signinLines, codex: (serverData, verb) => codexSigninLines(serverData, verb) };
 
 /**
  * Prints the CLI's sign-in (or sign-out) commands for a person to run; runs nothing, needs no
@@ -77,12 +89,14 @@ async function accountConfirm(ctx: CommandContext, rest: ReadonlyArray<string>):
  */
 async function signin(ctx: CommandContext, verb: "signin" | "signout", harness: string | undefined, rest: ReadonlyArray<string>): Promise<number> {
   onlyFlags(ctx.args, `provider ${verb}`, verb === "signin" ? ["confirm"] : []);
-  if (harness !== "claudeCode" || rest.length > 0) usage(`provider ${verb} takes claudeCode`);
+  const printer = isAccountHarness(harness) ? SIGNIN_PRINTERS[harness] : undefined;
+  if (printer === undefined || rest.length > 0) usage(`provider ${verb} takes ${Object.keys(SIGNIN_PRINTERS).join(" or ")}`);
+  const name = HARNESS_NAMES[harness as CliHarness];
   const expect = has(ctx.args, "confirm");
   if (expect) requireTty(ctx.prompt, "provider signin --confirm");
   let lines: string[];
   try {
-    lines = signinLines(ctx.serverData, verb === "signin" ? "login" : "logout");
+    lines = printer(ctx.serverData, verb === "signin" ? "login" : "logout");
   } catch (e) {
     if (e instanceof FinError) throw consoleError(e.code, e.message, e.details as Record<string, unknown>, e.fix);
     throw e;
@@ -90,9 +104,9 @@ async function signin(ctx: CommandContext, verb: "signin" | "signout", harness: 
   for (const l of lines) ctx.output.out(l);
   if (!expect) return 0;
   await withConnection(ctx, (c) =>
-    confirmed(c, ctx.prompt, "This lets the next change of Claude Code's account through without a confirmation: sign in to the new account with the commands above.", proceed, "agent.account.confirm", { harness: "claudeCode", next: true }),
+    confirmed(c, ctx.prompt, `This lets the next change of ${name}'s account through without a confirmation: sign in to the new account with the commands above.`, proceed, "agent.account.confirm", { harness, next: true }),
   );
-  ctx.output.out("The next Claude Code account is taken as expected.");
+  ctx.output.out(`The next ${name} account is taken as expected.`);
   return 0;
 }
 

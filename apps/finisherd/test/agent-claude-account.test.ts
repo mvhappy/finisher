@@ -16,7 +16,8 @@ import { type Principal, type ProviderInfo, ruleOf, type Session } from "@finish
 import { sandboxStatus } from "@finisher/fin-node";
 import { Effect, Exit } from "effect";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
-import { type AuthStatus, accountCheck, accountIdentified, accountKey, accountProblem, ACCOUNT_FILE, ClaudeAccounts, EXPECT_TTL_MS, instanceAccount, labelOf, labelOfOutput, registerAccountAudit } from "../src/agent/claude/account.ts";
+import { type AuthStatus, accountCheck, accountFile, accountIdentified, accountKey, accountProblem, CliAccounts, EXPECT_TTL_MS, instanceAccount, registerAccountAudit } from "../src/agent/cli/account.ts";
+import { labelOf, labelOfOutput } from "../src/agent/claude/account.ts";
 import { CLAUDE_CAPABILITIES, claudeProviderInfo, type ClaudeDetectDeps, invalidateClaudeDetection } from "../src/agent/claude/detect.ts";
 import { probe } from "../src/agent/claude/probe.ts";
 import { BUNDLED_CATALOGUE, Catalogue } from "../src/agent/catalogue/catalogue.ts";
@@ -219,13 +220,13 @@ describe("the account hash", () => {
     // Linked into place from a full temp file, which is gone; a second creator reads the first's key.
     expect(readdirSync(join(data, "auth")).filter((f) => f.startsWith("account.key"))).toEqual(["account.key"]);
     // The state file holds hashes and one-word methods only.
-    const accounts = new ClaudeAccounts(data);
+    const accounts = new CliAccounts(data, { harness: "claudeCode" });
     accounts.observe(SIGNED_IN(LABEL_A), k);
     accounts.observe(SIGNED_IN(LABEL_B), k);
-    const raw = readFileSync(join(data, "agents", ACCOUNT_FILE), "utf8");
+    const raw = readFileSync(join(data, "agents", accountFile("claudeCode")), "utf8");
     expect(raw).not.toContain("label-7d11");
     expect(Object.keys(JSON.parse(raw)).sort()).toEqual(["current", "pending", "v"]);
-    if (!WIN) expect(statSync(join(data, "agents", ACCOUNT_FILE)).mode & 0o777).toBe(0o600);
+    if (!WIN) expect(statSync(join(data, "agents", accountFile("claudeCode"))).mode & 0o777).toBe(0o600);
   });
 
   withFake("account_hash_keyed_and_stored_only_as_hash: agent.providers reports the hash; no file of the server's, nor its log, holds the label", async () => {
@@ -264,7 +265,7 @@ describe("the account hash", () => {
     // control.db (and its WAL), the journal, the audit, the account state, every other file.
     const files = filesUnder(serverData, join(serverData, "providers"));
     expect(files.some((f) => f.endsWith("control.db"))).toBe(true);
-    expect(files.some((f) => f.endsWith(ACCOUNT_FILE))).toBe(true);
+    expect(files.some((f) => f.endsWith(accountFile("claudeCode")))).toBe(true);
     for (const f of files) expect(readFileSync(f).includes(Buffer.from("label-7d11")), f).toBe(false);
     expect(logged.join("")).not.toContain("label-7d11");
   });
@@ -275,6 +276,31 @@ describe("the account hash", () => {
 const startReq = { projectId: "01JP0000000000000000000001", harness: "claudeCode" as const, model: "default" };
 
 describe("an account change", () => {
+  withFake("stale_cache_never_clears_pending_change: detection's cached answer leaves a change an instance saw waiting", async () => {
+    const { bin } = installFake("cli", { account: LABEL_A });
+    const data = join(tmp, "data");
+    let now = 1_000_000;
+    const d: ClaudeDetectDeps = { ...detectDeps(data, bin), now: () => now };
+    const first = await line(d);
+    expect(first.problem).toBeUndefined();
+    const accounts = new CliAccounts(data, { harness: "claudeCode" });
+    // An instance's own `initialize` named another account: the change waits.
+    const b = accounts.observe(SIGNED_IN(LABEL_B), accountKey(data));
+    expect(b.changed).toBe(true);
+    // Detection's cached `auth status` (the earlier account, within its TTL) leaves it waiting.
+    const cached = await line(d);
+    expect(cached.problem?.code).toBe("PROVIDER_ACCOUNT_CHANGED");
+    expect(cached.accountHash).toBe(b.hash);
+    expect(accounts.pending()).toBe(b.hash);
+    // The persisted record keeps 7D's shape.
+    expect(Object.keys(accounts.state()).sort()).toEqual(["current", "pending", "v"]);
+    // A fresh read begun after the change was seen, naming the recorded account: nothing waits.
+    await new Promise((r) => setTimeout(r, 5));
+    now += 60_000;
+    expect((await line(d)).problem).toBeUndefined();
+    expect(accounts.pending()).toBeUndefined();
+  });
+
   withFake("account_change_stops_new_sessions: PROVIDER_ACCOUNT_CHANGED, exit 5, until a person confirms", async () => {
     const { dir, bin } = installFake("cli", { account: LABEL_A });
     const data = join(tmp, "data");
@@ -312,11 +338,11 @@ describe("an account change", () => {
     // Back on the recorded account: nothing waits any more.
     setAccount(dir, LABEL_A);
     expect(await planner.plan(startReq, PEOPLE)).toMatchObject({ harness: "claudeCode" });
-    expect(new ClaudeAccounts(data).pending()).toBeUndefined();
+    expect(new CliAccounts(data, { harness: "claudeCode" }).pending()).toBeUndefined();
     // Away again, then a person confirms: sessions plan on the new account.
     setAccount(dir, LABEL_B);
     await expect(planner.plan(startReq, PEOPLE)).rejects.toMatchObject({ code: "PROVIDER_ACCOUNT_CHANGED" });
-    expect(new ClaudeAccounts(data).confirm(changed.accountHash!)).toEqual({ confirmed: true, accountHash: changed.accountHash, previous: first });
+    expect(new CliAccounts(data, { harness: "claudeCode" }).confirm(changed.accountHash!)).toEqual({ confirmed: true, accountHash: changed.accountHash, previous: first });
     expect(await planner.plan(startReq, PEOPLE)).toMatchObject({ harness: "claudeCode" });
     expect((await line(d)).problem).toBeUndefined();
     // The model cache is keyed by the same hash (Decision 11).
@@ -335,7 +361,7 @@ describe("an account change", () => {
     const running = instanceAccount(data, SIGNED_IN(LABEL_B), { newSession: false });
     expect(running.refused).toBeNull();
     expect(running.hash).not.toBe(a.hash);
-    expect(new ClaudeAccounts(data).pending()).toBe(running.hash);
+    expect(new CliAccounts(data, { harness: "claudeCode" }).pending()).toBe(running.hash);
     expect(instanceAccount(data, SIGNED_IN(LABEL_B), { newSession: true }).refused).toMatchObject({ code: "PROVIDER_ACCOUNT_CHANGED", details: { harness: "claudeCode", accountHash: running.hash } });
     // Signed out: no hash, no refusal (the CLI's own error is PROVIDER_AUTH).
     expect(instanceAccount(data, { signedIn: false }, { newSession: true })).toEqual({ refused: null });
@@ -393,7 +419,7 @@ describe("an account change", () => {
       ok(await commit(local, projectId, tx("01aaaaaaaaaaaaaaaaaaaaaaaP", 0, [addAsset()])));
       ok(await local.call("agent.session.start", { projectId, harness: "claudeCode", prompt: "first" }));
       // Recorded from the sign-in home, under the subject an instance's e-mail would have.
-      expect(new ClaudeAccounts(serverData).state().current?.hash).toBe(accountCheck(SIGNED_IN(LABEL_A), accountKey(serverData), null).hash);
+      expect(new CliAccounts(serverData, { harness: "claudeCode" }).state().current?.hash).toBe(accountCheck(SIGNED_IN(LABEL_A), accountKey(serverData), null).hash);
       setAccount(cli.dir, LABEL_B);
       const refused = await local.call("agent.session.start", { projectId, harness: "claudeCode", prompt: "new" });
       expect(refused.ok ? undefined : refused.error).toMatchObject({ code: "PROVIDER_ACCOUNT_CHANGED", details: { accountHash: accountCheck(SIGNED_IN(LABEL_B), accountKey(serverData), null).hash } });
@@ -415,10 +441,10 @@ describe("the account record fails closed", () => {
 
   test("state_unreadable_fails_closed: a corrupt or unreadable record never forgets a pending change", () => {
     const { data, key } = setup();
-    const accounts = new ClaudeAccounts(data);
+    const accounts = new CliAccounts(data, { harness: "claudeCode" });
     accounts.observe(SIGNED_IN(LABEL_A), key);
     accounts.observe(SIGNED_IN(LABEL_B), key);
-    const file = join(data, "agents", ACCOUNT_FILE);
+    const file = join(data, "agents", accountFile("claudeCode"));
     const good = readFileSync(file, "utf8");
     for (const bad of ["{not json", JSON.stringify({ v: 2 }), JSON.stringify({ v: 1, pending: { hash: "label" } })]) {
       writeFileSync(file, bad);
@@ -446,7 +472,7 @@ describe("the account record fails closed", () => {
   test("expect_next_is_refused_while_a_change_waits_and_expires", () => {
     const { data, key } = setup();
     let now = Date.parse("2026-11-13T08:00:00Z");
-    const accounts = new ClaudeAccounts(data, () => new Date(now));
+    const accounts = new CliAccounts(data, { harness: "claudeCode", now: () => new Date(now) });
     const by = { kind: "console", id: "owner" };
     accounts.observe(SIGNED_IN(LABEL_A), key);
     accounts.observe(SIGNED_IN(LABEL_B), key);
@@ -474,7 +500,7 @@ describe("the account record fails closed", () => {
 
   test("confirm_takes_only_what_was_shown (unit)", () => {
     const { data, key } = setup();
-    const accounts = new ClaudeAccounts(data);
+    const accounts = new CliAccounts(data, { harness: "claudeCode" });
     const a = accounts.observe(SIGNED_IN(LABEL_A), key).hash;
     const b = accounts.observe(SIGNED_IN(LABEL_B), key).hash;
     const c = accounts.observe(SIGNED_IN(LABEL_C), key).hash;
@@ -497,14 +523,14 @@ describe("the account record fails closed", () => {
     const data = join(tmp, "data");
     mkdirSync(data, { recursive: true, mode: 0o700 });
     expect(instanceAccount(data, { signedIn: true, authMethod: "claude.ai" }, { newSession: true })).toEqual({ refused: null });
-    expect(new ClaudeAccounts(data).state()).toEqual({ v: 1 });
-    const accounts = new ClaudeAccounts(data);
+    expect(new CliAccounts(data, { harness: "claudeCode" }).state()).toEqual({ v: 1 });
+    const accounts = new CliAccounts(data, { harness: "claudeCode" });
     accounts.observe(SIGNED_IN(LABEL_A), accountKey(data));
     const waiting = accounts.observe(SIGNED_IN(LABEL_B), accountKey(data)).hash;
     expect(instanceAccount(data, { signedIn: true, authMethod: "claude.ai" }, { newSession: true }).refused).toMatchObject({ code: "PROVIDER_ACCOUNT_CHANGED", details: { accountHash: waiting } });
     expect(instanceAccount(data, { signedIn: true, authMethod: "claude.ai" }, { newSession: false })).toEqual({ refused: null });
     // A record that cannot be read refuses a new session too.
-    writeFileSync(join(data, "agents", ACCOUNT_FILE), "{");
+    writeFileSync(join(data, "agents", accountFile("claudeCode")), "{");
     expect(instanceAccount(data, { signedIn: true, authMethod: "claude.ai" }, { newSession: true }).refused).toMatchObject({ code: "PROVIDER_ACCOUNT_CHANGED", details: { reason: "stateUnreadable" } });
   });
 
@@ -518,9 +544,9 @@ describe("the account record fails closed", () => {
     const l = await line(d);
     expect(l).toMatchObject({ signedIn: true, authMethod: "claude.ai", problem: { code: "PROVIDER_AUTH" } });
     expect(l.accountHash).toBeUndefined();
-    expect(new ClaudeAccounts(data).state()).toEqual({ v: 1 });
+    expect(new CliAccounts(data, { harness: "claudeCode" }).state()).toEqual({ v: 1 });
     // A change seen elsewhere (an instance's `initialize.account`) waits: detection shows it.
-    const accounts = new ClaudeAccounts(data);
+    const accounts = new CliAccounts(data, { harness: "claudeCode" });
     accounts.observe(SIGNED_IN(LABEL_A), accountKey(data));
     const waiting = accounts.observe(SIGNED_IN(LABEL_B), accountKey(data)).hash;
     setAccount(dir, undefined);
@@ -656,7 +682,14 @@ describe("confirming a change", () => {
     expect(changed.problem?.code).toBe("PROVIDER_ACCOUNT_CHANGED");
     // Not at a terminal: refused before anything connects.
     expect((await run(["provider", "account", "confirm", "claudeCode"])).code).toBe(7);
-    expect((await run(["provider", "account", "confirm", "codex"], person())).code).toBe(2);
+    expect((await run(["provider", "account", "confirm", "gemini"], person())).code).toBe(2);
+    // Another harness's confirmation (7E Task 1, `confirm_takes_harness`) neither shows nor takes Claude Code's change.
+    const other = person();
+    const codex = await run(["provider", "account", "confirm", "codex"], other);
+    expect(codex.code, codex.err).toBe(0);
+    expect(codex.out).toContain("No Codex account change waits");
+    expect(other.asked).toEqual([]);
+    expect((await claudeLine()).problem?.code).toBe("PROVIDER_ACCOUNT_CHANGED");
     // A person answers no: nothing changes.
     const no = person("n");
     const declined = await run(["provider", "account", "confirm", "claudeCode"], no);

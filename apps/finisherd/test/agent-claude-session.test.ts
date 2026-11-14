@@ -13,7 +13,7 @@ import { Effect, Exit, Scope, Stream } from "effect";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import type { CallGate, ProviderSession, SessionSpec } from "../src/agent/adapter.ts";
 import { ClaudeCodeAdapter, sessionUuid } from "../src/agent/claude/adapter.ts";
-import { accountCheck, accountKey, ClaudeAccounts } from "../src/agent/claude/account.ts";
+import { accountCheck, accountKey, CliAccounts } from "../src/agent/cli/account.ts";
 import { CLAUDE_FLOOR } from "../src/agent/claude/detect.ts";
 import { ClaudeModelCache } from "../src/agent/claude/models.ts";
 import { readProbeCache } from "../src/agent/claude/probe.ts";
@@ -927,12 +927,12 @@ describe("review of Task 7", () => {
     await run(first.provider.startTurn({ runId: "r1", text: "go" }));
     await waitFor(first, "turnCompleted");
     await first.close();
-    const recorded = new ClaudeAccounts(first.serverData).state().current?.hash;
+    const recorded = new CliAccounts(first.serverData, { harness: "claudeCode" }).state().current?.hash;
     expect(recorded).toBe(accountCheck({ signedIn: true, label: ACCOUNT }, accountKey(first.serverData), null).hash);
     // The CLI is signed in to another account: the session's resume opens (the change is recorded) ...
     const resumed = await openWatched(TURN, { account: "other@example.invalid", resume: true });
     expect(resumed.spawns[0]!.argv.some((a) => a.startsWith("--resume="))).toBe(true);
-    const waiting = new ClaudeAccounts(first.serverData).pending();
+    const waiting = new CliAccounts(first.serverData, { harness: "claudeCode" }).pending();
     expect(waiting).toBe(accountCheck({ signedIn: true, label: "other@example.invalid" }, accountKey(first.serverData), null).hash);
     await resumed.close();
     // ... a new session is refused until a person confirms.
@@ -947,11 +947,11 @@ describe("review of Task 7", () => {
     await run(first.provider.startTurn({ runId: "r1", text: "go" }));
     await waitFor(first, "turnCompleted");
     await first.close();
-    expect(new ClaudeAccounts(first.serverData).state()).toEqual({ v: 1 });
+    expect(new CliAccounts(first.serverData, { harness: "claudeCode" }).state()).toEqual({ v: 1 });
     // The CLI holds the profile by its next process: `initialize.account.email` names it.
     const resumed = await openWatched(TURN, { resume: true, authMethod: "claude.ai" });
     await resumed.close();
-    expect(new ClaudeAccounts(first.serverData).state().current?.hash).toBe(accountCheck({ signedIn: true, label: ACCOUNT }, accountKey(first.serverData), null).hash);
+    expect(new CliAccounts(first.serverData, { harness: "claudeCode" }).state().current?.hash).toBe(accountCheck({ signedIn: true, label: ACCOUNT }, accountKey(first.serverData), null).hash);
   });
 
   withFake("account: naming no account, a new session is still refused while a change waits", async () => {
@@ -962,7 +962,7 @@ describe("review of Task 7", () => {
         authMethod: "claude.ai",
         mayFail: true,
         before: (data) => {
-          const accounts = new ClaudeAccounts(data);
+          const accounts = new CliAccounts(data, { harness: "claudeCode" });
           accounts.observe({ signedIn: true, authMethod: "claude.ai", label: ACCOUNT }, accountKey(data));
           waiting = accounts.observe({ signedIn: true, authMethod: "claude.ai", label: "other@example.invalid" }, accountKey(data)).hash;
         },

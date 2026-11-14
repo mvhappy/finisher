@@ -109,7 +109,9 @@ describe("a process's own environment (SpawnOptions.env)", () => {
       "BASH_DEFAULT_TIMEOUT_MS",
       "FIN_CALL",
     ]);
-    for (const h of ["codex", "fake"] as const) expect(harnessExtra(h)).toEqual(["FIN_CALL"]);
+    // Codex: `NO_COLOR` too (plan 7E Decision 5, `agent-codex-seams.test.ts`).
+    expect(harnessExtra("codex")).toEqual(["NO_COLOR", "FIN_CALL"]);
+    expect(harnessExtra("fake")).toEqual(["FIN_CALL"]);
     for (const h of ["claudeCode", "codex", "fake"] as const) {
       for (const k of harnessExtra(h)) {
         expect(NEVER_IN_SESSION, k).not.toContain(k);
@@ -136,7 +138,8 @@ describe("a process's own environment (SpawnOptions.env)", () => {
         [{ CLAUDE_CODE_GIT_BASH_PATH: "C:\\git\\bash.exe" }, "a variable outside the harness's"],
         [{ CLAUDE_CODE_ENTRYPOINT: "sdk-ts" }, "a variable outside the harness's"],
         [{ ANTHROPIC_API_KEY: "k" }, "a secret"],
-        [{ OPENAI_API_KEY: "k" }, "a secret"],
+        // Named in `NEVER_IN_SESSION` since plan 7E Decision 5.
+        [{ OPENAI_API_KEY: "k" }, "a variable that never passes"],
         [{ CLAUDE_CODE_OAUTH_TOKEN: "t" }, "a variable that never passes"],
         [{ SSH_AUTH_SOCK: "/run/ssh" }, "a variable that never passes"],
         [{ FIN_CALL_IDEM: "1" }, "a variable that never passes"],
@@ -299,7 +302,7 @@ describe("the host sandbox (detection and the probe)", () => {
   test("host_sandbox_has_throwaway_home", async () => {
     // `$HOME/.config/anthropic/*` and the like can sign a CLI in: a host sandbox's `HOME` is its
     // own empty directory `tmp/home`, never the server's. So is a Claude Code session's (7D
-    // Decision 5, Task 0 signed in); a Codex session keeps the server's.
+    // Decision 5, Task 0 signed in) and a Codex session's (plan 7E Decision 5); a fake one keeps the server's.
     const d = deps();
     await within(openHostSandbox("probe", "claudeCode", d), async (box) => {
       const [id] = readdirSync(join(d.serverData, "agents"));
@@ -329,6 +332,10 @@ describe("the host sandbox (detection and the probe)", () => {
     });
     if (!WIN) {
       await within(openSessionSandbox(session("codex"), "codex", d), async (box) => {
+        expect(box.env.HOME).toBe(join(d.serverData, "agents", SESSION_ID, "tmp", "home"));
+        expect(box.env.SHELL).toMatch(/^\/bin\/(ba)?sh$/);
+      });
+      await within(openSessionSandbox(session("fake"), "fake", d), async (box) => {
         expect(box.env.HOME).toBe("/home/u");
         expect(box.env.SHELL).toBeUndefined();
       });
