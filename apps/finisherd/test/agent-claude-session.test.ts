@@ -196,9 +196,9 @@ describe("a turn through the runtime", () => {
     // The fake's sign-in is a plan (`claude.ai`): its money shown, not charged (Task 9).
     expect(content[6]!.payload).toMatchObject({ input: 30, output: 7, cacheRead: 100, moneyMicros: 4200, costBasis: "subscription" });
     expect(runOf(s.id, content[0]!.runId!)).toMatchObject({ status: "completed" });
-    // api_retry_is_notice; the version is untested (no transcript suite yet, spec §4.5).
+    // api_retry_is_notice; the version is tested (Task 15's contract suite), so no untested notice.
     expect(notices(ns, "retry")).toEqual([{ attempt: 1, code: "PROVIDER_OVERLOADED", delayMs: 800 }]);
-    expect(notices(ns, "untestedVersion")).toEqual([{ harness: "claudeCode", version: VERSION }]);
+    expect(notices(ns, "untestedVersion")).toEqual([]);
     // deltas_streamed_not_stored: the partial text is in no node.
     expect(JSON.stringify(ns)).not.toMatch(/"Hel"|"lo"/);
     // The process ran with the session's UUID and the launch plan's flags.
@@ -654,7 +654,7 @@ describe("the instance", () => {
     await until(async () => ((await readProbeCache(w.serverData))[0]?.result.initPending === undefined ? true : undefined));
     // The gate held `turnStarted` back until the init passed, then released it first; the
     // result's per-model split is a notice (Task 9).
-    expect(w.events.map((e) => e.type)).toEqual(["turnStarted", "notice", "usage", "notice", "turnCompleted"]);
+    expect(w.events.map((e) => e.type)).toEqual(["turnStarted", "usage", "notice", "turnCompleted"]);
   });
 });
 
@@ -852,12 +852,12 @@ describe("review of Task 7", () => {
     await completed(1);
     await run(w.provider.startTurn({ runId: "r2", text: "two" }));
     await completed(2);
-    // Nothing held or released twice: the untested-version notice once, each turn's events once.
-    expect(w.events.map((e) => e.type)).toEqual(["turnStarted", "notice", "usage", "notice", "turnCompleted", "turnStarted", "usage", "notice", "turnCompleted"]);
+    // Nothing held or released twice: each turn's events once (2.1.321 is tested: no untested notice).
+    expect(w.events.map((e) => e.type)).toEqual(["turnStarted", "usage", "notice", "turnCompleted", "turnStarted", "usage", "notice", "turnCompleted"]);
     await run(w.provider.startTurn({ runId: "r3", text: "three" }));
     await waitFor(w, "exited");
-    expect(w.events.slice(9).map((e) => e.type)).toEqual(["turnStarted", "turnFailed", "exited"]);
-    expect(w.events[10]).toMatchObject({ error: { code: "PROVIDER_VERSION", details: { missing: "isolation", item: "init:agents" } } });
+    expect(w.events.slice(8).map((e) => e.type)).toEqual(["turnStarted", "turnFailed", "exited"]);
+    expect(w.events[9]).toMatchObject({ error: { code: "PROVIDER_VERSION", details: { missing: "isolation", item: "init:agents" } } });
     expect(JSON.stringify(w.events)).not.toContain("never");
   });
 
