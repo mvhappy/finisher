@@ -314,3 +314,25 @@ fn agent_tables_are_append_only() {
             .any(|t| std::ptr::eq(*t, &AGENT_UPSTREAMS))
     );
 }
+
+/// 7E Task 9: every id the pinned Codex 0.167.0's unsigned `model/list` answered (7E Task 0) is
+/// named in `AGENT_MODELS`; a newer id is `other` + a keyed `modelHash`.
+#[test]
+fn codex_model_ids_are_named() {
+    for id in [
+        "gpt-6.1-sol",
+        "gpt-6.1-terra",
+        "gpt-6-sol",
+        "gpt-6-luna",
+        "gpt-6-astra",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "gpt-5.5",
+    ] {
+        assert!(
+            AGENT_MODELS.get(id).is_some(),
+            "{id} is not in AGENT_MODELS"
+        );
+    }
+}

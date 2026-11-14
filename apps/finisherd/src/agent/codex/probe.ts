@@ -68,7 +68,7 @@ const CachedResult = Schema.Struct({
   version: Str,
   sandbox: Schema.Literals(["read-only", "danger-full-access"]),
   approval: Schema.Literals(["on-request", "granular"]),
-  models: Schema.Array(Schema.Struct({ id: Str, displayName: Str, isDefault: Schema.Boolean })),
+  models: Schema.Array(Schema.Struct({ id: Str, displayName: Str, isDefault: Schema.Boolean, alias: Schema.optionalKey(Str) })),
   initPending: Schema.optionalKey(Schema.Literal(true)),
 });
 const CacheEntry = Schema.Struct({ version: Str, flagsHash: Str, os: Str, result: CachedResult });
@@ -98,7 +98,7 @@ let cacheWrites: Promise<unknown> = Promise.resolve();
 /** Replaces `key`'s entry with `result`, temp then rename (0600). Only `CachedResult`'s fields are written. */
 function writeCodexProbeCache(serverData: string, key: ProbeKey, result: CodexProbeResult): Promise<void> {
   const write = async () => {
-    const r = Schema.decodeUnknownSync(CachedResult)({ ...result, models: result.models.map(({ id, displayName, isDefault }) => ({ id, displayName, isDefault })) }, { onExcessProperty: "ignore" });
+    const r = Schema.decodeUnknownSync(CachedResult)({ ...result, models: result.models.map(({ id, displayName, isDefault, alias }) => ({ id, displayName, isDefault, ...(alias === undefined ? {} : { alias }) })) }, { onExcessProperty: "ignore" });
     const entries = [...(await readCodexProbeCache(serverData)).filter((e) => !sameKey(e, key)), { ...key, result: r }];
     const path = codexProbeCachePath(serverData);
     await mkdir(dirname(path), { recursive: true, mode: 0o700 });

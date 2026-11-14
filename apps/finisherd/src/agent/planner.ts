@@ -27,8 +27,9 @@ import type { Catalogue } from "./catalogue/catalogue.ts";
 import { OPENROUTER_ID } from "./catalogue/prices.ts";
 import { accountChanged } from "./cli/account.ts";
 import { type ClaudeAccess, claudeModelOffered } from "./claude/models.ts";
+import { type CodexAccess, codexListDefault, codexModelListed, unsupportedAccount } from "./codex/models.ts";
 import { budgetFor, MODE_RANK, type Role, roleModel, roleUnknown } from "./roles.ts";
-import { harnessUnknown, type SessionPlan, type SessionPlanner, type StartRequest } from "./runtime-deps.ts";
+import { harnessUnknown, pricingUnknown, type SessionPlan, type SessionPlanner, type StartRequest } from "./runtime-deps.ts";
 import type { LocalEndpoint } from "./settings.ts";
 
 export interface PlannerDeps {
@@ -49,6 +50,11 @@ export interface PlannerDeps {
    * Below the floor: `PROVIDER_VERSION`; an unconfirmed account change: `PROVIDER_ACCOUNT_CHANGED`.
    */
   readonly claude?: () => Promise<ClaudeAccess>;
+  /**
+   * Codex's discovered models and account (`codex/models.ts`), or `undefined` when the harness is
+   * not usable here (not installed, or `agents.codex.enabled` off): then `HARNESS_UNKNOWN`.
+   */
+  readonly codex?: () => Promise<CodexAccess>;
 }
 
 const LOCAL_ID = /^[^\s\u0000-\u001f/\\][^\s\u0000-\u001f]{0,199}$/;
@@ -79,6 +85,7 @@ export function sessionPlanner(deps: PlannerDeps): SessionPlanner {
         return { ...base, provider: "local", model: req.model ?? "fake", weights: "unknown" };
       }
       if (harness === "claudeCode") return { ...base, provider: "anthropic", ...(await claudeModel(deps, req.model ?? roleModel(role, harness))) };
+      if (harness === "codex") return { ...base, provider: "openai", ...(await codexModel(deps, req.model ?? roleModel(role, harness))) };
       if (harness !== "builtin") harnessUnknown(harness);
       const preset = req.provider ?? (parent?.provider === "local" ? "local" : "openrouter");
       if (preset === "local") return { ...base, provider: "local", ...(await localModel(deps, req.model ?? roleModel(role, harness, "local"))) };
@@ -130,6 +137,39 @@ async function claudeModel(deps: PlannerDeps, model: string | undefined): Promis
       { harness: "claudeCode", ...(model === undefined ? {} : { model }), reason: model === undefined ? "noDefault" : "notOffered" },
       `use one of: ${["default", ...models.map((m) => m.id)].filter((x, i, a) => a.indexOf(x) === i).join(", ")}`,
     );
+  }
+  return { model, weights: "closed" };
+}
+
+/**
+ * Codex's model: a listed `model` or `id`, else the role's default, else the list's `isDefault`;
+ * its weights are closed. A ChatGPT plan needs no price; an API key needs one (OpenRouter's
+ * `openai/<model>` or the owner's `agents.models` entry): `PRICING_UNKNOWN` otherwise. Any other
+ * account type is refused (detection refuses it too). Nothing discovered yet accepts a named id
+ * (the app-server's own error is the answer then, as for Claude Code).
+ */
+async function codexModel(deps: PlannerDeps, named: string | undefined): Promise<{ model: string; weights: Weights }> {
+  const access = await deps.codex?.();
+  if (access === undefined) harnessUnknown("codex");
+  if ("versionMismatch" in access) {
+    const { version } = access.versionMismatch;
+    throw finError("PROVIDER_VERSION", `Codex${version === undefined ? "" : ` ${version}`} is not the version this Finisher bundles`, { harness: "codex", ...(version === undefined ? {} : { version }) }, "reinstall Finisher to restore the bundled Codex");
+  }
+  if ("accountChanged" in access) throw accountChanged(access.accountChanged.accountHash, "codex");
+  const { models, authMethod } = access;
+  if (authMethod !== undefined && authMethod !== "chatgpt" && authMethod !== "apiKey") throw unsupportedAccount(authMethod);
+  const model = named ?? codexListDefault(models);
+  if (model === undefined || model === "" || (models.length > 0 && !codexModelListed(models, model))) {
+    throw finError(
+      "MODEL_UNKNOWN",
+      model === undefined ? "no model was named and the role has no default" : `${model} is not a model the bundled Codex offers this account`,
+      { harness: "codex", ...(model === undefined ? {} : { model }), reason: model === undefined ? "noDefault" : "notOffered" },
+      models.length === 0 ? "name a model with --model" : `use one of: ${models.map((m) => m.id).join(", ")}`,
+    );
+  }
+  if (authMethod === "apiKey") {
+    await deps.refreshListing?.();
+    if (deps.catalogue.describe("openai", model).price === undefined) throw pricingUnknown("openai", model);
   }
   return { model, weights: "closed" };
 }
