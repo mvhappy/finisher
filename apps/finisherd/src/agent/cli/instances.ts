@@ -89,6 +89,10 @@ export class CliSession<I extends CliInstance = CliInstance> {
   #closed: I | null = null;
   #timer: ReturnType<typeof setTimeout> | null = null;
   #ended = false;
+  /** `close()` was called: no process starts from now on (one starting is closed instead). */
+  #stopping = false;
+  /** A process being started (its `start` not settled yet), awaited by `close()` and other turns. */
+  #spawning: Promise<void> | null = null;
   #note: string | undefined;
   /** Every call any process announced, and the ones before the current process. */
   readonly #known: Set<string>;
@@ -127,11 +131,36 @@ export class CliSession<I extends CliInstance = CliInstance> {
         this.#end();
       },
     };
-    return Effect.map(this.#o.start({ resume, sink, rerun: (id) => before.has(id) }), (i) => {
+    let settled!: () => void;
+    const spawning = new Promise<void>((r) => (settled = r));
+    this.#spawning = spawning;
+    return Effect.flatMap(this.#o.start({ resume, sink, rerun: (id) => before.has(id) }), (i) => {
+      if (this.#stopping || this.#ended) {
+        // The session closed while this process started: it is closed too, never the current one.
+        flag.live = false;
+        return Effect.flatMap(
+          Effect.promise(() => i.close()),
+          (gone) => {
+            if (!gone) this.#o.log?.(`${LOG_NAMES[this.#o.harness]} process still running after its close`, { instance: this.#o.instance });
+            return Effect.fail(this.#interrupted());
+          },
+        );
+      }
       this.#current = i;
       this.#sink = flag;
-      return i;
-    });
+      return Effect.succeed(i);
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          if (this.#spawning === spawning) this.#spawning = null;
+          settled();
+        }),
+      ),
+    );
+  }
+
+  #interrupted(): FinError {
+    return finError("SESSION_INTERRUPTED", `this ${HARNESS_NAMES[this.#o.harness]} instance is closed`, { instance: this.#o.instance });
   }
 
   #end(): void {
@@ -150,7 +179,7 @@ export class CliSession<I extends CliInstance = CliInstance> {
   #arm(): void {
     this.#disarm();
     const ms = this.#o.idleCloseMs();
-    if (!(ms > 0) || this.#ended) return;
+    if (!(ms > 0) || this.#ended || this.#stopping) return;
     this.#timer = setTimeout(() => this.#idle(), ms);
     this.#timer.unref?.();
   }
@@ -172,11 +201,18 @@ export class CliSession<I extends CliInstance = CliInstance> {
   /** The process for a turn: the current one, or (after an idle close) a resumed one. */
   #process(): Effect.Effect<I, FinError> {
     return Effect.suspend(() => {
-      if (this.#ended) return Effect.fail(finError("SESSION_INTERRUPTED", `this ${HARNESS_NAMES[this.#o.harness]} instance is closed`, { instance: this.#o.instance }));
+      if (this.#ended || this.#stopping) return Effect.fail(this.#interrupted());
       if (this.#current !== null) return Effect.succeed(this.#current);
+      // Another turn is starting the process: this one takes it (or its failure) once it settles.
+      const starting = this.#spawning;
+      if (starting !== null) return Effect.flatMap(Effect.promise(() => starting), () => this.#process());
       return Effect.flatMap(
         Effect.promise(() => this.#closing),
         (gone) => {
+          // Rechecked after the wait: the session may have closed, or another turn reopened it.
+          if (this.#ended || this.#stopping) return Effect.fail(this.#interrupted());
+          if (this.#current !== null) return Effect.succeed(this.#current);
+          if (this.#spawning !== null) return this.#process();
           if (!gone && this.#closed !== null && !this.#closed.exited()) {
             this.#o.log?.(`${LOG_NAMES[this.#o.harness]} closed process still running`, { instance: this.#o.instance });
             return Effect.fail(finError("PROVIDER_UNAVAILABLE", `the session's closed ${HARNESS_NAMES[this.#o.harness]} process has not exited yet`, { harness: this.#o.harness, reason: "previousProcessAlive" }, "prompt again in a moment"));
@@ -194,10 +230,13 @@ export class CliSession<I extends CliInstance = CliInstance> {
 
   /** The scope's end: the timer stops, the process (if any) is closed, the stream ends. */
   async close(): Promise<void> {
+    this.#stopping = true;
     this.#disarm();
+    const closed = await this.#closing;
+    // A process starting now is closed by its own start (`#stopping`); wait for that.
+    while (this.#spawning !== null) await this.#spawning;
     const i = this.#current;
     this.#current = null;
-    const closed = await this.#closing;
     const gone = i === null ? closed || this.#closed === null || this.#closed.exited() : await i.close();
     // Still running after its wait: the next open refuses to start another beside it (the
     // adapter's `aliveProcesses` check over `provider.pid`).
