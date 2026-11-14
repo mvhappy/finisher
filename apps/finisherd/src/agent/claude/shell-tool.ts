@@ -11,8 +11,12 @@
 //   AppContainer, arch §27.6), `/bin/sh -c` elsewhere, so every case is tested on Linux.
 // - **Output** is capped as the CLI's own `Bash` caps it (`BASH_MAX_OUTPUT_LENGTH`, default
 //   30,000 characters): stdout keeps its first `SHELL_OUTPUT_MAX` characters, stderr its last
-//   (`stderrTail`: an error is at the end); `truncated` says either was cut. Only that much (in
-//   bytes, four per character at most) is ever held.
+//   (`stderrTail`: an error is at the end); `truncated` says either was cut. A "character" is a
+//   UTF-16 code unit (a JavaScript string's `length`, what the CLI's cap counts), and a cut
+//   never splits a surrogate pair (`capOutput`): a pair across the boundary is dropped whole, so
+//   a cut output may be one unit short and is always well formed. Only that much (in bytes,
+//   four per character at most) is ever held; a UTF-8 sequence the byte hold splits decodes to
+//   U+FFFD past the cut, never inside what is kept.
 // - **Timeout** as the CLI's `Bash`: `timeoutMs` defaults to `BASH_DEFAULT_TIMEOUT_MS`' 120 s and
 //   is capped at its 600 s maximum. At the timeout (or an abort: the CLI cancelled the call, the
 //   turn ended, the instance closed) the sandbox kills the process's whole group (Windows: its
@@ -91,6 +95,20 @@ export interface ShellTool {
   run(input: ShellInput, callId: string | undefined, signal: AbortSignal): Promise<ShellResult>;
 }
 
+const isHigh = (c: number) => c >= 0xd800 && c <= 0xdbff;
+const isLow = (c: number) => c >= 0xdc00 && c <= 0xdfff;
+
+/** `s`'s first (`head`) or last `SHELL_OUTPUT_MAX` UTF-16 code units, cut at a code point (module docs). */
+export function capOutput(s: string, keep: "head" | "tail"): string {
+  if (s.length <= SHELL_OUTPUT_MAX) return s;
+  if (keep === "head") {
+    const end = isHigh(s.charCodeAt(SHELL_OUTPUT_MAX - 1)) ? SHELL_OUTPUT_MAX - 1 : SHELL_OUTPUT_MAX;
+    return s.slice(0, end);
+  }
+  const start = s.length - SHELL_OUTPUT_MAX;
+  return s.slice(isLow(s.charCodeAt(start)) ? start + 1 : start);
+}
+
 /** Collects a stream's head (`keep: "head"`) or tail, at most `HOLD_BYTES`. */
 function collector(keep: "head" | "tail") {
   let chunks: Buffer[] = [];
@@ -118,7 +136,7 @@ function collector(keep: "head" | "tail") {
     text(): { text: string; cut: boolean } {
       const s = Buffer.concat(chunks).toString("utf8");
       if (s.length <= SHELL_OUTPUT_MAX) return { text: s, cut };
-      return { text: keep === "head" ? s.slice(0, SHELL_OUTPUT_MAX) : s.slice(s.length - SHELL_OUTPUT_MAX), cut: true };
+      return { text: capOutput(s, keep), cut: true };
     },
   };
 }

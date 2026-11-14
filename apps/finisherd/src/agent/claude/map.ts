@@ -60,8 +60,8 @@ export interface Denial {
 export interface PromptMemory {
   /** Whether a prompt of this turn named the call (else its denial is the CLI's own). */
   asked(d: Denial): boolean;
-  /** A `result` ended the turn: the turn's prompts are forgotten. */
-  turnEnded(): void;
+  /** A `result` ended the turn: the turn's prompts are forgotten; the events of the prompts it withdrew. */
+  turnEnded(): readonly Event[] | void;
 }
 
 const NO_PROMPTS: PromptMemory = { asked: () => false, turnEnded: () => {} };
@@ -273,7 +273,7 @@ export class LineMapper {
       out.push({ type: "notice", name: "cliDenied", details: { harness: "claudeCode", tool: d.tool_name.slice(0, 64), toolUseId: d.tool_use_id?.slice(0, 128) ?? null, ...(path === undefined ? {} : { path: path.slice(0, 1024) }) } });
     }
     if (malformed > 0) out.push({ type: "notice", name: "malformedDenials", details: { harness: "claudeCode", count: malformed } });
-    this.#prompts.turnEnded();
+    out.push(...(this.#prompts.turnEnded() ?? []));
     return out;
   }
 

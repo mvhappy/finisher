@@ -73,8 +73,8 @@ export interface RequestPort {
   cancel(requestId: string): readonly ProviderEvent[];
   /** Whether a prompt of this turn named the denied call (else its denial is the CLI's own). */
   asked?(d: Denial): boolean;
-  /** A `result` ended the turn: forget its prompts. */
-  turnEnded?(): void;
+  /** A `result` ended the turn: forget its prompts (the events of those it withdrew, `requestCancelled`). */
+  turnEnded?(): readonly ProviderEvent[] | void;
 }
 
 /** Where an instance's events go instead of its own stream (`ClaudeSession`, Task 10). */
@@ -160,7 +160,7 @@ export class ClaudeInstance {
     this.#queue = queue;
     this.#gate = firstTurnGate(o.plan, o.check ?? {});
     this.#requests = mcpHost(o.requests ?? claudePermissions(), { mcpTools: o.plan.mcpTools, ...(o.shell === undefined ? {} : { shell: o.shell }) });
-    this.#map = new LineMapper(o.usage, { asked: (d) => this.#requests.asked?.(d) === true, turnEnded: () => this.#requests.turnEnded?.() });
+    this.#map = new LineMapper(o.usage, { asked: (d) => this.#requests.asked?.(d) === true, turnEnded: () => this.#requests.turnEnded() });
     this.#pending = [...(o.notices ?? [])];
     this.#initialized = new Promise((resolve) => (this.#answerInitialize = resolve));
   }

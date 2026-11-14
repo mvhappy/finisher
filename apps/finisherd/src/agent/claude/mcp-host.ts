@@ -16,11 +16,23 @@
 //   `mcp__finisher__shell` with `can_use_tool` like any tool (Decision 4's `ask` list), the
 //   runtime decides it through 7B's `permissions.ts` (where `tool:Bash(...)` rules hold for it
 //   too), and its allow leaves a one-use ticket: the call's input (compared as canonical JSON),
-//   its `tool_use_id` and the runtime's call id. A `tools/call` runs only by consuming the ticket
-//   with the same input (and the same `tool_use_id` when the CLI sends `_meta
-//   ["claudecode/toolUseId"]`); otherwise it is refused (`isError`, a `shellRefused` notice) and
-//   nothing starts. Tickets die with their turn (`turnEnded`). The call id becomes the process's
-//   `FIN_CALL`, so its `fin` is attributed `exact`.
+//   its `tool_use_id` and the runtime's call id. A `tools/call` runs only by consuming a ticket
+//   with the same input; otherwise it is refused (`isError`, a `shellRefused` notice) and
+//   nothing starts. The call id becomes the process's `FIN_CALL`, so its `fin` is attributed
+//   `exact`.
+// - **Which ticket, failing closed** (review of Task 13): a call carrying `_meta
+//   ["claudecode/toolUseId"]` takes only the ticket of that `tool_use_id` (or, failing one, an
+//   unambiguous ticket that names none). A call without it takes a ticket only when the match is
+//   unambiguous: exactly one live ticket for that input, and no other prompt of this turn for the
+//   same input that is waiting, was denied, was withdrawn or was refused at once by the port.
+//   Anything else is refused (`reason: "ambiguous"`), so a denied or never-asked call cannot take
+//   another call's allow, and out-of-order calls never swap their `FIN_CALL`s.
+// - **Turn boundaries** (review of Task 13): at the turn's `result` (`turnEnded`) and the
+//   instance's end (`closed`) every ticket dies and every shell prompt still waiting is withdrawn
+//   from the port (`turnEnded` returns its `requestCancelled`, so the runtime expires the card);
+//   a decision for it arriving later is `PROVIDER_PROTOCOL` and makes no ticket.
+// - **One CLI request id per request**: a `tools/call` of the shell reusing any id this host has
+//   seen is JSON-RPC `-32600` with a `reusedRequestId` notice, before any ticket is looked at.
 // - **Stopping**: `notifications/cancelled`, a `control_cancel_request` of the `tools/call`, the
 //   turn's `result` (`turnEnded`: no answer is awaited after it) and the instance's end
 //   (`closed`) abort a running shell (its process group killed); an aborted call is not answered.
@@ -28,6 +40,7 @@
 // TODO(7D Task 13 Step 0, a Windows host): whether 2.1.321 sends `_meta["claudecode/toolUseId"]`
 // in `tools/call` and `notifications/cancelled` on an interrupt (fake-claude does both).
 import type { FinError, ProviderEvent } from "@finisher/contracts";
+import { finError } from "../../errors.ts";
 import type { RuntimeAnswer } from "../adapter.ts";
 import { MCP_SERVER, SHELL_TOOL } from "./launch.ts";
 import { type CliRequest, encodeAnswer, type McpReply } from "./protocol.ts";
@@ -86,7 +99,9 @@ export function mcpReply(serverName: string, message: unknown, mcpTools: readonl
 /** The host as an instance uses it: a `RequestPort` that also answers the handshake. */
 export interface McpHostPort extends RequestPort {
   handshake(serverName: string, message: unknown): McpReply | { readonly error: string };
-  /** The instance ended: running shells are stopped, tickets dropped. */
+  /** The turn's `result`: tickets dropped, running shells stopped; the shell prompts it withdrew. */
+  turnEnded(): readonly ProviderEvent[];
+  /** The instance ended: running shells are stopped, tickets dropped, waiting shell prompts withdrawn. */
   closed(): void;
 }
 
@@ -97,10 +112,23 @@ export interface McpHostOptions {
   readonly shell?: ShellTool;
 }
 
-interface Ticket {
+/** A shell prompt of this turn: waiting, allowed (a ticket), used, or not allowed (denied, withdrawn, refused). */
+interface ShellAsk {
+  readonly cli: string;
   readonly key: string;
   readonly toolUseId?: string;
-  readonly callId?: string;
+  state: "waiting" | "allowed" | "used" | "notAllowed";
+  callId?: string;
+}
+
+/** The tool, input and `tool_use_id` a permission prompt asks about (`can_use_tool`, or the MCP `approve`). */
+function promptOf(r: CliRequest): { tool: string; input: unknown; toolUseId?: string } | undefined {
+  if (r.subtype === "can_use_tool") return { tool: r.tool_name, input: r.input, ...(r.tool_use_id === undefined ? {} : { toolUseId: r.tool_use_id }) };
+  if (r.subtype !== "mcp_message" || r.server_name !== MCP_SERVER || !isMcpToolCall(r.message)) return undefined;
+  const p = (r.message as { params?: unknown }).params;
+  const args = isObject(p) && p.name === "approve" && isObject(p.arguments) ? p.arguments : undefined;
+  if (args === undefined || typeof args.tool_name !== "string") return undefined;
+  return { tool: args.tool_name, input: args.input, ...(typeof args.tool_use_id === "string" ? { toolUseId: args.tool_use_id } : {}) };
 }
 
 const clip = (s: string) => s.slice(0, 64);
@@ -111,14 +139,40 @@ const toolResult = (id: unknown, text: string, isError: boolean): McpReply => ({
 /** The `finisher` server of one instance, over `port` (its permissions: `claudePermissions()`). */
 export function mcpHost(port: RequestPort, o: McpHostOptions): McpHostPort {
   const served = o.mcpTools.includes(SHELL_TOOL) && o.shell !== undefined ? o.shell : undefined;
-  /** The runtime's ids of the shell prompts waiting for a decision. */
-  const asked = new Map<string, { readonly key: string; readonly toolUseId?: string }>();
-  let tickets: Ticket[] = [];
+  /** This turn's shell prompts, by the runtime's id (a port refusal: by `!<cli>`). */
+  const asks = new Map<string, ShellAsk>();
+  /** The runtime's ids of shell prompts whose turn ended undecided: their decisions are refused. */
+  const ended = new Set<string>();
+  /** Every CLI request id this host has been given. */
+  const seen = new Set<string>();
   /** Running calls by the CLI's request id, with their JSON-RPC id. */
   const running = new Map<string, { readonly rpc: unknown; readonly stop: AbortController }>();
   const stopAll = () => {
     for (const r of running.values()) r.stop.abort();
     running.clear();
+  };
+  /** Ends the turn's prompts: the waiting ones withdrawn from the port (its events), the rest dropped. */
+  const endAsks = (): ProviderEvent[] => {
+    const out: ProviderEvent[] = [];
+    for (const [id, a] of asks) {
+      if (a.state !== "waiting") continue;
+      ended.add(id);
+      out.push(...port.cancel(a.cli).filter((e) => e.type === "requestCancelled"));
+    }
+    asks.clear();
+    return out;
+  };
+  /** The ticket a call takes (module docs), or why none. */
+  const pick = (key: string, toolUseId: string | undefined): ShellAsk | "notAllowed" | "ambiguous" => {
+    const same = [...asks.values()].filter((a) => a.key === key && a.state !== "used");
+    const live = same.filter((a) => a.state === "allowed");
+    if (toolUseId !== undefined) {
+      const exact = live.find((a) => a.toolUseId === toolUseId);
+      if (exact !== undefined) return exact;
+    }
+    const open = toolUseId === undefined ? live : live.filter((a) => a.toolUseId === undefined);
+    if (open.length === 0) return "notAllowed";
+    return open.length === 1 && same.length === 1 ? open[0]! : "ambiguous";
   };
 
   const shellCall = (cli: string, rpc: unknown, params: Record<string, unknown>) => {
@@ -127,18 +181,18 @@ export function mcpHost(port: RequestPort, o: McpHostOptions): McpHostPort {
     if (typeof input === "string") return { answer: encodeAnswer(cli, toolResult(rpc, input, true)) };
     const meta = isObject(params._meta) ? params._meta["claudecode/toolUseId"] : undefined;
     const toolUseId = typeof meta === "string" ? meta : undefined;
-    const key = callKey(SHELL_TOOL, params.arguments);
-    const i = tickets.findIndex((t) => t.key === key && (toolUseId === undefined || t.toolUseId === undefined || t.toolUseId === toolUseId));
-    if (i < 0) {
-      const event: ProviderEvent = { type: "notice", name: "shellRefused", details: { harness: "claudeCode", reason: "notAllowed", ...(toolUseId === undefined ? {} : { toolUseId: clip(toolUseId) }) } };
-      return { answer: encodeAnswer(cli, toolResult(rpc, "Finisher has not allowed this shell call.", true)), events: [event] };
+    const ticket = pick(callKey(SHELL_TOOL, params.arguments), toolUseId);
+    if (typeof ticket === "string") {
+      const event: ProviderEvent = { type: "notice", name: "shellRefused", details: { harness: "claudeCode", reason: ticket, ...(toolUseId === undefined ? {} : { toolUseId: clip(toolUseId) }) } };
+      const text = ticket === "ambiguous" ? "Finisher cannot tell which allowed shell call this is: send its tool_use_id." : "Finisher has not allowed this shell call.";
+      return { answer: encodeAnswer(cli, toolResult(rpc, text, true)), events: [event] };
     }
-    const [ticket] = tickets.splice(i, 1);
-    const stop = new AbortController();
-    running.set(cli, { rpc, stop });
-    const later = served.run(input, ticket!.callId, stop.signal).then((r: ShellResult) => {
-      const aborted = stop.signal.aborted;
-      running.delete(cli);
+    ticket.state = "used";
+    const entry = { rpc, stop: new AbortController() };
+    running.set(cli, entry);
+    const later = served.run(input, ticket.callId, entry.stop.signal).then((r: ShellResult) => {
+      const aborted = entry.stop.signal.aborted;
+      if (running.get(cli) === entry) running.delete(cli);
       return aborted ? undefined : encodeAnswer(cli, toolResult(rpc, JSON.stringify(r), r.exit !== 0));
     });
     return { later };
@@ -155,25 +209,41 @@ export function mcpHost(port: RequestPort, o: McpHostOptions): McpHostPort {
     },
 
     request(id: string, r: CliRequest) {
+      const reused = seen.has(id);
+      seen.add(id);
       if (r.subtype === "mcp_message" && r.server_name === MCP_SERVER && isMcpToolCall(r.message)) {
         const m = r.message as { id?: unknown; params?: unknown };
         const params = isObject(m.params) ? m.params : {};
-        if (params.name === "shell") return shellCall(id, m.id ?? null, params);
+        if (params.name === "shell") {
+          if (reused) {
+            const event: ProviderEvent = { type: "notice", name: "reusedRequestId", details: { harness: "claudeCode", requestId: clip(id) } };
+            return { answer: encodeAnswer(id, rpcError(m.id ?? null, -32600, "Finisher refuses a tools/call that reuses a request id.")), events: [event] };
+          }
+          return shellCall(id, m.id ?? null, params);
+        }
       }
       const out = port.request(id, r);
       // A prompt for the brokered shell: its allow leaves a ticket (module docs).
-      for (const e of out.events ?? []) {
-        if (e.type === "request" && e.tool === SHELL_TOOL) asked.set(e.id, { key: callKey(SHELL_TOOL, e.input), ...(e.providerId === undefined ? {} : { toolUseId: e.providerId }) });
+      const prompt = promptOf(r);
+      if (prompt?.tool === SHELL_TOOL) {
+        const key = callKey(SHELL_TOOL, prompt.input);
+        const ask = out.events?.find((e) => e.type === "request");
+        const toolUseId = ask?.type === "request" ? ask.providerId : prompt.toolUseId;
+        const base = { cli: id, key, ...(toolUseId === undefined ? {} : { toolUseId }) };
+        // Refused at once by the port (a reused id, a re-run): a not-allowed prompt all the same.
+        if (ask?.type === "request") asks.set(ask.id, { ...base, state: "waiting" });
+        else asks.set(`!${id}#${asks.size}`, { ...base, state: "notAllowed" });
       }
       return out;
     },
 
     respond(id: string, a: RuntimeAnswer): string | FinError {
+      if (ended.has(id)) return finError("PROVIDER_PROTOCOL", "this shell prompt's turn has ended: it was withdrawn", { id: clip(id) });
       const line = port.respond(id, a);
-      const prompt = asked.get(id);
-      if (typeof line === "string" && prompt !== undefined) {
-        asked.delete(id);
-        if (a.kind === "approval" && a.allow) tickets.push({ ...prompt, ...(a.callId === undefined ? {} : { callId: a.callId }) });
+      const ask = asks.get(id);
+      if (typeof line === "string" && ask?.state === "waiting") {
+        ask.state = a.kind === "approval" && a.allow ? "allowed" : "notAllowed";
+        if (a.kind === "approval" && a.callId !== undefined) ask.callId = a.callId;
       }
       return line;
     },
@@ -185,21 +255,24 @@ export function mcpHost(port: RequestPort, o: McpHostOptions): McpHostPort {
         return [];
       }
       const events = port.cancel(requestId);
-      for (const e of events) if (e.type === "requestCancelled") asked.delete(e.id);
+      for (const e of events) {
+        const ask = e.type === "requestCancelled" ? asks.get(e.id) : undefined;
+        if (ask !== undefined) ask.state = "notAllowed";
+      }
       return events;
     },
 
     ...(port.asked === undefined ? {} : { asked: port.asked }),
 
     turnEnded() {
+      const withdrawn = endAsks();
       port.turnEnded?.();
-      tickets = [];
       stopAll();
+      return withdrawn;
     },
 
     closed() {
-      tickets = [];
-      asked.clear();
+      endAsks();
       stopAll();
     },
   };
