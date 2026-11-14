@@ -207,7 +207,6 @@ export declare class Engine {
    * the audio plan of `[from, to)` references) and, with `paramsJson` (the job's `ListenParams`),
    * `params.json` with the plan samples filled into `inputDir` (the job's existing `in/`).
    * Resolves to `{ rev, planSamples, sources }` as JSON: one sample per 10 s window of the range.
-   * Rejects as `evalAudio` does (`INVALID_RANGE`, `NOT_FOUND`).
    */
   prepareListenJob(branch: string, timeline: string, from: string, to: string, inputDir: string, paramsJson?: string | null): Promise<string>;
   /**
@@ -461,28 +460,6 @@ export declare function endCredential(credential: string): void;
  */
 export declare function commitJobOutput(from: string, to: string, maxBytes: number, copy?: boolean | undefined | null): Promise<void>;
 
-/** What `mediaProxyPlan` is asked. */
-export interface MediaProxyPlanRequest {
-  readonly fingerprint: string;
-  readonly tier: "540" | "1080";
-  readonly codec: "h264" | "av1";
-  /** The source's video codec (`av1`, `h264`, `hevc`, `vp9`, `proRes`, …). */
-  readonly sourceCodec: string;
-  /** The capability report's backends for that codec, in the order they are tried. */
-  readonly decoders: ReadonlyArray<string>;
-}
-
-/**
- * 6B-1 Task 14 (Decision 11): the cache key a `media.proxy` job of the source will commit
- * under, with the decoder the report names first for its codec and that decoder's vendor
- * class. Throws `CODEC_UNAVAILABLE` (`details.direction: "decode"`) when no listed backend
- * decodes the codec, `INVALID_REQUEST` for a request that does not parse.
- */
-export declare function mediaProxyPlan(request: MediaProxyPlanRequest): { key: string; decoder: string; decoderClass: "os" | "gpu" | "software" | "plugin" };
-
-/** 6B-1 Task 14: this build's `RENDER_VERSION`, `AUDIO_VERSION` (6C) and its cache recipes' versions (`proxy-540`: 1, …). */
-export declare function mediaVersions(): { renderVersion: number; audioVersion: number; recipes: Record<string, number> };
-
 /**
  * Probes a media file (MP4/MOV/M4A/WAV), image (PNG/JPEG/WebP), SVG, dotLottie, font
  * (TTF/OTF/TTC) or `.cube` LUT; resolves to `Probe` JSON (`{ kind, duration?, video?, audio?,
@@ -556,6 +533,8 @@ export * from "./media-cache.js";
 export * from "./media-thumbs.js";
 // PCM feed plans (`media-pcm.js`, 6C Task 18).
 export * from "./media-pcm.js";
+// Proxy plans and the build's versions (`media-proxy.js`, 6B-1 Task 14).
+export * from "./media-proxy.js";
 // The native Windows pipe listener (`pipe.js`).
 export * from "./pipe.js";
 // The vault and the identity key (`vault.js`, 5B).

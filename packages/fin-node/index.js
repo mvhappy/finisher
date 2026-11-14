@@ -15,6 +15,7 @@ export { kindNames, kindVersion, validatePrivacy } from "./events.js";
 export { MEDIA_READ_MAX, MediaCache } from "./media-cache.js";
 export { mediaThumbsPlan } from "./media-thumbs.js";
 export { mediaPcmPlan } from "./media-pcm.js";
+export { mediaProxyPlan, mediaVersions } from "./media-proxy.js";
 export { PipeServer } from "./pipe.js";
 export { decodePluginCall, permissionRisks, PluginCommandArgs, pluginCommandOutcome, pluginProjectView } from "./plugin-calls.js";
 export { checkServerDataLocal, serverId } from "./server-data.js";
@@ -524,16 +525,6 @@ export function probeBeneath(root, path) {
 
 export function commitJobOutput(from, to, maxBytes, copy) {
   return call(native.commitJobOutput(from, to, maxBytes, copy ?? null));
-}
-
-/** A proxy's cache key before its job is submitted (6B-1 Task 14); see `index.d.ts`. */
-export function mediaProxyPlan(request) {
-  return JSON.parse(sync(() => native.mediaProxyPlan(JSON.stringify(request))));
-}
-
-/** This build's `RENDER_VERSION` and cache recipe versions; see `index.d.ts`. */
-export function mediaVersions() {
-  return JSON.parse(sync(() => native.mediaVersions()));
 }
 
 /** The plugin store and registries of a server (`registry.js`). */
