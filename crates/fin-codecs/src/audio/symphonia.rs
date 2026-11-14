@@ -42,6 +42,13 @@ pub(crate) fn guarded<T>(
 pub(crate) fn error(e: SymError, demux: bool) -> CoreError {
     let during = if demux { "demux" } else { "decode" };
     match e {
+        // A decoder's I/O error is its bitstream reader running out inside a packet: the packet
+        // is bad, not the file system.
+        SymError::IoError(io) if !demux => {
+            CoreError::new("DECODE_FAILED", format!("audio decode failed: {io}")).with_details(
+                json!({ "backend": BACKEND.0, "during": during, "reason": "bitstream" }),
+            )
+        }
         SymError::IoError(io) if io.kind() == std::io::ErrorKind::UnexpectedEof => {
             CoreError::new("MEDIA_CORRUPT", "the audio file ends early (truncated)")
                 .with_details(json!({ "at": "end", "backend": BACKEND.0, "during": during }))

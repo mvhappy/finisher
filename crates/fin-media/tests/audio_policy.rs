@@ -42,8 +42,11 @@ fn symphonia_row() {
     ] {
         assert!(s.decode.contains(&c), "{c:?}");
     }
-    // AAC is Linux-only and arrives with Task 14; nothing encodes yet.
-    assert!(!s.decode.contains(&AudioCodec::Aac));
+    // AAC-LC is symphonia's on Linux only (Decision 9); symphonia encodes nothing.
+    assert_eq!(
+        s.decode.contains(&AudioCodec::Aac),
+        cfg!(target_os = "linux")
+    );
     assert!(s.encode.is_empty());
     // Every name is one of the diagnostics' closed table (Decision 24).
     for b in AUDIO_BACKENDS {
@@ -54,6 +57,16 @@ fn symphonia_row() {
             "{}",
             b.name
         );
+    }
+}
+
+#[test]
+fn vo_aacenc_row_on_linux_only() {
+    let row = audio_backend("vo-aacenc");
+    assert_eq!(row.is_some(), cfg!(target_os = "linux"), "{row:?}");
+    if let Some(b) = row {
+        assert_eq!(b.class, VendorClass::Software);
+        assert_eq!((b.decode, b.encode), (&[][..], &[AudioCodec::Aac][..]));
     }
 }
 

@@ -48,6 +48,18 @@
       "note": "the codec library only (float, static; celt_sources.mk CELT_SOURCES, silk_sources.mk SILK_SOURCES + SILK_SOURCES_FLOAT, opus_sources.mk OPUS_SOURCES + OPUS_SOURCES_FLOAT), compiled by crates/fin-opus-sys/build.rs with cc (no meson, cmake or autotools): no dnn/ or lpcnet sources (deep PLC, DRED and OSCE off), no SSE/AVX/NEON intrinsics or assembly files, no run-time CPU detection. BSD-3-Clause (Xiph.Org, Skype Limited, Octasic, Jean-Marc Valin, Timothy B. Terriberry, CSIRO, Gregory Maxwell, Mark Borgerding, Erik de Castro Lopo, Mozilla, Amazon; the COPYING text, which also points to the royalty-free IETF patent licences of Xiph.Org, Microsoft and Broadcom). crates/fin-opus-sys/shim/fin_opus_shim.c is Finisher's own (MIT)"
     },
     {
+      "name": "vo-aacenc",
+      "package": "fin-aacenc-sys",
+      "path": "third_party/vo-aacenc",
+      "commit": "a277487e051e92e99a532294eed3c673f4d879f2",
+      "license": "Apache-2.0",
+      "files": {
+        "COPYING": "e061f6e4d36bd814ce3b8169a35a1c11b9dec8947c3da487359aafbb85670555",
+        "NOTICE": "a199740981687116598fac2c5c780528bbe3744de26ffc3ea7d6e1dff5ed2e2b"
+      },
+      "note": "release 0.1.3 (configure.ac) at upstream mstorsjo/vo-aacenc's last commit (2017-06-28, after the v0.1.3 tag), from Finisher's fork (spec §6.4). Linux only: the encoder library (fixed point, static; Makefile.am libvo_aacenc_la_SOURCES: common/cmnMemory.c, aacenc/basic_op, aacenc/src), compiled by crates/fin-aacenc-sys/build.rs with cc (no autotools) for Linux targets only; no ARMv5E/ARMv7 assembly, no example program. Apache-2.0 (VisualOn, Android Open Source Project; the COPYING text and the section 4(d) NOTICE). Its patent grant covers VisualOn's contributions only; AAC patent licensing is counsel item 6.1 (aacenc/patent_disclaimer.txt: no grant of patent rights). crates/fin-aacenc-sys/shim/fin_aacenc_shim.c is Finisher's own (MIT)"
+    },
+    {
       "name": "SQLite",
       "package": "libsqlite3-sys",
       "version": "0.39",

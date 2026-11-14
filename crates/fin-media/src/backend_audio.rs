@@ -27,16 +27,33 @@ pub struct AudioBackendEntry {
     pub encode: &'static [AudioCodec],
 }
 
+#[cfg(target_os = "linux")]
+use AudioCodec::Aac;
 use AudioCodec::{Alac, Flac, Mp3, Opus, Pcm, Vorbis};
 
-/// The audio backends built so far. Tasks 14–16 add symphonia's AAC-LC and `vo-aacenc` (Linux
-/// only), `audiotoolbox` (macOS) and `mediafoundation` (Windows).
+/// What symphonia decodes on this target: AAC-LC only on Linux (Decision 9: Finisher's own AAC
+/// code is compiled for Linux only; macOS and Windows decode AAC with the OS codec).
+#[cfg(target_os = "linux")]
+const SYMPHONIA_DECODES: &[AudioCodec] = &[Pcm, Flac, Alac, Mp3, Vorbis, Aac];
+#[cfg(not(target_os = "linux"))]
+const SYMPHONIA_DECODES: &[AudioCodec] = &[Pcm, Flac, Alac, Mp3, Vorbis];
+
+/// The audio backends built for this target. Tasks 15–16 add `audiotoolbox` (macOS) and
+/// `mediafoundation` (Windows).
 pub static AUDIO_BACKENDS: &[AudioBackendEntry] = &[
     AudioBackendEntry {
         name: "symphonia",
         class: VendorClass::Software,
-        decode: &[Pcm, Flac, Alac, Mp3, Vorbis],
+        decode: SYMPHONIA_DECODES,
         encode: &[],
+    },
+    // vo-aacenc, AAC-LC encode on Linux only (Task 14, Decision 12).
+    #[cfg(target_os = "linux")]
+    AudioBackendEntry {
+        name: "vo-aacenc",
+        class: VendorClass::Software,
+        decode: &[],
+        encode: &[Aac],
     },
     // libopus 1.6.1 built from source on every target (Task 13).
     AudioBackendEntry {

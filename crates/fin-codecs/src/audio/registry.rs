@@ -32,8 +32,13 @@ pub(crate) trait AudioEncoderBackend: Send + Sync {
     ) -> Result<Box<dyn AudioEncoder>, CoreError>;
 }
 
-/// The audio encoders, in preference order (OS before software, as for video).
-static ENCODERS: &[&dyn AudioEncoderBackend] = &[&LibOpus];
+/// The audio encoders, in preference order (OS before software, as for video). vo-aacenc is
+/// Linux's AAC-LC encoder (Decision 9).
+static ENCODERS: &[&dyn AudioEncoderBackend] = &[
+    &LibOpus,
+    #[cfg(target_os = "linux")]
+    &super::aac_linux::VoAacEnc,
+];
 
 pub(crate) fn codec_name(codec: AudioCodec) -> String {
     serde_json::to_value(codec)
@@ -44,7 +49,7 @@ pub(crate) fn codec_name(codec: AudioCodec) -> String {
 
 /// `CODEC_UNAVAILABLE` for a codec whose MP4 sample entry carries a configuration this build
 /// does not read yet.
-fn needs_config(codec: AudioCodec) -> CoreError {
+pub(crate) fn needs_config(codec: AudioCodec) -> CoreError {
     unavailable(&codec_name(codec), "decode").with_details(json!({
         "codec": codec_name(codec), "direction": "decode", "os": std::env::consts::OS,
         "reason": "config",
@@ -61,8 +66,9 @@ pub(crate) fn symphonia_decodes(codec: AudioCodec) -> Result<(), CoreError> {
 
 /// A decoder for a track: libopus for Opus (from the MP4 `dOps` or the Ogg `OpusHead`);
 /// symphonia for the codecs its table row lists (from symphonia's own parameters, or for MP3
-/// in MP4 from the track's rate and channels); `CODEC_UNAVAILABLE` otherwise (AAC arrives
-/// with Tasks 14–16).
+/// in MP4 from the track's rate and channels); on Linux, symphonia's AAC-LC decoder from the
+/// AudioSpecificConfig (HE-AAC refused first); `CODEC_UNAVAILABLE` otherwise (AAC on macOS and
+/// Windows arrives with Tasks 15–16).
 pub fn open_audio_decoder(
     info: &AudioTrackInfo,
     config: &AudioConfig,
@@ -77,6 +83,10 @@ pub fn open_audio_decoder(
             AudioConfig::Record(_) => return Err(needs_config(info.codec)),
         };
         return Ok(Box::new(OpusDecoder::open(&header)?));
+    }
+    #[cfg(target_os = "linux")]
+    if info.codec == AudioCodec::Aac {
+        return super::aac_linux::open_decoder(info, config);
     }
     symphonia_decodes(info.codec)?;
     match config {

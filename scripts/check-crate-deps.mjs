@@ -22,6 +22,8 @@
 //   nothing of the server (`fin-node`, `fin-registry`) or the media engine (`fin-codecs`);
 // - `fin` and `fin-node` link neither the SDK nor the harness (`fin-plugin-test`).
 // Each breach is CRATE_DEPENDENCY naming the path's two ends.
+import { spawnSync } from "node:child_process";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Graph, denyTargets, documents, metadata } from "./cargo-graph.mjs";
 import { report, rootArg } from "./walk.mjs";
@@ -130,7 +132,10 @@ export function check(doc) {
 }
 
 /** A `cargo metadata --filter-platform <triple>` document of a non-Linux target: the resolved
- * graph (features forwarded through any member included) holds no Linux-only AAC code. */
+ * graph (features forwarded through any member included) holds no Linux-only AAC code. For a
+ * `--metadata` document only: `cargo metadata` unifies features across every target (a
+ * `[target.'cfg(target_os = "linux")'.dependencies]` feature shows on the macOS node too), so
+ * the real workspace is checked with {@link treeTarget}. */
 export function checkTarget(doc, triple) {
   const g = new Graph(doc);
   const out = [];
@@ -142,12 +147,36 @@ export function checkTarget(doc, triple) {
   return out;
 }
 
+/** Lines of `cargo tree` naming the packages that depend on `pkg` for `triple`, the package itself
+ * not counted. `cargo tree` resolves features per target (resolver 3), as a build does. */
+export function dependents(treeOutput, pkg) {
+  const names = treeOutput
+    .split("\n")
+    .map((l) => l.trim().split(" ")[0])
+    .filter((n) => n && n !== pkg);
+  return [...new Set(names)];
+}
+
+/** The real workspace for a non-Linux target, as cargo builds it (`cargo tree --target`,
+ * features resolved for that target, normal and build edges): no member reaches Linux-only AAC
+ * code. */
+export function treeTarget(root, triple, run = spawnSync) {
+  const out = [];
+  for (const bad of LINUX_ONLY_PACKAGES) {
+    const args = ["tree", "-q", "--manifest-path", join(root, "Cargo.toml"), "--workspace", "--all-features", "--target", triple, "-e", "normal,build", "--prefix", "none", "--format", "{p}", "-i", bad];
+    const r = run("cargo", args, { encoding: "utf8", maxBuffer: 1 << 26 });
+    if (r.error || r.status !== 0) throw new Error(`cargo tree --target ${triple} -i ${bad} failed: ${r.stderr ?? r.error?.message}`);
+    for (const who of dependents(r.stdout, bad)) out.push(`CRATE_DEPENDENCY: ${who} reaches ${bad} on ${triple} (Finisher's own AAC code is Linux-only)`);
+  }
+  return out;
+}
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const root = rootArg();
   try {
     const found = documents(process.argv, () => [metadata(root)]).flatMap(check);
     if (!process.argv.includes("--metadata"))
-      for (const t of denyTargets(root).filter((x) => !x.includes("linux"))) found.push(...checkTarget(metadata(root, t), t));
+      for (const t of denyTargets(root).filter((x) => !x.includes("linux"))) found.push(...treeTarget(root, t));
     report(found);
   } catch (e) {
     report([`CRATE_DEPENDENCY: ${e.message}`]);
