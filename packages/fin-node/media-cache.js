@@ -81,6 +81,10 @@ export class MediaCache {
     return call(this.#native.attachProxies(inDir, holder, [...projects]));
   }
 
+  attachPcm(inDir, holder, projects) {
+    return call(this.#native.attachPcm(inDir, holder, [...projects]));
+  }
+
   currentProxy(fingerprint, projects) {
     return json(this.#native.currentProxy(fingerprint, [...projects]));
   }

@@ -203,6 +203,14 @@ export declare class Engine {
    */
   prepareAssetJob(branch: string, asset: string, inputDir: string): Promise<string>;
   /**
+   * Prepares a `media.listen` (6C Task 21): writes `snapshot.json`, `manifest.json` (the assets
+   * the audio plan of `[from, to)` references) and, with `paramsJson` (the job's `ListenParams`),
+   * `params.json` with the plan samples filled into `inputDir` (the job's existing `in/`).
+   * Resolves to `{ rev, planSamples, sources }` as JSON: one sample per 10 s window of the range.
+   * Rejects as `evalAudio` does (`INVALID_RANGE`, `NOT_FOUND`).
+   */
+  prepareListenJob(branch: string, timeline: string, from: string, to: string, inputDir: string, paramsJson?: string | null): Promise<string>;
+  /**
    * Resolves to the `AudioPlan` JSON of `timeline` on `branch` over `[from, to)`. `rev` as
    * `evalFrame`'s.
    */

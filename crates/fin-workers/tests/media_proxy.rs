@@ -71,6 +71,7 @@ fn job_for(fp: &str, path: &Path) -> Job {
             proxies: Vec::new(),
         }],
         fonts: ManifestFonts::default(),
+        pcm: Default::default(),
     };
     std::fs::write(
         job.path("in/manifest.json"),

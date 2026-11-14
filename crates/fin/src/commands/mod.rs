@@ -26,6 +26,7 @@ pub mod job;
 pub mod keyframe;
 pub mod library;
 pub(crate) mod library_set;
+pub mod listen;
 pub mod log;
 pub mod look;
 pub mod marker;

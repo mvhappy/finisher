@@ -134,5 +134,9 @@
   {
     "path": "crates/fin-workers/src/media/audio_src_tests.rs",
     "reason": "Unit tests write fixture WAV files and PCM entries into temporary directories and open them by path; never a library path."
+  },
+  {
+    "path": "crates/fin-node/tests/media_cache_pcm.rs",
+    "reason": "Tests build and inspect temporary cache trees by path; none is a library reader."
   }
 ]

@@ -17,3 +17,21 @@ export const MediaPcmPayload = Schema.Struct({
 });
 /** `{asset, recipe, key, state: ready | making, cached?, job?, result?}` (`result` is the generated `PcmResult`). */
 export const MediaPcmSuccess = Schema.Unknown;
+
+/**
+ * 6C Task 21 (`fin listen`): loudness, true and sample peak, clipping, silences and the loudest
+ * moments of `[from, to)` of a timeline (the first when absent), per track and for the mix, from a
+ * `media.listen` job. The range defaults to the whole timeline; a time past its end is
+ * `INVALID_RANGE`. `branch` defaults to `main`; unless `wait: false` the job is waited for (up to
+ * 10 minutes).
+ */
+export const MediaListenPayload = Schema.Struct({
+  projectId: Schema.String,
+  branch: Schema.optional(Schema.String),
+  timeline: Schema.optional(Schema.String),
+  from: Schema.optional(Schema.String),
+  to: Schema.optional(Schema.String),
+  wait: Schema.optional(Schema.Boolean),
+});
+/** The generated `ListenResult`, or `{job}` with `wait: false`. */
+export const MediaListenSuccess = Schema.Unknown;

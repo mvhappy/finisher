@@ -4,7 +4,8 @@
 use fin_jobs::KindParams;
 use fin_jobs::kinds::{find, schema_as, validate_as};
 use fin_media::jobs::{
-    CapabilitiesParams, LookParams, PcmParams, ProbeDeepParams, ProxyParams, ThumbsParams,
+    CapabilitiesParams, ListenParams, LookParams, PcmParams, ProbeDeepParams, ProxyParams,
+    ThumbsParams,
 };
 use napi_derive::napi;
 use serde_json::{Value, json};
@@ -76,7 +77,28 @@ static MEDIA: &[KindParams] = &[
         validate: validate_pcm,
         schema: schema_as::<PcmParams>,
     },
+    KindParams {
+        kind: "media.listen",
+        version: 1,
+        validate: validate_listen,
+        schema: schema_as::<ListenParams>,
+    },
 ];
+
+/// `ListenParams`, then its range, as the worker checks them; the plan samples are the host's
+/// (6C Task 21).
+fn validate_listen(params: &Value) -> Result<Value, Vec<String>> {
+    let filled = validate_as::<ListenParams>(params)?;
+    let p: ListenParams =
+        serde_json::from_value(filled.clone()).map_err(|e| vec![e.to_string()])?;
+    p.check().map_err(|e| vec![e.message])?;
+    if !p.plan_samples.is_empty() {
+        return Err(vec![
+            "params.planSamples: computed by the kind's prepare; leave it out".to_string(),
+        ]);
+    }
+    Ok(filled)
+}
 
 /// `PcmParams`, then one source, a well-formed key and a layout its recipe has (6C Task 18).
 fn validate_pcm(params: &Value) -> Result<Value, Vec<String>> {

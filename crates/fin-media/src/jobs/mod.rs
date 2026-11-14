@@ -12,9 +12,10 @@
 //! One module per job family's types: [`look`] (`media.look`), [`caps`]
 //! (`media.capabilities`, v1 and the v2 report of 6B-1), [`probe`] (`media.probeDeep`, 6B-1),
 //! [`manifest`] (the job inputs), [`proxy`] (`media.proxy`, 6B-1), [`thumbs`] (`media.thumbs`, 6B-1), [`pcm`]
-//! (`media.pcm`, 6C).
+//! (`media.pcm`, 6C), [`listen`] (`media.listen`, 6C).
 
 pub mod caps;
+pub mod listen;
 pub mod look;
 pub mod manifest;
 pub mod pcm;
@@ -23,6 +24,7 @@ pub mod proxy;
 pub mod thumbs;
 
 pub use caps::*;
+pub use listen::*;
 pub use look::*;
 pub use manifest::*;
 pub use pcm::*;

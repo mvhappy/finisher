@@ -10395,6 +10395,308 @@
         }
       ]
     },
+    "ListenClipped": {
+      "description": "Samples above full scale.",
+      "properties": {
+        "firstAt": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/Rational"
+            }
+          ],
+          "description": "The first frame holding one, on the timeline (exact: its sample index ÷ 48,000)."
+        },
+        "samples": {
+          "description": "Samples (each channel's) whose magnitude is above 1.0.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "samples"
+      ],
+      "type": "object"
+    },
+    "ListenJobStats": {
+      "description": "Where the sources were read from.",
+      "properties": {
+        "sourcesDecoded": {
+          "description": "Assets decoded from their original (no entry, or one that did not verify).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sourcesFromCache": {
+          "description": "Assets read from their `pcm48` cache entry (the manifest's `pcm`).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sourcesFromCache",
+        "sourcesDecoded"
+      ],
+      "type": "object"
+    },
+    "ListenMoment": {
+      "description": "One of the loudest moments: the 3 s window starting at `at` (clipped to the range start)\nread `shortTerm` LUFS.",
+      "properties": {
+        "at": {
+          "$ref": "#/$defs/Rational"
+        },
+        "shortTerm": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "at",
+        "shortTerm"
+      ],
+      "type": "object"
+    },
+    "ListenNote": {
+      "description": "Something the listen could not hear as planned; never a failure.",
+      "oneOf": [
+        {
+          "description": "An asset with neither a `pcm48` entry nor a readable original here: its items are\nsilent. `reason` is the opener's code (`ORIGINALS_MISSING`, `CODEC_UNAVAILABLE`, …).",
+          "properties": {
+            "asset": {
+              "type": "string"
+            },
+            "code": {
+              "const": "missingSource",
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "asset",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "An item played at a speed WSOLA cannot do well (below 1/4 or above 4: Decision 6).",
+          "properties": {
+            "code": {
+              "const": "STRETCH_EXTREME",
+              "type": "string"
+            },
+            "item": {
+              "type": "string"
+            },
+            "speed": {
+              "$ref": "#/$defs/Rational"
+            }
+          },
+          "required": [
+            "code",
+            "item",
+            "speed"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "An effect of a kind this engine does not know: its item plays without it.",
+          "properties": {
+            "code": {
+              "const": "skippedEffect",
+              "type": "string"
+            },
+            "effect": {
+              "type": "string"
+            },
+            "item": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "item",
+            "effect",
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ListenParams": {
+      "additionalProperties": false,
+      "description": "`media.listen` v1: measure `[from, to)` of `timeline`.",
+      "properties": {
+        "branch": {
+          "description": "The branch of the snapshot (an id, a name or `<name>#<id>`).",
+          "type": "string"
+        },
+        "from": {
+          "$ref": "#/$defs/Rational"
+        },
+        "planSamples": {
+          "default": [],
+          "description": "One sample per window of [`listen_windows`]; a plan the worker evaluates differently is\n`PLAN_MISMATCH`. A submitter leaves them out: the kind's `prepare` computes them from the\nsnapshot it writes and hands them to the worker as `start.job.extra.planSamples` (and in\n`in/params.json` for `--replay`).",
+          "items": {
+            "$ref": "#/$defs/PlanSample"
+          },
+          "type": "array"
+        },
+        "projectId": {
+          "description": "The project measured. Only the host reads it (the kind's `dedupe` and `prepare`).",
+          "type": "string"
+        },
+        "rev": {
+          "description": "The branch's rev the submitter saw: part of the job's identity (`dedupe`).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "timeline": {
+          "type": "string"
+        },
+        "to": {
+          "$ref": "#/$defs/Rational"
+        }
+      },
+      "required": [
+        "timeline",
+        "from",
+        "to"
+      ],
+      "type": "object"
+    },
+    "ListenResult": {
+      "description": "What `media.listen` v1 answers.",
+      "properties": {
+        "from": {
+          "$ref": "#/$defs/Rational"
+        },
+        "mix": {
+          "$ref": "#/$defs/ListenStats"
+        },
+        "notes": {
+          "items": {
+            "$ref": "#/$defs/ListenNote"
+          },
+          "type": "array"
+        },
+        "stats": {
+          "$ref": "#/$defs/ListenJobStats"
+        },
+        "timeline": {
+          "type": "string"
+        },
+        "to": {
+          "$ref": "#/$defs/Rational"
+        },
+        "tracks": {
+          "description": "The tracks with items in the range, in the timeline's order.",
+          "items": {
+            "$ref": "#/$defs/ListenTrack"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "timeline",
+        "from",
+        "to",
+        "mix",
+        "tracks",
+        "notes",
+        "stats"
+      ],
+      "type": "object"
+    },
+    "ListenSpan": {
+      "description": "A span of the timeline, `[from, to)`.",
+      "properties": {
+        "from": {
+          "$ref": "#/$defs/Rational"
+        },
+        "to": {
+          "$ref": "#/$defs/Rational"
+        }
+      },
+      "required": [
+        "from",
+        "to"
+      ],
+      "type": "object"
+    },
+    "ListenStats": {
+      "description": "What one mix (the master bus, or one track's items alone) measured (Decision 21).",
+      "properties": {
+        "clipped": {
+          "$ref": "#/$defs/ListenClipped"
+        },
+        "integrated": {
+          "description": "Integrated loudness, LUFS; absent when nothing is above the −70 LUFS gate.",
+          "format": "double",
+          "type": "number"
+        },
+        "loudest": {
+          "description": "Up to 5 short-term (3 s) loudness maxima, loudest first, at least 3 s apart.",
+          "items": {
+            "$ref": "#/$defs/ListenMoment"
+          },
+          "type": "array"
+        },
+        "range": {
+          "description": "Loudness range, LU.",
+          "format": "double",
+          "type": "number"
+        },
+        "samplePeak": {
+          "description": "dBFS; absent for silence.",
+          "format": "double",
+          "type": "number"
+        },
+        "silences": {
+          "description": "Runs of 10 ms blocks whose louder channel's RMS is below −60 dBFS, lasting 0.5 s or more,\nat 10 ms resolution from the range start and clipped to the range.",
+          "items": {
+            "$ref": "#/$defs/ListenSpan"
+          },
+          "type": "array"
+        },
+        "truePeak": {
+          "description": "dBTP; absent for silence.",
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "range",
+        "clipped",
+        "silences",
+        "loudest"
+      ],
+      "type": "object"
+    },
+    "ListenTrack": {
+      "description": "One track's own statistics.",
+      "properties": {
+        "stats": {
+          "$ref": "#/$defs/ListenStats"
+        },
+        "track": {
+          "description": "The track of the measured timeline (a nested timeline's items count for the track their\ncompound clip is on).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "track",
+        "stats"
+      ],
+      "type": "object"
+    },
     "Listing": {
       "description": "A plugin in search results: its newest version that is not yanked.",
       "properties": {
@@ -10971,6 +11273,24 @@
           "type": "array"
         }
       },
+      "type": "object"
+    },
+    "ManifestPcm": {
+      "description": "One `pcm48` entry of the media cache (`cache/media/<key[0..2]>/<key>/`): `meta.json` and its\nchunks (plan 6C Decision 7). The worker reads it through `audio_src::CachedSource`, which\nrecomputes the key from `meta.json` and checks every chunk's size and BLAKE3.",
+      "properties": {
+        "dir": {
+          "description": "The entry's directory on this machine, absolute.",
+          "type": "string"
+        },
+        "key": {
+          "description": "The entry's cache key.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "dir"
+      ],
       "type": "object"
     },
     "ManifestProxy": {
@@ -16759,6 +17079,13 @@
           "default": {
             "files": []
           }
+        },
+        "pcm": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ManifestPcm"
+          },
+          "description": "The `pcm48` entries the media cache holds for the assets, by asset id (plan 6C Task 21:\n`media.listen` mixes from them and decodes the originals of the others), pinned for the\njob's life by the host. Absent for every other kind.",
+          "type": "object"
         },
         "version": {
           "description": "[`MANIFEST_VERSION`].",

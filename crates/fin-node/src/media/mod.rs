@@ -17,6 +17,7 @@
 //! - `mediaProxyPlan` (`proxy.rs`, 6B-1 Task 14): a proxy's cache key, before its job.
 //! - `mediaThumbsPlan` (`thumbs.rs`, 6B-1 Task 15): the same for thumbnails and filmstrips.
 //! - `mediaPcmPlan` (`pcm.rs`, 6C Task 18): the same for the `pcm48` and `pcm16m` feeds.
+//! - `Engine::prepare_listen_job` (`listen.rs`, 6C Task 21): the inputs of a `media.listen`.
 //! - [`cache`]: the media cache (`MediaCache`, 6B-1 Task 13): its index, commits, pins and
 //!   eviction.
 //!
@@ -26,6 +27,7 @@
 mod asset_job;
 pub mod cache;
 mod inputs;
+pub mod listen;
 pub mod pcm;
 pub mod proxy;
 pub mod thumbs;

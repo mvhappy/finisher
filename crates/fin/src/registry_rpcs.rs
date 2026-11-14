@@ -98,6 +98,11 @@ pub const ROWS: &[Row] = &[
         rpc!("media.look"),
         &["projectId", "branch", "timeline", "at"]
     ),
+    row!(
+        "listen",
+        rpc!("media.listen"),
+        &["projectId", "branch", "timeline", "from", "to"]
+    ),
     row!("view", rpc!(), PB),
     row!(
         "branch.new",

@@ -94,6 +94,7 @@ fn job_with(fp: &str, path: Option<&Path>, proxy: Option<&Filed>) -> Job {
             proxies: proxy.map(|f| vec![f.listed.clone()]).unwrap_or_default(),
         }],
         fonts: ManifestFonts::default(),
+        pcm: Default::default(),
     };
     std::fs::write(
         job.path("in/manifest.json"),

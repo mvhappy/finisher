@@ -125,6 +125,7 @@ test("the group exposes exactly the protocol 2 RPC tags", () => {
       "media.cache.gc",
       "media.cache.status",
       "media.capabilities",
+      "media.listen",
       "media.look",
       "media.pcm",
       "media.probeDeep",

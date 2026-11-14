@@ -43,6 +43,7 @@ import { chainJobs, jobHandlers } from "./jobs/rpc.ts";
 import { MediaCacheTag } from "./media/cache.ts";
 import { CapTokensTag, mediaUrl } from "./media/cap-tokens.ts";
 import { mediaCapabilities } from "./media/caps.ts";
+import { listen as mediaListen } from "./media/listen.ts";
 import { look as mediaLook } from "./media/look.ts";
 import { probeDeep } from "./media/probe-deep.ts";
 import { MediaProxyTag, type ProxyService } from "./media/proxy.ts";
@@ -474,6 +475,8 @@ export const HandlersLive = FinRpcs.toLayer(
       // 6C Task 18: an asset's pcm48 or pcm16m feed.
       "media.pcm": (req, options) =>
         guard("media.pcm", mediaProxy?.pcm === undefined ? Effect.fail(finError("SERVER_UNAVAILABLE", "PCM feeds are not served here", { feature: "mediaPcm" })) : mediaProxy.pcm.request(ownerOf(options), req)),
+      // 6C Task 21: `fin listen`'s measurements of a range.
+      "media.listen": (req, options) => guard("media.listen", mediaListen(mediaDeps, ownerOf(options), req)),
       "asset.reprobe": (req, options) =>
         guard(
           "asset.reprobe",
