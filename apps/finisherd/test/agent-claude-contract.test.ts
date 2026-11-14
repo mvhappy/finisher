@@ -29,6 +29,8 @@ import { ClaudeUsage, type UsageTotals } from "../src/agent/claude/usage.ts";
 
 /** The floor never goes below the `--setting-sources` leak fix (Decision 9, changelog 2.1.314). */
 const CHANGELOG_FLOOR = "2.1.314";
+/** The version Task 0's signed-in half validated (Decision 9: the floor is never below it). */
+const TASK0_VALIDATED = "2.1.321";
 /** The synthetic session id the scrubber writes. */
 const SESSION_ID = "01890a5d-ac96-774b-bcce-b302099a8057";
 
@@ -310,63 +312,127 @@ describe("what each scenario shows (2.1.321)", () => {
   });
 });
 
-describe("fixtures_are_scrubbed", () => {
-  const text = (v: string, s: string) => readFileSync(`${ROOT}${v}/${s}.jsonl`, "utf8");
-  const names = (() => {
-    const out = new Set<string>();
-    const add = (n: string | undefined) => {
-      if (n !== undefined && n.length >= 3) out.add(n.toLowerCase());
-    };
-    try {
-      add(userInfo().username);
-    } catch {
-      // no passwd entry
+/** The scrubber's account-label fields and their placeholders: a fixture value must equal it exactly. */
+const { LABEL_KEYS } = (await import(new URL("../../../scripts/scrub-transcript.mjs", import.meta.url).href)) as { LABEL_KEYS: ReadonlyMap<string, string> };
+const PLACEHOLDER_EMAIL = "user@example.invalid";
+const SYNTHETIC_UUID = /^(?:00000000-0000-4000-8000-[0-9a-f]{12}|01890a5d-ac96-774b-bcce-b302099a8057)$/;
+const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/g;
+/** An id of a recorded kind: a prefix, then one unbroken run of 16+ letters and digits holding a digit (capability names like `msg_lifecycle_v1` are not ids). */
+const ID_LIKE = /(?<![A-Za-z0-9_])(?:msg|req|toolu)_(?=[A-Za-z]*\d)[A-Za-z0-9]{16,}(?![A-Za-z0-9_])/g;
+
+const machineNames = (() => {
+  const out = new Set<string>();
+  const add = (n: string | undefined) => {
+    if (n !== undefined && n.length >= 3) out.add(n.toLowerCase());
+  };
+  try {
+    add(userInfo().username);
+  } catch {
+    // no passwd entry
+  }
+  add(homedir().split(/[\\/]/).filter(Boolean).at(-1));
+  add(hostname());
+  add(hostname().split(".")[0]);
+  return [...out];
+})();
+
+/** Every `[key, value]` string pair in a parsed JSON value, nested to any depth. */
+function* stringFields(v: unknown): Generator<[string, string]> {
+  if (Array.isArray(v)) for (const x of v) yield* stringFields(x);
+  else if (v !== null && typeof v === "object") {
+    for (const [k, x] of Object.entries(v)) {
+      if (typeof x === "string") yield [k, x];
+      else yield* stringFields(x);
     }
-    add(homedir().split(/[\\/]/).filter(Boolean).at(-1));
-    add(hostname());
-    add(hostname().split(".")[0]);
-    return [...out];
-  })();
-  const SYNTHETIC_UUID = /^(?:00000000-0000-4000-8000-[0-9a-f]{12}|01890a5d-ac96-774b-bcce-b302099a8057)$/;
+  }
+}
 
-  describe.each(all())("$version $scenario", ({ version, scenario }) => {
-    const raw = text(version, scenario);
-    const jsonl = raw.split("\n").filter((l) => l !== "");
+/** The JSON values in a fixture file: one per line for `.jsonl`, the whole text for `.json`. */
+function jsonValues(name: string, raw: string): unknown[] {
+  return name.endsWith(".jsonl") ? raw.split("\n").filter((l) => l !== "").map((l) => JSON.parse(l) as unknown) : [JSON.parse(raw) as unknown];
+}
 
-    test("no home directory, e-mail, user or host name of this machine", () => {
-      expect(raw).not.toMatch(/\/home\/|\/Users\/|[A-Za-z]:\\+Users/i);
-      expect(raw.includes(homedir())).toBe(false);
-      for (const m of raw.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/g) ?? []) expect(m).toMatch(/^(user@example\.invalid|cc-plugin-[a-z-]+@builtin)$/);
-      for (const n of names) expect(raw.toLowerCase().includes(n), `a name of this machine appears (${n.length} chars)`).toBe(false);
+/** What is wrong with a fixture or expectation's text (empty when clean); never quotes a personal value. */
+function scrubProblems(name: string, raw: string, names: readonly string[] = machineNames): string[] {
+  const bad: string[] = [];
+  if (/\/home\/|\/Users\/|[A-Za-z]:\\+Users/i.test(raw)) bad.push("a home directory");
+  if (raw.includes(homedir())) bad.push("this machine's home directory");
+  for (const m of raw.match(EMAIL_RE) ?? []) if (!/^(?:user@example\.invalid|cc-plugin-[a-z-]+@builtin)$/.test(m)) bad.push("an e-mail");
+  for (const n of names) if (raw.toLowerCase().includes(n)) bad.push(`a name of this machine (${n.length} chars)`);
+  for (const u of raw.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi) ?? []) if (!SYNTHETIC_UUID.test(u)) bad.push("a real uuid");
+  if ((raw.match(ID_LIKE) ?? []).length > 0) bad.push("a real msg_/req_/toolu_ id");
+  for (const p of raw.match(/"\/[A-Za-z0-9_.\-/]*"/g) ?? []) if (!/^"\/(?:srv\/finisher|tmp|usr|bin|dev|proc)\b/.test(p)) bad.push("a path outside the placeholders");
+  for (const t of raw.match(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/g) ?? []) if (t !== "2026-01-01T00:00:00.000Z") bad.push("a real timestamp");
+  for (const r of raw.match(/"resetsAt":\s*[0-9.]+/g) ?? []) if (r !== '"resetsAt":1795093200') bad.push("a real resetsAt");
+  if (/"(?:argv|env|note)"/.test(raw)) bad.push("a recorder note");
+  for (const v of jsonValues(name, raw)) {
+    for (const [k, x] of stringFields(v)) {
+      const want = LABEL_KEYS.get(k);
+      if (want !== undefined && x !== want) bad.push(`a non-placeholder ${k}`);
+    }
+  }
+  return [...new Set(bad)];
+}
+
+/** Every file under `fixtures/claude/<version>/`: the transcripts and their expectations. */
+const fixtureFiles = (): { version: string; file: string }[] => versions().flatMap((version) => readdirSync(`${ROOT}${version}`).sort().map((file) => ({ version, file })));
+
+describe("fixtures_are_scrubbed", () => {
+  test("the scrubber's label keys are the ones this check knows", () => {
+    for (const k of ["email", "emailAddress", "subscriptionType", "orgId", "orgName", "displayName", "accountUuid", "organizationUuid"]) expect(LABEL_KEYS.has(k), k).toBe(true);
+    expect(LABEL_KEYS.get("email")).toBe(PLACEHOLDER_EMAIL);
+  });
+
+  test("a dirty copy fails the check (account labels, e-mails, names, ids, paths)", () => {
+    const line = (o: unknown) => `${JSON.stringify({ dir: "out", line: o })}\n`;
+    const clean = line({ type: "control_response", response: { account: { email: PLACEHOLDER_EMAIL, subscriptionType: "Claude Plan", orgName: "Org", displayName: "User" } } });
+    expect(scrubProblems("x.jsonl", clean, ["alice"])).toEqual([]);
+    const dirty: [string, string, RegExp][] = [
+      ["subscription type", line({ account: { subscriptionType: "Acme Gold" } }), /subscriptionType/],
+      ["org name", line({ a: { b: { orgName: "Acme Inc" } } }), /orgName/],
+      ["display name", line({ list: [{ displayName: "Alice A" }] }), /displayName/],
+      ["org id", line({ orgId: "11111111-2222-4333-8444-555555555555" }), /orgId/],
+      ["account e-mail field", line({ account: { email: "someone@corp.example" } }), /email/],
+      ["e-mail anywhere", line({ text: "mail someone@corp.example" }), /e-mail/],
+      ["machine name", line({ text: "built by Alice" }), /name of this machine/],
+      ["home directory", line({ cwd: "/home/bob/w" }), /home directory/],
+      ["real message id", line({ id: "msg_011Ch1i4Bed1aTV9K4SYsbsF" }), /id/],
+    ];
+    for (const [what, text, re] of dirty) expect(scrubProblems("x.jsonl", text, ["alice"]), what).toEqual(expect.arrayContaining([expect.stringMatching(re)]));
+    // The same labels in an expectation file (`.json`) fail too.
+    expect(scrubProblems("x.expected.json", JSON.stringify([{ details: { orgName: "Acme Inc" } }]), ["alice"])).toEqual(["a non-placeholder orgName"]);
+  });
+
+  test("capability names that look like ids are kept (msg_lifecycle_v1)", () => {
+    for (const { version, scenario } of all()) expect(readFileSync(`${ROOT}${version}/${scenario}.jsonl`, "utf8"), `${version}/${scenario}`).toContain('"msg_lifecycle_v1"');
+  });
+
+  describe.each(fixtureFiles())("$version $file", ({ version, file }) => {
+    const raw = readFileSync(`${ROOT}${version}/${file}`, "utf8");
+
+    test("no personal data: paths, e-mails, names, ids, times, account labels, recorder notes", () => {
+      expect(file).toMatch(/^[a-z0-9-]+(?:\.expected\.json|\.jsonl)$/);
+      expect(scrubProblems(file, raw)).toEqual([]);
     });
 
-    test("only placeholder ids: uuids, request ids, message and tool-use ids", () => {
-      for (const u of raw.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi) ?? []) expect(u).toMatch(SYNTHETIC_UUID);
-      for (const r of raw.match(/\breq_[A-Za-z0-9<>]+/g) ?? []) expect(r).toMatch(/^req_\d{4}$/);
-      for (const r of raw.match(/\bmsg_[A-Za-z0-9<>]+/g) ?? []) expect(r).toMatch(/^msg_\d{4}$/);
-      for (const r of raw.match(/\btoolu_[A-Za-z0-9<>]+/g) ?? []) expect(r).toMatch(/^toolu_\d{4}$/);
-    });
-
-    test("paths are placeholders, times and rate-limit numbers are normalised, no recorder notes", () => {
-      for (const p of raw.match(/"\/[A-Za-z0-9_.\-/]*"/g) ?? []) expect(p, p).toMatch(/^"\/(?:srv\/finisher|tmp|usr|bin|dev|proc)\b/);
-      for (const t of raw.match(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/g) ?? []) expect(t).toBe("2026-01-01T00:00:00.000Z");
-      for (const r of raw.match(/"resetsAt":\s*[0-9.]+/g) ?? []) expect(r).toBe('"resetsAt":1795093200');
-      for (const l of jsonl) {
-        const o = JSON.parse(l) as Record<string, unknown>;
-        expect(Object.keys(o).sort()).toEqual(["dir", "line"]);
-        expect(["in", "out"]).toContain(o.dir);
-      }
-      expect(raw).not.toMatch(/"(?:argv|env|note)"/);
-    });
+    if (file.endsWith(".jsonl")) {
+      test("every line is {dir, line}", () => {
+        for (const l of raw.split("\n").filter((x) => x !== "")) {
+          const o = JSON.parse(l) as Record<string, unknown>;
+          expect(Object.keys(o).sort()).toEqual(["dir", "line"]);
+          expect(["in", "out"]).toContain(o.dir);
+        }
+      });
+    }
   });
 });
 
 describe("floor_is_lowest_passing_version", () => {
-  test("CLAUDE_FLOOR is the highest of the changelog's 2.1.314 and the lowest recorded version that passes (Decision 9)", () => {
+  test("CLAUDE_FLOOR is the highest of the changelog's 2.1.314, the version Task 0 validated and the lowest recorded version that passes (Decision 9)", () => {
     const passing = versions().filter((v) => scenarios(v).every((s) => scenarioPasses(v, s)));
     expect(passing.length).toBeGreaterThan(0);
     const lowest = passing[0]!;
-    const floor = compareVersions(lowest, CHANGELOG_FLOOR) >= 0 ? lowest : CHANGELOG_FLOOR;
+    const floor = [CHANGELOG_FLOOR, TASK0_VALIDATED, lowest].reduce((a, b) => (compareVersions(b, a) > 0 ? b : a));
     expect(CLAUDE_FLOOR).toBe(floor);
     // Every version with a passing suite is a tested one (no `untestedVersion` notice).
     expect([...TESTED_VERSIONS]).toEqual(passing);

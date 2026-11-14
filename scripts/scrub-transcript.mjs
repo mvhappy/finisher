@@ -36,10 +36,18 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
 const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/g;
 const ISO_TIME = /\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\b/g;
 
+/**
+ * What a real id looks like: the prefix, then one unbroken run of 16+ letters and digits holding
+ * a digit, and nothing id-like after it. A capability or enum name (`msg_lifecycle_v1`) has
+ * underscores and no such run, so it survives.
+ */
+const idShape = (prefix) => new RegExp(`(?<![A-Za-z0-9_])${prefix}_(?=[A-Za-z]*\\d)[A-Za-z0-9]{16,}(?![A-Za-z0-9_])`, "g");
+const ID_SHAPE = { toolu: idShape("toolu"), msg: idShape("msg"), req: idShape("req") };
+
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /** Keys whose string value is an account label: replaced whole, wherever they occur. */
-const LABEL_KEYS = new Map([
+export const LABEL_KEYS = new Map([
   ["email", EMAIL],
   ["emailAddress", EMAIL],
   ["displayName", "User"],
@@ -131,9 +139,9 @@ class Scrubber {
     out = out.replace(/(?<![A-Za-z0-9_.-])\/(?:home|Users)\/[^/\s"'\\`<>]+/g, "/srv/finisher/home").replace(/[A-Za-z]:\\+Users\\+[^\\\s"'`<>]+/g, "/srv/finisher/home");
     out = out.replace(/cc-socks-\d+/g, "cc-socks-uid").replace(/\/cc-socks-uid\/\d+\.sock/g, "/cc-socks-uid/1.sock");
     out = out.replace(UUID, (m) => this.#uuid(m));
-    out = out.replace(/\btoolu_[A-Za-z0-9]+/g, (m) => this.#counted("toolu", m, (n) => `toolu_${String(n).padStart(4, "0")}`));
-    out = out.replace(/\bmsg_[A-Za-z0-9]+/g, (m) => this.#counted("msg", m, (n) => `msg_${String(n).padStart(4, "0")}`));
-    out = out.replace(/\breq_[A-Za-z0-9]+/g, (m) => this.#counted("req", m, (n) => `req_${String(n).padStart(4, "0")}`));
+    out = out.replace(ID_SHAPE.toolu, (m) => this.#counted("toolu", m, (n) => `toolu_${String(n).padStart(4, "0")}`));
+    out = out.replace(ID_SHAPE.msg, (m) => this.#counted("msg", m, (n) => `msg_${String(n).padStart(4, "0")}`));
+    out = out.replace(ID_SHAPE.req, (m) => this.#counted("req", m, (n) => `req_${String(n).padStart(4, "0")}`));
     out = out.replace(EMAIL_RE, EMAIL);
     out = out.replace(ISO_TIME, TIMESTAMP);
     for (const re of this.#nameRes) out = out.replace(re, "user");
@@ -184,29 +192,44 @@ function trimInitialize(line) {
   return line;
 }
 
+/** The field each streamed delta type carries its text in. */
+const DELTA_FIELDS = new Map([
+  ["input_json_delta", "partial_json"],
+  ["text_delta", "text"],
+  ["thinking_delta", "thinking"],
+]);
+
 /**
- * A tool input streams as `input_json_delta` pieces cut anywhere, so a path can be split across
- * lines and no single piece shows it whole. Each block's pieces are joined and scrubbed as one
- * string; the first piece carries it and the rest are empty (the pieces mean nothing alone, the
- * complete `assistant` line has the input, and a fixed cut could land inside a placeholder).
+ * A block streams as pieces cut anywhere (`input_json_delta`, `text_delta`, `thinking_delta`),
+ * so a path or a name can be split across lines and no single piece shows it whole. Each block's
+ * pieces are joined and scrubbed as one string. A tool input always collapses into its first
+ * piece (the pieces mean nothing alone, the complete `assistant` line has the input, and a fixed
+ * cut could land inside a placeholder); text and thinking collapse the same way only when the
+ * whole has something to scrub, else the original cuts stay. What is written is checked again
+ * as a whole: a leftover identity fails the run.
  */
-function rewriteJsonDeltas(records, lines, s) {
+function rewriteDeltas(records, lines, s, identity) {
   const groups = new Map();
   let message = 0;
   records.forEach((r, i) => {
     const ev = r.dir === "out" && r.line.type === "stream_event" ? r.line.event : null;
     if (ev?.type === "message_start") message++;
-    if (ev?.type === "content_block_delta" && ev.delta?.type === "input_json_delta" && typeof ev.delta.partial_json === "string") {
-      const key = `${message}:${ev.index}`;
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key).push(i);
+    const field = ev?.type === "content_block_delta" ? DELTA_FIELDS.get(ev.delta?.type) : undefined;
+    if (field !== undefined && typeof ev.delta[field] === "string") {
+      const key = `${message}:${ev.index}:${ev.delta.type}`;
+      if (!groups.has(key)) groups.set(key, { field, collapse: field === "partial_json", at: [] });
+      groups.get(key).at.push(i);
     }
   });
-  for (const at of groups.values()) {
-    const whole = s.string(at.map((i) => records[i].line.event.delta.partial_json).join(""));
-    at.forEach((i, n) => {
-      lines[i].line.event.delta.partial_json = n === 0 ? whole : "";
-    });
+  for (const { field, collapse, at } of groups.values()) {
+    const original = at.map((i) => records[i].line.event.delta[field]).join("");
+    const whole = s.string(original);
+    if (collapse || whole !== original) {
+      at.forEach((i, n) => {
+        lines[i].line.event.delta[field] = n === 0 ? whole : "";
+      });
+    }
+    assertScrubbed(at.map((i) => lines[i].line.event.delta[field]).join(""), identity);
   }
 }
 
@@ -256,7 +279,7 @@ export function scrubTranscript(raw, identity = detectIdentity()) {
   const s = new Scrubber(identity);
   for (const r of records) s.collectSessions(r.line);
   const lines = records.map((r) => ({ dir: r.dir, line: s.value(trimInitialize(r.line)) }));
-  rewriteJsonDeltas(records, lines, s);
+  rewriteDeltas(records, lines, s, identity);
   const out = lines.map((l) => JSON.stringify(l));
   const text = `${out.join("\n")}\n`;
   assertScrubbed(text, identity);

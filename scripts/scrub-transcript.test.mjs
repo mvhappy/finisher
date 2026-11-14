@@ -57,13 +57,48 @@ test("a path split across input_json_delta pieces is scrubbed as a whole", () =>
   assert.equal(parse(text).filter((o) => o.line.event?.delta).length, 3, "the pieces stay as many lines");
 });
 
+test("text and thinking deltas split across lines are scrubbed as a whole too", () => {
+  const delta = (index, type, field, piece) => rec("out", { type: "stream_event", event: { type: "content_block_delta", index, delta: { type, [field]: piece } } });
+  const text = scrub(
+    rec("out", { type: "stream_event", event: { type: "message_start" } }),
+    delta(0, "text_delta", "text", "Hello ali"),
+    delta(0, "text_delta", "text", "ce, wel"),
+    delta(0, "text_delta", "text", "come"),
+    delta(1, "thinking_delta", "thinking", "mail bob@corp.exa"),
+    delta(1, "thinking_delta", "thinking", "mple now"),
+    delta(2, "text_delta", "text", "nothing to hide"),
+    delta(2, "text_delta", "text", " here"),
+  );
+  assert.ok(!/alice|bob@|corp\.exa/i.test(text), text);
+  const deltas = parse(text).filter((o) => o.line.event?.delta).map((o) => o.line.event.delta);
+  assert.equal(deltas.length, 7, "the pieces stay as many lines");
+  assert.equal(deltas.filter((d) => d.type === "text_delta").slice(0, 3).map((d) => d.text).join(""), "Hello user, welcome");
+  assert.equal(deltas.filter((d) => d.type === "thinking_delta").map((d) => d.thinking).join(""), `mail ${EMAIL} now`);
+  // A block with nothing to scrub keeps its own cuts.
+  assert.deepEqual(deltas.filter((d) => d.type === "text_delta").slice(3).map((d) => d.text), ["nothing to hide", " here"]);
+});
+
+test("capability names that look like ids survive; real ids are still replaced", () => {
+  const [a, b] = parse(
+    scrub(
+      rec("out", { type: "control_response", response: { request_id: "init_1", response: { capabilities: ["interrupt_send_now_v1", "msg_lifecycle_v1", "toolu_cap_v2", "req_marker_v1"] } } }),
+      rec("out", { type: "assistant", request_id: "req_011Ch1i4MLYEV56Rr6v1rfjN", message: { id: "msg_011Ch1i4Bed1aTV9K4SYsbsF", content: [{ type: "tool_use", id: "toolu_01Q8aWmZbNpDx3sRtU4vYhJk", name: "Read", input: {} }, { type: "text", text: "see msg_011Ch1i4Bed1aTV9K4SYsbsF" }] } }),
+    ),
+  );
+  assert.deepEqual(a.line.response.response.capabilities, ["interrupt_send_now_v1", "msg_lifecycle_v1", "toolu_cap_v2", "req_marker_v1"]);
+  assert.equal(b.line.request_id, "req_0001");
+  assert.equal(b.line.message.id, "msg_0001");
+  assert.equal(b.line.message.content[0].id, "toolu_0001");
+  assert.equal(b.line.message.content[1].text, "see msg_0001");
+});
+
 test("ids get stable counters; the session id is the synthetic one", () => {
   const out = parse(
     scrub(
       rec("in", { type: "user", session_id: UUID_A, message: { role: "user", content: [] } }),
       rec("out", { type: "system", subtype: "init", session_id: UUID_B, uuid: UUID_A }),
-      rec("out", { type: "assistant", session_id: UUID_B, uuid: "99999999-aaaa-4bbb-8ccc-dddddddddddd", request_id: "req_01Abc", message: { id: "msg_01Zed", content: [{ type: "tool_use", id: "toolu_01Q", name: "Read", input: {} }] } }),
-      rec("out", { type: "user", session_id: UUID_B, message: { content: [{ type: "tool_result", tool_use_id: "toolu_01Q" }] } }),
+      rec("out", { type: "assistant", session_id: UUID_B, uuid: "99999999-aaaa-4bbb-8ccc-dddddddddddd", request_id: "req_01AbcDefGhiJklMnoPqrStu", message: { id: "msg_01ZedAbcDefGhiJklMnoPqrS", content: [{ type: "tool_use", id: "toolu_01QAbcDefGhiJklMnoPqrSt", name: "Read", input: {} }] } }),
+      rec("out", { type: "user", session_id: UUID_B, message: { content: [{ type: "tool_result", tool_use_id: "toolu_01QAbcDefGhiJklMnoPqrSt" }] } }),
     ),
   );
   assert.equal(out[0].line.session_id, SESSION_ID);
