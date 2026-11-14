@@ -3,7 +3,6 @@
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { AgentProvidersSuccess, type FinError, type ProviderInfo } from "@finisher/contracts";
 import { sandboxStatus } from "@finisher/fin-node";
 import { Effect, Exit, Schema } from "effect";
@@ -18,9 +17,10 @@ import type { SessionSandboxDeps } from "../src/agent/sandbox.ts";
 import { readAgentSettings } from "../src/agent/settings.ts";
 import { runConsole } from "../src/console/main.ts";
 import type { SandboxStatus } from "../src/sandbox/status.ts";
+import { debugBin } from "./support/debug-bin.ts";
 
 const WIN = process.platform === "win32";
-const FAKE = fileURLToPath(new URL(`../../../target/debug/fake-codex${WIN ? ".exe" : ""}`, import.meta.url));
+const FAKE = debugBin("fake-codex");
 /** CI (`FIN_REQUIRE_SERVER=1`): a missing fake fails instead of skipping. */
 const NO_FAKE = !existsSync(FAKE) && process.env.FIN_REQUIRE_SERVER !== "1";
 const PIN = pinnedCodexVersion();

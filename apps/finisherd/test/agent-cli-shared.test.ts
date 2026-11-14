@@ -8,7 +8,6 @@ import { createHmac } from "node:crypto";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { FinError, ProviderEvent } from "@finisher/contracts";
 import { Effect, Exit } from "effect";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -24,6 +23,7 @@ import { finError } from "../src/errors.ts";
 import { AgentServer } from "./support/agent-server.ts";
 import { ok } from "./support/ndjson-client.ts";
 import { person } from "./support/person.ts";
+import { debugBin } from "./support/debug-bin.ts";
 
 const FIXTURES = join(import.meta.dirname, "fixtures", "cli-account");
 const HASHES = JSON.parse(readFileSync(join(FIXTURES, "hashes.json"), "utf8")) as { a: string; b: string };
@@ -287,7 +287,7 @@ describe("the account record", () => {
   });
 });
 
-const FAKE_CODEX = fileURLToPath(new URL(`../../../target/debug/fake-codex${process.platform === "win32" ? ".exe" : ""}`, import.meta.url));
+const FAKE_CODEX = debugBin("fake-codex");
 const NO_FAKE_CODEX = !existsSync(FAKE_CODEX) && process.env.FIN_REQUIRE_SERVER !== "1";
 const SAVED_ENV = { FIN_RESOURCES_DIR: process.env.FIN_RESOURCES_DIR, FIN_TEST_HOOKS: process.env.FIN_TEST_HOOKS, FIN_TEST_SANDBOX_READY: process.env.FIN_TEST_SANDBOX_READY };
 
