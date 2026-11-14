@@ -6,7 +6,11 @@
 // run in `crates/fin-sandbox/tests/escape_common.rs` (`pnpm sandbox:suite`).
 //
 // `fake-claude` loads what a real CLI would from the paths it is given and reports each planted
-// canary it read (`observed.canaries`) and what it tried (`observed.loads`).
+// canary it read and applied (`observed.canaries`) and every read or listing it attempted, with
+// its outcome and whether the flags let it apply (`observed.loads`): Task 0 saw the CLI read the
+// working directory's `.claude/settings.json` and `settings.local.json` and list
+// `.claude/{agents,commands,output-styles,skills,workflows}` in it and every parent up to `/`
+// whatever the flags say, applying none of it.
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -93,6 +97,8 @@ function plant(w: World): { protectedFiles: Record<string, string>; workspaceFil
     project_memory: put(join(w.project, "CLAUDE.md"), "project_memory"),
     project_local_memory: put(join(w.project, "CLAUDE.local.md"), "project_local_memory"),
     project_settings: put(join(w.project, ".claude", "settings.json"), "project_settings"),
+    // A parent's `.claude/` the CLI lists (Task 0): the project's skill.
+    project_skill: put(join(w.project, ".claude", "skills", "x", "SKILL.md"), "project_skill"),
     user_settings: put(join(w.home, ".claude", "settings.json"), "user_settings"),
     user_state: put(join(w.home, ".claude.json"), "user_state"),
     other_session_settings: put(join(w.other, "settings.json"), "other_session_settings"),
@@ -170,9 +176,12 @@ async function run(box: SessionSandbox, argv: readonly string[], env?: Record<st
   return { code: exit.code, stdout };
 }
 
+type Status = "ok" | "absent" | { unreadable: string };
 interface Observed {
   canaries: { source: string; where: string; file: string; canary: string }[];
-  loads: { source: string; where: string; file: string; status: string | { unreadable: string } }[];
+  loads: { op: "read" | "list"; source: string; where: string; file: string; status: Status; applies: boolean }[];
+  /** The launch's exit code (set by `launch`; the record itself shows the start ran). */
+  code: number | null;
 }
 
 /** Starts the installed fake the way the adapter does (`instancePlan`'s flags and environment,
@@ -183,15 +192,37 @@ async function launch(box: SessionSandbox, real: string, how: "finisher" | "bare
   await writeLaunchFiles(plan);
   const bare = how === "bare";
   const argv = bare ? [real, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"] : plan.argv;
-  await run(box, argv, bare ? {} : plan.env, installTreeRead(real));
+  const r = await run(box, argv, bare ? {} : plan.env, installTreeRead(real));
   const file = join(box.env.CLAUDE_CONFIG_DIR!, "observed.json");
   const records = JSON.parse(readFileSync(file, "utf8")) as Observed[];
   rmSync(file);
-  return records.at(-1)!;
+  return { ...records.at(-1)!, code: r.code };
 }
 
 const tags = (o: Observed) => o.canaries.map((c) => c.canary.replace("FIN_CANARY_", "")).sort();
 const status = (o: Observed, where: string, file: string) => o.loads.find((l) => l.where === where && l.file === file)?.status;
+const applying = (o: Observed) => o.loads.filter((l) => l.applies);
+const attempt = (o: Observed, op: "read" | "list", where: string, file: string) => {
+  const l = o.loads.find((x) => x.op === op && x.where === where && x.file === file);
+  return l === undefined ? undefined : { status: l.status, applies: l.applies };
+};
+const LISTED = ["agents", "commands", "output-styles", "skills", "workflows"];
+
+/** Task 0's attempts under Finisher's flags: the working directory's two settings files read and
+ * not applied, `.claude/<listed>` listed (not applied) in it and every parent up to `/`; nothing
+ * else attempted but what applies. `cwdStatus` is what the reads see. */
+function expectTask0Attempts(o: Observed, workspace: string, cwdStatus: Status) {
+  const msg = JSON.stringify(o.loads);
+  expect(attempt(o, "read", "cwd", ".claude/settings.json"), msg).toEqual({ status: cwdStatus, applies: false });
+  expect(attempt(o, "read", "cwd", ".claude/settings.local.json"), msg).toEqual({ status: cwdStatus, applies: false });
+  let depth = 0;
+  for (let d = workspace; ; d = dirname(d)) {
+    for (const sub of LISTED) expect(attempt(o, "list", depth === 0 ? "cwd" : `cwd+${depth}`, `.claude/${sub}`)?.applies, `${d} ${sub}`).toBe(false);
+    depth += 1;
+    if (dirname(d) === d) break;
+  }
+  expect(o.loads.filter((l) => !l.applies)).toHaveLength(2 + depth * LISTED.length);
+}
 
 describe.skipIf(WIN)("a Claude Code session loads nothing planted", () => {
   test.skipIf(NO_FAKE)("planted_files_never_load", async () => {
@@ -210,10 +241,15 @@ describe.skipIf(WIN)("a Claude Code session loads nothing planted", () => {
       // Finisher's launch: none of the planted canaries, anywhere.
       const finisher = await launch(box, real, "finisher");
       expect(tags(finisher), JSON.stringify(finisher.loads)).toEqual([]);
-      // It looked at its own configuration directory and the store, and nowhere else: not the
-      // user's home, the project, a parent of the workspace or the rest of the sign-in home.
-      expect(new Set(finisher.loads.map((l) => l.where))).toEqual(new Set(["config", "store"]));
-      expect(status(finisher, "store", ".credentials.json")).toBe("loaded");
+      // What applies is its own configuration directory and the store, and nothing else: not
+      // the user's home, the project, a parent of the workspace or the rest of the sign-in home.
+      expect(new Set(applying(finisher).map((l) => l.where))).toEqual(new Set(["config", "store"]));
+      expect(status(finisher, "store", ".credentials.json")).toBe("ok");
+      // As Task 0 recorded: the workspace's planted settings are read (not applied) and every
+      // parent's `.claude/` listed, the project's skills included, nothing of it applied.
+      expectTask0Attempts(finisher, w.workspace, "ok");
+      expect(attempt(finisher, "list", "cwd+2", ".claude/skills")).toEqual({ status: "ok", applies: false });
+      expect(finisher.code).toBe(0);
     });
 
     // Under the launcher, where the profile is enforced here: every file the profile protects
@@ -228,7 +264,14 @@ describe.skipIf(WIN)("a Claude Code session loads nothing planted", () => {
       expect(box.mode).toBe("launcher");
       const finisher = await launch(box, real, "finisher");
       expect(tags(finisher), JSON.stringify(finisher.loads)).toEqual([]);
-      expect(status(finisher, "store", ".credentials.json")).toBe("loaded");
+      expect(status(finisher, "store", ".credentials.json")).toBe("ok");
+      // The same attempts, now refused where the profile denies them, and the CLI still starts:
+      // the project's `.claude/` (a parent's listing) is unreadable. The workspace's own two
+      // settings files are the agent's (it may write them), so they read; `--setting-sources
+      // user` is what keeps them from applying.
+      expectTask0Attempts(finisher, w.workspace, "ok");
+      expect(attempt(finisher, "list", "cwd+2", ".claude/skills")).toEqual({ status: { unreadable: "PermissionDenied" }, applies: false });
+      expect(finisher.code, JSON.stringify(finisher.loads)).toBe(0);
       // Every protected planted file is unreadable to a process of the session ...
       for (const [name, path] of Object.entries(protectedFiles)) {
         const r = await run(box, ["/bin/cat", path]);

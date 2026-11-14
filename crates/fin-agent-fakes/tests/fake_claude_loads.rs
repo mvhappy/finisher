@@ -112,12 +112,72 @@ fn set(tags: &[&str]) -> BTreeSet<String> {
     tags.iter().map(|t| (*t).to_owned()).collect()
 }
 
-/// Where each load looked (`cwd`, `config`, `store`, ...), without repeats.
+/// Where each applying load came from (`cwd`, `config`, `store`, ...), without repeats.
 fn places(loads: &[Value]) -> BTreeSet<String> {
-    loads
-        .iter()
+    applied(loads)
         .map(|l| l["where"].as_str().unwrap().to_owned())
         .collect()
+}
+
+/// The loads the flags let apply (their content is used when the file is there).
+fn applied(loads: &[Value]) -> impl Iterator<Item = &Value> {
+    loads.iter().filter(|l| l["applies"] == true)
+}
+
+/// The attempts the flags did not apply: `(op, where, file, status)`.
+fn attempted(loads: &[Value]) -> Vec<(String, String, String, Value)> {
+    loads
+        .iter()
+        .filter(|l| l["applies"] == false)
+        .map(|l| {
+            let s = |k: &str| l[k].as_str().unwrap().to_owned();
+            (s("op"), s("where"), s("file"), l["status"].clone())
+        })
+        .collect()
+}
+
+/// The `.claude/` subdirectories Task 0 saw the CLI list in the working directory and every
+/// parent (plan 7D Facts, `--setting-sources`).
+const LISTED: [&str; 5] = ["agents", "commands", "output-styles", "skills", "workflows"];
+
+/// What Task 0 recorded for `--setting-sources user` and `--restricted` alike: the working
+/// directory's two settings files read (not applied), `.claude/<listed>` listed in the working
+/// directory and in every parent up to `/`.
+fn assert_task0_attempts(p: &Planted, loads: &[Value]) {
+    let got = attempted(loads);
+    let reads: Vec<_> = got.iter().filter(|a| a.0 == "read").collect();
+    assert_eq!(
+        reads
+            .iter()
+            .map(|a| (a.1.as_str(), a.2.as_str(), a.3.clone()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("cwd", ".claude/settings.json", serde_json::json!("ok")),
+            (
+                "cwd",
+                ".claude/settings.local.json",
+                serde_json::json!("ok")
+            ),
+        ],
+        "{loads:#?}"
+    );
+    let depth = p.path("p/workspace/s1").ancestors().count();
+    for n in 0..depth {
+        let at = if n == 0 {
+            "cwd".to_owned()
+        } else {
+            format!("cwd+{n}")
+        };
+        for sub in LISTED {
+            let file = format!(".claude/{sub}");
+            assert!(
+                got.iter()
+                    .any(|a| a.0 == "list" && a.1 == at && a.2 == file),
+                "{at} {file} not listed: {loads:#?}"
+            );
+        }
+    }
+    assert_eq!(got.len(), reads.len() + depth * LISTED.len(), "{loads:#?}");
 }
 
 #[test]
@@ -161,14 +221,19 @@ fn finishers_launch_lets_nothing_planted_through() {
     ];
     let (got, loads) = p.run(&["--setting-sources", "user", "--strict-mcp-config"], &env);
     assert_eq!(got, set(&[]), "{loads:#?}");
-    // Only the CLI's own places are opened: its (empty) config dir and the store; never the
+    // Only the CLI's own places are applied: its (empty) config dir and the store; never the
     // user's home, the project, a parent directory or the rest of the sign-in home.
     assert_eq!(places(&loads), set(&["config", "store"]), "{loads:#?}");
-    let files: BTreeSet<&str> = loads.iter().map(|l| l["file"].as_str().unwrap()).collect();
+    let files: BTreeSet<&str> = applied(&loads)
+        .map(|l| l["file"].as_str().unwrap())
+        .collect();
     assert_eq!(
         files,
         [".claude.json", ".credentials.json", "settings.json"].into()
     );
+    // ... while the reads Task 0 saw are still attempted (the workspace's planted settings are
+    // read, not applied), and the parents' `.claude/` listed.
+    assert_task0_attempts(&p, &loads);
 }
 
 #[test]
@@ -182,8 +247,55 @@ fn restricted_reads_no_configuration_but_the_state_and_the_store() {
     ];
     let (got, loads) = p.run(&["--restricted"], &env);
     assert_eq!(got, set(&[]));
-    assert_eq!(loads.len(), 2, "{loads:#?}");
+    assert_eq!(applied(&loads).count(), 2, "{loads:#?}");
     assert_eq!(places(&loads), set(&["config", "store"]));
+    assert_task0_attempts(&p, &loads);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_denied_attempt_is_recorded_and_the_cli_carries_on() {
+    use std::os::unix::fs::PermissionsExt;
+    let p = Planted::new();
+    // The project's `.claude/` (a parent of the workspace) holds a skill; the workspace's own
+    // settings file is refused: the way the sandbox's `deny_read` shows.
+    p.plant("p/.claude/skills/x/SKILL.md", "project_skill");
+    let skills = p.path("p/.claude/skills");
+    let settings = p.path("p/workspace/s1/.claude/settings.json");
+    for f in [&skills, &settings] {
+        std::fs::set_permissions(f, std::fs::Permissions::from_mode(0o000)).unwrap();
+    }
+    if std::fs::read(&settings).is_ok() {
+        return; // root reads anything
+    }
+    let env = [
+        ("HOME", p.path("home")),
+        ("CLAUDE_CONFIG_DIR", p.path("cfg")),
+        ("CLAUDE_CODE_DISABLE_CLAUDE_MDS", PathBuf::from("1")),
+    ];
+    let (got, loads) = p.run(&["--setting-sources", "user", "--strict-mcp-config"], &env);
+    std::fs::set_permissions(&skills, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(got, set(&[]));
+    let denied = serde_json::json!({"unreadable": "PermissionDenied"});
+    let got = attempted(&loads);
+    let find = |op: &str, at: &str, file: &str| {
+        got.iter()
+            .find(|a| a.0 == op && a.1 == at && a.2 == file)
+            .map(|a| a.3.clone())
+    };
+    assert_eq!(
+        find("read", "cwd", ".claude/settings.json"),
+        Some(denied.clone())
+    );
+    assert_eq!(
+        find("read", "cwd", ".claude/settings.local.json"),
+        Some("ok".into())
+    );
+    assert_eq!(find("list", "cwd+2", ".claude/skills"), Some(denied));
+    assert_eq!(
+        find("list", "cwd+2", ".claude/agents"),
+        Some("absent".into())
+    );
 }
 
 #[test]
@@ -235,4 +347,30 @@ fn an_unreadable_file_is_reported_not_loaded() {
         .find(|l| l["where"] == "cwd+2" && l["file"] == "CLAUDE.md")
         .unwrap();
     assert_eq!(hit["status"]["unreadable"], "PermissionDenied");
+    assert_eq!(hit["applies"], true);
+}
+
+#[test]
+fn a_bare_launch_applies_what_it_reads() {
+    let p = Planted::new();
+    let (_, loads) = p.run(&[], &[("HOME", p.path("home"))]);
+    let hit = loads
+        .iter()
+        .find(|l| l["op"] == "read" && l["where"] == "cwd" && l["file"] == ".claude/settings.json")
+        .unwrap();
+    assert_eq!(
+        (&hit["status"], &hit["applies"]),
+        (&"ok".into(), &true.into())
+    );
+    // `--setting-sources user`: the same read, attempted and read, does not apply.
+    let (got, loads) = p.run(&["--setting-sources", "user"], &[("HOME", p.path("home"))]);
+    let hit = loads
+        .iter()
+        .find(|l| l["op"] == "read" && l["where"] == "cwd" && l["file"] == ".claude/settings.json")
+        .unwrap();
+    assert_eq!(
+        (&hit["status"], &hit["applies"]),
+        (&"ok".into(), &false.into())
+    );
+    assert!(!got.contains("project_settings"));
 }

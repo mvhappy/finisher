@@ -394,8 +394,11 @@ async function claudeServer(script: Record<string, unknown>, opts: { status?: ()
   restore ??= previous;
   const serverData = join(tmp, "server-data");
   mkdirSync(serverData, { recursive: true, mode: 0o700 });
-  const dir = mkdtempSync(join(tmp, "cli-"));
-  const binary = join(dir, "claude");
+  // The native layout (`…/claude/versions/<v>`): a session reads only its directory, where the
+  // fake's sidecars are (any other binary is granted alone, `install.ts`).
+  const dir = join(mkdtempSync(join(tmp, "cli-")), "claude", "versions");
+  mkdirSync(dir, { recursive: true });
+  const binary = join(dir, VERSION);
   copyFileSync(FAKE, binary);
   writeFileSync(join(dir, "script.json"), JSON.stringify({ ...SIGNED, ...script }));
   writeFileSync(join(dir, "fake-claude.json"), JSON.stringify({ script: "script.json", observed: "@config/observed.json", version: VERSION }));
