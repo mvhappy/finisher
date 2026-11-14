@@ -3,7 +3,10 @@
 
 use fin_jobs::KindParams;
 use fin_jobs::kinds::{find, schema_as, validate_as};
-use fin_media::jobs::{CapabilitiesParams, LookParams, ProbeDeepParams, ProxyParams, ThumbsParams};
+use fin_media::jobs::{
+    CapabilitiesParams, ListenParams, LookParams, PcmParams, ProbeDeepParams, ProxyParams,
+    ThumbsParams, WaveParams,
+};
 use napi_derive::napi;
 use serde_json::{Value, json};
 
@@ -68,7 +71,56 @@ static MEDIA: &[KindParams] = &[
         validate: validate_thumbs,
         schema: schema_as::<ThumbsParams>,
     },
+    KindParams {
+        kind: "media.pcm",
+        version: 1,
+        validate: validate_pcm,
+        schema: schema_as::<PcmParams>,
+    },
+    KindParams {
+        kind: "media.waveform",
+        version: 1,
+        validate: validate_wave,
+        schema: schema_as::<WaveParams>,
+    },
+    KindParams {
+        kind: "media.listen",
+        version: 1,
+        validate: validate_listen,
+        schema: schema_as::<ListenParams>,
+    },
 ];
+
+/// `WaveParams`, then a named asset and well-formed keys (6C Task 19).
+fn validate_wave(params: &Value) -> Result<Value, Vec<String>> {
+    let filled = validate_as::<WaveParams>(params)?;
+    let p: WaveParams = serde_json::from_value(filled.clone()).map_err(|e| vec![e.to_string()])?;
+    p.check().map_err(|e| vec![e.message])?;
+    Ok(filled)
+}
+
+/// `ListenParams`, then its range, as the worker checks them; the plan samples are the host's
+/// (6C Task 21).
+fn validate_listen(params: &Value) -> Result<Value, Vec<String>> {
+    let filled = validate_as::<ListenParams>(params)?;
+    let p: ListenParams =
+        serde_json::from_value(filled.clone()).map_err(|e| vec![e.to_string()])?;
+    p.check().map_err(|e| vec![e.message])?;
+    if !p.plan_samples.is_empty() {
+        return Err(vec![
+            "params.planSamples: computed by the kind's prepare; leave it out".to_string(),
+        ]);
+    }
+    Ok(filled)
+}
+
+/// `PcmParams`, then one source, a well-formed key and a layout its recipe has (6C Task 18).
+fn validate_pcm(params: &Value) -> Result<Value, Vec<String>> {
+    let filled = validate_as::<PcmParams>(params)?;
+    let p: PcmParams = serde_json::from_value(filled.clone()).map_err(|e| vec![e.to_string()])?;
+    p.check().map_err(|e| vec![e.message])?;
+    Ok(filled)
+}
 
 /// `ProxyParams`, then one source and a well-formed key (6B-1 Task 14).
 fn validate_proxy(params: &Value) -> Result<Value, Vec<String>> {

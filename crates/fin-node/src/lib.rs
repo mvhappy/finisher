@@ -101,6 +101,7 @@ pub use library::{
 pub use library::{library_probe_hang_for_test, library_probe_started_for_test};
 pub use media::cache::{MediaCache, media_cache_open};
 pub use media::commit_job_output;
+pub use media::pcm::{media_pcm_plan, media_wave_plan};
 pub use media::proxy::{media_proxy_plan, media_versions};
 pub use media::thumbs::media_thumbs_plan;
 pub use pipe_server::{PipeOptions, PipeServer};

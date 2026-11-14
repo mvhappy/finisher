@@ -61,6 +61,7 @@ fn prepare(store: &Shared, branch: &str, asset: &str, dir: PathBuf) -> Result<St
             proxies: Vec::new(),
         }],
         fonts: ManifestFonts::default(),
+        pcm: Default::default(),
     };
     inputs::write_json(&dir, "manifest.json", &manifest).map_err(reject)?;
     encode(&Prepared {

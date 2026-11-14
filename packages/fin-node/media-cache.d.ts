@@ -89,6 +89,13 @@ export declare class MediaCache {
    */
   attachProxies(inDir: string, holder: string, projects: ReadonlyArray<string>): Promise<string[]>;
   /**
+   * 6C Task 21: fills the `pcm` of the job's `in/manifest.json` (by asset id: `{key, dir}`) with the
+   * current `pcm48` entry of each asset's fingerprint, pinned for `holder` (`job:<id>`; release it
+   * when the job ends) and serving `projects`. Resolves to the files a worker reads from those
+   * entries (absolute, for the job's `reads`): none when no asset has one.
+   */
+  attachPcm(inDir: string, holder: string, projects: ReadonlyArray<string>): Promise<string[]>;
+  /**
    * The `1080` proxy entry of the content `fingerprint` that `attachProxies` would list (the newest
    * current one), now serving `projects` (pinned for those open), or `null` when there is none.
    * Pins nothing for a job: `media.thumbs` plans from its `meta.json` (the original's media

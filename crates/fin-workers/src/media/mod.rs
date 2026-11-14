@@ -17,6 +17,12 @@
 //!   GPU scale in `scale.rs`, the encoder and muxer in `encode_pipeline.rs`).
 //! - `media.thumbs` v1 (plan 6B-1 Task 15, cold): thumbnails and filmstrips into `out/<key>/`
 //!   (`thumbs.rs`, the frames' source in `thumbs_source.rs`, upright pixels in `pixels.rs`).
+//! - `media.pcm` v1 (plan 6C Task 18, cold): a `pcm48` or `pcm16m` feed into `out/<key>/`
+//!   (`pcm.rs`; decoded audio meets `fin-audio` only in `audio_src.rs`).
+//! - `media.waveform` v1 (plan 6C Task 19, cold): the `wave` peaks of an asset into `out/<key>/`
+//!   (`wave.rs`), from its `pcm48` entry or the decode.
+//! - `media.listen` v1 (plan 6C Task 21, cold): loudness, peaks, clipping and silences of a
+//!   range per track and for the mix (`listen.rs`), from `pcm48` entries or decoded originals.
 
 use fin_codecs::{Capabilities, ProbeResult};
 use fin_compositor::{Compositor, Gpu};
@@ -24,6 +30,7 @@ use fin_jobs::worker::{Family, JobCtx};
 use fin_jobs::{JobError, KindVersion, Retry, StartJob};
 use serde_json::Value;
 
+mod audio_src;
 mod caps;
 mod caps_report;
 mod diag;
@@ -32,17 +39,21 @@ mod encode_pipeline;
 mod escape;
 mod fonts;
 mod inputs;
+mod listen;
 mod look;
 mod open_cache;
+mod pcm;
 mod pixels;
 mod probe_deep;
 mod proxy;
+mod proxy_audio;
 mod proxy_source;
 pub mod replay;
 mod scale;
 mod sources;
 mod thumbs;
 mod thumbs_source;
+mod wave;
 
 /// The kinds `hello` lists. The escape suite's probe (`escape.rs`, `test-hooks` builds only) is
 /// not one of them: it is no fin-core kind and no host ever submits it.
@@ -52,6 +63,9 @@ static KINDS: &[KindVersion] = &[
     KindVersion::new("media.probeDeep", 1),
     KindVersion::new("media.proxy", 1),
     KindVersion::new("media.thumbs", 1),
+    KindVersion::new("media.pcm", 1),
+    KindVersion::new("media.waveform", 1),
+    KindVersion::new("media.listen", 1),
 ];
 
 /// The GPU state a warm worker keeps.
@@ -133,6 +147,9 @@ impl Family for MediaFamily {
             ("media.thumbs", 1) => thumbs::run(job, ctx, &mut self.state),
             #[cfg(feature = "test-hooks")]
             (escape::KIND, 1) => escape::run(job),
+            ("media.pcm", 1) => pcm::run(job, ctx, &mut self.state),
+            ("media.waveform", 1) => wave::run(job, ctx, &mut self.state),
+            ("media.listen", 1) => listen::run(job, ctx, &mut self.state),
             (kind, version) => Err(JobError::new(
                 "JOB_KIND_UNKNOWN",
                 format!("family media has no kind {kind} v{version}"),

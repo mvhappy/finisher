@@ -1624,6 +1624,7 @@ name = "fin-workers"
 version = "0.0.0"
 dependencies = [
  "blake3",
+ "fin-audio",
  "fin-codecs",
  "fin-compositor",
  "fin-container",

@@ -16,6 +16,10 @@
 //!    `out/<key>/table.bin` (the original's sample table) and `out/<key>/meta.json` (the
 //!    `EntryMeta` the host's cache commit checks). Progress every 1 % of frames; cancel
 //!    between frames.
+//! 4. **The audio** (recipe v2, 6C plan Task 20): when the original has an audio track, it is
+//!    opened again and encoded as Opus before the frames (`proxy_audio`), then muxed beside
+//!    them (`encode_pipeline::encode_with_audio`); `ProxyResult.audio` says how. A source
+//!    without one, or with one this build cannot read, gives a video-only proxy.
 //!
 //! The item fails with the source's or the codec's own error (`CODEC_UNAVAILABLE` for a codec
 //! nothing here encodes, with `open_encoder`'s guidance, and for Dolby Vision profile 5: Decision
@@ -37,8 +41,8 @@ use fin_library::{Expect, OpenError, RawRel, open_for_read};
 use fin_media::backend::{EncodePurpose, backend};
 use fin_media::cache::{EntryEncoder, EntryFile, EntryMeta, META_FILE};
 use fin_media::jobs::{
-    MANIFEST_VERSION, ManifestAsset, ProxyCodec, ProxyParams, ProxyResult, RenderManifest, gop,
-    proxy_key,
+    MANIFEST_VERSION, ManifestAsset, ProxyAudioSkipped, ProxyCodec, ProxyParams, ProxyResult,
+    ProxySourceAudio, RenderManifest, audio_unavailable_code, gop, proxy_key, source_audio,
 };
 use fin_media::table_bin::{self, TABLE_FILE};
 use fin_media::{ColourTags, MediaInfo, VideoTrackInfo};
@@ -50,7 +54,7 @@ use super::encode_pipeline::{self, Frames, Track};
 use super::inputs::{self, MANIFEST_CAP};
 use super::open_cache::{WORKER_MAX_PIXELS, open_original_in};
 use super::sources::micros_since;
-use super::{Warm, job_error, look, scale};
+use super::{Warm, job_error, look, proxy_audio, scale};
 
 /// The proxy's video file in its entry.
 pub const PROXY_FILE: &str = "proxy.mp4";
@@ -243,12 +247,20 @@ fn make(
     let decoder_class = backend(decoder)
         .map(|b| b.class)
         .ok_or_else(|| CoreError::new("INTERNAL", format!("{decoder} is not a known backend")))?;
-    let key = proxy_key(&p.fingerprint, p.tier, p.codec, decoder_class);
+    // What this build reads of the audio is in the key too (Task 20 review), from the file.
+    let audio_key = source_audio(
+        reader.info().container,
+        reader.info().audio.as_ref().map(|a| a.codec),
+    );
+    let key = proxy_key(&p.fingerprint, p.tier, p.codec, decoder_class, audio_key);
     if key.as_str() != p.key {
         return Err(item(
             "PLAN_MISMATCH",
             "the proxy's cache key does not match the decoder this worker opened".into(),
-            json!({ "reason": "cacheKey", "expected": p.key, "decoderClass": decoder_class }),
+            json!({
+                "reason": "cacheKey", "expected": p.key, "decoderClass": decoder_class,
+                "audio": audio_key,
+            }),
         ));
     }
     let info: MediaInfo = reader.info().clone();
@@ -270,6 +282,21 @@ fn make(
             json!({ "reason": "noFrames" }),
         ));
     }
+    let (audio, audio_skipped) = match audio_key {
+        ProxySourceAudio::None => (None, None),
+        ProxySourceAudio::Unavailable => {
+            (None, Some(audio_unavailable_code(info.container).into()))
+        }
+        ProxySourceAudio::Decoded(class) => {
+            let file = open_source(p, ctx, &dir, warm)?;
+            let scratch = dir.output().join(format!("{key}.audio"));
+            match proxy_audio::encode(file, class, &dir, &scratch, audio_progress(ctx, frames))? {
+                proxy_audio::Outcome::Track(a) => (Some(a), None),
+                proxy_audio::Outcome::Skipped(code) => (None, Some(code)),
+                proxy_audio::Outcome::Empty => (None, None),
+            }
+        }
+    };
     let size = p.tier.fit(video.coded);
     let (timescale, tick) = encode_pipeline::timing(video.nominal_rate)?;
     let (every, intra_only) = gop(
@@ -323,7 +350,7 @@ fn make(
         decode_hw: &mut decode_hw,
         gpu_api: None,
     };
-    let encoded = encode_pipeline::encode(
+    let encoded = encode_pipeline::encode_with_audio(
         &caps,
         &cfg,
         &Track {
@@ -333,6 +360,7 @@ fn make(
         },
         frames,
         &mut src,
+        audio.as_ref(),
     )?;
     let media = diagnostics.then(|| {
         diag::run_media(&RunFacts {
@@ -352,7 +380,7 @@ fn make(
         entry_file(&dir, &out, PROXY_FILE)?,
         entry_file(&dir, &out, TABLE_FILE)?,
     ];
-    let input = p.key_input(decoder_class);
+    let input = p.key_input(decoder_class, audio_key);
     let meta = EntryMeta {
         key: key.to_string(),
         fingerprint: input.fingerprint,
@@ -386,8 +414,36 @@ fn make(
         size,
         tone_mapped,
         fell_back: encoded.fell_back,
+        audio: audio.map(|a| {
+            let r = a.result.clone();
+            a.remove();
+            r
+        }),
+        audio_skipped: audio_skipped.map(|code| ProxyAudioSkipped { code }),
     };
     Ok((result, media))
+}
+
+/// The audio pass's `between`: cancel, and a `progress` of phase `encodeAudio` at its start and
+/// at most once a second, so a long source's audio is not taken for a stall. It counts no frame
+/// (`done` 0 of the video's `frames`), so the job's progress stays monotonic.
+fn audio_progress<'a>(
+    ctx: &'a mut JobCtx<'_>,
+    frames: u64,
+) -> impl FnMut(u64) -> Result<(), CoreError> + 'a {
+    let mut every = proxy_audio::Throttle::new(std::time::Duration::from_secs(1));
+    move |_| {
+        if ctx.cancelled().is_some() {
+            return Err(CoreError::new("JOB_CANCELLED", "the proxy was cancelled"));
+        }
+        if every.due(std::time::Instant::now()) {
+            let mut pr = fin_jobs::Progress::new(0.0, ProgressUnit::Frames);
+            pr.total = Some(frames as f64);
+            pr.phase = Some("encodeAudio".into());
+            ctx.progress(pr);
+        }
+        Ok(())
+    }
 }
 
 /// Decision 9 (spec §10.1): Dolby Vision profile 5 has no backward-compatible base layer, so

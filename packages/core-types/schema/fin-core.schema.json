@@ -10574,6 +10574,315 @@
         }
       ]
     },
+    "ListenClipped": {
+      "description": "Samples above full scale.",
+      "properties": {
+        "firstAt": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/Rational"
+            }
+          ],
+          "description": "The first frame holding one, on the timeline (exact: its sample index ÷ 48,000)."
+        },
+        "samples": {
+          "description": "Samples (each channel's) whose magnitude is above 1.0.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "samples"
+      ],
+      "type": "object"
+    },
+    "ListenJobStats": {
+      "description": "Where the sources were read from.",
+      "properties": {
+        "sourcesDecoded": {
+          "description": "Assets decoded from their original (no entry, or one that did not verify).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sourcesFromCache": {
+          "description": "Assets read from their `pcm48` cache entry (the manifest's `pcm`).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sourcesFromCache",
+        "sourcesDecoded"
+      ],
+      "type": "object"
+    },
+    "ListenMoment": {
+      "description": "One of the loudest moments: the 3 s window starting at `at` (clipped to the range start)\nread `shortTerm` LUFS.",
+      "properties": {
+        "at": {
+          "$ref": "#/$defs/Rational"
+        },
+        "shortTerm": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "at",
+        "shortTerm"
+      ],
+      "type": "object"
+    },
+    "ListenNote": {
+      "description": "Something the listen could not hear as planned; never a failure.",
+      "oneOf": [
+        {
+          "description": "An asset with neither a `pcm48` entry nor a readable original here: its items are\nsilent. `reason` is the opener's code (`ORIGINALS_MISSING`, `CODEC_UNAVAILABLE`, …).",
+          "properties": {
+            "asset": {
+              "type": "string"
+            },
+            "code": {
+              "const": "missingSource",
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "asset",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "An item played at a speed WSOLA cannot do well (below 1/4 or above 4: Decision 6).",
+          "properties": {
+            "code": {
+              "const": "STRETCH_EXTREME",
+              "type": "string"
+            },
+            "item": {
+              "type": "string"
+            },
+            "speed": {
+              "$ref": "#/$defs/Rational"
+            }
+          },
+          "required": [
+            "code",
+            "item",
+            "speed"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "An effect of a kind this engine does not know: its item plays without it.",
+          "properties": {
+            "code": {
+              "const": "skippedEffect",
+              "type": "string"
+            },
+            "effect": {
+              "type": "string"
+            },
+            "item": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "item",
+            "effect",
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ListenParams": {
+      "additionalProperties": false,
+      "description": "`media.listen` v1: measure `[from, to)` of `timeline`.",
+      "properties": {
+        "branch": {
+          "description": "The branch of the snapshot (an id, a name or `<name>#<id>`).",
+          "type": "string"
+        },
+        "from": {
+          "$ref": "#/$defs/Rational"
+        },
+        "planSamples": {
+          "default": [],
+          "description": "One sample per window of [`listen_windows`]; a plan the worker evaluates differently is\n`PLAN_MISMATCH`. A submitter leaves them out: the kind's `prepare` computes them from the\nsnapshot it writes and hands them to the worker as `start.job.extra.planSamples` (and in\n`in/params.json` for `--replay`).",
+          "items": {
+            "$ref": "#/$defs/PlanSample"
+          },
+          "type": "array"
+        },
+        "projectId": {
+          "description": "The project measured. Only the host reads it (the kind's `dedupe` and `prepare`).",
+          "type": "string"
+        },
+        "rev": {
+          "description": "The branch's rev the submitter saw: part of the job's identity (`dedupe`).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "timeline": {
+          "type": "string"
+        },
+        "to": {
+          "$ref": "#/$defs/Rational"
+        }
+      },
+      "required": [
+        "timeline",
+        "from",
+        "to"
+      ],
+      "type": "object"
+    },
+    "ListenResult": {
+      "description": "What `media.listen` v1 answers.",
+      "properties": {
+        "from": {
+          "$ref": "#/$defs/Rational"
+        },
+        "mix": {
+          "$ref": "#/$defs/ListenStats"
+        },
+        "notes": {
+          "items": {
+            "$ref": "#/$defs/ListenNote"
+          },
+          "type": "array"
+        },
+        "rev": {
+          "description": "The branch rev of the snapshot measured.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "stats": {
+          "$ref": "#/$defs/ListenJobStats"
+        },
+        "timeline": {
+          "type": "string"
+        },
+        "to": {
+          "$ref": "#/$defs/Rational"
+        },
+        "tracks": {
+          "description": "The tracks with items in the range, in the timeline's order.",
+          "items": {
+            "$ref": "#/$defs/ListenTrack"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "timeline",
+        "rev",
+        "from",
+        "to",
+        "mix",
+        "tracks",
+        "notes",
+        "stats"
+      ],
+      "type": "object"
+    },
+    "ListenSpan": {
+      "description": "A span of the timeline, `[from, to)`.",
+      "properties": {
+        "from": {
+          "$ref": "#/$defs/Rational"
+        },
+        "to": {
+          "$ref": "#/$defs/Rational"
+        }
+      },
+      "required": [
+        "from",
+        "to"
+      ],
+      "type": "object"
+    },
+    "ListenStats": {
+      "description": "What one mix (the master bus, or one track's items alone) measured (Decision 21).",
+      "properties": {
+        "clipped": {
+          "$ref": "#/$defs/ListenClipped"
+        },
+        "integrated": {
+          "description": "Integrated loudness, LUFS; absent when nothing is above the −70 LUFS gate.",
+          "format": "double",
+          "type": "number"
+        },
+        "loudest": {
+          "description": "Up to 5 short-term (3 s) loudness maxima, loudest first, at least 3 s apart.",
+          "items": {
+            "$ref": "#/$defs/ListenMoment"
+          },
+          "type": "array"
+        },
+        "range": {
+          "description": "Loudness range, LU.",
+          "format": "double",
+          "type": "number"
+        },
+        "samplePeak": {
+          "description": "dBFS; absent for silence.",
+          "format": "double",
+          "type": "number"
+        },
+        "silences": {
+          "description": "Runs of 10 ms blocks whose louder channel's RMS is below −60 dBFS, lasting 0.5 s or more\n(or of any length when they touch an edge of the range, clipped there), at 10 ms resolution\nfrom the range start.",
+          "items": {
+            "$ref": "#/$defs/ListenSpan"
+          },
+          "type": "array"
+        },
+        "truePeak": {
+          "description": "dBTP; absent for silence.",
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "range",
+        "clipped",
+        "silences",
+        "loudest"
+      ],
+      "type": "object"
+    },
+    "ListenTrack": {
+      "description": "One track's own statistics.",
+      "properties": {
+        "stats": {
+          "$ref": "#/$defs/ListenStats"
+        },
+        "track": {
+          "description": "The track of the measured timeline (a nested timeline's items count for the track their\ncompound clip is on).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "track",
+        "stats"
+      ],
+      "type": "object"
+    },
     "Listing": {
       "description": "A plugin in search results: its newest version that is not yanked.",
       "properties": {
@@ -11150,6 +11459,24 @@
           "type": "array"
         }
       },
+      "type": "object"
+    },
+    "ManifestPcm": {
+      "description": "One `pcm48` entry of the media cache (`cache/media/<key[0..2]>/<key>/`): `meta.json` and its\nchunks (plan 6C Decision 7). The worker reads it through `audio_src::CachedSource`, which\nrecomputes the key from `meta.json` and checks every chunk's size and BLAKE3.",
+      "properties": {
+        "dir": {
+          "description": "The entry's directory on this machine, absolute.",
+          "type": "string"
+        },
+        "key": {
+          "description": "The entry's cache key.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "dir"
+      ],
       "type": "object"
     },
     "ManifestProxy": {
@@ -13320,6 +13647,164 @@
         }
       ],
       "description": "A parameter value: finite numbers round-trip bit for bit through stored JSON (serde_json's\n`float_roundtrip`). Times, rationals, colours (`#rrggbb[aa]`) and enum values are text; an\nasset reference is `{\"asset\": id}`, so every id a value carries is found without the\nregistry (plan 4C Decision 24)."
+    },
+    "PcmDecoder": {
+      "additionalProperties": false,
+      "description": "The backend that decoded the source, and its class.",
+      "properties": {
+        "backend": {
+          "type": "string"
+        },
+        "class": {
+          "$ref": "#/$defs/VendorClass"
+        }
+      },
+      "required": [
+        "backend",
+        "class"
+      ],
+      "type": "object"
+    },
+    "PcmLayout": {
+      "description": "A feed's channels: one, or two interleaved `L R`.",
+      "enum": [
+        "mono",
+        "stereo"
+      ],
+      "type": "string"
+    },
+    "PcmParams": {
+      "additionalProperties": false,
+      "description": "`media.pcm` v1: the `recipe` feed of the source whose content is `fingerprint`, which the\ncache knows as `key`. A batch kind of one item, the fingerprint.",
+      "properties": {
+        "asset": {
+          "description": "A project asset, through the job's `in/manifest.json`.",
+          "type": "string"
+        },
+        "branch": {
+          "description": "The branch whose head names the asset (`main` when absent). Host only.",
+          "type": "string"
+        },
+        "decoderClass": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/VendorClass"
+            }
+          ],
+          "description": "The vendor class the host expects the source's decoder to have (part of the key)."
+        },
+        "file": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/ProxyLibraryFile"
+            }
+          ],
+          "description": "A library file (the `pcm16m` stage)."
+        },
+        "fingerprint": {
+          "type": "string"
+        },
+        "key": {
+          "description": "[`pcm_key`] of the fields above: the worker writes `out/<key>/`.",
+          "type": "string"
+        },
+        "layout": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/PcmLayout"
+            }
+          ],
+          "description": "The layout the host planned (part of the key)."
+        },
+        "projectId": {
+          "description": "The project that asked (host only, as `ProxyParams`).",
+          "type": "string"
+        },
+        "recipe": {
+          "$ref": "#/$defs/PcmRecipe"
+        }
+      },
+      "required": [
+        "fingerprint",
+        "recipe",
+        "layout",
+        "decoderClass",
+        "key"
+      ],
+      "type": "object"
+    },
+    "PcmRecipe": {
+      "description": "Which PCM feed (Decision 7).",
+      "oneOf": [
+        {
+          "const": "pcm48",
+          "description": "48 kHz in the canonical layout: the mixer's input.",
+          "type": "string"
+        },
+        {
+          "const": "pcm16m",
+          "description": "16 kHz mono: the analysis feed.",
+          "type": "string"
+        }
+      ]
+    },
+    "PcmResult": {
+      "additionalProperties": false,
+      "description": "What `media.pcm` v1 answers for its item (the fingerprint).",
+      "properties": {
+        "bytes": {
+          "description": "The entry's bytes (its chunks, `meta.json` not included).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "chunks": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "decoder": {
+          "$ref": "#/$defs/PcmDecoder"
+        },
+        "frames": {
+          "description": "Frames at the feed's rate.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "key": {
+          "type": "string"
+        },
+        "layout": {
+          "$ref": "#/$defs/PcmLayout"
+        },
+        "recipe": {
+          "$ref": "#/$defs/PcmRecipe"
+        },
+        "sourceChannels": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sourceRate": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "key",
+        "recipe",
+        "layout",
+        "frames",
+        "chunks",
+        "decoder",
+        "sourceRate",
+        "sourceChannels",
+        "bytes"
+      ],
+      "type": "object"
     },
     "PendingCompaction": {
       "description": "One manifest as status shows it.",
@@ -15769,6 +16254,53 @@
       ],
       "type": "object"
     },
+    "ProxyAudio": {
+      "additionalProperties": false,
+      "description": "The proxy's audio track (recipe v2, 6C plan Task 20): the source's audio at 48 kHz in its\ncanonical layout (a mono source stays one channel), as Opus at 128 kb/s stereo or 64 kb/s\nmono; its edit list presents exactly the source's samples after `priming`.",
+      "properties": {
+        "bitrate": {
+          "description": "Bits a second.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "codec": {
+          "$ref": "#/$defs/ProxyAudioCodec"
+        },
+        "priming": {
+          "description": "The encoder's delay in samples (the edit list's media time, `dOps` pre-skip).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "codec",
+        "bitrate",
+        "priming"
+      ],
+      "type": "object"
+    },
+    "ProxyAudioCodec": {
+      "description": "The codec of a proxy's audio (spec §7.1).",
+      "enum": [
+        "opus"
+      ],
+      "type": "string"
+    },
+    "ProxyAudioSkipped": {
+      "additionalProperties": false,
+      "description": "Why a source's audio track is not in its proxy (6C Task 20 review): the decode's error code\n(`CODEC_UNAVAILABLE`, `UNSUPPORTED_CONTAINER`, `MEDIA_LIMIT`, `MEDIA_CORRUPT`,\n`DECODE_FAILED`). The mix reads `pcm48`, which reports the same failure as its own.",
+      "properties": {
+        "code": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code"
+      ],
+      "type": "object"
+    },
     "ProxyCodec": {
       "description": "The codec of a proxy (Decision 5).",
       "oneOf": [
@@ -15845,6 +16377,14 @@
           "description": "A project asset, through the job's `in/manifest.json` (the asset's fingerprint there\nmust equal `fingerprint`, else `ASSET_CHANGED`).",
           "type": "string"
         },
+        "audio": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/ProxySourceAudio"
+            }
+          ],
+          "description": "What the host expects of the original's audio ([`source_audio`], part of the key)."
+        },
         "branch": {
           "description": "The branch whose head names the asset (`main` when absent). Host only.",
           "type": "string"
@@ -15895,6 +16435,7 @@
         "tier",
         "codec",
         "decoderClass",
+        "audio",
         "key"
       ],
       "type": "object"
@@ -15903,6 +16444,22 @@
       "additionalProperties": false,
       "description": "What `media.proxy` v1 answers for its item (the fingerprint).",
       "properties": {
+        "audio": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/ProxyAudio"
+            }
+          ],
+          "description": "The audio track; absent when the source has none or its audio could not be read (then\n`audioSkipped` says why): the proxy is then video only."
+        },
+        "audioSkipped": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/ProxyAudioSkipped"
+            }
+          ],
+          "description": "The source has an audio track the proxy does not carry, and why."
+        },
         "backend": {
           "description": "The encoder's backend (`svt-av1`, `videotoolbox`, `mf-hw`, …) and its vendor class.",
           "type": "string"
@@ -15965,6 +16522,34 @@
         "size"
       ],
       "type": "object"
+    },
+    "ProxySourceAudio": {
+      "description": "What a proxy's key says of the source's audio (6C Task 20 review): none, one this build\nhas no decoder for, or one a decoder of a class decodes. It is read from this build's static\ntables ([`audio_decoder_for_proxy`] over [`AUDIO_BACKENDS`]), not from what the machine can do\nat run time. So a **build** whose tables gain a decoder for the codec or container (AAC on\nmacOS and Windows with 6C Tasks 15–16; WebM audio) changes the key, and a video-only entry\nmade without it is made again. What does **not** change the key: a decoder the tables list\nbut the machine lacks or refuses at run time (Media Foundation's AAC on Windows N without the\nMedia Feature Pack; a profile such as HE-AAC that the listed decoder refuses), and a corrupt\ntrack. Those key as decodable, their proxy is video only (`audioSkipped`), and a plugin or\nfeature pack installed later does not refresh it. Keying on the capability report's audio\ndecode rows instead is 6C Task 17's.",
+      "oneOf": [
+        {
+          "const": "none",
+          "description": "The source has no audio track.",
+          "type": "string"
+        },
+        {
+          "const": "unavailable",
+          "description": "It has one this build reads no audio of (its codec, or its container).",
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "description": "It has one a backend of this class decodes.",
+          "properties": {
+            "decoded": {
+              "$ref": "#/$defs/VendorClass"
+            }
+          },
+          "required": [
+            "decoded"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "ProxyStatus": {
       "additionalProperties": false,
@@ -16797,6 +17382,13 @@
           "default": {
             "files": []
           }
+        },
+        "pcm": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ManifestPcm"
+          },
+          "description": "The `pcm48` entries the media cache holds for the assets, by asset id (plan 6C Task 21:\n`media.listen` mixes from them and decodes the originals of the others), pinned for the\njob's life by the host. Absent for every other kind.",
+          "type": "object"
         },
         "version": {
           "description": "[`MANIFEST_VERSION`].",
@@ -20877,6 +21469,103 @@
       "required": [
         "code",
         "details"
+      ],
+      "type": "object"
+    },
+    "WaveFrom": {
+      "description": "Where the peaks were made from.",
+      "oneOf": [
+        {
+          "const": "pcm48",
+          "description": "The source's `pcm48` entry.",
+          "type": "string"
+        },
+        {
+          "const": "decode",
+          "description": "The decoded original.",
+          "type": "string"
+        }
+      ]
+    },
+    "WaveParams": {
+      "additionalProperties": false,
+      "description": "`media.waveform` v1: the peaks of the asset whose content is `fingerprint`, which the cache\nknows as `key`. A batch kind of one item, the fingerprint.",
+      "properties": {
+        "asset": {
+          "description": "A project asset, through the job's `in/manifest.json`.",
+          "type": "string"
+        },
+        "branch": {
+          "description": "The branch whose head names the asset (`main` when absent). Host only.",
+          "type": "string"
+        },
+        "decoderClass": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/VendorClass"
+            }
+          ],
+          "description": "The vendor class the host expects the source's decoder to have (part of the key)."
+        },
+        "fingerprint": {
+          "type": "string"
+        },
+        "key": {
+          "description": "[`wave_key`] of the fields above: the worker writes `out/<key>/`.",
+          "type": "string"
+        },
+        "pcmKey": {
+          "description": "The source's `pcm48` entry the host found (its directory is in `in/pcm.json`).",
+          "type": "string"
+        },
+        "projectId": {
+          "description": "The project that asked (host only).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "fingerprint",
+        "decoderClass",
+        "key",
+        "asset"
+      ],
+      "type": "object"
+    },
+    "WaveResult": {
+      "additionalProperties": false,
+      "description": "What `media.waveform` v1 answers for its item (the fingerprint).",
+      "properties": {
+        "bytes": {
+          "description": "`peaks.bin`'s size.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "frames": {
+          "description": "Frames of the 48 kHz signal the peaks cover.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "from": {
+          "$ref": "#/$defs/WaveFrom"
+        },
+        "key": {
+          "type": "string"
+        },
+        "levels": {
+          "description": "Levels in `peaks.bin` (5).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "key",
+        "levels",
+        "frames",
+        "bytes",
+        "from"
       ],
       "type": "object"
     },

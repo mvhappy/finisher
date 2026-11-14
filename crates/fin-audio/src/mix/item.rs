@@ -165,6 +165,25 @@ impl ItemMix {
         })
     }
 
+    /// Frees the item's buffers and its stretcher once it has ended (it is never rendered again:
+    /// the mixer skips an item whose end is behind the block). Nothing it played changes.
+    pub fn release(&mut self) {
+        self.buf = Canonical::Mono(Vec::new());
+        self.stretch = None;
+    }
+
+    /// The frames the item holds allocated: its read buffer and its stretcher's.
+    pub fn buffered(&self) -> usize {
+        let buf = match &self.buf {
+            Canonical::Mono(m) => m.capacity(),
+            Canonical::Stereo(s) => s.l.capacity().max(s.r.capacity()),
+        };
+        buf + self.stretch.as_ref().map_or(0, |st| {
+            // The stretcher's own window and history count as one frame.
+            st.pending.l.capacity() + st.feed_st.l.capacity() + 1
+        })
+    }
+
     /// The item's effects the chain skipped (unknown kinds).
     pub fn skipped_effects(&self) -> &[crate::effects::SkippedEffect] {
         self.chain.skipped()

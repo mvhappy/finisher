@@ -8,6 +8,11 @@
 //!
 //! When the session moves to another encoder (`ENCODER_HUNG`'s fallback, Decision 20), the
 //! output is made again from frame 0 with the new encoder's configuration record.
+//!
+//! An audio track (proxy recipe v2, 6C plan Task 20: [`encode_with_audio`]) is added after the
+//! video one, its packets already encoded (`proxy_audio`); each is muxed once the video has
+//! reached its start time, so the file interleaves the two by time, and the rest after the
+//! last frame.
 
 use std::fs::File;
 use std::time::Instant;
@@ -19,6 +24,8 @@ use fin_media::backend::{BackendEntry, EncodePurpose};
 use fin_media::jobs::ProxyFallback;
 use fin_media::{ColourTags, Rotation};
 use serde_json::json;
+
+use super::proxy_audio::{AudioPackets, PacketReader};
 
 /// Where and how the frames are muxed.
 pub struct Track {
@@ -86,6 +93,44 @@ fn moov_reserve(frames: u64) -> u64 {
     (64 << 10) + frames.saturating_mul(24)
 }
 
+/// The audio track being muxed beside the video: its packets and the next one due.
+struct AudioMux<'a> {
+    a: &'a AudioPackets,
+    r: PacketReader<'a>,
+    track: TrackRef,
+    next: usize,
+}
+
+impl AudioMux<'_> {
+    /// Writes the packets that start before video frame `frames` (`frames × tick` in the video
+    /// timescale), or all of them (`None`).
+    fn up_to(
+        &mut self,
+        w: &mut Mp4Writer<File>,
+        t: &Track,
+        frames: Option<u64>,
+    ) -> Result<(), CoreError> {
+        let rate = self.a.track.sample_rate as u128;
+        while self.next < self.a.len() {
+            let start = self.next as u64 * self.a.frame as u64;
+            // start / rate < frames × tick / timescale, exactly.
+            if let Some(f) = frames
+                && start as u128 * t.timescale as u128 >= f as u128 * t.tick as u128 * rate
+            {
+                break;
+            }
+            let at = i64::try_from(start).map_err(|_| {
+                CoreError::new("ENCODE_FAILED", "the audio track's time overflows")
+                    .with_details(json!({ "backend": "libopus" }))
+            })?;
+            let packet = self.r.next(self.next)?;
+            w.write(self.track, packet, at, at, self.a.frame, true)?;
+            self.next += 1;
+        }
+        Ok(())
+    }
+}
+
 /// Writes one packet; `next` is the frame index the packet must carry.
 fn write(
     w: &mut Mp4Writer<File>,
@@ -112,16 +157,18 @@ fn write(
     Ok(())
 }
 
-fn start(
+fn start<'a>(
     session: &mut EncoderSession,
     t: &Track,
     cfg: &EncoderConfig,
     frames: u64,
     src: &mut dyn Frames,
-) -> Result<(Mp4Writer<File>, TrackRef), CoreError> {
+    audio: Option<&'a AudioPackets>,
+) -> Result<(Mp4Writer<File>, TrackRef, Option<AudioMux<'a>>), CoreError> {
     let config = session.config()?;
+    let audio_samples = audio.map_or(0, |a| a.len() as u64);
     let opts = Mp4Options {
-        moov_reserve: moov_reserve(frames),
+        moov_reserve: moov_reserve(frames.saturating_add(audio_samples)),
         ..Mp4Options::default()
     };
     let mut w = Mp4Writer::new(src.output()?, opts)?;
@@ -134,17 +181,42 @@ fn start(
         colour: t.colour,
         hdr: None,
     })?;
-    Ok((w, track))
+    let audio = match audio {
+        Some(a) => Some(AudioMux {
+            a,
+            r: a.reader()?,
+            track: w.add_audio(a.track.clone())?,
+            next: 0,
+        }),
+        None => None,
+    };
+    Ok((w, track, audio))
 }
 
 /// Encodes `frames` frames from `src` with `cfg` (keyframes forced every `cfg.gop.interval()`)
-/// into `src.output()`. `cfg.purpose` must be `Proxy` (`INTERNAL` otherwise).
+/// into `src.output()`. `cfg.purpose` must be `Proxy` (`INTERNAL` otherwise). Video only: the
+/// form the unit tests drive; the worker calls [`encode_with_audio`].
+#[cfg(test)]
 pub fn encode(
     caps: &ProbeResult,
     cfg: &EncoderConfig,
     t: &Track,
     frames: u64,
     src: &mut dyn Frames,
+) -> Result<Encoded, CoreError> {
+    encode_with_audio(caps, cfg, t, frames, src, None)
+}
+
+/// Encodes `frames` frames from `src` with `cfg` (keyframes forced every `cfg.gop.interval()`)
+/// into `src.output()`, with `audio`'s packets muxed beside them (module docs). `cfg.purpose`
+/// must be `Proxy` (`INTERNAL` otherwise).
+pub fn encode_with_audio(
+    caps: &ProbeResult,
+    cfg: &EncoderConfig,
+    t: &Track,
+    frames: u64,
+    src: &mut dyn Frames,
+    audio: Option<&AudioPackets>,
 ) -> Result<Encoded, CoreError> {
     if cfg.purpose != EncodePurpose::Proxy {
         return Err(CoreError::new(
@@ -155,7 +227,7 @@ pub fn encode(
     let mut session = open_encoder(cfg, caps)?;
     let every = u64::from(cfg.gop.interval());
     'again: loop {
-        let (mut w, track) = start(&mut session, t, cfg, frames, src)?;
+        let (mut w, track, mut audio) = start(&mut session, t, cfg, frames, src, audio)?;
         let entry = session.entry();
         let mut next = 0u64;
         for i in 0..frames {
@@ -167,7 +239,12 @@ pub fn encode(
             }
             loop {
                 match session.receive()? {
-                    Output::Packet(p) => write(&mut w, track, t, &p, &mut next, entry)?,
+                    Output::Packet(p) => {
+                        write(&mut w, track, t, &p, &mut next, entry)?;
+                        if let Some(a) = audio.as_mut() {
+                            a.up_to(&mut w, t, Some(next))?;
+                        }
+                    }
                     Output::Pending | Output::End => break,
                     Output::Restart => continue 'again,
                 }
@@ -181,7 +258,12 @@ pub fn encode(
         }
         loop {
             match session.receive()? {
-                Output::Packet(p) => write(&mut w, track, t, &p, &mut next, entry)?,
+                Output::Packet(p) => {
+                    write(&mut w, track, t, &p, &mut next, entry)?;
+                    if let Some(a) = audio.as_mut() {
+                        a.up_to(&mut w, t, Some(next))?;
+                    }
+                }
                 Output::End => break,
                 Output::Pending => {}
                 Output::Restart => continue 'again,
@@ -193,6 +275,9 @@ pub fn encode(
                 format!("{next} packets for {frames} frames"),
                 entry,
             ));
+        }
+        if let Some(a) = audio.as_mut() {
+            a.up_to(&mut w, t, None)?;
         }
         drop(w.finish()?);
         let fell_back = session

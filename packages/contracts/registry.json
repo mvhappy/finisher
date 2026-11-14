@@ -177,6 +177,24 @@
       "group": "read",
       "identity": [
         "projectId",
+        "branch",
+        "timeline",
+        "from",
+        "to"
+      ],
+      "name": "listen",
+      "rpcs": [
+        {
+          "method": "media.listen"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "read",
+      "identity": [
+        "projectId",
         "branch"
       ],
       "name": "view",
@@ -1612,6 +1630,39 @@
       "rpcs": [
         {
           "method": "media.thumbs"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "media",
+      "identity": [
+        "projectId",
+        "branch",
+        "asset",
+        "recipe"
+      ],
+      "name": "media.pcm",
+      "rpcs": [
+        {
+          "method": "media.pcm"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "media",
+      "identity": [
+        "projectId",
+        "branch",
+        "asset"
+      ],
+      "name": "media.wave",
+      "rpcs": [
+        {
+          "method": "media.waveform"
         }
       ],
       "write": false

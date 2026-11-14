@@ -47,16 +47,16 @@ impl Recipe {
     }
 }
 
-/// The scrub tier (Decision 6: fits 960 × 540). v1 is video only (Decision 4; 6C's Opus audio
-/// is v2).
+/// The scrub tier (Decision 6: fits 960 × 540). v1 was video only (Decision 4); v2 carries
+/// the source's audio as Opus (6C plan Task 20), so v1 entries are other keys.
 pub const PROXY_540: Recipe = Recipe {
     name: "proxy-540",
-    version: 1,
+    version: 2,
 };
-/// The default preview tier (fits 1920 × 1080). v1 is video only, as `proxy-540`.
+/// The default preview tier (fits 1920 × 1080). v2 carries Opus audio, as `proxy-540`.
 pub const PROXY_1080: Recipe = Recipe {
     name: "proxy-1080",
-    version: 1,
+    version: 2,
 };
 /// Thumbnails at requested times (Decision 17).
 pub const THUMBS: Recipe = Recipe {
@@ -69,8 +69,25 @@ pub const STRIP: Recipe = Recipe {
     version: 1,
 };
 
+/// 48 kHz `f32` in the source's canonical layout (6C plan Decision 7; `jobs::pcm`).
+pub const PCM48: Recipe = Recipe {
+    name: "pcm48",
+    version: 1,
+};
+/// 16 kHz `f32` mono, the analysis feed (6C plan Decision 7; `jobs::pcm`).
+pub const PCM16M: Recipe = Recipe {
+    name: "pcm16m",
+    version: 1,
+};
+
+/// Waveform peaks, `peaks.bin` (6C plan Decision 19; `jobs::wave`).
+pub const WAVE: Recipe = Recipe {
+    name: "wave",
+    version: 1,
+};
+
 /// Every recipe this build makes.
-pub const RECIPES: &[Recipe] = &[PROXY_540, PROXY_1080, THUMBS, STRIP];
+pub const RECIPES: &[Recipe] = &[PROXY_540, PROXY_1080, THUMBS, STRIP, PCM48, PCM16M, WAVE];
 
 /// The recipe of this build named `name`.
 pub fn recipe(name: &str) -> Option<Recipe> {
@@ -216,6 +233,9 @@ pub struct EntryFile {
     /// BLAKE3 of the file, 64 lower-case hex digits.
     pub blake3: String,
 }
+
+/// The largest `meta.json` the cache reads (fin-node's `adopt::META_CAP`).
+pub const MAX_META_BYTES: u64 = 1 << 20;
 
 /// The most files one entry may list (a filmstrip of a long source has one sprite per 10 s).
 pub const MAX_ENTRY_FILES: usize = 10_000;

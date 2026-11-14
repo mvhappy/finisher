@@ -46,7 +46,18 @@ fn meta(files: &[(&str, &[u8])]) -> EntryMeta {
 #[test]
 fn recipes_are_named_and_versioned() {
     let names: Vec<&str> = RECIPES.iter().map(|r| r.name).collect();
-    assert_eq!(names, ["proxy-540", "proxy-1080", "thumbs", "strip"]);
+    assert_eq!(
+        names,
+        [
+            "proxy-540",
+            "proxy-1080",
+            "thumbs",
+            "strip",
+            "pcm48",
+            "pcm16m",
+            "wave"
+        ]
+    );
     assert_eq!(recipe("proxy-540"), Some(PROXY_540));
     assert_eq!(recipe("thumbs"), Some(THUMBS));
     assert_eq!(recipe("strip"), Some(STRIP));
@@ -78,7 +89,7 @@ fn key_is_blake3_of_the_canonical_input() {
         "fingerprint": "b3:0123",
         "params": { "codec": "h264", "tier": "t1080" },
         "recipe": "proxy-1080",
-        "recipeVersion": 1,
+        "recipeVersion": PROXY_1080.version,
         "renderVersion": RENDER_VERSION,
     }));
     let want = blake3::hash(text.as_bytes()).to_hex().to_string();
@@ -99,7 +110,7 @@ fn key_is_blake3_of_the_canonical_input() {
             ..i.clone()
         },
         KeyInput {
-            recipe_version: 2,
+            recipe_version: PROXY_1080.version + 1,
             ..i.clone()
         },
         KeyInput {

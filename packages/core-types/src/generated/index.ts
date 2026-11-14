@@ -2293,6 +2293,29 @@ export type JobSpawnRole = "worker" | "helper";
  */
 export type LibraryScanMode = "full" | "dirs" | "poll";
 /**
+ * Something the listen could not hear as planned; never a failure.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ListenNote".
+ */
+export type ListenNote =
+  | {
+      asset: string;
+      code: "missingSource";
+      reason: string;
+    }
+  | {
+      code: "STRETCH_EXTREME";
+      item: string;
+      speed: Rational;
+    }
+  | {
+      code: "skippedEffect";
+      effect: string;
+      item: string;
+      kind: string;
+    };
+/**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "LogLevel".
  */
@@ -2450,6 +2473,20 @@ export type ParamType =
       type: "assetRef";
     };
 /**
+ * A feed's channels: one, or two interleaved `L R`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PcmLayout".
+ */
+export type PcmLayout = "mono" | "stereo";
+/**
+ * Which PCM feed (Decision 7).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PcmRecipe".
+ */
+export type PcmRecipe = "pcm48" | "pcm16m";
+/**
  * A cloud placeholder (Decision 12): catalogued from metadata only, never opened unless the
  * library has `hydrate`.
  *
@@ -2463,6 +2500,35 @@ export type Placeholder =
  * via the `definition` "Severity".
  */
 export type Severity = "low" | "medium" | "high" | "critical";
+/**
+ * The codec of a proxy's audio (spec §7.1).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProxyAudioCodec".
+ */
+export type ProxyAudioCodec = "opus";
+/**
+ * What a proxy's key says of the source's audio (6C Task 20 review): none, one this build
+ * has no decoder for, or one a decoder of a class decodes. It is read from this build's static
+ * tables ([`audio_decoder_for_proxy`] over [`AUDIO_BACKENDS`]), not from what the machine can do
+ * at run time. So a **build** whose tables gain a decoder for the codec or container (AAC on
+ * macOS and Windows with 6C Tasks 15–16; WebM audio) changes the key, and a video-only entry
+ * made without it is made again. What does **not** change the key: a decoder the tables list
+ * but the machine lacks or refuses at run time (Media Foundation's AAC on Windows N without the
+ * Media Feature Pack; a profile such as HE-AAC that the listed decoder refuses), and a corrupt
+ * track. Those key as decodable, their proxy is video only (`audioSkipped`), and a plugin or
+ * feature pack installed later does not refresh it. Keying on the capability report's audio
+ * decode rows instead is 6C Task 17's.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProxySourceAudio".
+ */
+export type ProxySourceAudio =
+  | "none"
+  | "unavailable"
+  | {
+      decoded: VendorClass;
+    };
 /**
  * What to purge (`fin diagnostics purge`, `diagnostics.purge`).
  *
@@ -2642,6 +2708,13 @@ export type ThumbsMode =
         tileHeight: number;
       };
     };
+/**
+ * Where the peaks were made from.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "WaveFrom".
+ */
+export type WaveFrom = "pcm48" | "decode";
 /**
  * What one worker serves.
  *
@@ -8123,6 +8196,171 @@ export interface LibraryScanResult {
   unchanged: number;
 }
 /**
+ * Samples above full scale.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ListenClipped".
+ */
+export interface ListenClipped {
+  /**
+   * The first frame holding one, on the timeline (exact: its sample index ÷ 48,000).
+   */
+  firstAt?: Rational;
+  /**
+   * Samples (each channel's) whose magnitude is above 1.0.
+   */
+  samples: number;
+}
+/**
+ * Where the sources were read from.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ListenJobStats".
+ */
+export interface ListenJobStats {
+  /**
+   * Assets decoded from their original (no entry, or one that did not verify).
+   */
+  sourcesDecoded: number;
+  /**
+   * Assets read from their `pcm48` cache entry (the manifest's `pcm`).
+   */
+  sourcesFromCache: number;
+}
+/**
+ * One of the loudest moments: the 3 s window starting at `at` (clipped to the range start)
+ * read `shortTerm` LUFS.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ListenMoment".
+ */
+export interface ListenMoment {
+  at: Rational;
+  shortTerm: number;
+}
+/**
+ * `media.listen` v1: measure `[from, to)` of `timeline`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ListenParams".
+ */
+export interface ListenParams {
+  /**
+   * The branch of the snapshot (an id, a name or `<name>#<id>`).
+   */
+  branch?: string;
+  from: Rational;
+  /**
+   * One sample per window of [`listen_windows`]; a plan the worker evaluates differently is
+   * `PLAN_MISMATCH`. A submitter leaves them out: the kind's `prepare` computes them from the
+   * snapshot it writes and hands them to the worker as `start.job.extra.planSamples` (and in
+   * `in/params.json` for `--replay`).
+   */
+  planSamples?: PlanSample[];
+  /**
+   * The project measured. Only the host reads it (the kind's `dedupe` and `prepare`).
+   */
+  projectId?: string;
+  /**
+   * The branch's rev the submitter saw: part of the job's identity (`dedupe`).
+   */
+  rev?: number;
+  timeline: string;
+  to: Rational;
+}
+/**
+ * The BLAKE3 of a frame plan at one time (plan 6A Decision 4): lowercase hex of the plan's
+ * compact JSON, as `fin-core`'s eval corpus hashes it.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PlanSample".
+ */
+export interface PlanSample {
+  at: Rational;
+  blake3: string;
+}
+/**
+ * What `media.listen` v1 answers.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ListenResult".
+ */
+export interface ListenResult {
+  from: Rational;
+  mix: ListenStats;
+  notes: ListenNote[];
+  /**
+   * The branch rev of the snapshot measured.
+   */
+  rev: number;
+  stats: ListenJobStats;
+  timeline: string;
+  to: Rational;
+  /**
+   * The tracks with items in the range, in the timeline's order.
+   */
+  tracks: ListenTrack[];
+}
+/**
+ * What one mix (the master bus, or one track's items alone) measured (Decision 21).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ListenStats".
+ */
+export interface ListenStats {
+  clipped: ListenClipped;
+  /**
+   * Integrated loudness, LUFS; absent when nothing is above the −70 LUFS gate.
+   */
+  integrated?: number;
+  /**
+   * Up to 5 short-term (3 s) loudness maxima, loudest first, at least 3 s apart.
+   */
+  loudest: ListenMoment[];
+  /**
+   * Loudness range, LU.
+   */
+  range: number;
+  /**
+   * dBFS; absent for silence.
+   */
+  samplePeak?: number;
+  /**
+   * Runs of 10 ms blocks whose louder channel's RMS is below −60 dBFS, lasting 0.5 s or more
+   * (or of any length when they touch an edge of the range, clipped there), at 10 ms resolution
+   * from the range start.
+   */
+  silences: ListenSpan[];
+  /**
+   * dBTP; absent for silence.
+   */
+  truePeak?: number;
+}
+/**
+ * A span of the timeline, `[from, to)`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ListenSpan".
+ */
+export interface ListenSpan {
+  from: Rational;
+  to: Rational;
+}
+/**
+ * One track's own statistics.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ListenTrack".
+ */
+export interface ListenTrack {
+  stats: ListenStats;
+  /**
+   * The track of the measured timeline (a nested timeline's items count for the track their
+   * compound clip is on).
+   */
+  track: string;
+}
+/**
  * A plugin in search results: its newest version that is not yanked.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -8249,17 +8487,6 @@ export interface LookParams {
    */
   size?: Size;
   timeline: string;
-}
-/**
- * The BLAKE3 of a frame plan at one time (plan 6A Decision 4): lowercase hex of the plan's
- * compact JSON, as `fin-core`'s eval corpus hashes it.
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "PlanSample".
- */
-export interface PlanSample {
-  at: Rational;
-  blake3: string;
 }
 /**
  * What `media.look` v1 answers.
@@ -8445,6 +8672,24 @@ export interface ManifestFonts {
   files?: FontFileRef[];
 }
 /**
+ * One `pcm48` entry of the media cache (`cache/media/<key[0..2]>/<key>/`): `meta.json` and its
+ * chunks (plan 6C Decision 7). The worker reads it through `audio_src::CachedSource`, which
+ * recomputes the key from `meta.json` and checks every chunk's size and BLAKE3.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ManifestPcm".
+ */
+export interface ManifestPcm {
+  /**
+   * The entry's directory on this machine, absolute.
+   */
+  dir: string;
+  /**
+   * The entry's cache key.
+   */
+  key: string;
+}
+/**
  * What `media.capabilities` v2 answers: per codec, profile and bit depth what this machine
  * decodes and encodes and through which backend (with guidance for every gap), the audio
  * codecs, the encoders that passed their test clip, the GPU a render would use and the worker.
@@ -8581,6 +8826,105 @@ export interface ParamSpec {
   scope: Scope;
   type: ParamType;
   unit?: string | null;
+}
+/**
+ * The backend that decoded the source, and its class.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PcmDecoder".
+ */
+export interface PcmDecoder {
+  backend: string;
+  class: VendorClass;
+}
+/**
+ * `media.pcm` v1: the `recipe` feed of the source whose content is `fingerprint`, which the
+ * cache knows as `key`. A batch kind of one item, the fingerprint.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PcmParams".
+ */
+export interface PcmParams {
+  /**
+   * A project asset, through the job's `in/manifest.json`.
+   */
+  asset?: string;
+  /**
+   * The branch whose head names the asset (`main` when absent). Host only.
+   */
+  branch?: string;
+  /**
+   * The vendor class the host expects the source's decoder to have (part of the key).
+   */
+  decoderClass: VendorClass;
+  /**
+   * A library file (the `pcm16m` stage).
+   */
+  file?: ProxyLibraryFile;
+  fingerprint: string;
+  /**
+   * [`pcm_key`] of the fields above: the worker writes `out/<key>/`.
+   */
+  key: string;
+  /**
+   * The layout the host planned (part of the key).
+   */
+  layout: PcmLayout;
+  /**
+   * The project that asked (host only, as `ProxyParams`).
+   */
+  projectId?: string;
+  recipe: PcmRecipe;
+}
+/**
+ * A library file the `proxy540` stage hands the worker (5D Decision 39): the library's
+ * canonical root, the file's raw chain below it and the `Expect` the opener checks, in
+ * `fin-library`'s wire forms (`RawRel`, `Expect`), which the worker decodes.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProxyLibraryFile".
+ */
+export interface ProxyLibraryFile {
+  /**
+   * `fin-library`'s `Expect`: `{size, mtimeNs, fileId?, dev?}`.
+   */
+  expect: unknown;
+  /**
+   * The library hydrates cloud-only files when read.
+   */
+  hydrate?: boolean;
+  library: string;
+  /**
+   * `fin-library`'s `RawRel`: `{components: [<base64>]}`.
+   */
+  rel: unknown;
+  /**
+   * The library's canonical root (absolute).
+   */
+  root: string;
+}
+/**
+ * What `media.pcm` v1 answers for its item (the fingerprint).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PcmResult".
+ */
+export interface PcmResult {
+  /**
+   * The entry's bytes (its chunks, `meta.json` not included).
+   */
+  bytes: number;
+  chunks: number;
+  decoder: PcmDecoder;
+  /**
+   * Frames at the feed's rate.
+   */
+  frames: number;
+  key: string;
+  layout: PcmLayout;
+  recipe: PcmRecipe;
+  sourceChannels: number;
+  sourceRate: number;
 }
 /**
  * One command as `plugin.commands` lists it.
@@ -9076,6 +9420,36 @@ export interface ProjectViewText {
   text: string;
 }
 /**
+ * The proxy's audio track (recipe v2, 6C plan Task 20): the source's audio at 48 kHz in its
+ * canonical layout (a mono source stays one channel), as Opus at 128 kb/s stereo or 64 kb/s
+ * mono; its edit list presents exactly the source's samples after `priming`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProxyAudio".
+ */
+export interface ProxyAudio {
+  /**
+   * Bits a second.
+   */
+  bitrate: number;
+  codec: ProxyAudioCodec;
+  /**
+   * The encoder's delay in samples (the edit list's media time, `dOps` pre-skip).
+   */
+  priming: number;
+}
+/**
+ * Why a source's audio track is not in its proxy (6C Task 20 review): the decode's error code
+ * (`CODEC_UNAVAILABLE`, `UNSUPPORTED_CONTAINER`, `MEDIA_LIMIT`, `MEDIA_CORRUPT`,
+ * `DECODE_FAILED`). The mix reads `pcm48`, which reports the same failure as its own.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProxyAudioSkipped".
+ */
+export interface ProxyAudioSkipped {
+  code: string;
+}
+/**
  * One move of the encode to another encoder (`ENCODER_HUNG`'s fallback, an encoder that did
  * not open), as the result records it.
  *
@@ -9091,33 +9465,6 @@ export interface ProxyFallback {
   to: string;
 }
 /**
- * A library file the `proxy540` stage hands the worker (5D Decision 39): the library's
- * canonical root, the file's raw chain below it and the `Expect` the opener checks, in
- * `fin-library`'s wire forms (`RawRel`, `Expect`), which the worker decodes.
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "ProxyLibraryFile".
- */
-export interface ProxyLibraryFile {
-  /**
-   * `fin-library`'s `Expect`: `{size, mtimeNs, fileId?, dev?}`.
-   */
-  expect: unknown;
-  /**
-   * The library hydrates cloud-only files when read.
-   */
-  hydrate?: boolean;
-  library: string;
-  /**
-   * `fin-library`'s `RawRel`: `{components: [<base64>]}`.
-   */
-  rel: unknown;
-  /**
-   * The library's canonical root (absolute).
-   */
-  root: string;
-}
-/**
  * `media.proxy` v1: a proxy of the source whose content is `fingerprint`, at `tier`, in
  * `codec`, which the cache knows as `key`. A batch kind of one item, the fingerprint.
  *
@@ -9130,6 +9477,10 @@ export interface ProxyParams {
    * must equal `fingerprint`, else `ASSET_CHANGED`).
    */
   asset?: string;
+  /**
+   * What the host expects of the original's audio ([`source_audio`], part of the key).
+   */
+  audio: ProxySourceAudio;
   /**
    * The branch whose head names the asset (`main` when absent). Host only.
    */
@@ -9170,6 +9521,15 @@ export interface ProxyParams {
  * via the `definition` "ProxyResult".
  */
 export interface ProxyResult {
+  /**
+   * The audio track; absent when the source has none or its audio could not be read (then
+   * `audioSkipped` says why): the proxy is then video only.
+   */
+  audio?: ProxyAudio;
+  /**
+   * The source has an audio track the proxy does not carry, and why.
+   */
+  audioSkipped?: ProxyAudioSkipped;
   /**
    * The encoder's backend (`svt-av1`, `videotoolbox`, `mf-hw`, …) and its vendor class.
    */
@@ -9530,6 +9890,14 @@ export interface RenderManifest {
    */
   assets: ManifestAsset[];
   fonts?: ManifestFonts1;
+  /**
+   * The `pcm48` entries the media cache holds for the assets, by asset id (plan 6C Task 21:
+   * `media.listen` mixes from them and decodes the originals of the others), pinned for the
+   * job's life by the host. Absent for every other kind.
+   */
+  pcm?: {
+    [k: string]: ManifestPcm;
+  };
   /**
    * [`MANIFEST_VERSION`].
    */
@@ -10326,6 +10694,62 @@ export interface ValidationReport {
   errors?: Invalid[];
   manifest?: Manifest;
   ok: boolean;
+}
+/**
+ * `media.waveform` v1: the peaks of the asset whose content is `fingerprint`, which the cache
+ * knows as `key`. A batch kind of one item, the fingerprint.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "WaveParams".
+ */
+export interface WaveParams {
+  /**
+   * A project asset, through the job's `in/manifest.json`.
+   */
+  asset: string;
+  /**
+   * The branch whose head names the asset (`main` when absent). Host only.
+   */
+  branch?: string;
+  /**
+   * The vendor class the host expects the source's decoder to have (part of the key).
+   */
+  decoderClass: VendorClass;
+  fingerprint: string;
+  /**
+   * [`wave_key`] of the fields above: the worker writes `out/<key>/`.
+   */
+  key: string;
+  /**
+   * The source's `pcm48` entry the host found (its directory is in `in/pcm.json`).
+   */
+  pcmKey?: string;
+  /**
+   * The project that asked (host only).
+   */
+  projectId?: string;
+}
+/**
+ * What `media.waveform` v1 answers for its item (the fingerprint).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "WaveResult".
+ */
+export interface WaveResult {
+  /**
+   * `peaks.bin`'s size.
+   */
+  bytes: number;
+  /**
+   * Frames of the 48 kHz signal the peaks cover.
+   */
+  frames: number;
+  from: WaveFrom;
+  key: string;
+  /**
+   * Levels in `peaks.bin` (5).
+   */
+  levels: number;
 }
 /**
  * A media worker (spec §8.10; sp6 §3.5; plan 7C Decisions 8 and 19).

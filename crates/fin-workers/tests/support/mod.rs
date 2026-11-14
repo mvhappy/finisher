@@ -50,6 +50,8 @@ pub struct Run {
     /// Non-`alive` messages that were already waiting when a call was about to be answered:
     /// a worker that waits for replies has none.
     pub early: Vec<String>,
+    /// Each `progress` message's phase, in order.
+    pub phases: Vec<Option<String>>,
     pub end: End,
 }
 
@@ -222,6 +224,7 @@ impl Proc {
         let mut calls = 0;
         let mut events = Vec::new();
         let mut early = Vec::new();
+        let mut phases = Vec::new();
         let end = loop {
             let Some(msg) = self.recv() else {
                 break End::Died(self.wait());
@@ -234,7 +237,10 @@ impl Proc {
                     Some(e) => Ev::ItemFailed(item, e.code),
                     None => Ev::Item(item, value),
                 }),
-                WorkerMsg::Progress(p) => events.push(Ev::Progress(p.done)),
+                WorkerMsg::Progress(p) => {
+                    phases.push(p.phase.clone());
+                    events.push(Ev::Progress(p.done));
+                }
                 WorkerMsg::Checkpoint { data, .. } => events.push(Ev::Checkpoint(data)),
                 WorkerMsg::Call { id, method, params } => {
                     events.push(Ev::Call(method.clone(), params.clone()));
@@ -263,7 +269,12 @@ impl Proc {
                 other => panic!("unexpected {other:?}"),
             }
         };
-        Run { events, early, end }
+        Run {
+            events,
+            early,
+            phases,
+            end,
+        }
     }
 
     pub fn wait(&mut self) -> ExitStatus {

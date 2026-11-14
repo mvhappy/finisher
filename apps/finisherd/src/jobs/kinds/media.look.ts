@@ -25,9 +25,12 @@ import { mkdirSafe } from "../fsafe.ts";
 import { type KindRegistry, type KindSpec, type MemoryRule, projectOfJob } from "../kinds.ts";
 import { mediaCapabilitiesKind } from "./media.capabilities.ts";
 import { mediaObject } from "./media.journal.ts";
+import { mediaListenKind } from "./media.listen.ts";
+import { mediaPcmKind } from "./media.pcm.ts";
 import { mediaProbeDeepKind } from "./media.probeDeep.ts";
 import { type ProxyKindDeps, mediaProxyKind } from "./media.proxy.ts";
 import { mediaThumbsKind } from "./media.thumbs.ts";
+import { mediaWaveformKind } from "./media.waveform.ts";
 
 export const MEDIA_FAMILY = "media";
 export const MEDIA_LOOK = "media.look";
@@ -372,7 +375,9 @@ function planSamplesOf(extra: unknown): ReadonlyArray<string> {
 
 /**
  * Registers the family and its kinds (`media.look`, `media.capabilities`; `media.probeDeep` given
- * `projects.onBranch`; `media.proxy` and `media.thumbs` given that and `proxy`, 6B-1 Tasks 14 and 15).
+ * `projects.onBranch`; `media.proxy` and `media.thumbs` given that and `proxy`, 6B-1 Tasks 14 and 15;
+ * `media.pcm` likewise, 6C Task 18; `media.waveform` likewise, 6C Task 19; `media.listen` likewise,
+ * 6C Task 21).
  */
 export function registerMediaKinds(registry: KindRegistry, deps: MediaKindDeps): void {
   registerMediaFamily(registry, deps);
@@ -382,4 +387,7 @@ export function registerMediaKinds(registry: KindRegistry, deps: MediaKindDeps):
   if (onBranch !== undefined) registry.registerKind(mediaProbeDeepKind({ ...deps, projects: { onBranch } }));
   if (onBranch !== undefined && deps.proxy !== undefined) registry.registerKind(mediaProxyKind({ ...deps, ...deps.proxy, projects: { onBranch } }));
   if (onBranch !== undefined && deps.proxy !== undefined) registry.registerKind(mediaThumbsKind({ ...deps, cache: deps.proxy.cache, projects: { onBranch } }));
+  if (onBranch !== undefined && deps.proxy !== undefined) registry.registerKind(mediaPcmKind({ ...deps, cache: deps.proxy.cache, projects: { onBranch } }));
+  if (onBranch !== undefined && deps.proxy !== undefined) registry.registerKind(mediaWaveformKind({ ...deps, cache: deps.proxy.cache, projects: { onBranch } }));
+  if (onBranch !== undefined && deps.proxy !== undefined) registry.registerKind(mediaListenKind({ ...deps, cache: deps.proxy.cache, projects: { onBranch } }));
 }
