@@ -262,7 +262,7 @@ describe.runIf(LINUX)("media workers under the worker profile", () => {
 
 describe.skipIf(process.platform === "win32")("libraryFileReads", () => {
   const b64 = (s: string | Buffer) => Buffer.from(s).toString("base64");
-  test("the file itself, never its root; nothing through a link; the deepest nameable directory otherwise", async () => {
+  test("the file itself, never its root; nothing through a link or for a name this process cannot write", async () => {
     const root = realpathSync(mkdtempSync(join(work, "reads-")));
     mkdirSync(join(root, "a", "b"), { recursive: true });
     writeFileSync(join(root, "a", "b", "f.mp4"), "f");
@@ -278,8 +278,12 @@ describe.skipIf(process.platform === "win32")("libraryFileReads", () => {
     expect(await libraryFileReads({ root, rel: rel("..", "x") })).toEqual([]);
     expect(await libraryFileReads({ root, rel: rel(Buffer.from([0xff]), "..") })).toEqual([]);
     expect(await libraryFileReads({ root, rel: { components: [] } })).toEqual([]);
-    // A name that is not UTF-8: its directory, the deepest one this process can name.
-    expect(await libraryFileReads({ root, rel: rel("a", "b", Buffer.from([0xff, 0x2e])) })).toEqual([join(root, "a", "b")]);
+    // A name that is not UTF-8: nothing (never an ancestor, which would grant its siblings).
+    expect(await libraryFileReads({ root, rel: rel("a", "b", Buffer.from([0xff, 0x2e])) })).toEqual([]);
+    expect(await libraryFileReads({ root, rel: rel(Buffer.from([0xff]), "b", "f.mp4") })).toEqual([]);
+    // A leading U+FEFF is part of the name: the BOM file is granted, never its stripped sibling.
+    writeFileSync(join(root, "a", "b", "\uFEFFf.mp4"), "x");
+    expect(await libraryFileReads({ root, rel: rel("a", "b", "\uFEFFf.mp4") })).toEqual([join(root, "a", "b", "\uFEFFf.mp4")]);
     expect(await libraryFileReads({ root: join(root, "missing"), rel: rel("f.mp4") })).toEqual([]);
   });
 });

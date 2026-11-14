@@ -121,7 +121,8 @@ async function canonical(paths: ReadonlyArray<string>): Promise<string[]> {
   return out.sort();
 }
 
-const UTF8 = new TextDecoder("utf-8", { fatal: true });
+// `ignoreBOM`: a name may begin with U+FEFF; stripping it would name (and grant) a sibling.
+const UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 /**
  * One raw component as a path component; `undefined` when it is not UTF-8 (this process cannot
@@ -143,28 +144,22 @@ function component(b64: unknown): string | null | undefined {
 /**
  * What a library file's proxy reads (6B-1 Task 18): the file at its raw chain below the
  * (canonical) root, when it is a regular file there now with no link on the way; else nothing
- * (the worker's open then fails and is reported). A valid chain this process cannot name (a
- * component that is not UTF-8) is granted its deepest nameable directory, at most the root.
+ * (the worker's open then fails and is reported). A chain this process cannot name (a component
+ * that is not UTF-8) is granted nothing: grants are UTF-8 paths, and granting an ancestor
+ * instead would let the job read its siblings (fail closed; the worker reports the open).
  */
 export async function libraryFileReads(file: { readonly root: string; readonly rel: unknown }): Promise<string[]> {
   const [root] = await canonical([file.root]);
   if (root === undefined) return [];
   const raw = (file.rel as { components?: unknown } | null | undefined)?.components;
   if (!Array.isArray(raw) || raw.length === 0) return [];
-  const parts = raw.map(component);
-  if (parts.includes(null)) return [];
-  const names: string[] = [];
-  for (const name of parts) {
-    if (name === undefined || name === null) break;
-    names.push(name);
-  }
-  const whole = names.length === raw.length;
+  const names = raw.map(component);
+  if (!names.every((n): n is string => typeof n === "string")) return [];
   const path = join(root, ...names);
   try {
     // No link anywhere below the root (the opener refuses one; a grant would follow it).
     const st = await lstat(path);
-    const kind = whole ? st.isFile() : st.isDirectory();
-    return kind && (await realpath(path)) === path ? [path] : [];
+    return st.isFile() && (await realpath(path)) === path ? [path] : [];
   } catch {
     return [];
   }
