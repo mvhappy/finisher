@@ -187,7 +187,7 @@ fn limiter_golden_hash() {
     for v in out.l.iter().chain(&out.r) {
         h.update(&v.to_le_bytes());
     }
-    assert_eq!(fin_audio::AUDIO_VERSION, 1);
+    assert_eq!(fin_audio::AUDIO_VERSION, 2);
     assert_eq!(
         h.finalize().to_hex().as_str(),
         "e58c9a93008d12b61eccbbe9df6d8732d0916f09610ebd281b80df3029c37e1e"

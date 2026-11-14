@@ -439,7 +439,7 @@ fn golden_hash() {
         h.update(&l.to_le_bytes());
         h.update(&r.to_le_bytes());
     }
-    assert_eq!(fin_audio::AUDIO_VERSION, 1);
+    assert_eq!(fin_audio::AUDIO_VERSION, 2);
     assert_eq!(
         h.finalize().to_hex().as_str(),
         "46c0e17d671eacae6f74c9a6e6ae06a5112177aa7af2ebfe8ac2798ef222ca1d"

@@ -7,4 +7,4 @@ pub const RENDER_VERSION: u32 = 2;
 /// frames, a copy of `fin_audio::AUDIO_VERSION` (which the A0 golden test guards; `fin-audio`
 /// fails to build while the two differ), kept here so the hosts, which never link `fin-audio`,
 /// put it into audio cache keys (Decision 7).
-pub const AUDIO_VERSION: u32 = 1;
+pub const AUDIO_VERSION: u32 = 2;

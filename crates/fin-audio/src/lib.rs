@@ -33,7 +33,7 @@ pub const RATE: u32 = 48_000;
 /// Bumped when any hashed audio output changes (the A0 golden hashes are re-blessed with it).
 /// `fin_media::AUDIO_VERSION` is bumped with it (the build fails while they differ): audio cache
 /// keys carry that copy on hosts that never link this crate (6C plan Decision 7).
-pub const AUDIO_VERSION: u32 = 1;
+pub const AUDIO_VERSION: u32 = 2;
 const _: () = assert!(
     AUDIO_VERSION == fin_media::AUDIO_VERSION,
     "bump fin_media::AUDIO_VERSION with fin_audio::AUDIO_VERSION"

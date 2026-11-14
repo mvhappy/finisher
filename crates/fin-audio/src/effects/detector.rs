@@ -22,11 +22,14 @@
 //! `f64`. Only `+ − ×` and one division are used, which IEEE 754 rounds correctly on every
 //! target (wasm32 included), in a fixed order and with no `mul_add`, so the result is
 //! bit-identical everywhere; no `f64` transcendental is involved (the mean square is cast to
-//! `f32` once before `log10f`). An `f32` square of an `f32` sample is exact in `f64`, and the
+//! `f32` once before its logarithm). An `f32` square of an `f32` sample is exact in `f64`, and the
 //! wider sum keeps the window's rounding far below the level's resolution.
 //!
 //! The level is in dBFS of that measure (a sine's RMS is its peak − 3.01 dB), computed in `f32`
-//! with `libm::log10f` and floored at −200 dBFS, so silence never reaches `log(0)`.
+//! as `log2` scaled to dB ([`log2_poly`]) and floored at −200 dBFS, so silence never reaches
+//! `log(0)`. Gains in dB become amplitudes through [`exp2_poly`] ([`amp`]). Both are short
+//! polynomials in `+ − ×` and bit operations (audioVersion 2, 6C Task 23: `libm::log10f` and
+//! `libm::exp10f` per frame kept the mixer under spec §14's throughput), accurate to 2.5e-4 dB.
 //!
 //! **Gain** is computed and smoothed in dB, per sample, in `f32` with a fixed operation order
 //! and no `mul_add`. [`static_gain`] is the soft-knee curve of Giannoulis, Massberg and Reiss
@@ -188,7 +191,7 @@ impl Detector {
         }
         let max = self.queue.front().map_or(0.0, |&(_, v)| v);
         if max > 1e-10 {
-            20.0 * libm::log10f(max)
+            DB_PER_OCTAVE_AMP * log2_poly(max)
         } else {
             FLOOR_DB
         }
@@ -208,16 +211,21 @@ impl Detector {
     }
 }
 
-/// The window's mean square in dBFS from its running sum.
+/// The window's mean square in dBFS from its running sum: `10·log10(sum/WINDOW)` as
+/// `10·log10(2)·log2(sum) − 10·log10(WINDOW)`, so no division per frame. The floor is a mean
+/// square of 1e-20.
 #[inline]
 fn rms_db(sum: f64) -> f32 {
-    let ms = (sum / WINDOW as f64) as f32;
-    if ms > 1e-20 {
-        10.0 * libm::log10f(ms)
+    let s = sum as f32;
+    if s > 1e-20 * WINDOW as f32 {
+        DB_PER_OCTAVE_POWER * log2_poly(s) - DB_WINDOW
     } else {
         FLOOR_DB
     }
 }
+
+/// `10·log10(WINDOW)`: the dB of the RMS window's length.
+const DB_WINDOW: f32 = 26.812_412;
 
 /// The one-pole coefficient `exp(−1/(τ·48000))` for a time constant of `ms` milliseconds (the
 /// argument in `f64`, cast once, then `libm::expf`).
@@ -262,8 +270,69 @@ impl Smoother {
     }
 }
 
-/// `10^(db/20)` in `f32`.
+/// `10^(db/20)` in `f32`: `2^(db · log2(10)/20)` through [`exp2_poly`].
 #[inline]
 pub fn amp(db: f32) -> f32 {
-    libm::exp10f(db / 20.0)
+    exp2_poly(db * OCTAVES_PER_DB_AMP)
+}
+
+/// `10·log10(2)`: dB per octave of a power (a mean square).
+const DB_PER_OCTAVE_POWER: f32 = 3.010_3;
+/// `20·log10(2)`: dB per octave of an amplitude.
+const DB_PER_OCTAVE_AMP: f32 = 6.020_6;
+/// `log2(10)/20`: octaves of amplitude per dB.
+const OCTAVES_PER_DB_AMP: f32 = 0.166_096_4;
+
+/// `log2(1 + t)/t` on `t ∈ [√½ − 1, √2 − 1]`: a degree-4 minimax fit, `c[0]` first (the
+/// error of [`log2_poly`] is below 4e-5, i.e. below 2.5e-4 dB of an amplitude).
+const LOG2_C: [f32; 5] = [
+    1.442_263_6,
+    -0.721_159_5,
+    0.496_625_57,
+    -0.381_153_76,
+    0.182_369_6,
+];
+
+/// `(2^f − 1)/f` on `f ∈ [0, 1)`: a degree-3 minimax fit, `c[0]` first (the relative error of
+/// [`exp2_poly`] is below 5e-6, i.e. below 5e-5 dB).
+const EXP2_C: [f32; 4] = [0.693_018_56, 0.241_445_51, 0.051_950_548, 0.013_581_248];
+
+/// `log2(x)` for a normal `x > 0` (the detectors' floors keep subnormals, zero and negatives
+/// out). Exponent and mantissa from the bits, the mantissa folded into `[√½, √2)` (exact),
+/// then `e + t·P(t)` with `t = m − 1` (exact) and [`LOG2_C`] by Horner. Only `+ − ×` and bit
+/// operations in a fixed order, no `mul_add`: the same bits on every target (plan 6C
+/// Determinism), and cheaper per frame than `libm::log10f` (6C Task 23 throughput).
+#[inline]
+pub fn log2_poly(x: f32) -> f32 {
+    let bits = x.to_bits();
+    let mut e = ((bits >> 23) & 0xff) as i32 - 127;
+    let mut m = f32::from_bits((bits & 0x007f_ffff) | 0x3f80_0000);
+    if m > core::f32::consts::SQRT_2 {
+        m *= 0.5;
+        e += 1;
+    }
+    let t = m - 1.0;
+    let mut p = LOG2_C[4];
+    for &c in LOG2_C[..4].iter().rev() {
+        p = p * t + c;
+    }
+    e as f32 + t * p
+}
+
+/// `2^y` (`y` clamped to `[−126, 127]`, so the result is a normal `f32`): `2^i` from the bits
+/// times `1 + f·P(f)` for `y = i + f`, `0 ≤ f < 1` (the split is exact), [`EXP2_C`] by Horner.
+/// `+ − ×` and bit operations only, in a fixed order (see [`log2_poly`]).
+#[inline]
+pub fn exp2_poly(y: f32) -> f32 {
+    let y = y.clamp(-126.0, 127.0);
+    let mut i = y as i32;
+    if i as f32 > y {
+        i -= 1;
+    }
+    let f = y - i as f32;
+    let mut p = EXP2_C[3];
+    for &c in EXP2_C[..3].iter().rev() {
+        p = p * f + c;
+    }
+    f32::from_bits(((i + 127) as u32) << 23) * (1.0 + f * p)
 }

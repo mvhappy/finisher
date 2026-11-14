@@ -136,7 +136,7 @@ fn peaks_golden_hash() {
         r: pink(9, 3.0, RATE),
     };
     let bytes = peaks(&s).to_bytes();
-    assert_eq!(fin_audio::AUDIO_VERSION, 1);
+    assert_eq!(fin_audio::AUDIO_VERSION, 2);
     assert_eq!(
         blake3::hash(&bytes).to_hex().as_str(),
         "f5c467fb0dfdee6f0380f116bf074ea93ea51cae50af40a9f095bc235e3be5ca"

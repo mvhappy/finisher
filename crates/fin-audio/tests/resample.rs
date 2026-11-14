@@ -239,7 +239,7 @@ fn golden_hash() {
     let out = run(44_100, 48_000, &sweep(20.0, 20_000.0, 1.0, 44_100));
     assert_eq!(out.len(), 48_000);
     let bytes: Vec<u8> = out.iter().flat_map(|v| v.to_le_bytes()).collect();
-    assert_eq!(fin_audio::AUDIO_VERSION, 1);
+    assert_eq!(fin_audio::AUDIO_VERSION, 2);
     assert_eq!(
         blake3::hash(&bytes).to_hex().as_str(),
         "87d1161c15a5eb499f1aa9ca09fabc01464ada9227ea29ab167f9fef66b815e9"

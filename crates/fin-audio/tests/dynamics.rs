@@ -561,19 +561,19 @@ fn golden_hash() {
     let want = [
         (
             "compressor",
-            "3e406c9cd58db793c957406f7197d5e6bc9d8641548740f9637582c2458aa517",
+            "ad720459a0b858e07e7ff43492c088fc55c0b1a0506962a4968a7787e99d991d",
         ),
         (
             "compressorPeak",
-            "4b8851ed0094ac6dbffd56e9f56d9c93d4aaf62b30a6cf3159495e1379a4d4c2",
+            "cac09a77b3e18b1baaa84b0b7576188edd5b37ea2a950f445c6feea748c909f4",
         ),
         (
             "gate",
-            "a1bb0cdbdbf67a41c317c6d4d58e77535d5fb99b459f3b9dbe12f9d9c2e71b97",
+            "079353985d1743a573b937f4db52412ed4efd5411ccc5f59422620667af269ed",
         ),
         (
             "deEsser",
-            "d91b71c7b53cc176e3227b82e2173a332d01b1b206e57d17566cb294ab8bacf1",
+            "c93ccd728368b728b2564955d3988f99e5ad76d9f2d758bdcf98e0b9fe548bc3",
         ),
     ];
     let mut got = Vec::new();
@@ -597,8 +597,51 @@ fn golden_hash() {
         }
         got.push((kind, h.finalize().to_hex().to_string()));
     }
-    assert_eq!(fin_audio::AUDIO_VERSION, 1);
+    assert_eq!(fin_audio::AUDIO_VERSION, 2);
     for ((kind, h), (_, w)) in got.iter().zip(want) {
         assert_eq!(h, w, "{kind}");
+    }
+}
+
+/// The detectors' `log2` and `amp`'s `exp2` (6C Task 23: polynomials instead of
+/// `libm::log10f`/`exp10f` per frame) stay within their documented errors over every input
+/// the dynamics effects feed them, and are exact where it matters: powers of two have their
+/// exponent as `log2`, integers give exact powers of two, and 0 dB is unity gain.
+#[test]
+fn log2_exp2_polynomials_accurate() {
+    use fin_audio::effects::detector::{amp, exp2_poly, log2_poly};
+    // log2 over the levels' whole range (the floors are 1e-20 and 1e-10 and up to far above
+    // full scale), absolute error below 4e-5 (2.5e-4 dB of an amplitude).
+    let mut worst = 0.0f64;
+    let mut x = 1e-20f32;
+    while x < 1e6 {
+        let e = (f64::from(log2_poly(x)) - f64::from(x).log2()).abs();
+        worst = worst.max(e);
+        x *= 1.000_37;
+    }
+    assert!(worst < 4e-5, "log2: worst absolute error {worst:e}");
+    for k in -66..=20 {
+        assert_eq!(log2_poly(2f32.powi(k)), k as f32, "log2(2^{k})");
+    }
+    // exp2 over the gains' range (gate ranges down to −90 dB, makeup up to +24 dB, so about
+    // −15…+4 octaves, and the clamp beyond), relative error below 5e-6 (5e-5 dB).
+    let mut worst = 0.0f64;
+    let mut y = -30.0f32;
+    while y < 10.0 {
+        let want = f64::from(y).exp2();
+        let e = ((f64::from(exp2_poly(y)) - want) / want).abs();
+        worst = worst.max(e);
+        y += 0.000_731;
+    }
+    assert!(worst < 5e-6, "exp2: worst relative error {worst:e}");
+    for k in -126..=127 {
+        assert_eq!(exp2_poly(k as f32), 2f32.powi(k), "exp2({k})");
+    }
+    assert_eq!(exp2_poly(-1000.0), 2f32.powi(-126), "clamped below");
+    assert_eq!(amp(0.0), 1.0, "0 dB is unity");
+    // In dB: within 1e-4 dB of the exact conversion.
+    for db in [-90.0f32, -60.0, -20.0, -6.0, -0.5, 0.25, 3.0, 12.0, 24.0] {
+        let got = 20.0 * f64::from(amp(db)).log10();
+        assert!((got - f64::from(db)).abs() < 1e-4, "amp({db}) is {got} dB");
     }
 }
