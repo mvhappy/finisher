@@ -86,6 +86,7 @@ interface AssetJson {
   readonly kind?: string;
   readonly path?: string;
   readonly fingerprint?: string;
+  readonly duration?: string;
   readonly audio?: { readonly channels?: number } | null;
 }
 
@@ -178,7 +179,8 @@ export function makePcmService(deps: PcmServiceDeps): PcmService {
       const path = isAbsolute(a.path) || dir === undefined ? a.path : join(dir, a.path);
       const codec = yield* sourceCodec(path, a.fingerprint, asset);
       const fingerprint = a.fingerprint;
-      const p = yield* attempt(async () => mediaPcmPlan({ fingerprint, recipe, sourceCodec: codec, channels }));
+      const duration = typeof a.duration === "string" ? a.duration : undefined;
+      const p = yield* attempt(async () => mediaPcmPlan({ fingerprint, recipe, sourceCodec: codec, channels, duration }));
       return { fingerprint, recipe, layout: p.layout, decoderClass: p.decoderClass, key: p.key, asset, projectId, branch };
     });
 
@@ -241,7 +243,7 @@ export function makePcmService(deps: PcmServiceDeps): PcmService {
           );
           asking.delete(seen);
           // Asked for, or failed for good: not again this run. A transient failure is tried again.
-          if (asked._tag === "Success" || CONTENT_FAILURES.has(asked.failure.code)) used.add(seen);
+          if (asked._tag === "Success" || CONTENT_FAILURES.has(asked.failure.code) || asked.failure.code === "MEDIA_LIMIT") used.add(seen);
           if (asked._tag === "Failure") log(`finisherd: media pcm: no pcm48 of ${id} in ${projectId} (${asked.failure.code})`);
         }
       }),
@@ -257,17 +259,18 @@ export function makePcmService(deps: PcmServiceDeps): PcmService {
 }
 
 /** The stored probe's audio channels and codec (`probe.audio`, `probe.media.audio`), when the file has audio. */
-function audioOf(f: StageFile): { readonly channels: number; readonly codec?: string } | undefined {
+function audioOf(f: StageFile): { readonly channels: number; readonly codec?: string; readonly duration?: string } | undefined {
   if (!isObj(f.probe) || !isObj(f.probe.audio) || typeof f.probe.audio.channels !== "number" || f.probe.audio.channels < 1) return undefined;
   const codec = codecOf(f.probe);
-  return { channels: f.probe.audio.channels, ...(codec === undefined ? {} : { codec }) };
+  const duration = typeof f.probe.duration === "string" ? f.probe.duration : undefined;
+  return { channels: f.probe.audio.channels, ...(codec === undefined ? {} : { codec }), ...(duration === undefined ? {} : { duration }) };
 }
 
 /** `media.pcm` params for `f` as `pcm16m`; throws `CODEC_UNAVAILABLE` when nothing decodes it. */
 function stageParams(f: StageFile): PcmParams {
   const audio = audioOf(f);
   if (audio === undefined) throw new Error("the file has no audio track");
-  const p = mediaPcmPlan({ fingerprint: f.fp, recipe: "pcm16m", sourceCodec: audio.codec, channels: audio.channels });
+  const p = mediaPcmPlan({ fingerprint: f.fp, recipe: "pcm16m", sourceCodec: audio.codec, channels: audio.channels, duration: audio.duration });
   return {
     fingerprint: f.fp,
     recipe: "pcm16m",

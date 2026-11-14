@@ -52,6 +52,14 @@ export interface KindSpec<P = unknown, R = unknown> {
   readonly batch?: BatchSpec<P>;
   readonly dedupe?: (params: P) => string | undefined;
   readonly rememberPoison?: boolean;
+  /**
+   * A cold batch of one item whose attempt restarts from its first byte (6C `media.pcm`,
+   * Decision 23): a worker crash with the item in flight is retried (an attempt spent, after the
+   * backoff) while attempts remain, and only the last attempt's crash is isolated (the item
+   * poisoned, so `rememberPoison` still holds); a crash after the item was acknowledged ends the
+   * job as a success.
+   */
+  readonly crashRestarts?: boolean;
   /** Asked before any POISON_ITEM verdict (Decision 31). */
   readonly resourceHealthy?: (job: JobView & { params: P }) => Effect.Effect<boolean>;
   readonly files?: OrFn<P, ReadonlyArray<MappedFile>>;

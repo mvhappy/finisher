@@ -234,6 +234,9 @@ pub struct EntryFile {
     pub blake3: String,
 }
 
+/// The largest `meta.json` the cache reads (fin-node's `adopt::META_CAP`).
+pub const MAX_META_BYTES: u64 = 1 << 20;
+
 /// The most files one entry may list (a filmstrip of a long source has one sprite per 10 s).
 pub const MAX_ENTRY_FILES: usize = 10_000;
 
