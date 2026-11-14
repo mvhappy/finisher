@@ -36,7 +36,9 @@ impl<R: Read + Seek + Send> Packets for Track<R> {
 }
 
 /// The first audio track of an MP4 file: its packets, its info, its configuration record and
-/// the samples its packets hold (the sum of their durations, before the edit list).
+/// the PCM samples its packets hold: the sum of their durations in media ticks, times the
+/// sample rate over the media timescale, rounded down (as `fin-container` converts priming and
+/// padding, so the three are in the same unit).
 pub(crate) fn open<R: Read + Seek + Send + 'static>(
     r: R,
     limits: &Limits,
@@ -48,10 +50,12 @@ pub(crate) fn open<R: Read + Seek + Send + 'static>(
             json!({ "reason": "noAudioTrack" }),
         ));
     };
-    let total = (0..track.sample_count())
+    let ticks: u64 = (0..track.sample_count())
         .filter_map(|i| track.sample(i))
         .map(|s| s.duration as u64)
         .sum();
+    let total = (ticks as u128 * info.sample_rate as u128 / track.timescale.max(1) as u128)
+        .min(u64::MAX as u128) as u64;
     let (track, config) = (track.track, track.config.clone());
     Ok((
         Box::new(Track {

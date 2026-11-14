@@ -99,12 +99,12 @@ enum Packets {
     },
 }
 
-/// Drops `skip` frames from the start and holds the last `hold` back until the end.
+/// Drops `skip` frames from the start, then passes at most `left` frames (the presented
+/// length, when the container states it exactly) and drops the rest: padding is never held.
 #[derive(Debug, Default)]
 struct Trim {
     skip: u64,
-    hold: usize,
-    held: Vec<f32>,
+    left: Option<u64>,
 }
 
 impl Trim {
@@ -112,11 +112,18 @@ impl Trim {
         let frames = (pcm.len() / channels) as u64;
         let drop = self.skip.min(frames);
         self.skip -= drop;
-        self.held
-            .extend_from_slice(&pcm[drop as usize * channels..]);
-        let keep = self.hold * channels;
-        let out = self.held.len().saturating_sub(keep);
-        self.held.drain(..out).collect()
+        let mut take = frames - drop;
+        if let Some(left) = &mut self.left {
+            take = take.min(*left);
+            *left -= take;
+        }
+        let from = drop as usize * channels;
+        pcm[from..from + take as usize * channels].to_vec()
+    }
+
+    /// Everything presented has been passed.
+    fn done(&self) -> bool {
+        self.left == Some(0)
     }
 }
 
@@ -129,8 +136,6 @@ pub struct AudioReader {
     declared: Option<u64>,
     /// `declared` is exact: fewer frames is a cut file.
     exact: bool,
-    /// Frames the trim drops (priming and padding), on top of the budget.
-    slack: u64,
     /// Frames decoded, before trimming.
     decoded: u64,
     max_frames: u64,
@@ -242,10 +247,15 @@ impl AudioReader {
         limits: &AudioLimits,
     ) -> Result<Self, CoreError> {
         let (src, info, config, total) = mp4::open(r, &limits.container)?;
-        // Untrusted edit lists: priming and padding are bounded by what the track holds, and the
-        // padding (held back in memory until the end) by one second.
+        // Untrusted edit lists: priming and padding must fit what the track holds, and what it
+        // holds (all of which may be decoded) must fit the budget.
         let (priming, padding) = (info.priming as u64, info.padding as u64);
-        if priming + padding > total || padding > info.sample_rate as u64 {
+        let budget = limits.max_seconds.saturating_mul(info.sample_rate as u64);
+        if total > budget && info.sample_rate > 0 {
+            let rate = info.sample_rate as u64;
+            return Err(limit("maxSeconds", total / rate, limits.max_seconds));
+        }
+        if priming + padding > total {
             return Err(CoreError::new(
                 "MEDIA_CORRUPT",
                 format!(
@@ -261,9 +271,8 @@ impl AudioReader {
         let dec = open_audio_decoder(&info, &AudioConfig::Record(config))?;
         Ok(AudioReader {
             trim: Trim {
-                skip: info.priming as u64,
-                hold: info.padding as usize,
-                held: Vec::new(),
+                skip: priming,
+                left: Some(total - priming - padding),
             },
             info,
             kind: Kind::Mp4,
@@ -275,7 +284,6 @@ impl AudioReader {
             layout: None,
             declared: Some(total - priming - padding),
             exact: false,
-            slack: priming + padding,
             decoded: 0,
             max_frames: 0,
             out: 0,
@@ -334,7 +342,6 @@ impl AudioReader {
             },
             declared,
             exact: false,
-            slack: 0,
             decoded: 0,
             max_frames: 0,
             trim: Trim::default(),
@@ -388,8 +395,13 @@ impl AudioReader {
                 }
                 Err(e) => Err(e),
             };
+            if self.trim.done() {
+                // The presented length is reached: the rest is padding, not decoded.
+                self.ended = true;
+            }
             match step {
                 Ok(Some(out)) => return Ok(Some(out)),
+                Ok(None) if self.ended => return self.finish().map(|()| None),
                 Ok(None) => {}
                 Err(e) => {
                     self.ended = true;
@@ -452,7 +464,7 @@ impl AudioReader {
         }
         // The budget counts what was decoded, before the trim drops anything.
         self.decoded += (d.interleaved.len() / n) as u64;
-        if self.decoded > self.max_frames.saturating_add(self.slack) {
+        if self.decoded > self.max_frames {
             let rate = self.info.sample_rate as u64;
             return Err(limit(
                 "maxSeconds",
@@ -533,11 +545,10 @@ mod tests {
     use super::Trim;
 
     #[test]
-    fn trim_skips_priming_and_holds_padding() {
+    fn trim_skips_priming_and_stops_at_the_presented_length() {
         let mut t = Trim {
             skip: 3,
-            hold: 2,
-            held: Vec::new(),
+            left: Some(5),
         };
         let pcm: Vec<f32> = (0..10).map(|i| i as f32).collect();
         // Mono: frames 0..10 in chunks of 4, 4, 2.
@@ -545,5 +556,6 @@ mod tests {
         out.extend(t.push(&pcm[4..8], 1));
         out.extend(t.push(&pcm[8..], 1));
         assert_eq!(out, vec![3.0, 4.0, 5.0, 6.0, 7.0]);
+        assert!(t.done());
     }
 }

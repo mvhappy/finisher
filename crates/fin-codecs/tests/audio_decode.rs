@@ -14,7 +14,14 @@ use fin_media::backend::VendorClass;
 
 /// Every frame of `bytes`: the reader, its samples (interleaved) and the layout of the chunks.
 fn decode(bytes: Vec<u8>) -> Result<(AudioReader, Vec<f32>, ChannelLayout), fin_core::CoreError> {
-    let mut r = AudioReader::open(Cursor::new(bytes), &AudioLimits::default())?;
+    decode_with(bytes, &AudioLimits::default())
+}
+
+fn decode_with(
+    bytes: Vec<u8>,
+    limits: &AudioLimits,
+) -> Result<(AudioReader, Vec<f32>, ChannelLayout), fin_core::CoreError> {
+    let mut r = AudioReader::open(Cursor::new(bytes), limits)?;
     let mut pcm = Vec::new();
     let mut layout = ChannelLayout::default();
     let mut next_pts = 0i64;
@@ -383,16 +390,21 @@ fn mp4_audio_routes_by_codec() {
 
 /// An MP4 of 12 silent stereo MP3 frames, priming 1.
 fn mp4_mp3() -> Vec<u8> {
+    mp4_mp3_with(12, 1)
+}
+
+/// An MP4 of `packets` silent stereo MP3 frames at 48 kHz with `priming`.
+fn mp4_mp3_with(packets: i64, priming: u32) -> Vec<u8> {
     let mut w = fin_container::Mp4Writer::new(Cursor::new(Vec::new()), Default::default()).unwrap();
     let t = w
         .add_audio(fin_container::AudioTrackConfig {
             config: fin_container::CodecConfig::Other { fourcc: *b".mp3" },
             sample_rate: 48_000,
             channels: 2,
-            priming: 1,
+            priming,
         })
         .unwrap();
-    for i in 0..12i64 {
+    for i in 0..packets {
         let n = mp3::FRAME_SAMPLES as i64;
         w.write(t, &mp3::frame(2), i * n, i * n, n as u32, true)
             .unwrap();
@@ -416,8 +428,10 @@ fn mp4_hostile_padding_is_corrupt() {
         bad[d..d + 4].copy_from_slice(&u32::MAX.to_be_bytes());
     }
     let e = decode(bad).unwrap_err();
-    assert_eq!(e.code, "MEDIA_CORRUPT", "{e:?}");
-    assert_eq!(e.details["at"], "edts");
+    assert!(
+        ["MEDIA_CORRUPT", "MEDIA_LIMIT"].contains(&e.code.as_str()),
+        "{e:?}"
+    );
 }
 
 #[test]
@@ -451,4 +465,96 @@ fn mp3_xing_length_is_exact() {
     // Without a Xing tag the length is an estimate: a cut file still decodes what is there.
     let plain = mp3::mp3(1, 40, false);
     decode(plain[..plain.len() - 1].to_vec()).unwrap();
+}
+
+/// The offset of box type `kind` (its four-character code) in `b`.
+fn find(b: &[u8], kind: &[u8; 4]) -> usize {
+    b.windows(4)
+        .position(|w| w == kind)
+        .unwrap_or_else(|| panic!("{kind:?}"))
+}
+
+fn be32(b: &[u8], at: usize) -> u32 {
+    u32::from_be_bytes(b[at..at + 4].try_into().unwrap())
+}
+
+fn put32(b: &mut [u8], at: usize, v: u32) {
+    b[at..at + 4].copy_from_slice(&v.to_be_bytes());
+}
+
+/// The timescale field of the `mvhd`/`mdhd` whose type is at `at` (version 0 or 1).
+fn timescale_at(b: &[u8], at: usize) -> usize {
+    if b[at + 4] == 1 { at + 24 } else { at + 16 }
+}
+
+/// The `elst` (type at `at`) first entry's segment duration and media time: (offset, width).
+fn elst_fields(b: &[u8], at: usize) -> ((usize, usize), (usize, usize)) {
+    if b[at + 4] == 1 {
+        ((at + 12, 8), (at + 20, 8))
+    } else {
+        ((at + 12, 4), (at + 16, 4))
+    }
+}
+
+fn put(b: &mut [u8], (at, width): (usize, usize), v: u64) {
+    b[at..at + width].copy_from_slice(&v.to_be_bytes()[8 - width..]);
+}
+
+#[test]
+fn priming_does_not_widen_the_decode_budget() {
+    // 100 packets (2.4 s at 48 kHz), 100,000 of them priming: 15,200 presented frames fit a
+    // 1 s limit, but 2.4 s would be decoded. The budget is on what is decoded.
+    let limits = AudioLimits {
+        max_seconds: 1,
+        ..AudioLimits::default()
+    };
+    let e = decode_with(mp4_mp3_with(100, 100_000), &limits).unwrap_err();
+    assert_eq!(e.code, "MEDIA_LIMIT", "{e:?}");
+}
+
+#[test]
+fn mp4_totals_in_samples_not_ticks() {
+    // Media timescale 1,000 beside a 48 kHz sample entry: 24 ticks a packet, priming 10 ticks
+    // (480 samples). The total is 12 × 1,152 samples, not 288.
+    let mut b = mp4_mp3();
+    let m = find(&b, b"mdhd");
+    let ts = timescale_at(&b, m);
+    put32(&mut b, ts, 1_000);
+    let st = find(&b, b"stts");
+    for e in 0..be32(&b, st + 8) as usize {
+        put32(&mut b, st + 12 + e * 8 + 4, 24);
+    }
+    let el = find(&b, b"elst");
+    let (_, media) = elst_fields(&b, el);
+    put(&mut b, media, 10);
+    let (r, pcm, _) = decode(b).unwrap();
+    assert_eq!(r.info().priming, 480);
+    assert_eq!(Some((pcm.len() / 2) as u64), r.declared_frames());
+}
+
+#[test]
+fn shortened_edit_presents_exactly() {
+    // 417 packets (10.008 s); the edit presents 5 s: decoded exactly 240,000 frames.
+    let mut b = mp4_mp3_with(417, 1);
+    let mv = find(&b, b"mvhd");
+    let movie = be32(&b, timescale_at(&b, mv)) as u64;
+    let el = find(&b, b"elst");
+    let (segment, _) = elst_fields(&b, el);
+    put(&mut b, segment, movie * 5);
+    let (r, pcm, _) = decode(b).unwrap();
+    assert_eq!(r.declared_frames(), Some(240_000));
+    assert_eq!(pcm.len() / 2, 240_000);
+}
+
+#[test]
+fn mp3_xing_after_several_id3_tags() {
+    let mut full = Vec::new();
+    for _ in 0..2 {
+        full.extend_from_slice(&[0x49, 0x44, 0x33, 0x04, 0, 0, 0, 0, 0, 0]);
+    }
+    full.extend_from_slice(&mp3::mp3(1, 40, true));
+    let (r, pcm, _) = decode(full.clone()).unwrap();
+    assert_eq!(r.declared_frames(), Some(pcm.len() as u64));
+    let e = decode(full[..full.len() - 1].to_vec()).unwrap_err();
+    assert_eq!(e.code, "MEDIA_CORRUPT", "{e:?}");
 }

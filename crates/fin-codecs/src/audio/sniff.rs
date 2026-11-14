@@ -138,16 +138,23 @@ pub(crate) fn wave_layout<R: Read + Seek>(
     .with_details(json!({ "at": at, "format": "wav", "maxChunks": MAX_CHUNKS })))
 }
 
-/// Whether an MP3 states its length: its first frame (after an ID3v2 tag) is a Xing/Info frame
+/// Leading ID3v2 tags skipped at most before an MP3's first frame.
+const MAX_ID3: usize = 16;
+
+/// Whether an MP3 states its length: its first frame (after any leading ID3v2 tags) is a Xing/Info frame
 /// with a frame count, or a VBRI frame; otherwise symphonia estimates it from the bitrate.
 pub(crate) fn mp3_exact<R: Read + Seek>(r: &mut R) -> Result<bool, CoreError> {
-    let mut id3 = [0u8; 10];
+    // Every leading ID3v2 tag (its footer counted when flagged), at most `MAX_ID3` of them.
     let mut at = 0u64;
-    if read_exact_at(r, 0, &mut id3)? && &id3[..3] == b"ID3" {
+    for _ in 0..MAX_ID3 {
+        let mut id3 = [0u8; 10];
+        if !read_exact_at(r, at, &mut id3)? || &id3[..3] != b"ID3" {
+            break;
+        }
         let size = id3[6..10]
             .iter()
             .fold(0u64, |a, &b| (a << 7) | (b & 0x7F) as u64);
-        at = 10 + size + if id3[5] & 0x10 != 0 { 10 } else { 0 };
+        at += 10 + size + if id3[5] & 0x10 != 0 { 10 } else { 0 };
     }
     let mut f = [0u8; 64];
     if !read_exact_at(r, at, &mut f)? || f[0] != 0xFF || f[1] & 0xE0 != 0xE0 {
