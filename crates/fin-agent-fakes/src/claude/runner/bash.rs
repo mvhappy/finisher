@@ -41,12 +41,16 @@ fn login_shell(command: &str) -> (String, [String; 3]) {
 impl Runner {
     /// The `assistant` line naming the call.
     pub(super) fn announce(&mut self, ask: &Ask, tool_use_id: &str) {
-        self.emit(&json!({
+        let line = json!({
             "type": "assistant", "session_id": self.session_id, "parent_tool_use_id": null,
             "uuid": fresh_uuid(),
             "message": {"id": fresh_uuid(), "model": self.model(), "role": "assistant",
                 "content": [{"type": "tool_use", "id": tool_use_id, "name": ask.tool, "input": ask.input}]},
-        }));
+        });
+        // The CLI writes the call to its transcript as it announces it: a process killed while
+        // the call runs leaves it there without a result, which a resume finds dangling.
+        self.transcript.append(&line);
+        self.emit(&line);
     }
 
     /// A background call while background tasks are disabled: rejected before any prompt.
