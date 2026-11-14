@@ -136,6 +136,8 @@ pub struct PluginProcess {
     rx: Receiver<Event>,
     stderr: Arc<Mutex<Vec<String>>>,
     pub warm: bool,
+    /// The job kinds its `hello` named (set by [`crate::fake_host::FakeHost::hello`]).
+    pub hello_kinds: Vec<fin_jobs::KindVersion>,
     ended: bool,
 }
 
@@ -182,6 +184,7 @@ impl PluginProcess {
             rx,
             stderr: lines,
             warm,
+            hello_kinds: Vec::new(),
             ended: false,
         })
     }

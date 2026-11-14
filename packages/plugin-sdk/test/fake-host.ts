@@ -25,6 +25,11 @@ export function commandJob(command: string, args: unknown = {}, rev = 7, extra: 
   return { id: `j${++jobs}`, kind: "plugin.command", kindVersion: 1, attempt: 1, params: { command, args, project: "p1", branch: "main", rev }, extra } as StartJob;
 }
 
+/** A `plugin.hook` v1 job calling `handler` with `request` (a `HookRun`). */
+export function hookJob(handler: string, request: unknown, extra: unknown = context()): StartJob {
+  return { id: `j${++jobs}`, kind: "plugin.hook", kindVersion: 1, attempt: 1, params: { handler, request }, extra } as StartJob;
+}
+
 export class FakeHost {
   readonly child: ChildProcessWithoutNullStreams;
   readonly got: Msg[] = [];

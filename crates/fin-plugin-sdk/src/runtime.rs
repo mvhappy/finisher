@@ -1,5 +1,6 @@
-//! The process: a `fin_jobs::worker` family named `plugin` serving `plugin.command` v1, run in
-//! the runtime's plugin mode (plan 8B Decision 21). `fin_jobs` owns the wire: `hello`, the
+//! The process: a `fin_jobs::worker` family named `plugin` serving `plugin.command` v1 (and
+//! `plugin.hook` v1 for a plugin with [`Plugin::HOOKS`], 7F Decision 20), run in the runtime's
+//! plugin mode (plan 8B Decision 21). `fin_jobs` owns the wire: `hello`, the
 //! reader and its cancel routing, `alive`, `call`/`reply`, `result`/`error`, `ready` when warm,
 //! exit 0 after a cold job, exit 70 when the host is gone, a caught panic answered
 //! `WORKER_CRASHED` and exit 101. This module adds the plugin's own rules: a cancelled job
@@ -9,10 +10,15 @@
 use fin_jobs::codec::{self, CodecError};
 use fin_jobs::worker::{Channel, Family, JobCtx};
 use fin_jobs::{JobError, KindVersion, StartJob, WorkerMsg};
-use fin_plugin_api::protocol::{COMMAND_KIND, COMMAND_KIND_VERSION, CommandRun, PluginContext};
+use fin_plugin_api::protocol::{
+    COMMAND_KIND, COMMAND_KIND_VERSION, CommandRun, HOOK_KIND, HOOK_KIND_VERSION, HookRun,
+    PluginContext,
+};
+use serde::Serialize;
 use serde_json::Value;
 
 use crate::command::{CommandCall, Plugin, cancelled, error_to_job, protocol};
+use crate::hook::HookCall;
 use crate::host::Host;
 
 /// The family every plugin process names in `hello` (Decision 3: one family for all plugins).
@@ -22,6 +28,10 @@ pub const FAMILY: &str = "plugin";
 pub const WARM_ARG: &str = "--warm";
 
 static KINDS: &[KindVersion] = &[KindVersion::new(COMMAND_KIND, COMMAND_KIND_VERSION)];
+static KINDS_WITH_HOOKS: &[KindVersion] = &[
+    KindVersion::new(COMMAND_KIND, COMMAND_KIND_VERSION),
+    KindVersion::new(HOOK_KIND, HOOK_KIND_VERSION),
+];
 
 /// Whether the process was started warm: its last argument is [`WARM_ARG`].
 pub fn warm_from_args(args: impl IntoIterator<Item = String>) -> bool {
@@ -59,7 +69,7 @@ impl<P: Plugin + Send> Family for PluginFamily<P> {
     }
 
     fn kinds(&self) -> &'static [KindVersion] {
-        KINDS
+        if P::HOOKS { KINDS_WITH_HOOKS } else { KINDS }
     }
 
     fn warm(&self) -> bool {
@@ -67,7 +77,7 @@ impl<P: Plugin + Send> Family for PluginFamily<P> {
     }
 
     fn run(&mut self, job: &StartJob, ctx: &mut JobCtx<'_>) -> Result<Value, JobError> {
-        let outcome = self.command(job, ctx);
+        let outcome = self.serve(job, ctx);
         if ctx.cancel_token().is_cancelled() {
             return Err(error_to_job(cancelled()));
         }
@@ -76,23 +86,35 @@ impl<P: Plugin + Send> Family for PluginFamily<P> {
 }
 
 impl<P: Plugin> PluginFamily<P> {
-    fn command(&mut self, job: &StartJob, ctx: &mut JobCtx<'_>) -> Result<Value, JobError> {
-        let (call, context) = decode(job).map_err(error_to_job)?;
+    fn serve(&mut self, job: &StartJob, ctx: &mut JobCtx<'_>) -> Result<Value, JobError> {
+        let (call, context) = decode::<P>(job).map_err(error_to_job)?;
+        let rev = match &call {
+            Call::Command(c) => Some(c.rev),
+            Call::Hook(_) => None,
+        };
         #[allow(unused_mut)]
-        let mut host = Host::new(ctx.reporter(), ctx.cancel_token(), context, call.rev);
+        let mut host = Host::new(ctx.reporter(), ctx.cancel_token(), context, rev);
         #[cfg(feature = "files")]
         host.files.extend_from_slice(ctx.files());
         if host.cancelled() {
             return Err(error_to_job(cancelled()));
         }
-        let out = self.plugin.command(&host, call).map_err(error_to_job)?;
-        serde_json::to_value(out).map_err(|e| {
-            error_to_job(protocol(
-                "badResult",
-                format!("the result does not encode: {e}"),
-            ))
-        })
+        match call {
+            Call::Command(c) => encode(self.plugin.command(&host, c)),
+            Call::Hook(h) => encode(self.plugin.hook(&host, h)),
+        }
     }
+}
+
+/// A handler's answer as the job's result value.
+fn encode<T: Serialize>(out: Result<T, crate::PluginError>) -> Result<Value, JobError> {
+    let out = out.map_err(error_to_job)?;
+    serde_json::to_value(out).map_err(|e| {
+        error_to_job(protocol(
+            "badResult",
+            format!("the result does not encode: {e}"),
+        ))
+    })
 }
 
 /// The longest message an oversized error keeps, in bytes.
@@ -172,22 +194,38 @@ fn too_large(bytes: usize) -> JobError {
     )
 }
 
-/// The job's command and context; `PLUGIN_PROTOCOL {reason: kind | params | context}`.
-fn decode(job: &StartJob) -> Result<(CommandCall, PluginContext), crate::PluginError> {
-    if job.kind != COMMAND_KIND || job.kind_version != COMMAND_KIND_VERSION {
+/// What a job asks for.
+enum Call {
+    Command(CommandCall),
+    Hook(HookCall),
+}
+
+/// The job's call and context; `PLUGIN_PROTOCOL {reason: kind | params | context}`. A
+/// `plugin.hook` job is a `kind` error for a plugin without hooks.
+fn decode<P: Plugin>(job: &StartJob) -> Result<(Call, PluginContext), crate::PluginError> {
+    let v = job.kind_version;
+    let call = if job.kind == COMMAND_KIND && v == COMMAND_KIND_VERSION {
+        let run: CommandRun = serde_json::from_value(job.params.clone())
+            .map_err(|e| protocol("params", format!("the command run does not decode: {e}")))?;
+        Call::Command(run.into())
+    } else if P::HOOKS && job.kind == HOOK_KIND && v == HOOK_KIND_VERSION {
+        let run: HookRun = serde_json::from_value(job.params.clone())
+            .map_err(|e| protocol("params", format!("the hook run does not decode: {e}")))?;
+        Call::Hook(run.into())
+    } else {
+        let serves = if P::HOOKS {
+            format!("{COMMAND_KIND} v{COMMAND_KIND_VERSION} and {HOOK_KIND} v{HOOK_KIND_VERSION}")
+        } else {
+            format!("{COMMAND_KIND} v{COMMAND_KIND_VERSION}")
+        };
         return Err(protocol(
             "kind",
-            format!(
-                "a plugin serves {COMMAND_KIND} v{COMMAND_KIND_VERSION}, not {} v{}",
-                job.kind, job.kind_version
-            ),
+            format!("a plugin serves {serves}, not {} v{v}", job.kind),
         )
         .with("kind", job.kind.clone()));
-    }
-    let run: CommandRun = serde_json::from_value(job.params.clone())
-        .map_err(|e| protocol("params", format!("the command run does not decode: {e}")))?;
+    };
     let extra = job.extra.clone().unwrap_or(Value::Null);
     let context: PluginContext = serde_json::from_value(extra)
         .map_err(|e| protocol("context", format!("start.extra is no plugin context: {e}")))?;
-    Ok((run.into(), context))
+    Ok((call, context))
 }

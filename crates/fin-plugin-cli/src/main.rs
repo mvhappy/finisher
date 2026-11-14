@@ -18,10 +18,11 @@ USAGE:
   fin-plugin new content|code <dir>
   fin-plugin validate <dir>
   fin-plugin pack <dir> -o <file.finpkg>
-  fin-plugin test <dir> [--profile command] [--fixture <snapshot.json>] [--exec <path>] [--node <path>]
+  fin-plugin test <dir> [--profile command|hook] [--fixture <snapshot.json>] [--exec <path>] [--node <path>]
         runs the plugin through a conformance profile on a fake host (`command`: every
         command answers in time with valid output, honours cancel, makes no call outside
-        its permissions and logs no path or secret). --exec: a native plugin's executable
+        its permissions and logs no path or secret; `hook`: every hook handler answers a
+        sample request of its event in time with allow, block or context). --exec: a native plugin's executable
         when <dir> is a source tree; --node: the Node a `node` plugin runs on
   fin-plugin keygen <private.pem> [--public <public.pem>]
   fin-plugin registry <command> ...        (see `fin-plugin registry --help`)

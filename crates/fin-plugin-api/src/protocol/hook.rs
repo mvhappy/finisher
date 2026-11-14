@@ -15,9 +15,21 @@ use serde_json::Value;
 /// The version of [`HookRequest`] this host sends (`v`).
 pub const HOOK_PROTOCOL_VERSION: u32 = 1;
 
+/// The job kind of a plugin hook handler's run (7F Decision 20): params [`HookRun`], result
+/// [`HookOut`].
+pub const HOOK_KIND: &str = "plugin.hook";
+/// The version of [`HOOK_KIND`]'s params and result.
+pub const HOOK_KIND_VERSION: u32 = 1;
+/// A plugin hook's timeout when its manifest names none, in seconds.
+pub const DEFAULT_HOOK_TIMEOUT_S: u16 = 10;
+/// The longest timeout a manifest may name for a plugin hook, in seconds.
+pub const MAX_HOOK_TIMEOUT_S: u16 = 60;
+
 /// An event a hook can subscribe to (arch §10 without `PreOp`/`PostOp`, spec §9.1).
 /// `PreRender` and `PostRender` are accepted and inert until a render job kind exists.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+)]
 pub enum HookEvent {
     SessionStart,
     SessionEnd,
@@ -66,6 +78,30 @@ impl HookEvent {
         HookEvent::Notification,
     ];
 
+    /// The event's name, as manifests, permissions and the wire spell it.
+    pub fn name(self) -> &'static str {
+        match self {
+            HookEvent::SessionStart => "SessionStart",
+            HookEvent::SessionEnd => "SessionEnd",
+            HookEvent::UserPrompt => "UserPrompt",
+            HookEvent::PreCommand => "PreCommand",
+            HookEvent::PostCommand => "PostCommand",
+            HookEvent::BranchReady => "BranchReady",
+            HookEvent::PreMerge => "PreMerge",
+            HookEvent::PostMerge => "PostMerge",
+            HookEvent::PreRender => "PreRender",
+            HookEvent::PostRender => "PostRender",
+            HookEvent::JobDone => "JobDone",
+            HookEvent::Approval => "Approval",
+            HookEvent::Notification => "Notification",
+        }
+    }
+
+    /// The event named `name`, exactly.
+    pub fn from_name(name: &str) -> Option<HookEvent> {
+        HookEvent::ALL.into_iter().find(|e| e.name() == name)
+    }
+
     pub fn class(self) -> HookClass {
         match self {
             HookEvent::UserPrompt
@@ -104,6 +140,53 @@ pub enum HookReply {
     Context {
         text: String,
     },
+}
+
+/// The most bytes (UTF-8) of a `block` reason, after control characters are stripped
+/// (Decision 2; `HOOK_LIMITS.reasonBytes` in `@finisher/contracts`).
+pub const MAX_BLOCK_REASON_BYTES: usize = 1024;
+/// The most bytes (UTF-8) of a `context` text, after control characters are stripped
+/// (Decision 2; `HOOK_LIMITS.textBytes`).
+pub const MAX_CONTEXT_TEXT_BYTES: usize = 16 * 1024;
+
+/// A reply whose `reason` or `text` passes Decision 2's limit: a failed hook, not truncated.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplyTooLarge {
+    /// `reason` or `text`.
+    pub field: &'static str,
+    /// Its bytes after stripping.
+    pub bytes: usize,
+    pub max: usize,
+}
+
+/// `s` without control characters (C0 but `\n` and `\t`, DEL, C1), as the host strips a reply.
+pub fn strip_control(s: &str) -> String {
+    s.chars()
+        .filter(|&c| !c.is_control() || c == '\n' || c == '\t')
+        .collect()
+}
+
+impl HookReply {
+    /// The reply as the host keeps it (Decision 2): control characters stripped from `reason`
+    /// and `text`, then at most [`MAX_BLOCK_REASON_BYTES`] and [`MAX_CONTEXT_TEXT_BYTES`].
+    pub fn checked(self) -> Result<HookReply, ReplyTooLarge> {
+        let fit = |field, s: &str, max| {
+            let s = strip_control(s);
+            match s.len() {
+                bytes if bytes > max => Err(ReplyTooLarge { field, bytes, max }),
+                _ => Ok(s),
+            }
+        };
+        Ok(match self {
+            HookReply::Allow {} => HookReply::Allow {},
+            HookReply::Block { reason } => HookReply::Block {
+                reason: fit("reason", &reason, MAX_BLOCK_REASON_BYTES)?,
+            },
+            HookReply::Context { text } => HookReply::Context {
+                text: fit("text", &text, MAX_CONTEXT_TEXT_BYTES)?,
+            },
+        })
+    }
 }
 
 /// What a `plugin.hook` v1 job returns.

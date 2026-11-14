@@ -6,11 +6,11 @@ use serde_json::Value;
 
 /// One failed check. `code` is the code the real host would answer or record for it
 /// (`PLUGIN_TIMEOUT`, `PLUGIN_CRASHED`, `PLUGIN_PERMISSION_DENIED`, …) or, for a check the
-/// host has no code for, the harness's own (`LOG_LEAK`, `ARGS_DELIVERED`).
+/// host has no code for, the harness's own (`LOG_LEAK`, `ARGS_DELIVERED`, `HOOK_REPLY_INVALID`).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Finding {
-    /// `answer`, `args`, `ops`, `cancel`, `permission`, `protocol` or `log`.
+    /// `answer`, `args`, `ops`, `cancel`, `permission`, `protocol`, `log` or `reply`.
     pub check: &'static str,
     pub code: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -27,7 +27,7 @@ pub struct Finding {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunSummary {
-    /// `tx`, `data`, `error`, `timeout`, `crashed`, `protocol` or `skipped`.
+    /// `tx`, `data`, `reply` (a hook's), `error`, `timeout`, `crashed`, `protocol` or `skipped`.
     pub outcome: &'static str,
     pub ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -60,6 +60,24 @@ pub struct CommandReport {
     pub cancel: Option<RunSummary>,
 }
 
+/// One declared hook handler (the `hook` profile).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HookReport {
+    pub event: String,
+    pub handler: String,
+    pub timeout_s: u16,
+    /// The sample request the runs sent.
+    pub request: Value,
+    /// What the warm run answered, when it was a valid reply (`allow`, `block`, `context`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reply: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warm: Option<RunSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cold: Option<RunSummary>,
+}
+
 /// A host call the plugin made, as the fake host answered it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -86,6 +104,8 @@ pub struct Report {
     /// The fixture's source (`builtin` or `file`) and rev.
     pub fixture: Value,
     pub commands: Vec<CommandReport>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub hooks: Vec<HookReport>,
     pub calls: Vec<CallRecord>,
     pub findings: Vec<Finding>,
 }

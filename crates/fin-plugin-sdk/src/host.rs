@@ -18,12 +18,13 @@ use crate::command::{cancelled, error_from_job, protocol};
 /// The largest response body the host holds (Decision 10).
 pub const MAX_BODY_BYTES: u64 = 64 << 20;
 
-/// The host, as one command job sees it.
+/// The host, as one command or hook job sees it.
 pub struct Host {
     reporter: Reporter,
     token: CancelToken,
     context: PluginContext,
-    rev: u64,
+    /// A command's pinned rev; none for a hook job (whose snapshot pages need only agree).
+    rev: Option<u64>,
     #[cfg(feature = "files")]
     pub(crate) files: Vec<fin_jobs::FileGrant>,
 }
@@ -68,7 +69,7 @@ impl Host {
         reporter: Reporter,
         token: CancelToken,
         context: PluginContext,
-        rev: u64,
+        rev: Option<u64>,
     ) -> Host {
         Host {
             reporter,
@@ -117,13 +118,14 @@ impl Host {
 
     /// The project at the job's pinned `rev` (`project.snapshot`, `project:read`): every page
     /// fetched and joined. Each page must name its own index, the same page count (at least 1)
-    /// and the job's `rev`; otherwise `PLUGIN_PROTOCOL {reason: snapshotPage | snapshotPages |
+    /// and the job's `rev` (a hook job pins none: the first page's); otherwise `PLUGIN_PROTOCOL {reason: snapshotPage | snapshotPages |
     /// snapshotRev, page, expected, got}`; joined bytes that are not a project
     /// `{reason: snapshotJson}`.
     pub fn snapshot(&self) -> Result<fin_core::model::Project, PluginError> {
         let method = HostMethod::ProjectSnapshot;
         let mut bytes = Vec::new();
         let mut pages = None;
+        let mut rev = self.rev;
         let mut page = 0u32;
         loop {
             let ask = ProjectSnapshot {
@@ -137,12 +139,10 @@ impl Host {
                     .with("expected", expected)
                     .with("got", got)
             };
-            if got.rev != self.rev {
-                let msg = format!(
-                    "page {page} is of rev {}, the job's is {}",
-                    got.rev, self.rev
-                );
-                return Err(bad("snapshotRev", msg, self.rev, got.rev));
+            let want = *rev.get_or_insert(got.rev);
+            if got.rev != want {
+                let msg = format!("page {page} is of rev {}, the job's is {want}", got.rev);
+                return Err(bad("snapshotRev", msg, want, got.rev));
             }
             if got.page != page {
                 let msg = format!("asked page {page}, got {}", got.page);

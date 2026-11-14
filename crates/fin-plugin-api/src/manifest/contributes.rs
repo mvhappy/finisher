@@ -12,6 +12,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
 use crate::contribution::ContributionKind;
+use crate::protocol::HookEvent;
 use crate::schema_subset::SchemaSubset;
 
 /// A font catalog file (`fin_fonts::FontCatalog` JSON) whose entries join the server's
@@ -55,13 +56,20 @@ pub struct CommandContribution {
     pub timeout_s: Option<u16>,
 }
 
-/// A hook handler (agent §9). Typed now; consumable once 7F's hook engine lands (8B
-/// Decision 20), refused as `PLUGIN_CONTRIBUTION_UNSUPPORTED` until then.
+/// A hook handler (agent §9; 7F Decision 20), run through a `plugin.hook` v1 job in the
+/// hook engine's `plugin` layer. Consumed from host API 1.2.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HookContribution {
-    pub event: String,
+    /// Needs `hooks:observe` naming it.
+    pub event: HookEvent,
+    /// `[a-z][a-z0-9-]{0,63}`: the name the SDK dispatches on (`HookRun.handler`); one plugin
+    /// lists each `(event, handler)` once.
     pub handler: String,
+    /// Seconds, 1 to 60; 10 when absent. A failure or timeout follows the event's default
+    /// `onTimeout` (a plugin cannot loosen `PreMerge`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_s: Option<u16>,
 }
 
 /// The typed contributions, plus the names of keys this crate does not type.
@@ -169,7 +177,8 @@ struct ContributesSchema {
     caption_styles: Vec<CaptionStyleContribution>,
     #[serde(default)]
     commands: Vec<CommandContribution>,
-    // No `hooks`: typed, but refused until the host consumes them (8B Decision 20).
+    #[serde(default)]
+    hooks: Vec<HookContribution>,
 }
 
 impl JsonSchema for Contributes {

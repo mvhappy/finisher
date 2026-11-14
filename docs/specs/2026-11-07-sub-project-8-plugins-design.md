@@ -68,7 +68,7 @@ Sub-project 8 makes Finisher extensible without trusting what extends it, and sh
 
 **Order:** 8A → 8B → 8C → {8D, 8G} → {8E, 8F} → 8H. 8G needs only 8B and 7A and can run beside 8C–8F; 8H needs 8B and sub-project 6's 6D/6E and can run beside 8D–8F. Arch §24 puts sub-project 7 before 8; no part of 8B waits for 7C (owner decision 1): 7C adds OS confinement to plugins that already run.
 
-**8B status (2026-11-12): built on branch `sp8b` except confinement (Task 16, waits for 7C's `plugin` profile) and hook handlers (Task 17, waits for 7F); the cross-platform validation (Task 19) has not run. §24 records the decisions as built, the review fixes and the residuals; where §24 and an unmarked paragraph differ, §24 wins.**
+**8B status (2026-11-12, hooks 2026-11-14): built on branch `sp8b` except confinement (Task 16, waits for 7C's `plugin` profile); hook handlers (Task 17) were built by sub-project 7F (agent §9, §27) at host API 1.2.0; the cross-platform validation (Task 19) has not run. §24 records the decisions as built, the review fixes and the residuals; where §24 and an unmarked paragraph differ, §24 wins.**
 
 ### 1.6 Ownership across sub-projects (coordinator decision)
 
@@ -163,7 +163,7 @@ Nothing at the OS level stops an unconfined plugin from opening sockets, reading
 - **Types** live in `fin-plugin-api::protocol` (Rust, pure), exported to JSON Schema and generated into `@finisher/core-types`. Nothing on either side is hand-written.
 - **Mapping of the earlier JSON-RPC design:** `initialize {hostApi, protocol, plugin, grants, dirs, locale, limits}` is the worker's `hello` (`v` 1, any `minor`, `kinds`, `warm`) and, per job, a **`PluginContext`** in `start.extra` (host API version, plugin id and version, granted permissions, `dirs {plugin, data?, tmp}`, locale, `limits`); `initialized` is `ready`; `shutdown`/`exit` are 5C's `shutdown` and stdin EOF. **Host to plugin** methods (`command.run`, later `hook.<event>`, `analyze.run`, `provider.*`, `codec.*`, `matte.run`) are **jobs of plugin kinds**: `plugin.command` v1 here; `plugin.hook` v1 with Task 17. **Plugin to host** methods are **host calls** (`call {id, method, params}`, answered by `reply`), routed to the `plugin` family's `onCall` (§3.6). The JSON-RPC types live on as the typed params and results of those kinds and calls.
 - **Plugin kinds are never submitted by RPC** (Decision 6): `registerKind` refuses `rpc: true` for plugin families permanently; clients reach plugin work through typed RPCs that check rights and build the job (`plugin.command.run`; 8C's analysis RPCs; 8G's generation RPCs), and plugins reach their own kinds through a `job.submit` host call in 8C.
-- **Versioning:** `hostApi` is a semver (**1.1.0** as built); a manifest's `hostApi` range must include the running host's (`PLUGIN_HOST_API`); additive host methods and newly consumable contribution kinds bump the minor (`commands` made 1.1; `hooks` will make 1.2). The envelope's own minor rule governs unknown message types: the SDKs drop and log an unknown type from a newer host, never fatal.
+- **Versioning:** `hostApi` is a semver (**1.2.0** as built: 1.1 made `commands` consumable, 7F's `hooks` 1.2); a manifest's `hostApi` range must include the running host's (`PLUGIN_HOST_API`); additive host methods and newly consumable contribution kinds bump the minor (`commands` made 1.1; **`hooks` made 1.2, as built in 7F: 1.2.0**). The envelope's own minor rule governs unknown message types: the SDKs drop and log an unknown type from a newer host, never fatal.
 - **Errors** are `{code, message, details, fix?}` with the exits of §13.
 
 ### 3.5 Data exchange: `in/`, `out/` and rings (`fin-shm`, owned by sub-project 6)
@@ -209,13 +209,13 @@ Rules, all implemented once in **`fin-shm`**, which `fin-worker` and the plugin 
 | Method (host → plugin) | Contribution |
 |---|---|
 | `command.run {command, args, project, branch, rev}` → `{tx?: {ops, baseRev}, data?}` | `commands` |
-| `hook.<event> {payload}` → `allow \| block {reason} \| context {text} \| modify {payload}` | `hooks`: receiving any event needs `hooks:observe`; `modify` needs `hooks:modify` granted per hook (agent §9.1) |
+| `plugin.hook` job (`HookRun {handler, request}`) → `allow \| block {reason} \| context {text}` | `hooks`: receiving an event needs a `hooks:observe` grant naming it, checked at every run. **No `modify` in v1** (agent §9.1, §1.6): a `modify` reply is a failure, and `hooks:modify` validates and grants nothing. **As built (7F, host API 1.2.0):** the hook is a `plugin.hook` v1 job (warm, interactive, never submittable by RPC) with the event's principal as owner and rights invoker ∩ grants, the manifest's `timeoutS` (1–60, default 10) its deadline; the reply is capped at 64 KiB and the payload at 384 KiB; a developer plugin never sees an `agent` or `mcp` principal's event; a server-scoped event (no project) reaches only a plugin whose rights cover every project; the job makes no project reads; its identity is `plugin:<id>/<handler>` and its audit row adds `pluginId` (agent §9.2) |
 | `analyze.run {analyzer, input, params, models}` (in a job) | `analyzers` |
 | `provider.estimate \| submit \| poll \| cancel \| fetch \| find` | `providers` (§9) |
 | `codec.*`, `demux.*` | `codecBackends` (§10.1) |
 | `matte.run` (in a job) | `matteProducers` (§10.3) |
 
-**As built (8B).** Host API **1.1.0** (`commands` became consumable; `hooks` is typed but refused `PLUGIN_CONTRIBUTION_UNSUPPORTED` by presence, so the API stays 1.1 until a follow-up after 7F). Built calls: `project.snapshot`, `project.view`, `log`, `net.fetch`, `net.read`. A call goes through, in order: method name (a later batch's method is `INVALID_REQUEST {method, availableFrom}`: `analysis.*`, `media.pcm|frames`, `job.submit` 8C, `media.file` 8H, `secret.grant` 8G; any other name `{reason: unknownMethod}`), decoding by the `fin-plugin-api` types (unknown fields refused, `PLUGIN_PROTOCOL`), the authority key of its own job (`PLUGIN_AUTHORITY_RETIRED`, exit 5, `retryable`), `narrowRights` against the live invoker (`CREDENTIAL_REVOKED`), then permission and reach (`PLUGIN_PERMISSION_DENIED {perm, missing: grant | invoker}`, `PROJECT_NOT_FOUND`, `BRANCH_NOT_ALLOWED`). **Page size (normative): 768,000 bytes before base64**, for snapshot pages, `project.view` (cut at whole lines) and `net.read` (`CallLimits.pageBytes`); a page's base64 and the envelope fit the 1 MiB line. The Rust SDK's `PAGE_BYTES` (756 KiB, 774,144 bytes) is only an upper clamp on the host's value (`min(pageBytes, PAGE_BYTES)`); the doc comments in `fin-plugin-api::protocol::calls` that say "756 KiB" are stale and the host's number wins. **Snapshot:** a command's snapshot is read at submit and held by the host (`CommandRun.rev` = every page's `rev` = `Tx.baseRev`), under a per-run handle in `CommandRun.snapshot` (opaque to plugins); other jobs pin at their first read. `log`: 20 a second per process, 4 KiB, scrubbed (paths become `<path>`, control and bidi characters become spaces), written to the server log under a keyed plugin id; stderr is scrubbed, capped at 64 KiB a minute and never journaled. A call from a process whose key the host does not know fails closed with `PLUGIN_AUTHORITY_RETIRED`.
+**As built (8B).** Host API **1.1.0** (`commands` became consumable; `hooks` was typed but refused `PLUGIN_CONTRIBUTION_UNSUPPORTED` by presence). **As built (7F): host API 1.2.0** (`fin_plugin_api::HOST_API` and finisherd's `PLUGIN_HOST_API` together): `hooks` is consumable from 1.2 and refused at 1.1; `job.submit` (8C) takes the next minor. Built calls: `project.snapshot`, `project.view`, `log`, `net.fetch`, `net.read`. A call goes through, in order: method name (a later batch's method is `INVALID_REQUEST {method, availableFrom}`: `analysis.*`, `media.pcm|frames`, `job.submit` 8C, `media.file` 8H, `secret.grant` 8G; any other name `{reason: unknownMethod}`), decoding by the `fin-plugin-api` types (unknown fields refused, `PLUGIN_PROTOCOL`), the authority key of its own job (`PLUGIN_AUTHORITY_RETIRED`, exit 5, `retryable`), `narrowRights` against the live invoker (`CREDENTIAL_REVOKED`), then permission and reach (`PLUGIN_PERMISSION_DENIED {perm, missing: grant | invoker}`, `PROJECT_NOT_FOUND`, `BRANCH_NOT_ALLOWED`). **Page size (normative): 768,000 bytes before base64**, for snapshot pages, `project.view` (cut at whole lines) and `net.read` (`CallLimits.pageBytes`); a page's base64 and the envelope fit the 1 MiB line. The Rust SDK's `PAGE_BYTES` (756 KiB, 774,144 bytes) is only an upper clamp on the host's value (`min(pageBytes, PAGE_BYTES)`); the doc comments in `fin-plugin-api::protocol::calls` that say "756 KiB" are stale and the host's number wins. **Snapshot:** a command's snapshot is read at submit and held by the host (`CommandRun.rev` = every page's `rev` = `Tx.baseRev`), under a per-run handle in `CommandRun.snapshot` (opaque to plugins); other jobs pin at their first read. `log`: 20 a second per process, 4 KiB, scrubbed (paths become `<path>`, control and bidi characters become spaces), written to the server log under a keyed plugin id; stderr is scrubbed, capped at 64 KiB a minute and never journaled. A call from a process whose key the host does not know fails closed with `PLUGIN_AUTHORITY_RETIRED`.
 
 ### 3.7 The `plugin` principal
 
@@ -302,7 +302,7 @@ A contribution kind is accepted only once a batch consumes it; until then a mani
 |---|---|---|---|
 | `fontCatalogs` | fin-fonts catalog merge (4C Decision 30) | low | 8A |
 | `captionStyles` | `style.add --from @pub/pack:<name>` (copied into the project) | low | 8A |
-| `commands`, `hooks` | §3.8, agent §9 | per permissions | 8B (hooks with 7F) |
+| `commands`, `hooks` | §3.8, agent §9 | per permissions | 8B (`commands`), 7F (`hooks`, host API 1.2.0, no `modify`) |
 | `skills`, `prompts`, `roles`, `rubrics` | `fin guide`, saved prompts, roles as data (agent §6.2, §6.4), critic rubrics (10) | **medium**: they steer agents; never auto-updated (§5.3) | when 7B, 7G or 10 consume them |
 | `analyzers` | §8.1 | per permissions | 8C |
 | `providers` | §9 | per permissions | 8G |
@@ -786,7 +786,7 @@ Arch §16 priority: injected agent > malicious plugin > stolen device > network 
 | Hostile model file | models only from signed or bundled manifests, pinned by SHA-256; inference inside the sandboxed process | an ORT exploit runs with the plugin's rights (the user's, before 7C) |
 | GPU driver attack surface | `gpu` is medium risk; only render nodes (Linux), Metal user clients (macOS) and D3D (Windows) are reachable, and only with the grant | a kernel driver bug |
 | Plugin starves the server | `fin-jobs` pools, memory and process limits, idle stop, crash-loop disable | — |
-| Hook handlers see or rewrite agent commands | `hooks:observe` and per-hook `hooks:modify` grants; both payloads audited (agent §9.1) | — |
+| Hook handlers see agent commands | `hooks:observe` (checked at every run, per event); **no `modify` in v1**, so a handler cannot rewrite one (agent §9.1); a block is audited `hook.block` with `pluginId` | A granted handler sees the payloads of the events it observes; `hooks:observe` with `net` is high risk (§4.3) |
 
 ---
 
@@ -1242,17 +1242,17 @@ Record the results here and in `TASKS.md` under 8A Task 15.
 | 11 | Bodies held by the host, read in pages | As built; pages are 768,000 bytes | §9.3 |
 | 12 | `Tx.via`, stripped from client commits | As built; `Option<Box<Via>>` | §3.8 |
 | 13 | Command arguments: a restricted JSON Schema subset, our own pure code | As built; **Deviation:** `regex-automata`, not `regex`; no `jsonschema` | §4.2, §18.1 |
-| 14 | Host API 1.1.0 (`commands`); `hooks` waits | As built; `hooks` typed and refused by presence | §3.6, §4.2 |
+| 14 | Host API 1.1.0 (`commands`); `hooks` waits | As built; `hooks` typed and refused by presence; **7F made `hooks` consumable at 1.2.0** | §3.6, §4.2 |
 | 15 | Crash loop: three crashes in ten minutes | As built; counted from job ends | §3.3 |
 | 16 | No store tree re-hash before 7C; no `PLUGIN_TREE_CHANGED` | As built; residual in §24.4 | §3.3, §13 |
 | 17 | `PLUGINS_UNCONFINED` on every host while an enabled code plugin runs unconfined | As built: `details.enabled` counts enabled, active code plugins; `reason` is `profileNotReady`, `landlockDisabled` or `spawnerUnconfined` (the profile could be enforced but the spawner does not apply it); the warning is absent while none is enabled | §3.1 |
 | 18 | Manifests that declare `models` cannot be enabled before 8C | As built | §3.1, §5.3 |
 | 19 | Developer mode (`finisherd --plugin-dir`) | As built; **Deviation:** a non-`@dev` id is refused, not renamed; content packs are refused | §5.5 |
-| 20 | Hooks wait for 7F; 8B may merge without them | As built: Task 17 is open, `hooks` is unconsumable, the host API stays 1.1 | §3.6 |
+| 20 | Hooks wait for 7F; 8B may merge without them | As built: 8B merged without them; **built by 7F (2026-11-14): `hooks` consumable at host API 1.2.0, `plugin.hook` v1, no `modify`** | §3.6 |
 | 21 | The SDKs implement the envelope's plugin rules | As built in both SDKs | §7 |
 | 22 | `worker.exit` `kv` 2 with `plugin?: PluginRef`; `plugin.exit` | As built; hashed in `fin-node` | §11 |
 
-Plan tasks not built: Task 16 (confinement, waits for 7C), Task 17 (hook handlers, waits for 7F). Task 19 (cross-platform validation) has not run.
+Plan tasks not built: Task 16 (confinement, waits for 7C). Task 17 (hook handlers) was built by 7F (agent §9.2, §27). Task 19 (cross-platform validation) has not run.
 
 ### 24.2 Review fixes
 
@@ -1299,7 +1299,7 @@ Each is a `fix(…)` commit with tests that fail without it; `TASKS.md` has the 
 
 **Follow-ups, by owner.**
 - *7C (Task 16, confinement):* turn the `plugin` profile on automatically once it is in `READY` for an OS (fails closed); accept `<server-data>/plugins/data/` and the authority-keyed directories in the grant mapping; verify Windows container ACLs; the developer folder of a `@dev` row is outside server data; `plugin.exit {reason: sandbox}` (unused until then); the e2e scenario's enforced-profile steps (sibling authority reads denied).
-- *7F (Task 17, hooks):* hook handlers (`plugin.hook` v1), `hooks` consumable at host API 1.2.
+- *7F (Task 17, hooks): closed (2026-11-14).* Hook handlers (`plugin.hook` v1) and `hooks` consumable at host API 1.2.0 are built, **without `modify`** (agent §9.1; `hooks:modify` validates and grants nothing); the 8B plan's `modify` tests were replaced; the Rust SDK's `Plugin::hook`, the TypeScript SDK's `definePlugin({hooks})` and `fin-plugin test --profile hook` exist; see agent §9.2 and §27. `job.submit` (8C) takes the next host API minor.
 - *8C:* the `job.submit` host call, the model manager and the `models` licence gate (then lift Decision 18), analysis host methods, cold kinds with `in/` and `out/` and the first raiser of `PLUGIN_OUTPUT_INVALID`, models under `<server-data>/plugins/models/`.
 - *8G:* secret injection and `ModelGateway` grant binding in the broker (`SECRET_MISSING` goes away), `secret.grant`.
 - *Task 14 (built late in 8B):* `fin-plugin-test` and `fin-plugin test` (`command` profile, §7.4); its first macOS and Windows runs are CI's.

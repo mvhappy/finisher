@@ -438,7 +438,7 @@ describe("authority drains (review of f25e589e)", () => {
     for (const k of [`agent-R.${h}.1`, `agent-R.${h}.2`]) mkdirSync(at(k), { recursive: true });
     // The server's order: register (before the engine starts), then bind.
     const host = makePluginHost({ serverData: sd, control, tables: new PluginTables(control) });
-    host.register({ registerFamily: () => {} } as unknown as Parameters<PluginHost["register"]>[0]);
+    host.register({ registerFamily: () => {}, registerKind: () => {} } as unknown as Parameters<PluginHost["register"]>[0]);
     expect(existsSync(at(`agent-R.${h}.2`)) && existsSync(at(`agent-R.${h}.1`))).toBe(true);
     host.bind({ onDone: () => () => {}, list: () => ({ jobs: [] }) } as unknown as JobEngine);
     expect(host.generations.of("agent:R")).toBe(2);

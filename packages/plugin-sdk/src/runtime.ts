@@ -1,7 +1,10 @@
 // The job loop of a plugin process (plan 8B Decisions 2, 7, 21): `hello` (`v` 1, this SDK's
 // minor, family `plugin`, no `envelope` hash), then one job at a time. A `plugin.command` v1
 // job's params are a `CommandRun` and its `extra` the `PluginContext`; the handler's
-// `{tx}`/`{data}` becomes the `CommandOut` result. After each job a process started with a
+// `{tx}`/`{data}` becomes the `CommandOut` result. A plugin with `hooks` also announces
+// `plugin.hook` v1 (7F Decision 20): its params are a `HookRun`, the handler named by
+// `handler` answers the `HookReply` result (`allow`, `block {reason}`, `context {text}`; no
+// `modify`, spec §9.1). After each job a process started with a
 // trailing `--warm` sends `ready`; any other exits. `alive` goes out every `ALIVE_MS` from
 // `hello`, and every `limits.aliveMs` of the latest `start` from then on (as fin-jobs' worker).
 // `cancel` aborts the job's signal and fails its pending calls; the job ends `JOB_CANCELLED`
@@ -14,7 +17,7 @@
 // `PLUGIN_PROTOCOL {reason: badResult}`, one over the line cap `{reason: tooLarge, bytes}`; an
 // error line that does not fit (or serialise) is sent again with its message cut to 1 KiB and
 // no details, and failing that as a fixed `PLUGIN_PROTOCOL {reason: tooLarge, bytes}`.
-import type { CommandOut, CommandRun, HostMethod, JobError, Op, PluginContext, Start, WorkerMsg } from "@finisher/core-types";
+import type { CommandOut, CommandRun, HookReply, HookRequest, HookRun, HostMethod, JobError, Op, PluginContext, Start, WorkerMsg } from "@finisher/core-types";
 import { EXIT_HOST_GONE, Envelope, type EnvelopeIo, type Incoming, LineTooLong, SDK_MINOR } from "./envelope.ts";
 import { cancelledError, codes, fromJobError, type PluginError, protocolError, toPluginError } from "./errors.ts";
 import { Host } from "./host.ts";
@@ -22,6 +25,9 @@ import { Host } from "./host.ts";
 /** The job kind of a command run and its version (`fin_plugin_api::protocol::COMMAND_KIND`). */
 export const COMMAND_KIND = "plugin.command";
 export const COMMAND_KIND_VERSION = 1;
+/** The job kind of a hook handler's run and its version (`fin_plugin_api::protocol::HOOK_KIND`). */
+export const HOOK_KIND = "plugin.hook";
+export const HOOK_KIND_VERSION = 1;
 /** How long a cancelled handler may take to settle before the process gives up on it. */
 export const CANCEL_GRACE_MS = 1500;
 /** The `alive` interval from `hello` until the first `start` sets its own (fin-jobs' default). */
@@ -35,9 +41,17 @@ export type CommandResult = { readonly tx: Op[] } | { readonly data: unknown } |
 /** A command handler: `args` are already checked against the manifest's schema by the host. */
 export type CommandHandler = (args: any, host: Host) => CommandResult | Promise<CommandResult>;
 
+/** What a hook handler returns: a `HookReply`, or nothing for `allow`. */
+export type HookResult = HookReply | undefined | void;
+
+/** A hook handler: `req` is the event's request; `block` refuses a blocking event's action. */
+export type HookHandler = (req: HookRequest, host: Host) => HookResult | Promise<HookResult>;
+
 export interface PluginDefinition {
   /** Handlers by the command's name in the manifest. */
   readonly commands?: { readonly [name: string]: CommandHandler };
+  /** Hook handlers by the manifest's `contributes.hooks[].handler` name (one may serve several events). */
+  readonly hooks?: { readonly [handler: string]: HookHandler };
 }
 
 /** The `CommandOut` a handler's return value is sent as. */
@@ -46,6 +60,26 @@ export function toCommandOut(r: CommandResult): CommandOut {
   if (typeof r === "object" && "tx" in r && Array.isArray(r.tx)) return { kind: "tx", ops: r.tx };
   if (typeof r === "object" && "data" in r) return { kind: "data", value: r.data ?? null };
   throw protocolError("a command returned neither {tx} nor {data}", { reason: "badResult" });
+}
+
+const badReply = (): PluginError => protocolError("a hook answered neither allow, block nor context (a reply is {reply: allow | block | context} with no other field)", { reason: "badReply" });
+
+/**
+ * The `HookReply` a hook handler's return value is sent as: `undefined` is `allow`; anything but
+ * exactly `{reply: "allow"}`, `{reply: "block", reason}` or `{reply: "context", text}` (a
+ * `modify`, an unknown field, a non-string, `null`) is `PLUGIN_PROTOCOL {reason: badReply}`, as the
+ * host's strict decoder would refuse it.
+ */
+export function toHookOut(r: HookResult): HookReply {
+  if (r === undefined) return { reply: "allow" };
+  // `null` (an untyped handler's) is no reply: failing it keeps a `PreMerge` closed (Decision 3).
+  if (typeof r !== "object" || r === null || Array.isArray(r)) throw badReply();
+  const keys = Object.keys(r).sort().join(",");
+  const o = r as Record<string, unknown>;
+  if (o["reply"] === "allow" && keys === "reply") return { reply: "allow" };
+  if (o["reply"] === "block" && keys === "reason,reply" && typeof o["reason"] === "string") return { reply: "block", reason: o["reason"] };
+  if (o["reply"] === "context" && keys === "reply,text" && typeof o["text"] === "string") return { reply: "context", text: o["text"] };
+  throw badReply();
 }
 
 interface Running {
@@ -69,13 +103,16 @@ interface Pending {
 export function runPlugin(def: PluginDefinition, io: EnvelopeIo, argv: ReadonlyArray<string>): void {
   const warm = argv.at(-1) === "--warm";
   const commands = def.commands ?? {};
+  const hooks = def.hooks ?? {};
+  const kinds = [{ kind: COMMAND_KIND, version: COMMAND_KIND_VERSION }];
+  if (Object.keys(hooks).length > 0) kinds.push({ kind: HOOK_KIND, version: HOOK_KIND_VERSION });
   const pending = new Map<number, Pending>();
   let nextCall = 0;
   let job: Running | undefined;
   let alive: ReturnType<typeof setInterval> | undefined;
 
   const env = new Envelope(io, onMessage, () => stop(EXIT_HOST_GONE));
-  env.send({ t: "hello", v: 1, minor: SDK_MINOR, role: "worker", family: "plugin", kinds: [{ kind: COMMAND_KIND, version: COMMAND_KIND_VERSION }], warm, pid: process.pid });
+  env.send({ t: "hello", v: 1, minor: SDK_MINOR, role: "worker", family: "plugin", kinds, warm, pid: process.pid });
   setAlive(ALIVE_MS);
 
   function setAlive(ms: number): void {
@@ -115,7 +152,7 @@ export function runPlugin(def: PluginDefinition, io: EnvelopeIo, argv: ReadonlyA
     protocolError("the command's outcome is too large for one envelope line", { reason: "tooLarge", bytes }).toJobError();
 
   /** Sends a job's result; one that does not serialise is `badResult`, one past the cap `tooLarge`. */
-  function sendResult(id: string, value: CommandOut): void {
+  function sendResult(id: string, value: CommandOut | HookReply): void {
     const sent = trySend({ t: "result", job: id, value });
     if (sent === undefined) return;
     if (sent.failure instanceof LineTooLong) return sendError(id, tooLarge(sent.failure.bytes));
@@ -149,7 +186,7 @@ export function runPlugin(def: PluginDefinition, io: EnvelopeIo, argv: ReadonlyA
   }
 
   /** Ends `j` with `outcome` (a cancelled job always as `JOB_CANCELLED`); `ready` or exit next. */
-  function finish(j: Running, outcome: { readonly error: JobError } | { readonly value: CommandOut }, exit = !warm): void {
+  function finish(j: Running, outcome: { readonly error: JobError } | { readonly value: CommandOut | HookReply }, exit = !warm): void {
     if (j.ended) return;
     end(j);
     job = undefined;
@@ -162,21 +199,33 @@ export function runPlugin(def: PluginDefinition, io: EnvelopeIo, argv: ReadonlyA
 
   async function serve(j: Running, start: Start): Promise<void> {
     const sj = start.job;
-    if (sj.kind !== COMMAND_KIND || sj.kindVersion !== COMMAND_KIND_VERSION) {
-      throw protocolError(`this plugin serves ${COMMAND_KIND} v${COMMAND_KIND_VERSION} only`, { reason: "kind", kind: sj.kind, version: sj.kindVersion });
+    const isHook = kinds.length > 1 && sj.kind === HOOK_KIND && sj.kindVersion === HOOK_KIND_VERSION;
+    if (!isHook && (sj.kind !== COMMAND_KIND || sj.kindVersion !== COMMAND_KIND_VERSION)) {
+      const serves = kinds.map((k) => `${k.kind} v${k.version}`).join(" and ");
+      throw protocolError(`this plugin serves ${serves} only`, { reason: "kind", kind: sj.kind, version: sj.kindVersion });
     }
+    if (isHook) return serveHook(j, sj.params as HookRun | null, sj.extra);
     const run = sj.params as CommandRun;
     if (typeof run !== "object" || run === null || typeof run.command !== "string" || typeof run.rev !== "number") {
       throw protocolError("a command job's params are not a command run", { reason: "params" });
     }
-    const ctx = sj.extra as PluginContext | undefined;
-    if (typeof ctx !== "object" || ctx === null || typeof ctx.limits !== "object" || ctx.limits === null) {
-      throw protocolError("a command job carries no plugin context", { reason: "context" });
-    }
+    const ctx = contextOf(sj.extra);
     const handler = Object.hasOwn(commands, run.command) ? commands[run.command] : undefined;
     if (handler === undefined) throw protocolError(`this plugin has no command ${JSON.stringify(run.command)}`, { reason: "unknownCommand", command: run.command });
     const host = new Host(ctx, run, j.abort.signal, (m, p) => call(j, m, p));
     return void finish(j, { value: toCommandOut(await handler(run.args, host)) });
+  }
+
+  async function serveHook(j: Running, run: HookRun | null, extra: unknown): Promise<void> {
+    const req = typeof run === "object" && run !== null ? run.request : undefined;
+    if (run === null || typeof req !== "object" || req === null || typeof run.handler !== "string" || typeof req.event !== "string" || typeof req.v !== "number") {
+      throw protocolError("a hook job's params are not a hook run", { reason: "params" });
+    }
+    const ctx = contextOf(extra);
+    const handler = Object.hasOwn(hooks, run.handler) ? hooks[run.handler] : undefined;
+    if (handler === undefined) throw protocolError(`this plugin has no hook handler ${JSON.stringify(run.handler)}`, { reason: "unknownHook", handler: run.handler });
+    const host = new Host(ctx, undefined, j.abort.signal, (m, p) => call(j, m, p));
+    return void finish(j, { value: toHookOut(await handler(req, host)) });
   }
 
   function onStart(start: Start): void {
@@ -230,6 +279,15 @@ export function runPlugin(def: PluginDefinition, io: EnvelopeIo, argv: ReadonlyA
   }
 }
 
+/** The job's `extra` as a plugin context; `PLUGIN_PROTOCOL {reason: context}` otherwise. */
+function contextOf(extra: unknown): PluginContext {
+  const ctx = extra as PluginContext | undefined;
+  if (typeof ctx !== "object" || ctx === null || typeof ctx.limits !== "object" || ctx.limits === null) {
+    throw protocolError("a job carries no plugin context", { reason: "context" });
+  }
+  return ctx;
+}
+
 /** A thrown value as a `JobError`, even when reading it throws (a hostile getter). */
 function jobErrorOf(e: unknown): JobError {
   try {
@@ -254,7 +312,8 @@ function cut(s: string, max: number): string {
 
 /**
  * Starts the plugin on this process's stdin and stdout. Call it once, at the top level of the
- * entry module: `definePlugin({ commands: { "trim-silence": async (args, host) => ({ tx }) } })`.
+ * entry module: `definePlugin({ commands: { "trim-silence": async (args, host) => ({ tx }) } })`,
+ * with hook handlers `hooks: { guard: (req, host) => ({ reply: "block", reason }) }`.
  */
 export function definePlugin(def: PluginDefinition): PluginDefinition {
   runPlugin(

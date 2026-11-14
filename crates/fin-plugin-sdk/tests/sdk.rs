@@ -104,6 +104,72 @@ impl Plugin for TestPlugin {
     }
 }
 
+/// A plugin with hook handlers (7F Task 9): `guard` and `audit` on `PreCommand`, `greet` on
+/// `SessionStart`, dispatched by the manifest's handler name.
+#[derive(Default)]
+struct HookPlugin {
+    seen: Vec<String>,
+}
+
+impl Plugin for HookPlugin {
+    const HOOKS: bool = true;
+
+    fn command(&mut self, _host: &Host, call: CommandCall) -> Result<CommandOut, PluginError> {
+        match call.name.as_str() {
+            "seen" => Ok(CommandOut::Data {
+                value: json!(self.seen),
+            }),
+            _ => Err(call.unknown()),
+        }
+    }
+
+    fn hook(&mut self, host: &Host, call: HookCall) -> Result<HookReply, PluginError> {
+        self.seen.push(call.handler.clone());
+        let req = &call.request;
+        match call.handler.as_str() {
+            "guard" => Ok(match req.payload["command"].as_str() {
+                Some("history.delete") => HookReply::Block {
+                    reason: format!("no deletes in {}", req.project.as_ref().unwrap().id),
+                },
+                _ => HookReply::Allow {},
+            }),
+            "audit" => Ok(HookReply::Context {
+                text: format!("{:?} v{} by {}", req.event, req.v, host.context().plugin.id),
+            }),
+            "greet" => Ok(HookReply::Context {
+                text: format!("hello {}", req.session.as_ref().unwrap().id),
+            }),
+            "view" => Ok(HookReply::Context {
+                text: host.view(None)?,
+            }),
+            _ => Err(call.unknown()),
+        }
+    }
+}
+
+fn start_hooks(warm: bool) -> (FakeHost, JoinHandle<i32>) {
+    let (in_r, in_w) = std::io::pipe().unwrap();
+    let (out_r, out_w) = std::io::pipe().unwrap();
+    let chan = Channel {
+        input: Box::new(in_r),
+        output: Box::new(out_w),
+        hard_exit: false,
+        self_sandbox: None,
+        pid: 7,
+    };
+    let run = std::thread::spawn(move || runtime::run_on::<HookPlugin>(chan, warm));
+    (FakeHost::new(Box::new(in_w), Box::new(out_r)), run)
+}
+
+fn request(event: &str, payload: Value) -> Value {
+    json!({
+        "event": event, "v": 1,
+        "session": { "id": "s1", "role": "editor", "mode": "plan", "harness": "builtin" },
+        "project": { "id": "p1", "dir": "/projects/p1" },
+        "payload": payload
+    })
+}
+
 fn start(warm: bool) -> (FakeHost, JoinHandle<i32>) {
     let (in_r, in_w) = std::io::pipe().unwrap();
     let (out_r, out_w) = std::io::pipe().unwrap();
@@ -714,4 +780,117 @@ fn page_size_is_capped() {
     run.join().unwrap();
     assert_eq!(result(m)["value"]["len"], 800_000);
     assert_eq!(calls[1].params["length"], 774_144);
+}
+
+#[test]
+fn hello_announces_hook_kind_only_with_hooks() {
+    let (mut host, run) = start(true);
+    assert_eq!(host.hello().kinds, [KindVersion::new("plugin.command", 1)]);
+    host.close();
+    run.join().unwrap();
+    let (mut host, run) = start_hooks(true);
+    assert_eq!(
+        host.hello().kinds,
+        [
+            KindVersion::new("plugin.command", 1),
+            KindVersion::new("plugin.hook", 1)
+        ]
+    );
+    // Its commands still run.
+    host.send(&command("j1", "seen", json!({}), 1));
+    assert_eq!(result(host.recv())["value"], json!([]));
+    host.close();
+    run.join().unwrap();
+}
+
+#[test]
+fn hook_handler_round_trip() {
+    // Cold: one hook job, its reply as the result (a `HookOut`), exit 0.
+    let (mut host, run) = start_hooks(false);
+    host.hello();
+    let req = request("PreCommand", json!({ "command": "history.delete" }));
+    host.send(&hook("j1", "guard", req));
+    let v = result(host.recv());
+    assert_eq!(v, json!({ "reply": "block", "reason": "no deletes in p1" }));
+    let reply: HookReply = serde_json::from_value(v).unwrap();
+    assert!(matches!(reply, HookReply::Block { .. }));
+    assert_eq!(run.join().unwrap(), 0);
+
+    // Warm: allow, then context; host calls work inside a hook (no pinned rev).
+    let (mut host, run) = start_hooks(true);
+    host.hello();
+    let req = request("PreCommand", json!({ "command": "history.list" }));
+    host.send(&hook("j1", "guard", req));
+    assert_eq!(result(host.recv()), json!({ "reply": "allow" }));
+    assert_eq!(host.recv(), WorkerMsg::Ready {});
+    host.send(&hook("j2", "view", request("PreCommand", json!({}))));
+    let (m, calls) = host.serve(|_| Ok(json!({ "text": "timeline: 2 items" })));
+    assert_eq!(calls[0].method, "project.view");
+    assert_eq!(
+        result(m),
+        json!({ "reply": "context", "text": "timeline: 2 items" })
+    );
+    assert_eq!(host.recv(), WorkerMsg::Ready {});
+    // A request without session or project (a server-scoped event) decodes.
+    let bare = json!({ "event": "JobDone", "v": 1, "payload": { "jobId": "j9" } });
+    host.send(&hook("j3", "audit", bare));
+    assert_eq!(
+        result(host.recv()),
+        json!({ "reply": "context", "text": "JobDone v1 by @example/rust-tools" })
+    );
+    assert_eq!(host.recv(), WorkerMsg::Ready {});
+    // A hook job whose params are no `HookRun` is a protocol error.
+    host.send(&hook(
+        "j4",
+        "guard",
+        json!({ "event": "PreOp", "v": 1, "payload": {} }),
+    ));
+    let e = error(host.recv());
+    assert_eq!(
+        (e.code.as_str(), e.details["reason"].clone()),
+        ("PLUGIN_PROTOCOL", json!("params"))
+    );
+    assert_eq!(host.recv(), WorkerMsg::Ready {});
+    host.close();
+    run.join().unwrap();
+}
+
+#[test]
+fn two_handlers_on_one_event_dispatch_by_name() {
+    let (mut host, run) = start_hooks(true);
+    host.hello();
+    for (id, handler) in [("j1", "audit"), ("j2", "guard"), ("j3", "greet")] {
+        let event = if handler == "greet" {
+            "SessionStart"
+        } else {
+            "PreCommand"
+        };
+        let req = request(event, json!({ "command": "history.delete" }));
+        host.send(&hook(id, handler, req));
+        let v = result(host.recv());
+        let want = match handler {
+            "audit" => {
+                json!({ "reply": "context", "text": "PreCommand v1 by @example/rust-tools" })
+            }
+            "guard" => json!({ "reply": "block", "reason": "no deletes in p1" }),
+            _ => json!({ "reply": "context", "text": "hello s1" }),
+        };
+        assert_eq!(v, want, "{handler}");
+        assert_eq!(host.recv(), WorkerMsg::Ready {});
+    }
+    // An unknown handler is the plugin's error, named.
+    host.send(&hook("j4", "nobody", request("PreCommand", json!({}))));
+    let e = error(host.recv());
+    assert_eq!(e.code, "PLUGIN_PROTOCOL");
+    assert_eq!(e.details["reason"], json!("unknownHook"));
+    assert_eq!(e.details["handler"], json!("nobody"));
+    assert_eq!(host.recv(), WorkerMsg::Ready {});
+    // One plugin value across command and hook jobs.
+    host.send(&command("j5", "seen", json!({}), 1));
+    assert_eq!(
+        result(host.recv())["value"],
+        json!(["audit", "guard", "greet", "nobody"])
+    );
+    host.close();
+    run.join().unwrap();
 }

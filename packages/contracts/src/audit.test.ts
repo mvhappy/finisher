@@ -48,6 +48,9 @@ describe("audit details", () => {
     expect(auditDetailsValid("hook.block", { ...row, event: "PostCommand", after: true })).toBe(true);
     expect(auditDetailsValid("hook.block", { event: "PreMerge", hookId: "managed.unreadable", layer: "managed" })).toBe(true);
     expect(auditDetailsValid("hook.block", { event: "JobDone", hookId: "x", layer: "plugin" })).toBe(true);
+    // A plugin handler's row names its plugin (7F Task 10); never a version or a free word there.
+    expect(auditDetailsValid("hook.block", { event: "PreCommand", hookId: "guard", layer: "plugin", pluginId: "@test/probe", projectId: id })).toBe(true);
+    for (const bad of ["@test/probe@1.0.0", "no plugin", "../x"]) expect(auditDetailsValid("hook.block", { event: "PreCommand", hookId: "guard", layer: "plugin", pluginId: bad }), bad).toBe(false);
     // Never the reason text (the session's notice holds it), a path, or a free word.
     for (const bad of [{ reason: "no trims on Fridays" }, { reason: "timeout" }, { text: "context" }, { event: "PreOp" }, { layer: "role" }, { hookId: "Has Spaces" }, { hookId: "../x" }, { after: false }, { session: "not an id" }, { path: "/home/someone/hook.mjs" }]) {
       expect(auditDetailsValid("hook.block", { ...row, ...bad }), JSON.stringify(bad)).toBe(false);

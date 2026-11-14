@@ -3186,6 +3186,13 @@
             "$ref": "#/$defs/FontCatalogContribution"
           },
           "type": "array"
+        },
+        "hooks": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/HookContribution"
+          },
+          "type": "array"
         }
       },
       "type": "object"
@@ -6591,13 +6598,26 @@
     },
     "HookContribution": {
       "additionalProperties": false,
-      "description": "A hook handler (agent §9). Typed now; consumable once 7F's hook engine lands (8B\nDecision 20), refused as `PLUGIN_CONTRIBUTION_UNSUPPORTED` until then.",
+      "description": "A hook handler (agent §9; 7F Decision 20), run through a `plugin.hook` v1 job in the\nhook engine's `plugin` layer. Consumed from host API 1.2.",
       "properties": {
         "event": {
-          "type": "string"
+          "allOf": [
+            {
+              "$ref": "#/$defs/HookEvent"
+            }
+          ],
+          "description": "Needs `hooks:observe` naming it."
         },
         "handler": {
+          "description": "`[a-z][a-z0-9-]{0,63}`: the name the SDK dispatches on (`HookRun.handler`); one plugin\nlists each `(event, handler)` once.",
           "type": "string"
+        },
+        "timeoutS": {
+          "description": "Seconds, 1 to 60; 10 when absent. A failure or timeout follows the event's default\n`onTimeout` (a plugin cannot loosen `PreMerge`).",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
         }
       },
       "required": [
