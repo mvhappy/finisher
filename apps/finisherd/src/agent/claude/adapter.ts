@@ -364,6 +364,6 @@ export const UNKNOWN_ACCOUNT = "unknown";
  */
 function sessionAccount(serverData: string, d: ClaudeDetection, account: unknown, newSession: boolean): { hash?: string; refused: FinError | null } {
   const label = labelOf(account);
-  if (label === undefined && d.accountHash !== undefined) return instanceAccountHash(serverData, d.accountHash, d.authMethod, { newSession });
+  if (label === undefined && d.accountHash !== undefined) return instanceAccountHash(serverData, d.accountHash, d.authMethod, { newSession, ...(d.readAt === undefined ? {} : { readAt: d.readAt }) });
   return instanceAccount(serverData, { signedIn: d.signedIn === true, ...(d.authMethod === undefined ? {} : { authMethod: d.authMethod }), ...(label === undefined ? {} : { label }) }, { newSession });
 }

@@ -33,6 +33,9 @@ pub struct Script {
     pub resume_restores_dynamic_tools: Option<bool>,
     /// `thread/revert` answers `threadRollbackFailed` and changes nothing.
     pub revert_fails: bool,
+    /// FAKE-ONLY (no real binary was seen doing either; for detection's failure paths):
+    /// `account/read` is never answered, the process exiting 1 (`crash`) or carrying on (`hang`).
+    pub account_read: Option<AccountRead>,
     pub turns: Vec<Turn>,
 }
 
@@ -46,6 +49,14 @@ pub enum Steer {
     /// UNOBSERVED(7E Task 0 Step 3): the refusal's shape (`-32600` with
     /// `data.codexErrorInfo.activeTurnNotSteerable {turnKind}`).
     Refuse,
+}
+
+/// What `account/read` does instead of answering (`Script::account_read`, fake-only).
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AccountRead {
+    Crash,
+    Hang,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Deserialize)]

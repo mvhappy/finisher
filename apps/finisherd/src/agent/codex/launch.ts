@@ -177,7 +177,31 @@ export function codexPinFacts(): CodexPinFacts {
   return { version: pin.version, resumeRestoresDynamicTools: pin.resumeRestoresDynamicTools === true };
 }
 
-const featuresOf = (version: string) => readFileSync(new URL(`${version}/features.txt`, VENDOR), "utf8");
+/** The committed `features list` output of `version` (`vendor/codex/<version>/features.txt`). */
+export const pinnedFeatures = (version: string): string => readFileSync(new URL(`${version}/features.txt`, VENDOR), "utf8");
+
+/** The sign-in store and Codex's own housekeeping: what a person's state and the network never get. */
+const HOUSEKEEPING_CONFIG = [
+  'cli_auth_credentials_store="file"',
+  "project_doc_max_bytes=0",
+  "project_doc_fallback_filenames=[]",
+  "check_for_update_on_startup=false",
+  "analytics.enabled=false",
+  'history.persistence="none"',
+];
+/** What Codex would load or write under `CODEX_HOME` at start (0.167.0 writes `skills/.system/` unless bundled skills are off). */
+const LOADERS_OFF_CONFIG = ["skills.bundled.enabled=false", "mcp_servers={}", "agents.enabled=false"];
+
+/**
+ * The `-c` overrides of every Codex app-server Finisher starts that do not depend on a session:
+ * detection's short one uses these alone (`codex/detect.ts`), an instance adds its own.
+ */
+export const ISOLATING_CONFIG: readonly string[] = [...HOUSEKEEPING_CONFIG, ...LOADERS_OFF_CONFIG];
+
+/** `app-server` over stdio under `--strict-config`, with each `-c` of `config` and each `--disable` (Decision 4's order). */
+export function appServerArgs(config: readonly string[], disabled: readonly string[]): string[] {
+  return ["app-server", "--listen", "stdio://", "--strict-config", ...config.flatMap((c) => ["-c", c]), ...disabled.flatMap((f) => ["--disable", f])];
+}
 
 /** A TOML basic string (`-c` values are TOML): JSON's escapes are TOML's, plus DEL. */
 function tomlString(v: string): string {
@@ -241,28 +265,16 @@ export function codexLaunch(s: Session, spec: SessionSpec, probe: CodexProbe, os
   const env = { NO_COLOR: "1" };
   assertSpawnEnv(env, s, os);
   assertSessionEnv({ ...spec.env, ...env }, s, { extra: harnessExtra("codex"), platform: os, ...(o.host === true ? { host: true } : {}) });
-  const disabled = disabledFeatures(o.features ?? featuresOf(pinned));
+  const disabled = disabledFeatures(o.features ?? pinnedFeatures(pinned));
   const config = [
-    'cli_auth_credentials_store="file"',
-    "project_doc_max_bytes=0",
-    "project_doc_fallback_filenames=[]",
-    "check_for_update_on_startup=false",
-    "analytics.enabled=false",
-    'history.persistence="none"',
+    ...HOUSEKEEPING_CONFIG,
     `web_search="${tools.webSearch ? "live" : "disabled"}"`,
     'shell_environment_policy.inherit="none"',
     // Only for commands Codex would run itself, which Decision 9 removes: §8.5's environment.
     `shell_environment_policy.set=${tomlTable(spec.env)}`,
-    "skills.bundled.enabled=false",
-    "mcp_servers={}",
-    "agents.enabled=false",
+    ...LOADERS_OFF_CONFIG,
   ];
-  const argv = [
-    o.binary ?? codexBinary(),
-    ...["app-server", "--listen", "stdio://", "--strict-config"],
-    ...config.flatMap((c) => ["-c", c]),
-    ...disabled.flatMap((f) => ["--disable", f]),
-  ];
+  const argv = [o.binary ?? codexBinary(), ...appServerArgs(config, disabled)];
   const startParams: Closed<ThreadStartParams> = {
     cwd,
     model: spec.model,

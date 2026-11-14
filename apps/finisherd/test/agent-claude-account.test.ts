@@ -276,6 +276,31 @@ describe("the account hash", () => {
 const startReq = { projectId: "01JP0000000000000000000001", harness: "claudeCode" as const, model: "default" };
 
 describe("an account change", () => {
+  withFake("stale_cache_never_clears_pending_change: detection's cached answer leaves a change an instance saw waiting", async () => {
+    const { bin } = installFake("cli", { account: LABEL_A });
+    const data = join(tmp, "data");
+    let now = 1_000_000;
+    const d: ClaudeDetectDeps = { ...detectDeps(data, bin), now: () => now };
+    const first = await line(d);
+    expect(first.problem).toBeUndefined();
+    const accounts = new CliAccounts(data, { harness: "claudeCode" });
+    // An instance's own `initialize` named another account: the change waits.
+    const b = accounts.observe(SIGNED_IN(LABEL_B), accountKey(data));
+    expect(b.changed).toBe(true);
+    // Detection's cached `auth status` (the earlier account, within its TTL) leaves it waiting.
+    const cached = await line(d);
+    expect(cached.problem?.code).toBe("PROVIDER_ACCOUNT_CHANGED");
+    expect(cached.accountHash).toBe(b.hash);
+    expect(accounts.pending()).toBe(b.hash);
+    // The persisted record keeps 7D's shape.
+    expect(Object.keys(accounts.state()).sort()).toEqual(["current", "pending", "v"]);
+    // A fresh read begun after the change was seen, naming the recorded account: nothing waits.
+    await new Promise((r) => setTimeout(r, 5));
+    now += 60_000;
+    expect((await line(d)).problem).toBeUndefined();
+    expect(accounts.pending()).toBeUndefined();
+  });
+
   withFake("account_change_stops_new_sessions: PROVIDER_ACCOUNT_CHANGED, exit 5, until a person confirms", async () => {
     const { dir, bin } = installFake("cli", { account: LABEL_A });
     const data = join(tmp, "data");

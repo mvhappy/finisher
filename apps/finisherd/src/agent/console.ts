@@ -383,11 +383,38 @@ async function remove(ctx: CommandContext, rest: ReadonlyArray<string>): Promise
   return 0;
 }
 
+/** What `agent providers` shows of one harness's line (`ProviderInfo` as the wire carries it). */
+export interface ProviderLine {
+  readonly harness: string;
+  readonly detected: boolean;
+  readonly version?: string;
+  readonly signedIn?: boolean | null;
+  readonly authMethod?: string;
+  readonly planType?: string;
+  readonly enabled?: boolean;
+  readonly warnings?: ReadonlyArray<{ readonly code: string; readonly message: string; readonly fix?: string }>;
+  readonly problem?: { readonly code: string; readonly message: string };
+}
+
+/**
+ * One harness in `agent providers`' text: its line, then each sign-in warning and its fix
+ * (`accountUnidentified`, 7E Owner Q7a). The sign-in method and plan type are one word each;
+ * no label or e-mail is ever on the wire to print.
+ */
+export function providerLine(p: ProviderLine): string[] {
+  const how = [p.authMethod, p.planType === undefined ? undefined : `plan ${p.planType}`].filter((x) => x !== undefined).map((x) => safe(x));
+  const signed = p.harness === "builtin" || p.signedIn === undefined || p.signedIn === null ? "" : p.signedIn ? `  signed in${how.length === 0 ? "" : ` (${how.join(", ")})`}` : "  not signed in";
+  return [
+    `${p.harness}  ${p.detected ? "available" : "not available"}${p.version === undefined ? "" : `  ${safe(p.version)}`}${signed}${p.enabled === false ? "  off" : ""}${p.problem === undefined ? "" : `  ${p.problem.code}: ${safe(p.problem.message)}`}`,
+    ...(p.warnings ?? []).flatMap((w) => [`  warning: ${safe(w.code)}: ${safe(w.message)}`, ...(w.fix === undefined ? [] : [`  fix: ${safe(w.fix)}`])]),
+  ];
+}
+
 async function providers(ctx: CommandContext, rest: ReadonlyArray<string>): Promise<number> {
   onlyFlags(ctx.args, "agent providers", ["json"]);
   if (rest.length > 0) usage("agent providers takes --json only");
   type Answer = {
-    providers: { harness: string; detected: boolean; version?: string; signedIn?: boolean | null; enabled?: boolean; problem?: { code: string; message: string } }[];
+    providers: ProviderLine[];
     openrouter: { keySet: boolean; projects?: string[] };
     local: { configured: boolean; preset?: string; reachable?: boolean };
     warnings?: { code: string; message: string; fix?: string }[];
@@ -397,10 +424,7 @@ async function providers(ctx: CommandContext, rest: ReadonlyArray<string>): Prom
     ctx.output.out(JSON.stringify(r));
     return 0;
   }
-  for (const p of r.providers) {
-    const signed = p.harness === "builtin" || p.signedIn === undefined || p.signedIn === null ? "" : p.signedIn ? "  signed in" : "  not signed in";
-    ctx.output.out(`${p.harness}  ${p.detected ? "available" : "not available"}${p.version === undefined ? "" : `  ${safe(p.version)}`}${signed}${p.enabled === false ? "  off" : ""}${p.problem === undefined ? "" : `  ${p.problem.code}: ${safe(p.problem.message)}`}`);
-  }
+  for (const p of r.providers) for (const l of providerLine(p)) ctx.output.out(l);
   const own = r.openrouter.projects ?? [];
   ctx.output.out(`openrouter key: ${r.openrouter.keySet ? "set for the server" : "not set for the server"}${own.length === 0 ? "" : `; own keys for ${own.join(", ")}`}`);
   ctx.output.out(`local endpoint: ${r.local.configured ? `${r.local.preset} (${r.local.reachable ? "answers" : "does not answer"})` : "not set"}`);

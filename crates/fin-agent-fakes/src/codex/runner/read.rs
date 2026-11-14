@@ -86,7 +86,9 @@ impl Fake {
 
     /// The signed-in account: only with an `auth.json` (or the script's `signedInElsewhere`); its fields from, in order, the
     /// `fake-account.json` beside it (what `accountChange` writes), an `account` object inside
-    /// `auth.json`, the script's `account`, else a ChatGPT Plus person.
+    /// `auth.json`, the script's `account`, else a ChatGPT Plus person. A ChatGPT `email` given as
+    /// a string (`""` too) or `null` is answered as given (the schema's `string | null`); only an
+    /// absent one is the default person's.
     pub(super) fn account(&self) -> Option<Value> {
         let auth = self.home.join("auth.json");
         if !auth.exists() && !self.script.signed_in_elsewhere {
@@ -106,7 +108,10 @@ impl Fake {
             Some("amazonBedrock") => json!({"type": "amazonBedrock"}),
             Some("gcp") => json!({"type": "gcp"}),
             _ => json!({"type": "chatgpt",
-                "email": given["email"].as_str().unwrap_or("person@example.com"),
+                "email": match given.get("email") {
+                    Some(e @ (Value::String(_) | Value::Null)) => e.clone(),
+                    _ => json!("person@example.com"),
+                },
                 "planType": given["planType"].as_str().unwrap_or("plus")}),
         })
     }

@@ -649,3 +649,59 @@ fn fake_messages_validate_against_schema() {
         "the scenario should have produced many lines, got {n}"
     );
 }
+
+#[test]
+fn fake_account_without_label_passes_through() {
+    let dir = Dir::new("nolabel");
+    let mut c = Client::start(&dir, None);
+    c.initialize();
+    // A ChatGPT account whose e-mail is null or empty is answered as such (the schema allows null).
+    for email in [Value::Null, json!("")] {
+        dir.write(
+            "codex-home/auth.json",
+            &json!({"account": {"type": "chatgpt", "email": email, "planType": "pro"}}).to_string(),
+        );
+        assert_eq!(
+            c.call("account/read", json!({}))["account"],
+            json!({"type": "chatgpt", "email": email, "planType": "pro"})
+        );
+    }
+    // No `email` at all: the default person.
+    dir.write(
+        "codex-home/auth.json",
+        &json!({"account": {"type": "chatgpt"}}).to_string(),
+    );
+    assert_eq!(
+        c.call("account/read", json!({}))["account"]["email"],
+        "person@example.com"
+    );
+}
+
+#[test]
+fn fake_account_read_crash_and_hang() {
+    // FAKE-ONLY knobs: `accountRead: "crash"` exits 1 without an answer, `"hang"` never answers.
+    let dir = Dir::new("acctcrash");
+    let mut c = Client::start(&dir, Some(json!({"accountRead": "crash"})));
+    c.initialize();
+    let id = c.request("account/read", json!({}));
+    while let Some(v) = c.next_within(5_000) {
+        assert_ne!(v["id"], id, "{v}");
+    }
+    assert_eq!(c.child.wait().unwrap().code(), Some(1));
+    assert_eq!(
+        observed(&dir)["exit"],
+        json!({"code": 1, "reason": "crash"})
+    );
+    let dir = Dir::new("accthang");
+    let mut c = Client::start(&dir, Some(json!({"accountRead": "hang"})));
+    c.initialize();
+    let id = c.request("account/read", json!({}));
+    while let Some(v) = c.next_within(500) {
+        assert_ne!(v["id"], id, "{v}");
+    }
+    // Still serving: another request is answered.
+    assert!(c.call("model/list", json!({"limit": 1}))["data"].is_array());
+    assert!(c.child.try_wait().unwrap().is_none());
+    c.child.kill().unwrap();
+    c.child.wait().unwrap();
+}

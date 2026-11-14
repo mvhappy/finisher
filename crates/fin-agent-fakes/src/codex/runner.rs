@@ -19,7 +19,7 @@ use serde_json::{Map, Value, json};
 use super::argv;
 use super::config::{self, Effective};
 use super::observed::Observed;
-use super::script::{OnInterrupt, Script, Steer};
+use super::script::{AccountRead, OnInterrupt, Script, Steer};
 use super::threads;
 
 /// The longest line read from stdin (the client's frame limit, Decision 3). A longer one is
@@ -359,6 +359,12 @@ impl Fake {
             self.initialize(&params)
         } else if !self.initialized {
             Err(rpc("Not initialized"))
+        } else if method == "account/read" && self.script.account_read.is_some() {
+            // FAKE-ONLY (`Script::account_read`): no answer.
+            if self.script.account_read == Some(AccountRead::Crash) {
+                self.exit(1, "crash");
+            }
+            return;
         } else if method == "thread/revert" && self.revert_waits(&id, &params) {
             // Answered once the turn it interrupted has ended.
             return;

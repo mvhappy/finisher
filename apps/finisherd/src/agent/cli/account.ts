@@ -289,8 +289,8 @@ export class CliAccounts {
     writePrivateFile(this.#path, `${JSON.stringify(s)}\n`);
   }
 
-  #seen(hash: string, authMethod: string | undefined): Seen {
-    return { hash, ...(authMethod === undefined ? {} : { authMethod }), at: this.#now().toISOString() };
+  #seen(hash: string, authMethod: string | undefined, readAt?: number): Seen {
+    return { hash, ...(authMethod === undefined ? {} : { authMethod }), at: (readAt === undefined ? this.#now() : new Date(readAt)).toISOString() };
   }
 
   #expecting(s: AccountState): boolean {
@@ -302,27 +302,39 @@ export class CliAccounts {
     return this.record(this.hashOf(status, key), status.authMethod);
   }
 
-  /** `observe` of an account already hashed (detection keeps the hash, never the label). */
-  record(hash: string, authMethod: string | undefined): Observation {
+  /**
+   * `observe` of an account already hashed (detection keeps the hash, never the label).
+   * `readAt` (epoch ms) is when the CLI was asked, for an answer that may be older than the
+   * record (a cached or in-flight read): an answer asked no later than the recorded account, or
+   * the waiting one, was seen is **stale** and changes nothing (a stale answer of the recorded
+   * account never clears a change waiting since; a stale other account is never made a change),
+   * and is answered with what the record says. Absent, the answer is now's. `at` is `readAt`.
+   */
+  record(hash: string, authMethod: string | undefined, o: { readonly readAt?: number } = {}): Observation {
     const s = this.state();
+    const { readAt } = o;
     if (s.current === undefined) {
-      this.#write({ v: 1, current: this.#seen(hash, authMethod) });
+      this.#write({ v: 1, current: this.#seen(hash, authMethod, readAt) });
       return { hash, changed: false };
+    }
+    const seenBy = (x: Seen | undefined) => readAt !== undefined && x !== undefined && readAt <= Date.parse(x.at);
+    if (seenBy(s.pending) || (s.current.hash !== hash && seenBy(s.current))) {
+      return s.pending === undefined ? { hash: s.current.hash, changed: false } : { hash: s.pending.hash, changed: true };
     }
     const expect = this.#expecting(s) ? { expectUntil: s.expectUntil!, ...(s.expectBy === undefined ? {} : { expectBy: s.expectBy }) } : {};
     if (s.current.hash === hash) {
       // Back on the recorded account: nothing waits any more (an expectation still runs its time).
       if (s.pending !== undefined || s.current.authMethod !== authMethod || (s.expectUntil !== undefined && !this.#expecting(s))) {
-        this.#write({ v: 1, current: this.#seen(hash, authMethod), ...expect });
+        this.#write({ v: 1, current: this.#seen(hash, authMethod, readAt), ...expect });
       }
       return { hash, changed: false };
     }
     if (this.#expecting(s)) {
-      this.#write({ v: 1, current: this.#seen(hash, authMethod) });
+      this.#write({ v: 1, current: this.#seen(hash, authMethod, readAt) });
       audits.get(keyOf(this.#serverData))?.(s.expectBy ?? { kind: "local", id: "server" }, { accountHash: hash, previousHash: s.current.hash }, this.#harness);
       return { hash, changed: false };
     }
-    if (s.pending?.hash !== hash || s.expectUntil !== undefined) this.#write({ v: 1, current: s.current, pending: this.#seen(hash, authMethod) });
+    if (s.pending?.hash !== hash || s.expectUntil !== undefined) this.#write({ v: 1, current: s.current, pending: this.#seen(hash, authMethod, readAt) });
     return { hash, changed: true };
   }
 
@@ -409,12 +421,18 @@ export function instanceAccount(serverData: string, status: AuthStatus, o: { rea
 
 /**
  * `instanceAccount` for an account detection already hashed, when the instance names none: the
- * same record and the same refusal rule.
+ * same record and the same refusal rule; `readAt` is when detection asked (`record`: a cached
+ * answer older than the record changes nothing).
  */
-export function instanceAccountHash(serverData: string, hash: string, authMethod: string | undefined, o: { readonly newSession: boolean; readonly accounts?: CliAccounts }): { hash?: string; refused: FinError | null } {
+export function instanceAccountHash(
+  serverData: string,
+  hash: string,
+  authMethod: string | undefined,
+  o: { readonly newSession: boolean; readonly accounts?: CliAccounts; readonly readAt?: number },
+): { hash?: string; refused: FinError | null } {
   const accounts = o.accounts ?? accountsOf(serverData, "claudeCode");
   try {
-    const seen = accounts.record(hash, authMethod);
+    const seen = accounts.record(hash, authMethod, o.readAt === undefined ? {} : { readAt: o.readAt });
     return { hash: seen.hash, refused: seen.changed && o.newSession ? accountChanged(seen.hash, accounts.harness) : null };
   } catch (e) {
     return { refused: o.newSession ? (e as FinError) : null };
