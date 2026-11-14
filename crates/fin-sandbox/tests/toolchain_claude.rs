@@ -40,57 +40,110 @@ fn recorded(read: &str) -> &str {
     read.strip_suffix("/*").unwrap_or(read)
 }
 
-#[test]
-fn toolchain_list_is_minimal() {
-    let fx = start();
-    let own = toolchain_harness(Os::Linux, Harness::ClaudeCode);
-    let base = toolchain_base(Os::Linux);
-    assert!(!own.is_empty());
-    for e in &own {
-        assert!(
-            e.starts_with('/') && !e.ends_with('/'),
-            "{e}: an absolute path"
-        );
+/// What is wrong with `own` (the harness list, with its file's `text`) against the base list and
+/// the recorded start: empty when it is minimal. An entry must **be** a recorded denied read (a
+/// `<dir>/*` record is its directory, the narrowest root that names every file below it), so an
+/// ancestor of one (`/usr/share` for `/usr/share/ca-certificates`) is too broad; every recorded
+/// read must be given or tolerated with a reason.
+fn minimality(own: &[&str], text: &str, base: &[&str], fx: &Start) -> Vec<String> {
+    let mut bad = vec![];
+    if own.is_empty() {
+        bad.push("the list is empty".to_owned());
+    }
+    for e in own {
+        if !e.starts_with('/') || e.ends_with('/') {
+            bad.push(format!("{e}: not an absolute path"));
+        }
         // Not what the base list already gives.
-        assert!(
-            !base.iter().any(|b| within(e, b)),
-            "{e} is already in toolchain-base.txt"
-        );
-        // Needed by a recorded start: it covers at least one read that start was refused.
-        assert!(
-            fx.denied_reads.iter().any(|r| within(recorded(r), e)),
-            "{e} covers no read Task 0 recorded"
-        );
+        if base.iter().any(|b| within(e, b)) {
+            bad.push(format!("{e} is already in toolchain-base.txt"));
+        }
+        // Needed by a recorded start, and no broader than that need.
+        if !fx.denied_reads.iter().any(|r| recorded(r) == *e) {
+            match fx.denied_reads.iter().find(|r| within(recorded(r), e)) {
+                Some(r) => bad.push(format!("{e} is broader than the recorded read {r}")),
+                None => bad.push(format!("{e} covers no read Task 0 recorded")),
+            }
+        }
         // Names its evidence.
-        let line = LINUX_TEXT
+        let evidence = text
             .lines()
             .find(|l| l.split('#').next().unwrap().trim() == *e)
-            .unwrap();
-        assert!(
-            line.split_once('#')
-                .is_some_and(|(_, c)| c.contains("Task 0")),
-            "{e}: no comment naming Task 0"
-        );
+            .and_then(|l| l.split_once('#'))
+            .is_some_and(|(_, c)| c.contains("Task 0"));
+        if !evidence {
+            bad.push(format!("{e}: no comment naming Task 0"));
+        }
     }
     // Every recorded read is given (base or own) or is named, with its reason, as not given.
     for r in &fx.denied_reads {
-        let given = base.iter().chain(&own).any(|g| within(recorded(r), g));
+        let given = base.iter().chain(own).any(|g| within(recorded(r), g));
         match fx.tolerated.get(r) {
-            Some(why) => {
-                assert!(
-                    !why.is_empty() && !given,
-                    "{r}: tolerated yet given or unexplained"
-                );
+            Some(why) if why.is_empty() || given => {
+                bad.push(format!("{r}: tolerated yet given or unexplained"));
             }
-            None => assert!(given, "{r}: a recorded read nobody gives or tolerates"),
+            Some(_) => {}
+            None if !given => bad.push(format!("{r}: a recorded read nobody gives or tolerates")),
+            None => {}
         }
     }
     for r in fx.tolerated.keys() {
+        if !fx.denied_reads.contains(r) {
+            bad.push(format!("{r}: tolerated but not recorded"));
+        }
+    }
+    bad
+}
+
+#[test]
+fn toolchain_list_is_minimal() {
+    let own = toolchain_harness(Os::Linux, Harness::ClaudeCode);
+    let bad = minimality(&own, LINUX_TEXT, &toolchain_base(Os::Linux), &start());
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+#[test]
+fn a_broader_root_than_the_recorded_read_is_rejected() {
+    // The shipped list with each entry swapped, in memory, for an ancestor of it: every one of
+    // them still covers the recorded read, and every one is refused as broader than it.
+    let fx = start();
+    let base = toolchain_base(Os::Linux);
+    let own = toolchain_harness(Os::Linux, Harness::ClaudeCode);
+    for (narrow, broad) in [
+        ("/usr/share/ca-certificates", "/usr/share"),
+        ("/proc/sys/vm", "/proc/sys"),
+        ("/proc/stat", "/proc"),
+        ("/sys/devices/system/cpu/online", "/sys/devices/system/cpu"),
+        ("/sys/kernel/mm/transparent_hugepage", "/sys"),
+    ] {
+        assert!(own.contains(&narrow), "{narrow} is not in the shipped list");
+        let mutated: Vec<&str> = own
+            .iter()
+            .map(|e| if *e == narrow { broad } else { e })
+            .collect();
+        let text = LINUX_TEXT.replace(&format!("{narrow}  #"), &format!("{broad}  #"));
+        let bad = minimality(&mutated, &text, &base, &fx);
+        // (`/proc` also gives the tolerated `/proc/self/*`, refused on its own line.)
+        let want = format!("{broad} is broader than the recorded read ");
         assert!(
-            fx.denied_reads.contains(r),
-            "{r}: tolerated but not recorded"
+            bad.iter().any(|b| b.starts_with(&want)),
+            "{broad}: {bad:#?}"
+        );
+        assert!(
+            bad.iter()
+                .all(|b| b.starts_with(&want) || b.contains("tolerated yet given")),
+            "{broad}: {bad:#?}"
         );
     }
+    // An entry no recorded read needs, and one already in the base list, are refused too.
+    let mut extra = own.clone();
+    extra.push("/opt/elsewhere");
+    let text = format!("{LINUX_TEXT}\n/opt/elsewhere  # (Task 0)\n");
+    let bad = minimality(&extra, &text, &base, &fx);
+    assert_eq!(
+        bad,
+        vec!["/opt/elsewhere covers no read Task 0 recorded".to_owned()]
+    );
 }
 
 #[test]
@@ -171,6 +224,11 @@ fn input(root: &Path, toolchains: Vec<PathBuf>) -> AgentInput {
     }
 }
 
+// The install-layout half of `toolchain_list_is_minimal`: a **layout fixture** (Task 0's recorded
+// layout, rebuilt in a temp dir), not drift detection against a real install, which this suite
+// may not depend on (the host's install is the person's). Drift of a real install is 7D Task 18's
+// recorded start on each OS; the TypeScript side (`installTreeRead`) is tested in
+// `apps/finisherd/test/agent-claude-install.test.ts`.
 #[cfg(unix)]
 #[test]
 fn install_directory_comes_from_the_resolved_binary_not_the_list() {

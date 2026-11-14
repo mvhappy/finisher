@@ -219,6 +219,24 @@ pub(crate) fn not_under<'a>(
     Ok(())
 }
 
+/// No path of `ps` may be, or contain, one of `guarded` (a root above a denied path or the home
+/// would grant everything beside it: `deny_read` takes out only the listed paths).
+pub(crate) fn not_over<'a>(
+    field: &str,
+    ps: impl IntoIterator<Item = &'a PathBuf>,
+    guarded: &[PathBuf],
+) -> Result<(), PolicyError> {
+    for p in ps {
+        if let Some(g) = guarded.iter().find(|g| g.starts_with(p)) {
+            return Err(PolicyError::input(
+                field,
+                format!("{} holds the guarded path {}", p.display(), g.display()),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Sorts and deduplicates every list, then validates.
 pub(crate) fn finish(mut p: SandboxPolicy) -> Result<SandboxPolicy, PolicyError> {
     for list in [
