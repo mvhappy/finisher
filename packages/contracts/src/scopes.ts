@@ -319,8 +319,14 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   // the other server-wide settings are (no new scope).
   "media.cache.status": { scopes: ["server.read"] },
   "media.cache.gc": { scopes: ["settings.admin"] },
+  // 6B-1 Task 17: reach is the handler's (the entry's projects come from the cache index, not the
+  // payload): `project.read`, and over one of the entry's projects, else `NOT_FOUND`.
+  "media.url": { scopes: ["project.read"] },
   // Plan 6B-1 Task 11: reads the project and submits a job; commits nothing.
   "media.probeDeep": { scopes: ["project.read", "jobs.submit"], resolve: BRANCH },
+  // 6B-1 Task 14: a proxy reads the project and may submit a job; its status only reads.
+  "media.proxy": { scopes: ["project.read", "jobs.submit"], resolve: BRANCH },
+  "media.proxy.status": { scopes: ["project.read"], resolve: BRANCH },
   // 6B-1 Task 11: a write of the branch (one `asset.reprobe` record); `deep` also runs a job.
   "asset.reprobe": {
     scopes: ["project.write"],

@@ -16,6 +16,8 @@ mod commit;
 mod evict;
 #[path = "../src/media/cache/index.rs"]
 mod index;
+#[path = "../src/media/cache/read.rs"]
+mod read;
 #[path = "../src/media/cache/state.rs"]
 mod state;
 
@@ -106,6 +108,7 @@ fn meta_for(input: &KeyInput, files: &[(&str, &[u8])]) -> EntryMeta {
             })
             .collect(),
         media: None,
+        tone_mapped: None,
         created_at: 7,
     }
 }
@@ -802,4 +805,111 @@ fn a_directory_without_a_row_in_the_run_valid_kept_damaged_replaced() {
         blake3::hash(b"fourth").to_hex().to_string()
     );
     assert_eq!(c.lookup(&key3).unwrap(), Some(meta4));
+}
+
+// ---- Serving bytes (6B-1 Task 17): `read_file` is the one way an entry's file is read for HTTP.
+
+#[test]
+fn read_file_returns_the_requested_range_of_a_listed_file() {
+    let fx = Fx::new();
+    let (mut c, _) = fx.open(None);
+    let (out, key) = fx.job("j1", &input("fp1"), FILES);
+    c.commit(&out, &key, &["p1".into()]).unwrap();
+    assert_eq!(
+        c.read_file(&key, "proxy.mp4", 0, 100).unwrap().unwrap(),
+        b"mp4 bytes"
+    );
+    assert_eq!(
+        c.read_file(&key, "proxy.mp4", 4, 3).unwrap().unwrap(),
+        b"byt"
+    );
+    assert_eq!(
+        c.read_file(&key, "proxy.mp4", 9, 5).unwrap().unwrap(),
+        b"",
+        "an offset at the end is an empty read"
+    );
+    assert_eq!(c.read_file(&key, "proxy.mp4", 50, 5).unwrap().unwrap(), b"");
+    // A read is at most `MAX_READ` bytes whatever the caller asks.
+    assert_eq!(
+        c.read_file(&key, "proxy.mp4", 0, u64::MAX)
+            .unwrap()
+            .unwrap(),
+        b"mp4 bytes"
+    );
+}
+
+#[test]
+fn read_file_refuses_every_name_the_entry_does_not_list() {
+    let fx = Fx::new();
+    let (mut c, _) = fx.open(None);
+    let (out, key) = fx.job("j1", &input("fp1"), FILES);
+    c.commit(&out, &key, &[]).unwrap();
+    for name in [
+        "meta.json",
+        "../meta.json",
+        "..",
+        ".",
+        "",
+        "a/b",
+        "proxy.mp4/",
+        "PROXY.MP4",
+        "other.bin",
+        "proxy.mp4\\0",
+    ] {
+        assert_eq!(c.read_file(&key, name, 0, 10).unwrap(), None, "{name:?}");
+    }
+    // An unknown or malformed key.
+    assert_eq!(c.read_file("nope", "proxy.mp4", 0, 10).unwrap(), None);
+    let other = CacheKey::compute(&input("never-committed")).to_string();
+    assert_eq!(c.read_file(&other, "proxy.mp4", 0, 10).unwrap(), None);
+}
+
+#[cfg(unix)]
+#[test]
+fn read_file_never_follows_a_link() {
+    let fx = Fx::new();
+    let (mut c, _) = fx.open(None);
+    let (out, key) = fx.job("j1", &input("fp1"), FILES);
+    c.commit(&out, &key, &[]).unwrap();
+    let secret = fx.data.join("secret.txt");
+    fs::write(&secret, b"mp4 bytes").unwrap();
+    let dir = c.entry_dir(&key_of(&key));
+    fs::remove_file(dir.join("proxy.mp4")).unwrap();
+    std::os::unix::fs::symlink(&secret, dir.join("proxy.mp4")).unwrap();
+    let e = c.read_file(&key, "proxy.mp4", 0, 10).unwrap_err();
+    assert_eq!(e.code, "SHM_REFUSED", "{e:?}");
+    // The entry directory itself replaced by a link is refused too.
+    let moved = dir.with_extension("moved");
+    fs::rename(&dir, &moved).unwrap();
+    std::os::unix::fs::symlink(&moved, &dir).unwrap();
+    let e = c.read_file(&key, "table.bin", 0, 10).unwrap_err();
+    assert_eq!(e.code, "SHM_REFUSED", "{e:?}");
+}
+
+#[test]
+fn read_file_refuses_a_file_larger_than_listed() {
+    let fx = Fx::new();
+    let (mut c, _) = fx.open(None);
+    let (out, key) = fx.job("j1", &input("fp1"), FILES);
+    c.commit(&out, &key, &[]).unwrap();
+    let dir = c.entry_dir(&key_of(&key));
+    fs::write(dir.join("table.bin"), b"table but much longer").unwrap();
+    let e = c.read_file(&key, "table.bin", 0, 10).unwrap_err();
+    assert_eq!(e.code, "SHM_REFUSED", "{e:?}");
+}
+
+#[test]
+fn an_http_pin_holds_an_entry_against_eviction() {
+    let fx = Fx::new();
+    let (mut c, _) = fx.open(Some(1));
+    let (out, key) = fx.job("j1", &input("fp1"), FILES);
+    c.commit(&out, &key, &[]).unwrap();
+    assert!(present(&mut c, &key));
+    assert!(c.pin(&key, "http:r1").unwrap());
+    c.gc(Some(0)).unwrap();
+    assert!(present(&mut c, &key), "an entry being served stays");
+    assert!(c.unpin(&key, "http:r1").unwrap());
+    c.gc(Some(0)).unwrap();
+    assert!(!present(&mut c, &key));
+    assert!(c.pin(&key, "http:bad id").is_err());
 }

@@ -145,3 +145,38 @@ export const FontsPlanPayload = Schema.Struct({
 });
 export const FontsPlanSchema = Schema.Unknown;
 export type FontsPlanResult = FontsPlan;
+/**
+ * 6B-1 Task 14: a proxy of a video asset (`tier` `540` by default, `codec` H.264 where a hardware
+ * encoder makes it, else AV1). A cache hit answers at once; otherwise a `media.proxy` job is
+ * submitted and, unless `wait: false`, waited for (up to 10 minutes). `branch` defaults to `main`.
+ */
+export const MediaProxyPayload = Schema.Struct({
+  projectId: Schema.String,
+  asset: Schema.String,
+  branch: Schema.optional(Schema.String),
+  tier: Schema.optional(Schema.Literals(["540", "1080"])),
+  codec: Schema.optional(Schema.Literals(["h264", "av1"])),
+  wait: Schema.optional(Schema.Boolean),
+});
+/** `{asset, tier, codec, key, state: ready | making, cached?, job?, result?}` (`result` is the generated `ProxyResult`). */
+export const MediaProxySuccess = Schema.Unknown;
+/** 6B-1 Task 14: each tier's proxy of an asset: `ready`, `making` (with its job), `failed` or `none`. */
+export const MediaProxyStatusPayload = Schema.Struct({
+  projectId: Schema.String,
+  asset: Schema.String,
+  branch: Schema.optional(Schema.String),
+});
+/** The generated `ProxyStatus`: `{asset, fingerprint, tiers: [{tier, state, key?, codec?, job?, code?}]}`. */
+export const MediaProxyStatusSuccess = Schema.Unknown;
+
+/**
+ * 6B-1 Task 17: `media.url {key, file}` mints a capability URL for one file of a media cache
+ * entry (spec 6 §7.3, plan Decisions 13 and 14). It needs `project.read` and reach over one of
+ * the projects the entry serves (`"*"` reaches all); a key the caller cannot reach, a key that
+ * is not there and a file the entry's `meta.json` does not list are all `NOT_FOUND`. `url` is
+ * origin-relative, `/media/cap/<token>/<file>`: fetch it with `GET` or `HEAD` (single `bytes=`
+ * ranges) on the HTTP origin the connection reached the server on; it works for that file only,
+ * until `expiresAt` (ms since the epoch, at most 10 minutes) or until the principal is revoked.
+ */
+export const MediaUrlPayload = Schema.Struct({ key: Schema.String, file: Schema.String });
+export const MediaUrlSuccess = Schema.Struct({ url: Schema.String, expiresAt: Schema.Number });

@@ -8,7 +8,22 @@ use crate::device::{Gpu, device_lost};
 
 /// Bytes per padded row for `width` RGBA8 pixels.
 pub(crate) fn padded_row(width: u32) -> u32 {
-    (width * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+    padded(width, 4)
+}
+
+/// Bytes per padded row for `width` texels of `bpp` bytes.
+pub(crate) fn padded(width: u32, bpp: u32) -> u32 {
+    (width * bpp).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+}
+
+/// A one-off staging buffer for a `width × height` plane of `bpp`-byte texels.
+pub(crate) fn staging(device: &wgpu::Device, width: u32, height: u32, bpp: u32) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("fin-compositor plane readback"),
+        size: u64::from(padded(width, bpp)) * u64::from(height),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    })
 }
 
 #[derive(Default)]
@@ -48,6 +63,18 @@ pub(crate) fn copy(
     width: u32,
     height: u32,
 ) {
+    copy_bytes(encoder, texture, buffer, width, height, 4);
+}
+
+/// Records the copy of `texture` (texels of `bpp` bytes) into `buffer`.
+pub(crate) fn copy_bytes(
+    encoder: &mut wgpu::CommandEncoder,
+    texture: &wgpu::Texture,
+    buffer: &wgpu::Buffer,
+    width: u32,
+    height: u32,
+    bpp: u32,
+) {
     encoder.copy_texture_to_buffer(
         wgpu::TexelCopyTextureInfo {
             texture,
@@ -59,7 +86,7 @@ pub(crate) fn copy(
             buffer,
             layout: wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(padded_row(width)),
+                bytes_per_row: Some(padded(width, bpp)),
                 rows_per_image: Some(height),
             },
         },
@@ -77,6 +104,17 @@ pub(crate) fn read(
     buffer: &wgpu::Buffer,
     width: u32,
     height: u32,
+) -> Result<Vec<u8>, CoreError> {
+    read_bytes(gpu, buffer, width, height, 4)
+}
+
+/// [`read`] of texels of `bpp` bytes.
+pub(crate) fn read_bytes(
+    gpu: &Gpu,
+    buffer: &wgpu::Buffer,
+    width: u32,
+    height: u32,
+    bpp: u32,
 ) -> Result<Vec<u8>, CoreError> {
     let (tx, rx) = std::sync::mpsc::channel();
     buffer.map_async(wgpu::MapMode::Read, .., move |r| {
@@ -100,14 +138,15 @@ pub(crate) fn read(
             return Err(device_lost("the readback never completed"));
         }
     }
-    let row = padded_row(width) as usize;
-    let mut out = Vec::with_capacity(width as usize * height as usize * 4);
+    let row = padded(width, bpp) as usize;
+    let len = (width * bpp) as usize;
+    let mut out = Vec::with_capacity(len * height as usize);
     {
         let view = buffer
             .get_mapped_range(..)
             .map_err(|e| CoreError::new("INTERNAL", format!("GPU readback failed: {e}")))?;
         for y in 0..height as usize {
-            out.extend_from_slice(&view[y * row..y * row + width as usize * 4]);
+            out.extend_from_slice(&view[y * row..y * row + len]);
         }
     }
     buffer.unmap();

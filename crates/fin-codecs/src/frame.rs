@@ -34,7 +34,8 @@ pub struct DecodedFrame {
     pub hw: bool,
 }
 
-/// A picture for an encoder (8-bit 4:2:0 in 6A).
+/// A picture for an encoder: 8-bit 4:2:0 as `I420` (three planes) or `Nv12` (Y, then
+/// interleaved UV; the third plane empty). Hardware encoders take NV12; SVT-AV1 takes both.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawFrame {
     pub format: PixelFormat,
@@ -67,6 +68,35 @@ impl RawFrame {
                     stride: cw as usize,
                     width: cw,
                     height: ch,
+                },
+            ],
+        }
+    }
+
+    /// Tight 8-bit NV12 planes: `y` is `width × height`, `uv` is `⌈width/2⌉ × ⌈height/2⌉` pairs.
+    pub fn nv12(size: Size, y: Vec<u8>, uv: Vec<u8>) -> RawFrame {
+        let (cw, ch) = (size.width.div_ceil(2), size.height.div_ceil(2));
+        RawFrame {
+            format: PixelFormat::Nv12,
+            size,
+            planes: [
+                Plane {
+                    data: y,
+                    stride: size.width as usize,
+                    width: size.width,
+                    height: size.height,
+                },
+                Plane {
+                    data: uv,
+                    stride: 2 * cw as usize,
+                    width: cw,
+                    height: ch,
+                },
+                Plane {
+                    data: Vec::new(),
+                    stride: 0,
+                    width: 0,
+                    height: 0,
                 },
             ],
         }

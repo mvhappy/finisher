@@ -27,15 +27,30 @@ fn input_invalid(name: &str, e: impl std::fmt::Display) -> JobError {
 
 /// `SHM_REFUSED` with `details.file` made relative to the job directory (no absolute path of
 /// the host reaches a client).
-pub fn relative_refusal(dir: &JobDir, mut e: CoreError) -> JobError {
-    if let Some(file) = e.details.get("file").and_then(|f| f.as_str()) {
-        let rel = Path::new(file)
+pub fn relative_refusal(dir: &JobDir, e: CoreError) -> JobError {
+    job_error(relative(dir, e))
+}
+
+/// `e` with its `details.file`, and that path in its message, made relative to the job
+/// directory (`<outside the job directory>` for a path elsewhere): `fin_shm`'s errors name the
+/// path they refused, which is the host's.
+pub fn relative(dir: &JobDir, mut e: CoreError) -> CoreError {
+    if let Some(file) = e
+        .details
+        .get("file")
+        .and_then(|f| f.as_str())
+        .map(str::to_owned)
+    {
+        let rel = Path::new(&file)
             .strip_prefix(&dir.root)
             .map(|r| r.to_string_lossy().replace('\\', "/"))
             .unwrap_or_else(|_| "<outside the job directory>".to_owned());
+        if !file.is_empty() {
+            e.message = e.message.replace(&file, &rel);
+        }
         e.details["file"] = json!(rel);
     }
-    job_error(e)
+    e
 }
 
 /// The job directory of `ctx`, resolved.

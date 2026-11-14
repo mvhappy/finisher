@@ -51,7 +51,12 @@ fn hello_lists_the_media_kinds() {
     let kinds: Vec<&str> = h.kinds.iter().map(|k| k.kind.as_ref()).collect();
     assert_eq!(
         kinds,
-        ["media.look", "media.capabilities", "media.probeDeep"]
+        [
+            "media.look",
+            "media.capabilities",
+            "media.probeDeep",
+            "media.proxy"
+        ]
     );
     assert!(WORKER_FAMILIES.get("media").is_some());
     for k in &h.kinds {
