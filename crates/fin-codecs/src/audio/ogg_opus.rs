@@ -98,10 +98,21 @@ pub(crate) fn start<R: Read + Seek>(r: &mut R, len: u64) -> Result<Option<OpusSt
             at = next;
             continue;
         }
+        // A repeated or wrapping sequence number is refused: symphonia's reader keeps the open
+        // packet across the one and drops it on the other, and a real encoder writes neither.
+        if last_seq.is_some_and(|s| seq <= s) {
+            return Err(corrupt(
+                "has a page sequence number that repeats or wraps before its first audio page",
+                at,
+            )
+            .with_details(json!({
+                "at": at, "format": "ogg", "sequence": seq, "previous": last_seq,
+            })));
+        }
         // As symphonia's reader does (RFC 7845 §3): a gap in the page sequence or a page that
         // does not continue drops the open packet; a continuation with no open packet starts
         // with an orphaned fragment, skipped up to its end and never counted.
-        if last_seq.is_some_and(|s| seq != s.wrapping_add(1)) || flags & 1 == 0 {
+        if last_seq.is_some_and(|s| seq > s + 1) || flags & 1 == 0 {
             open = false;
             have = 0;
         }
