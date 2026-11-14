@@ -19,19 +19,27 @@ jobs:
           # lavapipe on Ubuntu and WARP on Windows are software adapters every runner has, so a
           # missing one fails the run (FIN_REQUIRE_GPU=1) instead of skipping the GPU tests.
           # macOS lets wgpu choose (Metal, when the runner exposes it) and skips without one.
+          # The platform codecs (6B-1: VideoToolbox, Media Foundation) run on macOS and Windows
+          # with FIN_REQUIRE_PLATFORM_CODECS=0: hosted runners lack the HEVC Video Extensions and
+          # hardware encoders, so those rows skip with a notice here; validation hosts set 1
+          # (plan Task 21). Linux has no platform codec before 6B-2 (VA-API).
           - os: macos-15
             gpu: auto
             require-gpu: "0"
+            require-platform-codecs: "0"
           - os: windows-2025
             gpu: software
             require-gpu: "1"
+            require-platform-codecs: "0"
           - os: ubuntu-24.04
             gpu: software
             require-gpu: "1"
+            require-platform-codecs: "0"
     runs-on: ${{ matrix.os }}
     env:
       FIN_GPU: ${{ matrix.gpu }}
       FIN_REQUIRE_GPU: ${{ matrix.require-gpu }}
+      FIN_REQUIRE_PLATFORM_CODECS: ${{ matrix.require-platform-codecs }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -118,8 +126,11 @@ jobs:
           if [ "$RUNNER_OS" = "Windows" ]; then exe=".exe"; fi
           target/release/fin-plugin$exe test examples/plugins/rust-tools --profile command --exec target/release/rust-tools$exe
           target/release/fin-plugin$exe test examples/plugins/ts-tools --profile command
-      - name: Codecs (the fixture writers behind the `testing` feature; needs cmake, nasm on x86_64, the submodules)
-        run: cargo test --release -p fin-codecs --features testing
+      - name: Codecs and platform codecs (the fixture writers behind the `testing` feature; needs cmake, nasm on x86_64, the submodules)
+        # The OS backends' tests (VideoToolbox on macOS, Media Foundation on Windows) are compiled
+        # only on their OS; with FIN_REQUIRE_PLATFORM_CODECS=0 (the matrix above) a missing OS
+        # feature skips its rows with a notice. `--nocapture` keeps those notices in the log.
+        run: cargo test --release -p fin-codecs --features testing -- --nocapture
       - name: Encode golden of this machine class (informational, prints whether SVT-AV1's bytes match and the entry to record)
         # The test asserts only with FIN_ENCODE_GOLDEN=1. A class without an entry in
         # crates/fin-codecs/tests/golden/encode.json (Windows, until one is recorded from this

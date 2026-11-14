@@ -6,7 +6,7 @@
 // through the `fin` binary, and asserts the subscriber saw every committed rev in order and
 // that its last rev equals `snapshot.get`'s. The server and the temp dir are always cleaned up.
 //
-// Usage: node scripts/e2e.mjs [--skip-build] [basic|storage|history|reel|diagnostics|plugins|plugin-code|auth|look|agent|library|sandbox|remote|review|subagents|hooks ...]  (default: every scenario)
+// Usage: node scripts/e2e.mjs [--skip-build] [basic|storage|history|reel|diagnostics|plugins|plugin-code|auth|look|agent|library|sandbox|remote|review|subagents|hooks|proxy ...]  (default: every scenario)
 //
 // Builds go to `CARGO_TARGET_DIR` when it is set (else `target/`), and so does the run's
 // `fin` and `fin-plugin`. Scenario temp dirs fall back to `/tmp` when `TMPDIR` is so deep that the
@@ -108,6 +108,14 @@
 // counts the runs. On Linux a probe hook runs under the `hook` profile's launcher and cannot write
 // the project folder (plan 7F Task 11).
 //
+// The "proxy" scenario (scripts/e2e/proxy*.mjs) makes proxies through the real media worker (6B-1
+// Task 20): a library's `proxy540` stage over generated AV1 clips (CFR, and VFR rotated 90°), the
+// `1080` tier by `fin media proxy`, `fin look` reading the proxies with the frame ids of
+// `--originals`, `fin media thumbs --strip`, `media.url` and an HTTP range request, `fin cache
+// status` and the console's `gc --to 0` around an open and a closed project, and the journal's
+// media entries. H.264: proxied from the OS encoder's clip where the report names one (macOS,
+// Windows), `CODEC_UNAVAILABLE` with `laterBatch` guidance on Linux. Needs a GPU adapter, as "look".
+//
 // After the builds, each scenario has a deadline (E2E_DEADLINE_MS, default 180 s): when it passes,
 // the server is killed and the script exits non-zero. Test hooks (scripts/e2e.test.mjs):
 // E2E_SERVER_CMD (a JSON array, `{serverData}` substituted) replaces the finisherd command,
@@ -130,6 +138,7 @@ import { run as runRemote } from "./e2e/remote.mjs";
 import { run as runReview } from "./e2e/review.mjs";
 import { run as runSubagents } from "./e2e/subagents.mjs";
 import { run as runHooks } from "./e2e/hooks.mjs";
+import { run as runProxy } from "./e2e/proxy.mjs";
 
 // The servers of every scenario keep their secrets in files, never in the OS keychain (5B Decision 4).
 process.env.FIN_SECRETS ??= "file";
@@ -138,7 +147,7 @@ export { parseFrames } from "./e2e/lib.mjs";
 export { checkRevs };
 
 const DEADLINE_MS = Number(process.env.E2E_DEADLINE_MS ?? 180_000);
-const SCENARIOS = { basic: runBasic, storage: runStorage, history: runHistory, reel: runReel, diagnostics: runDiagnostics, plugins: runPlugins, "plugin-code": runPluginCode, auth: runAuth, look: runLook, agent: runAgent, library: runLibrary, sandbox: runSandbox, remote: runRemote, review: runReview, subagents: runSubagents, hooks: runHooks };
+const SCENARIOS = { basic: runBasic, storage: runStorage, history: runHistory, reel: runReel, diagnostics: runDiagnostics, plugins: runPlugins, "plugin-code": runPluginCode, auth: runAuth, look: runLook, agent: runAgent, library: runLibrary, sandbox: runSandbox, remote: runRemote, review: runReview, subagents: runSubagents, hooks: runHooks, proxy: runProxy };
 
 async function main(argv) {
   const names = argv.filter((a) => !a.startsWith("--"));
@@ -148,8 +157,8 @@ async function main(argv) {
     if (names.length === 0 || names.includes("plugin-code")) build("cargo", ["build", "--release", "-p", "example-rust-tools", "--bin", "rust-tools"]); // the Rust example plugin
     build("pnpm", ["--filter", "@finisher/fin-node", "build"]);
     build("pnpm", ["--filter", "@finisher/fin-node", "build:test"]);
-    if (names.length === 0 || names.includes("look") || names.includes("sandbox")) {
-      // The look scenario's fixture writer and CPU oracle (it runs them with `cargo run`, which finds them built); the sandbox scenario's AV1 clips.
+    if (names.length === 0 || names.includes("look") || names.includes("sandbox") || names.includes("proxy")) {
+      // The look scenario's fixture writer and CPU oracle (it runs them with `cargo run`, which finds them built); the sandbox and proxy scenarios' AV1 clips.
       build("cargo", ["build", "--release", "-p", "fin-codecs", "--features", "testing", "--example", "make_fixture"]);
       build("cargo", ["build", "--release", "-p", "fin-workers", "--example", "reference_render"]);
     }
