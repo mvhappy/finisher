@@ -6,7 +6,6 @@
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir, userInfo } from "node:os";
 import { delimiter, join, sep } from "node:path";
-import { fileURLToPath } from "node:url";
 import { AgentProvidersSuccess, type FinError, type ProviderInfo } from "@finisher/contracts";
 import { sandboxStatus } from "@finisher/fin-node";
 import { Effect, Exit, Schema } from "effect";

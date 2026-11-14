@@ -5,7 +5,6 @@ import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { CredentialFile, Principal, Rule, RuleLayer, Session } from "@finisher/contracts";
 import { RuleCommand, ruleOf } from "@finisher/contracts";
 import { Effect, Schema } from "effect";

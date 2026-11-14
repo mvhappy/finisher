@@ -3,7 +3,6 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { FinError } from "@finisher/contracts";
 import fc from "fast-check";
 import { describe, expect, it, test } from "vitest";

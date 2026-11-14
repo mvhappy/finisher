@@ -10,7 +10,6 @@ import { randomBytes } from "node:crypto";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { Node, Principal, Session } from "@finisher/contracts";
 import { Effect } from "effect";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";

@@ -7,7 +7,6 @@ import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { Approval, FinError, Node, Principal, Rule } from "@finisher/contracts";
 import { Effect, Exit } from "effect";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";

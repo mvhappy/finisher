@@ -8,7 +8,6 @@
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { Approval, Node, ProviderEvent, Rule, Session } from "@finisher/contracts";
 import { sandboxStatus } from "@finisher/fin-node";
 import { Effect } from "effect";

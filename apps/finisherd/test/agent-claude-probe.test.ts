@@ -6,7 +6,6 @@
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { FinError } from "@finisher/contracts";
 import { sandboxStatus } from "@finisher/fin-node";
 import { Effect, Exit, Scope } from "effect";

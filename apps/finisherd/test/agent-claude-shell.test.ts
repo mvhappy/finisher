@@ -12,7 +12,6 @@
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { Node, ProviderEvent, Session } from "@finisher/contracts";
 import { sandboxStatus } from "@finisher/fin-node";
 import { Effect } from "effect";

@@ -11,7 +11,6 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
-import { fileURLToPath } from "node:url";
 import { FinRpcs, type FinRpcTag, type Principal, type ReviewItem, type ReviewView, type Session } from "@finisher/contracts";
 import type { BranchView } from "@finisher/core-types";
 import { kindVersion } from "@finisher/fin-node";

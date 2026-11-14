@@ -4,7 +4,6 @@
 import { existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, closeSync, realpathSync, rmSync, symlinkSync, writeFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { FinError } from "@finisher/contracts";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { FinIndex, pathValues, runFinTool, type SessionEnv, STDOUT_MAX } from "../src/agent/builtin/fin-tool.ts";
