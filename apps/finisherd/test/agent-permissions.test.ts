@@ -264,6 +264,34 @@ describe("provider card expiry", () => {
     expect(t.live()).toHaveLength(0);
   });
 
+  // Review of 7D Task 13: a run closed under a waiting request (an interrupt, the provider's exit)
+  // expires its card in the transition; the request leaves `ProviderRequests` with it, its timer
+  // stops, and a late answer settles nothing.
+  test.each([
+    ["an interrupt", [...request("r1", "WebFetch", { url: "https://a.example" })]],
+    ["the provider's exit", [{ emit: [{ type: "request", id: "r1", kind: "approval", tool: "WebFetch", input: { url: "https://a.example" } }] }, { crash: { code: 1, signal: null } }]],
+  ] as const)("a run closed by %s drops its waiting requests: card expired, nothing waits, no timer, a late answer settles nothing", async (how, turn) => {
+    const adapter = FakeAdapter([{ turns: [[...turn] as FakeScript["turns"][number]] }]);
+    const t = handTimers();
+    const h = routed(adapter, [rule("fetch", "ask", "tool:WebFetch")], {}, t.schedule);
+    await h.runtime.boot();
+    const { session: s } = await Effect.runPromise(h.runtime.start({ projectId: "P1", prompt: "go" }, PEOPLE, META));
+    await until(() => store.approvals(s.id).length === 1, "the card");
+    const card = store.approvals(s.id)[0]!;
+    if (how === "an interrupt") {
+      await until(() => h.requests.waiting === 1, "the waiting request");
+      await Effect.runPromise(h.runtime.interrupt(s.id, PEOPLE));
+    }
+    await until(() => store.get(s.id)!.status === "interrupted", "interrupted");
+    await until(() => h.requests.waiting === 0, "no waiting request");
+    expect(store.approval(card.id)!.status).toBe("expired");
+    expect(t.live()).toHaveLength(0);
+    expect(approvalNodes(s.id).at(-1)).toMatchObject({ approvalId: card.id, requestId: "r1", kind: "provider", tool: "WebFetch", status: "expired", reason: "runClosed" });
+    expect((await Effect.runPromiseExit(h.approvals.answer(card.id, "allow", PERSON)))._tag).toBe("Failure");
+    expect(store.approval(card.id)!.status).toBe("expired");
+    expect(adapter.log.answers).toEqual([]);
+  });
+
   test("boot expires approvals already overdue (a restart does not wait for the hourly sweep)", async () => {
     const adapter = FakeAdapter([{ turns: [[...request("r1", "WebFetch", { url: "https://a.example" })]] }]);
     const h = routed(adapter, [rule("fetch", "ask", "tool:WebFetch")], { timers: false });

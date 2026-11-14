@@ -20,6 +20,12 @@
 //   `approval` node `{status: expired, reason: withdrawn}` and sends no answer; the card, once no
 //   identical request waits on it, is expired (`Expiry.withdraw`). A request already answered is
 //   not withdrawn (nothing waits).
+// - **Run closed.** A run that closes under a waiting request (an interrupt, an end, the
+//   provider's exit, a turn's end) expires its cards in the same transition (`session.ts`); the
+//   engine then drops the run's requests here (`dropRun`, for every harness): an `approval` node
+//   `{status: expired, reason: runClosed, stop}` each, their timers stopped, no answer sent (the
+//   instance's own interrupt or exit has already ended what waited there). A late answer to the
+//   card is refused (it is expired) and reaches no one.
 // - **Deny messages.** Every deny carries the server's reason (`denyMessage`), which a provider
 //   shows its model (Claude Code's `deny.message`).
 // - **Unconfined.** `RequestContext.unconfined` (the session sandbox's `agent` profile is not
@@ -243,6 +249,33 @@ export class ProviderRequests {
       }
       await p!.ctx.node({ approvalId: id, requestId, kind: "provider", tool: p!.tool, status: "expired", reason: "withdrawn" });
       return;
+    }
+  }
+
+  /**
+   * Run `runId` of `sessionId` closed (`stop`, module docs): its waiting requests leave, each
+   * with a node; their cards' timers stop (the transition already expired the cards).
+   */
+  async dropRun(sessionId: string, runId: string, stop: string): Promise<void> {
+    const dropped: Array<[string, Pending]> = [];
+    for (const [id, list] of [...this.#pending]) {
+      const kept = list.filter((p) => !(p.ctx.session.id === sessionId && p.ctx.runId === runId));
+      if (kept.length === list.length) continue;
+      for (const p of list) if (!kept.includes(p)) dropped.push([id, p]);
+      if (kept.length > 0) {
+        this.#pending.set(id, kept);
+        continue;
+      }
+      this.#pending.delete(id);
+      this.#timers.get(id)?.();
+      this.#timers.delete(id);
+    }
+    for (const [id, p] of dropped) {
+      try {
+        await p.ctx.node({ approvalId: id, requestId: p.requestId, kind: "provider", tool: p.tool, status: "expired", reason: "runClosed", stop });
+      } catch (e) {
+        p.ctx.log("agent runtime: a dropped request's node was not written", { error: String(e) });
+      }
     }
   }
 
