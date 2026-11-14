@@ -2,7 +2,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { check, checkTarget } from "./check-crate-deps.mjs";
+import { fileURLToPath } from "node:url";
+import { check, checkTarget, treeTarget } from "./check-crate-deps.mjs";
+import { metadata } from "./cargo-graph.mjs";
 import { fixtureRoot, runGate } from "./gate-helpers.mjs";
 
 /** A fake `cargo metadata` graph: `deps` maps a member to [name, kind?, declaration?]. */
@@ -213,4 +215,25 @@ test("the audio platform crates are target-gated in every member, not only fin-c
   assert.deepEqual(check(graph(MEMBERS, { "fin-media": [["objc2-audio-toolbox"]] })), [
     'CRATE_DEPENDENCY: fin-media takes objc2-audio-toolbox for every target (only under cfg(target_os = "macos"))',
   ]);
+});
+
+test("aac_only_on_linux: the real workspace's macOS and Windows builds hold no AAC code of ours (6C Task 14)", () => {
+  const root = fileURLToPath(new URL("..", import.meta.url));
+  for (const t of ["aarch64-apple-darwin", "x86_64-pc-windows-msvc"]) assert.deepEqual(treeTarget(root, t), [], t);
+  // Not vacuous: the Linux build has both, through fin-codecs and fin-workers.
+  const linux = treeTarget(root, "x86_64-unknown-linux-gnu");
+  for (const bad of ["symphonia-codec-aac", "fin-aacenc-sys"])
+    for (const who of ["fin-codecs", "fin-workers"]) assert.ok(linux.some((l) => l.startsWith(`CRATE_DEPENDENCY: ${who} reaches ${bad} `)), `${who} ${bad}: ${linux}`);
+  // cargo metadata unifies features across targets, so the metadata check would see a false
+  // breach for the Linux-gated feature: why the real run uses cargo tree.
+  assert.ok(checkTarget(metadata(root, "aarch64-apple-darwin"), "aarch64-apple-darwin").length > 0);
+});
+
+test("treeTarget reads cargo tree's dependents, the package itself not counted", () => {
+  const run = (_, args) => ({ status: 0, stdout: args.includes("fin-aacenc-sys") ? "fin-aacenc-sys v0.0.0 (/w)\n" : "symphonia-codec-aac v0.6.1\nsymphonia v0.6.1\nfin-codecs v0.0.0 (/w)\nfin-codecs v0.0.0 (/w) (*)\n" });
+  assert.deepEqual(treeTarget("/w", "aarch64-apple-darwin", run), [
+    "CRATE_DEPENDENCY: symphonia reaches symphonia-codec-aac on aarch64-apple-darwin (Finisher's own AAC code is Linux-only)",
+    "CRATE_DEPENDENCY: fin-codecs reaches symphonia-codec-aac on aarch64-apple-darwin (Finisher's own AAC code is Linux-only)",
+  ]);
+  assert.throws(() => treeTarget("/w", "x", () => ({ status: 101, stderr: "boom" })), /boom/);
 });

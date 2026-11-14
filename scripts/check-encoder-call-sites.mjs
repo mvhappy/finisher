@@ -7,11 +7,15 @@
 //   `mf/codecapi.rs`; SVT-AV1's bindings (`fin_svt_sys`) in `av1/svt_ffi.rs`, and its safe
 //   wrapper (`svt_ffi`) in `av1/svt.rs` (the `fin-svt-sys` crate itself is not scanned), and
 //   its opener (`open_av1_encoder`) in `av1/svt.rs` and the registry backend `av1/backends.rs`;
-// - every file that calls `open_encoder(` names an `EncodePurpose::` variant (its config's
-//   `purpose`); `open_encoder` is never renamed (`as`) or taken as a value, so every call is
-//   seen; and `EncoderConfig` has no `Default`, so its `purpose` field (required, no default)
-//   is always written out at the literal: the compiler holds the per-call rule, this gate the
-//   per-file one.
+// - audio (6C plan Decision 10): `fin_media::backend_audio::audio_encoder_allowed` decides and
+//   `fin_codecs::audio::registry::open_audio_encoder` opens; an audio encoder backend's `open`
+//   takes an `AudioOpenToken`, which is made (`AudioOpenToken(())`) only in `audio/registry.rs`,
+//   so that file is the only audio encoder opener. Tasks 13–16 add their encoder primitives here;
+// - every file that calls `open_encoder(` or `open_audio_encoder(` names an `EncodePurpose::`
+//   variant (its config's `purpose`, or the purpose argument); neither is renamed (`as`) or taken
+//   as a value, so every call is seen; and `EncoderConfig` has no `Default`, so its `purpose`
+//   field (required, no default) is always written out at the literal: the compiler holds the
+//   per-call rule, this gate the per-file one.
 // Rust sources under `crates/` and `apps/`, comments and string literals ignored. Each finding
 // is `ENCODER_CALL_SITE <path>:<line>: <what>`.
 import { readFileSync } from "node:fs";
@@ -29,12 +33,11 @@ export const PRIMITIVES = [
   { name: "SVT-AV1's bindings", re: /\bfin_svt_sys\b/, files: [`${CODECS}av1/svt_ffi.rs`] },
   { name: "SVT-AV1's encoder wrapper", re: /\bsvt_ffi\b/, files: [`${CODECS}av1/svt.rs`, `${CODECS}av1/mod.rs`] },
   { name: "SVT-AV1's opener (use open_encoder)", re: /\bopen_av1_encoder\b/, files: [`${CODECS}av1/svt.rs`, `${CODECS}av1/backends.rs`] },
+  { name: "the audio encoder token (use open_audio_encoder)", re: /\bAudioOpenToken\s*\(\s*\(\s*\)\s*\)/, files: [`${CODECS}audio/registry.rs`] },
 ];
-const CALL = /(?<!fn\s+)\bopen_encoder\s*\(/;
+/** The policy-filtered openers: video (6B-1) and audio (6C). */
+export const OPENERS = ["open_encoder", "open_audio_encoder"];
 const PURPOSE = /\bEncodePurpose\s*::\s*\w+/;
-const RENAMED = /\bopen_encoder\s+as\b/;
-/** `open_encoder` neither called nor defined (over the text without `use` items): taken as a value. */
-const AS_VALUE = /(?<!fn\s+)\bopen_encoder\b(?!\s*\()/;
 const DEFAULT = /#\[derive\([^)]*\bDefault\b[^)]*\)\]\s*(?:#\[[^\]]*\]\s*)*pub\s+struct\s+EncoderConfig\b|\bimpl\s+Default\s+for\s+EncoderConfig\b/;
 
 /** Whether `path` (repo-relative, "/") is scanned. */
@@ -51,17 +54,21 @@ export function findings(path, text) {
   lines.forEach((line, n) => {
     for (const p of PRIMITIVES) if (p.re.test(line) && !p.files.includes(path)) out.push(`ENCODER_CALL_SITE ${path}:${n + 1}: ${p.name} outside ${p.files.join(", ")}`);
   });
-  const call = body.search(new RegExp(CALL.source));
-  if (call !== -1 && !PURPOSE.test(body)) out.push(`ENCODER_CALL_SITE ${path}:${lineOf(call)}: open_encoder without an EncodePurpose (name the config's purpose in this file)`);
   const noUse = body.replace(/\buse\b[^;]*;/g, (u) => u.replace(/[^\n]/g, " "));
-  for (const [re, what, text] of [
-    [RENAMED, "open_encoder renamed (call it by its name)", body],
-    [AS_VALUE, "open_encoder taken as a value (call it directly)", noUse],
-    [DEFAULT, "EncoderConfig with a Default (its purpose must be written out)", body],
-  ]) {
-    const at = text.search(new RegExp(re.source));
-    if (at !== -1) out.push(`ENCODER_CALL_SITE ${path}:${lineOf(at)}: ${what}`);
+  for (const name of OPENERS) {
+    const call = body.search(new RegExp(`(?<!fn\\s+)\\b${name}\\s*\\(`));
+    if (call !== -1 && !PURPOSE.test(body)) out.push(`ENCODER_CALL_SITE ${path}:${lineOf(call)}: ${name} without an EncodePurpose (name the config's purpose in this file)`);
+    for (const [re, what, text] of [
+      [new RegExp(`\\b${name}\\s+as\\b`), `${name} renamed (call it by its name)`, body],
+      // Neither called nor defined (over the text without `use` items): taken as a value.
+      [new RegExp(`(?<!fn\\s+)\\b${name}\\b(?!\\s*\\()`), `${name} taken as a value (call it directly)`, noUse],
+    ]) {
+      const at = text.search(re);
+      if (at !== -1) out.push(`ENCODER_CALL_SITE ${path}:${lineOf(at)}: ${what}`);
+    }
   }
+  const at = body.search(new RegExp(DEFAULT.source));
+  if (at !== -1) out.push(`ENCODER_CALL_SITE ${path}:${lineOf(at)}: EncoderConfig with a Default (its purpose must be written out)`);
   return out;
 }
 

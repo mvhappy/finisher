@@ -63,6 +63,10 @@ pub struct AudioTrackConfig {
     pub channels: u16,
     /// Encoder delay in samples, written as the edit list's media time.
     pub priming: u32,
+    /// The samples to present after the priming (6C plan Decision 22: an encoder's
+    /// `EncodedLength.valid`), written exactly as the edit's segment duration; `None` presents
+    /// every sample to the end of the encoded ones.
+    pub presented: Option<u64>,
 }
 
 /// `ftyp`'s brands.
