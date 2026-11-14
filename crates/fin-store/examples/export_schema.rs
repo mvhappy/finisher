@@ -105,6 +105,8 @@ fn main() {
         g.subschema_for::<fin_media::cache::CacheGcResult>();
         g.subschema_for::<fin_media::jobs::ProbeDeepParams>();
         g.subschema_for::<fin_media::jobs::ProbeDeepResult>();
+        // The audio backend table (6C Task 12).
+        g.subschema_for::<fin_media::backend_audio::AudioBackendEntry>();
         g.subschema_for::<fin_library::RawRel>();
         g.subschema_for::<fin_library::Expect>();
         g.subschema_for::<fin_library::ScanEntry>();

@@ -15,7 +15,7 @@ export const AgentModeSchema = Schema.Literals(["plan", "draft", "auto"]);
 export const agentModeMatches: Same<typeof AgentModeSchema.Type, T.AgentMode> = true;
 export const AssetKindSchema = Schema.Literals(["media", "image", "svg", "lottieTemplate", "font", "lut"]);
 export const assetKindMatches: Same<typeof AssetKindSchema.Type, T.AssetKind> = true;
-export const AudioCodecSchema = Schema.Union([Schema.Literals(["aac", "opus", "mp3", "flac", "alac", "pcm", "ac3", "eac3"]), Schema.Literal("other")], { mode: "oneOf" });
+export const AudioCodecSchema = Schema.Union([Schema.Literals(["aac", "opus", "mp3", "flac", "alac", "pcm", "ac3", "eac3"]), Schema.Literal("vorbis"), Schema.Literal("other")], { mode: "oneOf" });
 export const audioCodecMatches: Same<typeof AudioCodecSchema.Type, T.AudioCodec> = true;
 export const AudioInfoSchema = Schema.Struct({
   channels: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(65535)),

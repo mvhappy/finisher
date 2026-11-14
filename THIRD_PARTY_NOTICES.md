@@ -501,6 +501,16 @@ status: used (sub-project 6C, Task 10), as Cargo dependencies; no code is copied
   default features only (no C reference tests);
 - `dasp_frame` and `dasp_sample` 0.11.0 (MIT OR Apache-2.0): `ebur128`'s sample and frame types.
 
+## symphonia — `fin-codecs` (audio containers and decoders, MPL-2.0)
+status: used (sub-project 6C, Task 12), as Cargo dependencies, unmodified; no code is copied.
+`symphonia` 0.6.1 is built with `default-features = false` and the features `wav`, `aiff`,
+`flac`, `ogg`, `vorbis`, `mp3`, `alac`, `caf` and `pcm` (never `opt-simd*`, so `rustfft` is not
+in the tree); its MPL-2.0 crates and their source are listed under "MPL-2.0 §3.2" below. Its
+other dependencies that ship:
+- `extended` 0.1.0 (MIT): 80-bit extended floats (AIFF's sample rate), for `symphonia-format-riff`;
+- `regex-lite` 0.1.9 (MIT OR Apache-2.0): tag parsing in `symphonia-metadata`;
+- `lazy_static` 1.5.1 (MIT OR Apache-2.0): symphonia's default codec and format registries.
+
 ## keyring, secret-service and zbus — `fin-node` (the vault's OS keychain)
 status: used (sub-project 5B, Task 2), as Cargo dependencies; no code is copied.
 - `keyring` **=3.6.3** (MIT OR Apache-2.0), `default-features = false` with `apple-native`,
@@ -583,7 +593,22 @@ and they are licensed under the Mozilla Public License 2.0
 (`https://mozilla.org/MPL/2.0/`). The native build gate checks that every MPL-2.0 package in
 the shipped graph is named here as `<name> <version>`.
 
-No MPL-2.0 crate is in the shipped graph yet (symphonia arrives in sub-project 6C).
+The MPL-2.0 crates in the shipped graph, all from Project Symphonia
+(`https://github.com/pdeljanov/Symphonia`; sub-project 6C, linked by `fin-codecs` for audio
+containers and decoders, which only `fin-workers` links), each with its source:
+
+- symphonia 0.6.1 (`symphonia`): `https://crates.io/crates/symphonia/0.6.1`
+- symphonia-core 0.6.1 (`symphonia-core`): `https://crates.io/crates/symphonia-core/0.6.1`
+- symphonia-common 0.6.1 (`symphonia-common`): `https://crates.io/crates/symphonia-common/0.6.1`
+- symphonia-metadata 0.6.1 (`symphonia-metadata`): `https://crates.io/crates/symphonia-metadata/0.6.1`
+- symphonia-format-riff 0.6.1 (`symphonia-format-riff`): `https://crates.io/crates/symphonia-format-riff/0.6.1`
+- symphonia-format-ogg 0.6.1 (`symphonia-format-ogg`): `https://crates.io/crates/symphonia-format-ogg/0.6.1`
+- symphonia-format-caf 0.6.1 (`symphonia-format-caf`): `https://crates.io/crates/symphonia-format-caf/0.6.1`
+- symphonia-codec-pcm 0.6.1 (`symphonia-codec-pcm`): `https://crates.io/crates/symphonia-codec-pcm/0.6.1`
+- symphonia-codec-vorbis 0.6.1 (`symphonia-codec-vorbis`): `https://crates.io/crates/symphonia-codec-vorbis/0.6.1`
+- symphonia-codec-alac 0.6.1 (`symphonia-codec-alac`): `https://crates.io/crates/symphonia-codec-alac/0.6.1`
+- symphonia-bundle-flac 0.6.1 (`symphonia-bundle-flac`): `https://crates.io/crates/symphonia-bundle-flac/0.6.1`
+- symphonia-bundle-mp3 0.6.1 (`symphonia-bundle-mp3`): `https://crates.io/crates/symphonia-bundle-mp3/0.6.1`
 
 ## openai (Apache-2.0) — the built-in agent's Chat Completions transport
 status: used (sub-project 7A), as an npm dependency of `finisherd` (`openai` 7.47.0, exact

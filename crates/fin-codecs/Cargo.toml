@@ -18,6 +18,9 @@ fin-svt-sys = { path = "../fin-svt-sys" }
 fin-dav1d-sys = { path = "../fin-dav1d-sys" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Audio containers and codecs (6C Decision 9 and the tech stack): MPL-2.0, unmodified, no
+# default features; never `opt-simd*` (the only path to rustfft). `aac` is Linux-only (Task 14).
+symphonia = { workspace = true, features = ["wav", "aiff", "flac", "ogg", "vorbis", "mp3", "alac", "caf", "pcm"] }
 
 # Platform codecs (6B-1), target-gated (scripts/check-crate-deps.mjs): VideoToolbox on macOS
 # (Tasks 4–5), Media Foundation on Windows 11 (Tasks 6–7). No other target links them.
@@ -33,6 +36,8 @@ windows = { workspace = true }
 
 [dev-dependencies]
 blake3 = "1"
+# Test signals and analysis only: `fin-codecs` never links `fin-audio` (6C Global Constraints).
+fin-audio = { path = "../fin-audio", features = ["testing"] }
 fin-codecs = { path = ".", features = ["testing"] }
 fin-container = { path = "../fin-container", features = ["testing"] }
 fin-media = { path = "../fin-media", features = ["testing"] }
