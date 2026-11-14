@@ -100,12 +100,14 @@
 // item open, the `auto` merge trigger answering `unavailable` (plan 7B Task 13).
 //
 // The "claude" scenario (scripts/e2e/claude*.mjs) runs Claude Code sessions from the console with
-// `fake-claude` as the CLI (`agents.claudeCode.path`): `agent providers` and a `provider signin` that
-// runs nothing, an `ask tool:Bash(curl *)` rule answered by a person, edits through `fin` on the
-// session's branch, a steer, an interrupt, a restart mid-call and a resume with no repeated commit,
-// an account change that refuses the next start until confirmed, a budget stop's approval and the
-// credential revoked at the end. On Linux it runs again under the launcher (`FIN_TEST_SANDBOX_READY=agent`,
-// the test-hooks fin-node) (plan 7D Task 16).
+// `fake-claude` as the CLI (`agents.claudeCode.path`, laid out as `claude/versions/<v>`): `agent
+// providers` and a `provider signin` that runs nothing, an `ask tool:Bash(curl *)` rule answered by a
+// person, edits through `fin` on the session's branch, a steer held for the next turn, an interrupt,
+// a restart mid-call and a resume that refuses the re-asked call (no repeated commit), an account
+// change that refuses the next start until confirmed, a budget stop whose approval gates the next
+// turn, the credential revoked at the end and the leak grep. On Linux it runs again under the
+// launcher (`FIN_TEST_SANDBOX_READY=agent`, the test-hooks fin-node; `FIN_REQUIRE_LANDLOCK=1` fails
+// instead of skipping where the profile cannot be enforced) (plan 7D Task 16).
 //
 // After the builds, each scenario has a deadline (E2E_DEADLINE_MS, default 180 s): when it passes,
 // the server is killed and the script exits non-zero. Test hooks (scripts/e2e.test.mjs):

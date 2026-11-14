@@ -28,9 +28,10 @@ const result = (inputTokens = 10, outputTokens = 5) => ({ cumulativeUsage: { inp
 const SIGNED = { init: { apiKeySource: "/login managed key" } };
 
 /**
- * Process 1 of session A. Turn 1 marks the intro, asks for `curl` and lingers (the steer lands
- * in that gap); turn 2 is the steer; turn 3 waits for an interrupt, which ends the process (the
- * runtime closes the CLI after an interrupt and resumes its transcript with the next prompt).
+ * Process 1 of session A. Turn 1 marks the intro and asks for `curl` (the steer is sent while the
+ * person has not answered it yet, so the runtime holds it for the next CLI turn of the same run);
+ * turn 2 is the steer; turn 3 waits for an interrupt, which ends the process (the runtime closes
+ * the CLI after an interrupt and resumes its transcript with the next prompt).
  */
 export function sessionA() {
   return {
@@ -38,7 +39,6 @@ export function sessionA() {
     steps: [
       { expect: "user", ...mark(LABELS.work) },
       bash(CURL, "check curl"),
-      { sleep: 3000 },
       result(),
       { expect: "user", ...mark(LABELS.steered, 2) },
       result(),
@@ -48,12 +48,16 @@ export function sessionA() {
   };
 }
 
-/** The process that resumes A after the interrupt: commits a marker, then holds inside the same shell call until the server is killed. */
+/**
+ * The process that resumes A after the interrupt: one shell call commits a marker, then holds
+ * until the server is killed. Run again, the same call would commit a second marker: the side
+ * effect the runtime must refuse when the resumed CLI asks for it again.
+ */
 export function sessionACrash() {
   return { ...SIGNED, steps: [{ expect: "user", ...bash(`${q(FIN)} marker add --at 3s --label ${LABELS.killed}; sleep 300`, "mark the credits, then wait", "toolu_crash_1") }, result()] };
 }
 
-/** The process after the restart: the CLI re-asks the call it left open; one turn. */
+/** The process after the restart: the CLI re-asks the call it left open (allowed, it runs again); one turn. */
 export function sessionAResumed() {
   return { ...SIGNED, onResumeDangling: "reask", steps: [{ expect: "user", ...result(7, 3) }] };
 }
