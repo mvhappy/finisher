@@ -137,10 +137,19 @@ function gitlinkAt(root) {
   };
 }
 
+/** The BLAKE3 of a listed file's text with CRLF line ends read as LF: a Windows checkout
+ *  (`core.autocrlf=true`, the Git for Windows default, which a parent `.gitattributes` does not
+ *  reach inside a submodule) has the same licence text with CRLF ends. */
+export function lfHash(bytes) {
+  const out = [];
+  for (let i = 0; i < bytes.length; i++) if (!(bytes[i] === 0x0d && bytes[i + 1] === 0x0a)) out.push(bytes[i]);
+  return blake3(Buffer.from(out));
+}
+
 function hashAt(root) {
   return (path) => {
     const full = join(root, path);
-    return existsSync(full) ? blake3(readFileSync(full)) : null;
+    return existsSync(full) ? lfHash(readFileSync(full)) : null;
   };
 }
 
