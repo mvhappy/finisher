@@ -444,9 +444,9 @@ export interface LineFramer {
  * `\r` alone stay inside the line, empty lines are skipped. Bytes are buffered, never decoded
  * until a line is whole, so a UTF-8 sequence split across chunks survives. The cap holds while
  * buffering: a line that passes `maxBytes` yields one error and is discarded up to its `\n`, so
- * an endless line cannot grow memory.
+ * an endless line cannot grow memory. `harness` names the CLI in that error (Codex reuses this).
  */
-export function lineFramer(maxBytes: number = MAX_LINE_BYTES): LineFramer {
+export function lineFramer(maxBytes: number = MAX_LINE_BYTES, harness: string = "claude"): LineFramer {
   const utf8 = new TextDecoder("utf-8");
   let parts: Uint8Array[] = [];
   let size = 0;
@@ -461,7 +461,7 @@ export function lineFramer(maxBytes: number = MAX_LINE_BYTES): LineFramer {
     if (n > 0 && bytes[n - 1] === 0x0d) n--;
     return n === 0 ? null : utf8.decode(bytes.subarray(0, n));
   };
-  const tooLong = (): FinError => finError("PROVIDER_PROTOCOL", "a claude line is longer than the cap", { maxBytes });
+  const tooLong = (): FinError => finError("PROVIDER_PROTOCOL", `a ${harness} line is longer than the cap`, { maxBytes });
 
   return {
     push(chunk) {
