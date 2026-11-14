@@ -326,3 +326,48 @@ export async function linkSignInStore(harness: Harness, serverData: string, dirs
   }
   return { grant: target };
 }
+
+/**
+ * What Codex would load from its `CODEX_HOME` as configuration, instructions or extensions
+ * (plan 7E Decision 6, with Task 0's `.env`, `environments.toml`, `agents/` and
+ * `managed_config.toml`): exact names, compared in any case (macOS and Windows find
+ * `CONFIG.TOML` as `config.toml`). With `*.config.toml` and `AGENTS*.md` (`plantedName`).
+ */
+export const PROVIDER_PLANTED: ReadonlyArray<string> = [
+  "config.toml",
+  "hooks.json",
+  "rules",
+  "skills",
+  "prompts",
+  "plugins",
+  "requirements.toml",
+  ".env",
+  "environments.toml",
+  "agents",
+  "managed_config.toml",
+];
+
+/** `name` (one entry of `provider/`) is one Codex would load: `PROVIDER_PLANTED`, `*.config.toml`, `AGENTS*.md`. */
+export function plantedName(name: string): boolean {
+  // Windows drops trailing dots and spaces (`config.toml.` opens `config.toml`).
+  const n = name.toLowerCase().replace(/[. ]+$/, "");
+  return PROVIDER_PLANTED.includes(n) || n.endsWith(".config.toml") || (n.startsWith("agents") && n.endsWith(".md"));
+}
+
+/**
+ * Provider directory hygiene (plan 7E Decision 6), before each instance: lists `provider/` by
+ * name only (`readdir`, no `stat`, so nothing is followed or opened: a link named
+ * `config.toml` is refused as a file of that name is) and refuses `PROVIDER_VERSION {missing:
+ * "isolation", item}` if a session planted something Codex would load there for its own resume.
+ * A `provider/` not made yet holds nothing.
+ */
+export async function providerDirClean(dirs: Pick<SessionDirs, "provider">): Promise<void> {
+  const names = await readdir(dirs.provider).catch((e: NodeJS.ErrnoException) => {
+    if (e.code === "ENOENT") return [] as string[];
+    throw e;
+  });
+  const item = names.find(plantedName);
+  if (item !== undefined) {
+    throw finError("PROVIDER_VERSION", `the session's provider directory holds ${JSON.stringify(item)}, which the CLI would load`, { missing: "isolation", item }, "end the session and start a new one");
+  }
+}
