@@ -34,7 +34,8 @@ pub use context::{CallLimits, PluginContext, PluginDirs, PluginRefFull};
 pub use errors::PluginError;
 pub use hook::{
     DEFAULT_HOOK_TIMEOUT_S, HOOK_KIND, HOOK_KIND_VERSION, HookClass, HookEvent, HookOut,
-    HookProject, HookReply, HookRequest, HookRun, HookSession, MAX_HOOK_TIMEOUT_S,
+    HookProject, HookReply, HookRequest, HookRun, HookSession, MAX_BLOCK_REASON_BYTES,
+    MAX_CONTEXT_TEXT_BYTES, MAX_HOOK_TIMEOUT_S, ReplyTooLarge,
 };
 pub use rights::{JobRights, PluginScope, Reach, ReachAll, RightsBranch, RightsPrincipal};
 pub use rpc::{

@@ -65,14 +65,15 @@ export function toCommandOut(r: CommandResult): CommandOut {
 const badReply = (): PluginError => protocolError("a hook answered neither allow, block nor context (a reply is {reply: allow | block | context} with no other field)", { reason: "badReply" });
 
 /**
- * The `HookReply` a hook handler's return value is sent as: nothing is `allow`; anything but
+ * The `HookReply` a hook handler's return value is sent as: `undefined` is `allow`; anything but
  * exactly `{reply: "allow"}`, `{reply: "block", reason}` or `{reply: "context", text}` (a
- * `modify`, an unknown field, a non-string) is `PLUGIN_PROTOCOL {reason: badReply}`, as the
+ * `modify`, an unknown field, a non-string, `null`) is `PLUGIN_PROTOCOL {reason: badReply}`, as the
  * host's strict decoder would refuse it.
  */
 export function toHookOut(r: HookResult): HookReply {
-  if (r === undefined || r === null) return { reply: "allow" };
-  if (typeof r !== "object" || Array.isArray(r)) throw badReply();
+  if (r === undefined) return { reply: "allow" };
+  // `null` (an untyped handler's) is no reply: failing it keeps a `PreMerge` closed (Decision 3).
+  if (typeof r !== "object" || r === null || Array.isArray(r)) throw badReply();
   const keys = Object.keys(r).sort().join(",");
   const o = r as Record<string, unknown>;
   if (o["reply"] === "allow" && keys === "reply") return { reply: "allow" };

@@ -1,6 +1,7 @@
 // A test plugin with hook handlers (7F Task 9), bundled by the tests with tools/bundle.mjs:
 // `guard` and `audit` both on `PreCommand`, dispatched by the manifest's handler name; `view`
-// calls the host inside a hook; `untyped` answers a `modify` reply the types refuse.
+// calls the host inside a hook; `untyped` answers a `modify` reply the types refuse, `extra` an
+// allow with an unknown field, `null` a JSON null.
 import { definePlugin } from "../../src/index.ts";
 
 const seen: string[] = [];
@@ -27,5 +28,6 @@ definePlugin({
     view: async (_req, host) => ({ reply: "context", text: await host.view() }),
     untyped: () => JSON.parse('{"reply": "modify", "payload": {"command": "history.list"}}'),
     extra: () => JSON.parse('{"reply": "allow", "payload": {}}'),
+    null: () => JSON.parse("null"),
   },
 });

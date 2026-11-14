@@ -215,3 +215,45 @@ fn request_v_is_1() {
     assert_eq!(v["request"]["v"], 1);
     assert_eq!(serde_json::from_value::<HookRun>(v).unwrap(), run);
 }
+
+#[test]
+fn reply_limits_after_stripping_control_characters() {
+    use fin_plugin_api::protocol::hook::{MAX_BLOCK_REASON_BYTES, MAX_CONTEXT_TEXT_BYTES};
+    assert_eq!(
+        (MAX_BLOCK_REASON_BYTES, MAX_CONTEXT_TEXT_BYTES),
+        (1024, 16 * 1024)
+    );
+    let block = |r: String| HookReply::Block { reason: r };
+    let context = |t: String| HookReply::Context { text: t };
+    // At the limit passes; one byte over is refused, never truncated.
+    assert_eq!(
+        block("r".repeat(1024)).checked(),
+        Ok(block("r".repeat(1024)))
+    );
+    let e = block("r".repeat(1025)).checked().unwrap_err();
+    assert_eq!((e.field, e.bytes, e.max), ("reason", 1025, 1024));
+    assert_eq!(
+        context("t".repeat(16384)).checked(),
+        Ok(context("t".repeat(16384)))
+    );
+    let e = context("t".repeat(16385)).checked().unwrap_err();
+    assert_eq!((e.field, e.bytes, e.max), ("text", 16385, 16384));
+    // UTF-8 bytes, not characters: 512 two-byte characters fit, 513 do not.
+    assert!(block("é".repeat(512)).checked().is_ok());
+    assert!(block("é".repeat(513)).checked().is_err());
+    // Control characters (C0 but `\n` and `\t`, DEL, C1) are stripped first, and kept out.
+    let noisy = format!("{}\u{1b}\u{7f}\u{85}\r\0", "r".repeat(1024));
+    assert_eq!(noisy.len(), 1024 + 6);
+    assert_eq!(block(noisy).checked(), Ok(block("r".repeat(1024))));
+    assert_eq!(
+        context("a\n\tb\u{7}c".into()).checked(),
+        Ok(context("a\n\tbc".into()))
+    );
+    // `\n` and `\t` count.
+    assert!(
+        context(format!("{}\n", "t".repeat(16384)))
+            .checked()
+            .is_err()
+    );
+    assert_eq!(HookReply::Allow {}.checked(), Ok(HookReply::Allow {}));
+}

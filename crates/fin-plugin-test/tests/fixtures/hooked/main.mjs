@@ -2,6 +2,9 @@
 // profiles.rs). It speaks the fin-jobs envelope by hand:
 // - `guard` (PreCommand) blocks a command and reads the project on the way (`project.view`);
 // - `audit` (PreCommand and JobDone, one handler on two events) answers context naming the event;
+// - `long-reason` and `long-text` (PreCommand) answer one byte over Decision 2's limits (a 1,025-byte
+//   reason, a 16,385-byte text); `edge` answers a 1,024-byte reason with control characters,
+//   which fits once they are stripped;
 // - `note` (SessionStart) allows;
 // - `rewrite` (PreMerge) answers a `modify` reply, which v1 does not have;
 // - `slow` (PreMerge) answers after 3 s, past its 1 s timeout.
@@ -36,6 +39,12 @@ async function hook(job) {
     }
     case "audit":
       return end(job, { value: { reply: "context", text: `${request.event} seen` } });
+    case "long-reason":
+      return end(job, { value: { reply: "block", reason: "r".repeat(1025) } });
+    case "long-text":
+      return end(job, { value: { reply: "context", text: "t".repeat(16385) } });
+    case "edge":
+      return end(job, { value: { reply: "block", reason: `${"é".repeat(512)}\u001b\u0000` } });
     case "note":
       return end(job, { value: { reply: "allow" } });
     case "rewrite":

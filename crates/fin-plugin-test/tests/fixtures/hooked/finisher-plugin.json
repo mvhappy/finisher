@@ -61,6 +61,18 @@
         "timeoutS": 5
       },
       {
+        "event": "PreCommand",
+        "handler": "long-reason"
+      },
+      {
+        "event": "PreCommand",
+        "handler": "long-text"
+      },
+      {
+        "event": "PreCommand",
+        "handler": "edge"
+      },
+      {
         "event": "SessionStart",
         "handler": "note"
       },

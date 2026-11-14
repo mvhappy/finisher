@@ -142,6 +142,53 @@ pub enum HookReply {
     },
 }
 
+/// The most bytes (UTF-8) of a `block` reason, after control characters are stripped
+/// (Decision 2; `HOOK_LIMITS.reasonBytes` in `@finisher/contracts`).
+pub const MAX_BLOCK_REASON_BYTES: usize = 1024;
+/// The most bytes (UTF-8) of a `context` text, after control characters are stripped
+/// (Decision 2; `HOOK_LIMITS.textBytes`).
+pub const MAX_CONTEXT_TEXT_BYTES: usize = 16 * 1024;
+
+/// A reply whose `reason` or `text` passes Decision 2's limit: a failed hook, not truncated.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplyTooLarge {
+    /// `reason` or `text`.
+    pub field: &'static str,
+    /// Its bytes after stripping.
+    pub bytes: usize,
+    pub max: usize,
+}
+
+/// `s` without control characters (C0 but `\n` and `\t`, DEL, C1), as the host strips a reply.
+pub fn strip_control(s: &str) -> String {
+    s.chars()
+        .filter(|&c| !c.is_control() || c == '\n' || c == '\t')
+        .collect()
+}
+
+impl HookReply {
+    /// The reply as the host keeps it (Decision 2): control characters stripped from `reason`
+    /// and `text`, then at most [`MAX_BLOCK_REASON_BYTES`] and [`MAX_CONTEXT_TEXT_BYTES`].
+    pub fn checked(self) -> Result<HookReply, ReplyTooLarge> {
+        let fit = |field, s: &str, max| {
+            let s = strip_control(s);
+            match s.len() {
+                bytes if bytes > max => Err(ReplyTooLarge { field, bytes, max }),
+                _ => Ok(s),
+            }
+        };
+        Ok(match self {
+            HookReply::Allow {} => HookReply::Allow {},
+            HookReply::Block { reason } => HookReply::Block {
+                reason: fit("reason", &reason, MAX_BLOCK_REASON_BYTES)?,
+            },
+            HookReply::Context { text } => HookReply::Context {
+                text: fit("text", &text, MAX_CONTEXT_TEXT_BYTES)?,
+            },
+        })
+    }
+}
+
 /// What a `plugin.hook` v1 job returns.
 pub type HookOut = HookReply;
 

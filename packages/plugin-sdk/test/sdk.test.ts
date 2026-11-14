@@ -536,9 +536,12 @@ describe("hook handlers (7F Task 9)", () => {
     expect(() => toHookOut({ reply: "context", text: 1 } as never)).toThrow();
     expect(() => toHookOut({ reply: "allow", extra: 1 } as never)).toThrow();
     expect(toHookOut(undefined)).toEqual({ reply: "allow" });
+    // `null` is no reply (only nothing is allow): an untyped handler returning it fails, so a
+    // `PreMerge` fails closed (Decision 3) rather than allowing.
+    expect(() => toHookOut(null as never)).toThrow(/neither allow, block nor context/);
     expect(toHookOut({ reply: "block", reason: "r" })).toEqual({ reply: "block", reason: "r" });
     const h = host(hooked, "--warm");
-    for (const name of ["untyped", "extra"]) {
+    for (const name of ["untyped", "extra", "null"]) {
       const out = await h.run(hookJob(name, request("PreCommand", {})));
       expect(out).toMatchObject({ t: "error", error: { code: "PLUGIN_PROTOCOL", details: { reason: "badReply" } } });
     }

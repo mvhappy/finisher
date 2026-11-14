@@ -4,7 +4,9 @@
 //!   request of its event answers within the hook's timeout (`PLUGIN_TIMEOUT`), without
 //!   crashing (`PLUGIN_CRASHED`) or breaking the envelope (`PLUGIN_PROTOCOL`, `ready` after
 //!   each job), and its result is one valid reply: `allow`, `block {reason}` or `context
-//!   {text}`, nothing else (`HOOK_REPLY_INVALID`: a `modify` reply, an unknown field). The real
+//!   {text}`, nothing else, within Decision 2's limits (`HOOK_REPLY_INVALID`: a `modify` reply,
+//!   an unknown field, a reason over 1 KiB or a text over 16 KiB after control characters are
+//!   stripped, `{reason: tooLarge, field, bytes, max}`). The real
 //!   host takes any of these as a failed hook resolved by the event's `onTimeout`;
 //! - **cold:** each handler that passed warm also runs in a cold process, which exits 0;
 //! - **calls** and **logs** are checked as in the `command` profile.
@@ -94,7 +96,21 @@ fn judge(hook: &str, phase: &'static str, run: &JobRun, out: &mut Vec<Finding>) 
     };
     match &run.ended {
         Ended::Result(v) => match serde_json::from_value::<HookReply>(v.clone()) {
-            Ok(_) => summary.outcome = "reply",
+            Ok(r) => match r.checked() {
+                Ok(_) => summary.outcome = "reply",
+                Err(t) => {
+                    summary.outcome = "protocol";
+                    find(
+                        "reply",
+                        "HOOK_REPLY_INVALID",
+                        format!(
+                            "{hook} answered a {} of {} bytes, over {} (after control characters are stripped)",
+                            t.field, t.bytes, t.max
+                        ),
+                        json!({ "reason": "tooLarge", "field": t.field, "bytes": t.bytes, "max": t.max }),
+                    );
+                }
+            },
             Err(e) => {
                 summary.outcome = "protocol";
                 find(
@@ -141,10 +157,14 @@ fn judge(hook: &str, phase: &'static str, run: &JobRun, out: &mut Vec<Finding>) 
     summary
 }
 
-/// The reply's kind, when the run ended with a valid one.
+/// The reply's kind, when the run ended with a valid one (Decision 2's limits included).
 fn reply_kind(run: &JobRun) -> Option<&'static str> {
     match &run.ended {
-        Ended::Result(v) => match serde_json::from_value::<HookReply>(v.clone()).ok()? {
+        Ended::Result(v) => match serde_json::from_value::<HookReply>(v.clone())
+            .ok()?
+            .checked()
+            .ok()?
+        {
             HookReply::Allow {} => Some("allow"),
             HookReply::Block { .. } => Some("block"),
             HookReply::Context { .. } => Some("context"),

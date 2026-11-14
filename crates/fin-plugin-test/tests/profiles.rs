@@ -371,6 +371,9 @@ fn hook_profile_runs_each_declared_handler() {
         [
             ("PreCommand", "guard", 10, Some("block")),
             ("PreCommand", "audit", 5, Some("context")),
+            ("PreCommand", "long-reason", 10, None),
+            ("PreCommand", "long-text", 10, None),
+            ("PreCommand", "edge", 10, Some("block")),
             ("SessionStart", "note", 10, Some("allow")),
             ("JobDone", "audit", 10, Some("context")),
             ("PreMerge", "rewrite", 10, None),
@@ -386,7 +389,7 @@ fn hook_profile_runs_each_declared_handler() {
         json!("history list")
     );
     assert!(
-        r.hooks[3].request.get("session").is_none(),
+        r.hooks[6].request.get("session").is_none(),
         "JobDone has no session"
     );
     // A host call inside a hook is answered and recorded under its handler.
@@ -412,7 +415,22 @@ fn hook_profile_runs_each_declared_handler() {
         has(f, "answer", "PLUGIN_TIMEOUT", Some("slow"), Some("warm")),
         "{shown}"
     );
-    assert_eq!(f.len(), 2, "{shown}");
+    // Decision 2's limits, in UTF-8 bytes after control characters are stripped.
+    for (hook, field, bytes, max) in [
+        ("long-reason", "reason", 1025, 1024),
+        ("long-text", "text", 16385, 16384),
+    ] {
+        let x = f
+            .iter()
+            .find(|x| x.command.as_deref() == Some(hook) && x.phase == Some("warm"))
+            .unwrap_or_else(|| panic!("{hook}: {shown}"));
+        assert_eq!((x.check, x.code.as_str()), ("reply", "HOOK_REPLY_INVALID"));
+        assert_eq!(
+            x.details,
+            json!({ "reason": "tooLarge", "field": field, "bytes": bytes, "max": max })
+        );
+    }
+    assert_eq!(f.len(), 4, "{shown}");
     // Only the handlers that passed warm run cold, and pass there too.
     let cold: Vec<_> = r
         .hooks
@@ -424,6 +442,7 @@ fn hook_profile_runs_each_declared_handler() {
         [
             ("guard", "reply"),
             ("audit", "reply"),
+            ("edge", "reply"),
             ("note", "reply"),
             ("audit", "reply")
         ]
