@@ -18,9 +18,9 @@
 use fin_core::CoreError;
 use fin_core::eval::AudioEffectPlan;
 
-use super::Effect;
 use super::detector::{Detector, Measure, Smoother, amp, coeff, static_gain};
 use super::params::{ParamCurve, ParamsAt};
+use super::{BLOCK, Effect};
 
 /// The block's coefficients.
 #[derive(Debug, Clone, Copy, Default)]
@@ -91,22 +91,60 @@ impl Effect for Compressor {
         self.designed = Some(p);
     }
 
+    /// In passes over at most a grid block: the levels, the smoothed gain (its one-pole
+    /// recursion alone in its loop), then the amplitudes and the multiply.
     fn run(&mut self, ch: &mut [&mut [f32]]) {
-        let c = self.c;
         let len = ch.first().map_or(0, |x| x.len());
-        for i in 0..len {
-            let (f, k) = Detector::frame(ch, i);
-            let level = self.det.level_db(&f[..k]);
-            let target = static_gain(level, c.threshold, c.slope, c.knee);
-            let a = if target < self.gain.g {
-                c.attack
-            } else {
-                c.release
-            };
-            let g = amp(self.gain.step(target, a) + c.makeup);
-            for x in ch.iter_mut() {
-                x[i] *= g;
+        let mut buf = [0.0f32; BLOCK as usize];
+        for at in (0..len).step_by(BLOCK as usize) {
+            let end = len.min(at + BLOCK as usize);
+            let gains = &mut buf[..end - at];
+            match ch {
+                [l, r] => {
+                    let part = [&mut l[at..end], &mut r[at..end]];
+                    self.det.levels(&part, gains);
+                    self.gains(gains);
+                    let [l, r] = part;
+                    for ((l, r), &m) in l.iter_mut().zip(r.iter_mut()).zip(gains.iter()) {
+                        *l *= m;
+                        *r *= m;
+                    }
+                }
+                _ => {
+                    let part = [&mut ch[0][at..end]];
+                    self.det.levels(&part, gains);
+                    self.gains(gains);
+                    let [x] = part;
+                    for (x, &m) in x.iter_mut().zip(gains.iter()) {
+                        *x *= m;
+                    }
+                }
             }
+        }
+    }
+}
+
+impl Compressor {
+    /// Turns `levels` (dBFS, one per frame) into the frames' amplitudes in place: the static
+    /// curve and the smoother (attack while the reduction grows), then makeup.
+    #[inline]
+    fn gains(&mut self, levels: &mut [f32]) {
+        let c = self.c;
+        let mut g = self.gain.g;
+        for v in levels.iter_mut() {
+            let target = static_gain(*v, c.threshold, c.slope, c.knee);
+            // Both candidates, then the pick: the pick no longer waits for the comparison
+            // before multiplying (the same value as choosing the coefficient first).
+            let (ga, gr) = (
+                Smoother::next(g, target, c.attack),
+                Smoother::next(g, target, c.release),
+            );
+            g = if target < g { ga } else { gr };
+            *v = g;
+        }
+        self.gain.g = g;
+        for v in levels.iter_mut() {
+            *v = amp(*v + c.makeup);
         }
     }
 }

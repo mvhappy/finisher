@@ -122,6 +122,57 @@ impl Detector {
         (f, ch.len().min(2))
     }
 
+    /// What the detector measures.
+    pub fn measure(&self) -> Measure {
+        self.measure
+    }
+
+    /// [`Detector::level_db`] of every frame of `ch` (1 or 2 channels of equal length) into
+    /// `out[..len]`: the same values in the same order, with the RMS window's state held in
+    /// locals across the run (the ring's writes cannot then force the running sum back through
+    /// memory on every frame).
+    pub fn levels(&mut self, ch: &[&mut [f32]], out: &mut [f32]) {
+        let len = ch.first().map_or(0, |x| x.len());
+        let out = &mut out[..len];
+        match (self.measure, ch) {
+            (Measure::Rms, [l, r]) => self.rms_levels(out, |i| {
+                let (l, r) = (f64::from(l[i]), f64::from(r[i]));
+                (l * l + r * r) / 2.0
+            }),
+            (Measure::Rms, [m]) => self.rms_levels(out, |i| {
+                let m = f64::from(m[i]);
+                m * m
+            }),
+            _ => {
+                for (i, o) in out.iter_mut().enumerate() {
+                    let (f, k) = Detector::frame(ch, i);
+                    *o = self.level_db(&f[..k]);
+                }
+            }
+        }
+    }
+
+    /// The RMS levels of `out.len()` frames whose mean squares `sq(i)` gives, as
+    /// [`Detector::rms`] one by one.
+    #[inline]
+    fn rms_levels(&mut self, out: &mut [f32], sq: impl Fn(usize) -> f64) {
+        let (mut sum, mut pos) = (self.sum, self.pos);
+        let ring = &mut self.ring[..WINDOW];
+        for (i, o) in out.iter_mut().enumerate() {
+            let sq = sq(i);
+            sum += sq - ring[pos];
+            ring[pos] = sq;
+            pos += 1;
+            if pos == WINDOW {
+                pos = 0;
+                sum = ring.iter().fold(0.0, |s, &v| s + v);
+            }
+            *o = rms_db(sum);
+        }
+        (self.sum, self.pos) = (sum, pos);
+        self.n += out.len() as u64;
+    }
+
     /// Takes one frame's linked `|x|`; the window's peak in dBFS.
     fn peak(&mut self, p: f32) -> f32 {
         while self.queue.back().is_some_and(|&(_, v)| v <= p) {
@@ -153,12 +204,18 @@ impl Detector {
             // The periodic recompute (see the module docs): a fixed order, once per window.
             self.sum = self.ring.iter().fold(0.0, |s, &v| s + v);
         }
-        let ms = (self.sum / WINDOW as f64) as f32;
-        if ms > 1e-20 {
-            10.0 * libm::log10f(ms)
-        } else {
-            FLOOR_DB
-        }
+        rms_db(self.sum)
+    }
+}
+
+/// The window's mean square in dBFS from its running sum.
+#[inline]
+fn rms_db(sum: f64) -> f32 {
+    let ms = (sum / WINDOW as f64) as f32;
+    if ms > 1e-20 {
+        10.0 * libm::log10f(ms)
+    } else {
+        FLOOR_DB
     }
 }
 
@@ -194,8 +251,14 @@ impl Smoother {
     /// Moves towards `target` with coefficient `a`; the new gain.
     #[inline]
     pub fn step(&mut self, target: f32, a: f32) -> f32 {
-        self.g = a * self.g + (1.0 - a) * target;
+        self.g = Smoother::next(self.g, target, a);
         self.g
+    }
+
+    /// The gain after `g` moves towards `target` with coefficient `a`.
+    #[inline]
+    pub fn next(g: f32, target: f32, a: f32) -> f32 {
+        a * g + (1.0 - a) * target
     }
 }
 

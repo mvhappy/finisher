@@ -3,8 +3,9 @@
 //! `band<n>Gain` and `band<n>Q` (animatable).
 //!
 //! A band that is `off` (or of a type this engine does not know) is not run at all, so an EQ
-//! with every band off is a bit-exact passthrough. The others run in band order, each over the
-//! whole block, one [`Biquad`] state per channel. On every block start
+//! with every band off is a bit-exact passthrough. The others run in band order, one
+//! [`Biquad`] state per channel (the same bits as running each band over the whole block in
+//! turn; the loop takes every sample through all bands, which pipelines). On every block start
 //! ([`super::Effect::update`]) each band reads its numbers there, clamps them to the registry
 //! ranges and redesigns its coefficients when they moved.
 
@@ -89,11 +90,53 @@ impl Effect for Eq {
         }
     }
 
+    /// Each sample goes through every band in band order (both channels side by side), so
+    /// the bands' recursions overlap in the pipeline. Each band sees exactly the samples and
+    /// operations it saw band by band over the whole block: the output is the same bits.
     fn run(&mut self, ch: &mut [&mut [f32]]) {
-        for b in &mut self.bands {
-            for (x, st) in ch.iter_mut().zip(&mut b.state) {
-                st.run(&b.c, x);
+        match self.bands.len() {
+            0 => {}
+            1 => cascade::<1>(&mut self.bands, ch),
+            2 => cascade::<2>(&mut self.bands, ch),
+            3 => cascade::<3>(&mut self.bands, ch),
+            4 => cascade::<4>(&mut self.bands, ch),
+            5 => cascade::<5>(&mut self.bands, ch),
+            6 => cascade::<6>(&mut self.bands, ch),
+            7 => cascade::<7>(&mut self.bands, ch),
+            _ => cascade::<8>(&mut self.bands, ch),
+        }
+    }
+}
+
+/// [`Eq::run`] for `N` bands: coefficients and states in fixed-size locals, so the compiler
+/// keeps the states in registers across the block.
+fn cascade<const N: usize>(bands: &mut [Band], ch: &mut [&mut [f32]]) {
+    let c: [Coeffs; N] = core::array::from_fn(|k| bands[k].c);
+    let mut st: [[Biquad; 2]; N] = core::array::from_fn(|k| bands[k].state);
+    match ch {
+        [l, r] => {
+            for (xl, xr) in l.iter_mut().zip(r.iter_mut()) {
+                let (mut yl, mut yr) = (*xl, *xr);
+                for (c, [sl, sr]) in c.iter().zip(st.iter_mut()) {
+                    yl = sl.tick(c, yl);
+                    yr = sr.tick(c, yr);
+                }
+                (*xl, *xr) = (yl, yr);
             }
         }
+        _ => {
+            for (x, k) in ch.iter_mut().take(2).zip(0..) {
+                for v in x.iter_mut() {
+                    let mut y = *v;
+                    for (c, s) in c.iter().zip(st.iter_mut()) {
+                        y = s[k].tick(c, y);
+                    }
+                    *v = y;
+                }
+            }
+        }
+    }
+    for (b, st) in bands.iter_mut().zip(st) {
+        b.state = st;
     }
 }

@@ -65,14 +65,30 @@ impl<T> Piece<T> {
         })
     }
 
+    /// The values at the piece's two ends (`v0`, `v1`).
+    pub fn ends(&self) -> [f64; 2] {
+        self.v
+    }
+
     /// The progress of control point `c` through the piece, in `[0, 1]`.
     pub fn progress(&self, c: i64) -> f64 {
+        // The differences in `i64` when they fit (always, but for items near the i64 range's
+        // ends), else in `i128`: either way the same integers, rounded once to `f64`.
+        if let (Some(num), Some(den)) =
+            (c.checked_sub(self.start), self.end.checked_sub(self.start))
+        {
+            return (num as f64 / den as f64).clamp(0.0, 1.0);
+        }
         let (c, start, end) = (i128::from(c), i128::from(self.start), i128::from(self.end));
         ((c - start) as f64 / (end - start) as f64).clamp(0.0, 1.0)
     }
 
     /// The plan value at control point `c`.
     pub fn value(&self, c: i64) -> f64 {
+        if self.v[0] == self.v[1] {
+            // What `lerp` answers for equal ends, whatever the progress.
+            return self.v[0];
+        }
         let x = self.progress(c);
         lerp(
             self.v[0],
@@ -103,6 +119,11 @@ impl<T> Piecewise<T> {
         pieces.retain(|p| p.start < p.end);
         pieces.sort_by_key(|p| p.start);
         Piecewise { pieces, start, end }
+    }
+
+    /// The pieces, in order.
+    pub fn pieces(&self) -> &[Piece<T>] {
+        &self.pieces
     }
 
     /// The piece holding sample `n`, else the nearest one before it, else the first (`None`
@@ -176,10 +197,15 @@ fn shape_factor(s: &Shape, x: f64) -> f32 {
 
 /// The gain amplitude at control point `c`: `10^(dB/20)` (`libm::powf`) times each shape's
 /// factor in plan order; 0 in a gap.
-pub(crate) fn gain_at(at: &Located<'_, Vec<Shape>>, c: i64) -> f32 {
+/// `memo` holds the last `(dB/20, 10^(dB/20))` this caller computed, so a constant gain pays
+/// for one `powf` per call site rather than one per control point (the same value either way).
+pub(crate) fn gain_at(at: &Located<'_, Vec<Shape>>, c: i64, memo: &mut (f32, f32)) -> f32 {
     let Some(p) = at.piece else { return 0.0 };
-    let db = p.value(c);
-    let mut a = libm::powf(10.0, (db / 20.0) as f32);
+    let e = (p.value(c) / 20.0) as f32;
+    if e.to_bits() != memo.0.to_bits() {
+        *memo = (e, libm::powf(10.0, e));
+    }
+    let mut a = memo.1;
     if !p.extra.is_empty() {
         let x = p.progress(c);
         for s in &p.extra {

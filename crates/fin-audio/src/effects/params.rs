@@ -25,6 +25,23 @@ pub struct ParamCurve {
     pieces: Piecewise<()>,
     /// The value when there are no pieces.
     default: f64,
+    /// `Some(v)` when the curve is `v` at every sample (no pieces, or every piece from `v` to
+    /// `v`): [`ParamCurve::at`] then answers without a lookup, the value it would compute.
+    constant: Option<f64>,
+}
+
+/// `Some(v)` when every piece holds `v` from end to end (a piece with equal ends is that value
+/// at every progress, see [`Piece::value`]).
+fn constant_of(pieces: &Piecewise<()>, default: f64) -> Option<f64> {
+    let mut v = None;
+    for p in pieces.pieces() {
+        let [a, b] = p.ends();
+        if a.to_bits() != b.to_bits() || v.is_some_and(|v: f64| v.to_bits() != a.to_bits()) {
+            return None;
+        }
+        v = Some(a);
+    }
+    Some(v.unwrap_or(default))
 }
 
 impl ParamCurve {
@@ -40,8 +57,10 @@ impl ParamCurve {
             .iter()
             .map(|s| Piece::new(s.from, s.to, s.v, s.interp, s.u, ()))
             .collect::<Result<Vec<_>, _>>()?;
+        let pieces = Piecewise::new(pieces, start, end);
         Ok(ParamCurve {
-            pieces: Piecewise::new(pieces, start, end),
+            constant: constant_of(&pieces, default),
+            pieces,
             default,
         })
     }
@@ -51,6 +70,7 @@ impl ParamCurve {
         ParamCurve {
             pieces: Piecewise::new(Vec::new(), 0, 0),
             default: v,
+            constant: Some(v),
         }
     }
 
@@ -58,6 +78,9 @@ impl ParamCurve {
     /// the first, after the last, or in a segment that rounded to no samples) the nearest
     /// piece's end value holds.
     pub fn at(&self, n: i64) -> f64 {
+        if let Some(v) = self.constant {
+            return v;
+        }
         self.pieces.nearest(n).map_or(self.default, |p| p.value(n))
     }
 }

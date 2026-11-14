@@ -221,12 +221,18 @@ impl ItemMix {
 
     /// Gain × shapes and pan, ramped between control points, added into `out`.
     fn apply(&self, layout: SourceLayout, s: i64, e: i64, b0: i64, out: &mut Stereo) {
+        let (xl, xr) = match &self.buf {
+            Canonical::Mono(x) => (&x[..], &x[..]),
+            Canonical::Stereo(st) => (&st.l[..], &st.r[..]),
+        };
+        // `powf(10, 0)` is 1: the memo starts as if it had computed 0 dB.
+        let mut memo = (0.0f32, 1.0f32);
         let mut n = s;
         while n < e {
             let (g, p) = (self.gain.locate(n), self.pan.locate(n));
             let (c0, c1) = interval(n, &g, &p);
-            let a = sides(layout, gain_at(&g, c0), pan_at(&p, c0));
-            let b = sides(layout, gain_at(&g, c1), pan_at(&p, c1));
+            let a = sides(layout, gain_at(&g, c0, &mut memo), pan_at(&p, c0));
+            let b = sides(layout, gain_at(&g, c1, &mut memo), pan_at(&p, c1));
             let ctl = Control {
                 c0,
                 c1,
@@ -234,15 +240,14 @@ impl ItemMix {
                 r: [a.1, b.1],
             };
             let stop = c1.min(e);
-            for m in n..stop {
+            let (i0, o0) = ((n - s) as usize, (n - b0) as usize);
+            let k = (stop - n) as usize;
+            let (ol, or) = (&mut out.l[o0..o0 + k], &mut out.r[o0..o0 + k]);
+            let (xl, xr) = (&xl[i0..i0 + k], &xr[i0..i0 + k]);
+            for (j, m) in (n..stop).enumerate() {
                 let (gl, gr) = ctl.at(m);
-                let (i, o) = ((m - s) as usize, (m - b0) as usize);
-                let (xl, xr) = match &self.buf {
-                    Canonical::Mono(x) => (x[i], x[i]),
-                    Canonical::Stereo(st) => (st.l[i], st.r[i]),
-                };
-                out.l[o] += xl * gl;
-                out.r[o] += xr * gr;
+                ol[j] += xl[j] * gl;
+                or[j] += xr[j] * gr;
             }
             n = stop;
         }

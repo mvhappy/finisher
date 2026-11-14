@@ -575,11 +575,36 @@ fn plans_follow_their_projects() {
     }
 }
 
-/// Mixer throughput, informational (the gate is Task 23's): 16 stereo items, each with an EQ
-/// and a compressor, 10 s. `cargo test --release -p fin-audio --test a0 -- --ignored perf`.
+/// Mixer throughput (spec §14, plan 6C Task 23 item 3): 16 stereo items, each with an EQ and a
+/// compressor, 10 s, must mix at ≥ [`PERF_MIN_X`]× real time in a release build on the
+/// reference machines (the median of [`PERF_RUNS`] renders, each with a fresh mixer, so one
+/// descheduled run does not decide). Ignored by default (a debug build and a shared CI runner
+/// are not the reference): `cargo test --release -p fin-audio --test a0 -- --ignored perf
+/// --nocapture`.
 #[test]
 #[ignore]
 fn perf() {
+    let mut runs: Vec<f64> = (0..PERF_RUNS).map(|_| perf_run()).collect();
+    runs.sort_by(f64::total_cmp);
+    let median = runs[PERF_RUNS / 2];
+    println!(
+        "A0 perf: 16 stereo items × (EQ + compressor): median {median:.1}× real time \
+         (runs {:?})",
+        runs.iter().map(|x| format!("{x:.1}")).collect::<Vec<_>>()
+    );
+    assert!(
+        median >= PERF_MIN_X,
+        "mixer throughput {median:.1}× real time, below the {PERF_MIN_X}× of spec §14"
+    );
+}
+
+/// The throughput spec §14 asks of the reference machines.
+const PERF_MIN_X: f64 = 100.0;
+/// Renders per `perf` run (odd: the median is one of them).
+const PERF_RUNS: usize = 5;
+
+/// One `perf` render: its speed in × real time.
+fn perf_run() -> f64 {
     const ITEMS: usize = 16;
     const SECS: i64 = 10;
     let eq = json!({"id": "fx1", "kind": "eq", "params": {
@@ -625,19 +650,13 @@ fn perf() {
     let total = SECS as usize * RATE as usize;
     let start = std::time::Instant::now();
     let mut done = 0;
+    // One output block reused, as a streaming caller does.
+    let mut b = Stereo::default();
     while done < total {
         let n = 1_024.min(total - done);
-        let mut b = Stereo {
-            l: vec![0.0; n],
-            r: Vec::new(),
-        };
+        b.l.resize(n, 0.0);
         mixer.render(&mut b).unwrap();
         done += n;
     }
-    let wall = start.elapsed().as_secs_f64();
-    println!(
-        "A0 perf: {ITEMS} stereo items × (EQ + compressor), {SECS} s mixed in {wall:.3} s = \
-         {:.1}× real time",
-        SECS as f64 / wall
-    );
+    SECS as f64 / start.elapsed().as_secs_f64()
 }
