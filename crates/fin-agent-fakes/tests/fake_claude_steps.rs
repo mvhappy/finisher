@@ -468,7 +468,7 @@ fn fake_resume_reasks_a_dangling_call_only_under_reask() {
     assert_eq!(f.read()["subtype"], "init");
     assert_eq!(f.read()["type"], "result");
     assert!(f.finish().success());
-    // `reask`: the same tool_use_id, run again only when allowed (here denied).
+    // `reask`: the same tool_use_id, run again only when allowed (here denied: its error result).
     let mut f = Fake::start(&dir, Some(plain("reask")), &[&resume], &[]);
     f.user("again");
     assert_eq!(f.read()["subtype"], "init");
@@ -476,6 +476,7 @@ fn fake_resume_reasks_a_dangling_call_only_under_reask() {
     assert_eq!(req["request"]["subtype"], "can_use_tool");
     assert_eq!(req["request"]["tool_use_id"], "toolu_D");
     f.answer(&req, json!({"behavior": "deny", "message": "no"}));
+    assert_eq!(f.read()["message"]["content"][0]["is_error"], true);
     assert_eq!(f.read()["type"], "result");
     assert!(f.finish().success());
     let all = observed_all(&dir);

@@ -3,7 +3,7 @@
 //! `can_use_tool`; the input is `{command, description?, timeout?, run_in_background?}`; once
 //! answered, an allowed command runs as the CLI runs it (a login shell of `$SHELL`, as
 //! `ask.run`: verified on 2.1.321, s3B) in the fake's working directory and environment, and the
-//! call's `tool_result` is written (a denied one gets an error result).
+//! call's `tool_result` is written (a denied one gets an error result), to the transcript too.
 //!
 //! `run_in_background: true` under `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` (Finisher's launch
 //! sets it) is rejected as an unknown parameter before any prompt: an error `tool_result`, no
@@ -49,8 +49,7 @@ impl Runner {
         });
         // The CLI writes the call to its transcript as it announces it: a process killed while
         // the call runs leaves it there without a result, which a resume finds dangling.
-        self.transcript.append(&line);
-        self.emit(&line);
+        self.emit_conversation(&line);
     }
 
     /// A background call while background tasks are disabled: rejected before any prompt.
@@ -114,8 +113,10 @@ impl Runner {
         self.tool_result(tool_use_id, &content, is_error);
     }
 
-    fn tool_result(&mut self, tool_use_id: &str, content: &str, is_error: bool) {
-        self.emit(&json!({
+    /// The call's `tool_result`, in the transcript too (as the CLI writes it): an answered call
+    /// is never dangling for a resume nor given an error result by an interrupt.
+    pub(super) fn tool_result(&mut self, tool_use_id: &str, content: &str, is_error: bool) {
+        self.emit_conversation(&json!({
             "type": "user", "session_id": self.session_id, "parent_tool_use_id": null,
             "uuid": fresh_uuid(),
             "message": {"role": "user", "content": [

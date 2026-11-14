@@ -66,6 +66,7 @@ pub fn main(argv: Vec<String>) -> i32 {
         .observed
         .or_else(|| script.observed.clone())
         .and_then(|s| config::observed_path(&s));
+    config::log_invocation(&cfg.invocations, &argv);
     let mut observed = Observed::new(observed_path);
     let args = match argv::parse(&argv, &script.refuse_flag_values) {
         Ok(a) => a,
@@ -212,6 +213,12 @@ impl Runner {
         // A host gone does not stop the turn (verified 2.1.321, Task 0, s5C).
         let mut out = std::io::stdout().lock();
         let _ = writeln!(out, "{v}").and_then(|()| out.flush());
+    }
+
+    /// A conversation line the fake writes itself: in the transcript, then on stdout.
+    fn emit_conversation(&self, v: &Value) {
+        self.transcript.append(v);
+        self.emit(v);
     }
 
     fn emit_script_line(&self, v: &Value) {

@@ -101,8 +101,9 @@ impl Runner {
         }
     }
 
+    /// The call's `tool_result`, in the transcript too (`bash.rs` `tool_result`).
     fn mcp_result(&mut self, tool_use_id: &str, content: Value, is_error: bool) {
-        self.emit(&json!({
+        self.emit_conversation(&json!({
             "type": "user", "session_id": self.session_id, "parent_tool_use_id": null,
             "uuid": fresh_uuid(),
             "message": {"role": "user", "content": [
