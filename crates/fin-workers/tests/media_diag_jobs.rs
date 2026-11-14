@@ -21,7 +21,8 @@ use fin_media::Size;
 use fin_media::backend::VendorClass;
 use fin_media::jobs::{
     MANIFEST_VERSION, ManifestAsset, ManifestFonts, OriginalFile, ProbeDeepParams, ProxyCodec,
-    ProxyParams, ProxyTier, RenderManifest, ThumbsMode, ThumbsParams, proxy_key, thumbs_key,
+    ProxyParams, ProxySourceAudio, ProxyTier, RenderManifest, ThumbsMode, ThumbsParams, proxy_key,
+    thumbs_key,
 };
 use media_support::{gpu_or_skip, worker_env};
 use serde_json::Value;
@@ -68,6 +69,7 @@ fn job_for(path: &Path) -> Job {
             proxies: Vec::new(),
         }],
         fonts: ManifestFonts::default(),
+        pcm: Default::default(),
     };
     std::fs::write(
         job.path("in/manifest.json"),
@@ -93,7 +95,15 @@ fn proxy(job: &Job, diagnostics: bool) -> Run {
         tier,
         codec: ProxyCodec::Av1,
         decoder_class: VendorClass::Software,
-        key: proxy_key("fp", tier, ProxyCodec::Av1, VendorClass::Software).to_string(),
+        audio: ProxySourceAudio::None,
+        key: proxy_key(
+            "fp",
+            tier,
+            ProxyCodec::Av1,
+            VendorClass::Software,
+            ProxySourceAudio::None,
+        )
+        .to_string(),
         asset: Some("a1".into()),
         file: None,
         project_id: None,

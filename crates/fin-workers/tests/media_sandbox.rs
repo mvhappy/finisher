@@ -27,8 +27,8 @@ use fin_jobs::sandbox::{ENV, NONE, SelfSandbox};
 use fin_jobs::{EXIT_SELF_SANDBOX, FileMode, HostMsg};
 use fin_media::backend::VendorClass;
 use fin_media::jobs::{
-    ManifestProxy, ProxyCodec, ProxyParams, ProxyTier, RenderManifest, ThumbsMode, ThumbsParams,
-    proxy_key, thumbs_key,
+    ManifestProxy, ProxyCodec, ProxyParams, ProxySourceAudio, ProxyTier, RenderManifest,
+    ThumbsMode, ThumbsParams, proxy_key, thumbs_key,
 };
 use fin_sandbox::WorkerInput;
 use fin_sandbox::linux::landlock::{Support, query};
@@ -548,7 +548,15 @@ fn look_proxy_and_thumbs_run_under_the_profile_with_identical_bytes() {
         tier,
         codec: ProxyCodec::Av1,
         decoder_class: VendorClass::Software,
-        key: proxy_key(&fp, tier, ProxyCodec::Av1, VendorClass::Software).to_string(),
+        audio: ProxySourceAudio::None,
+        key: proxy_key(
+            &fp,
+            tier,
+            ProxyCodec::Av1,
+            VendorClass::Software,
+            ProxySourceAudio::None,
+        )
+        .to_string(),
         asset: Some(fx.av1_id.clone()),
         file: None,
         project_id: None,
