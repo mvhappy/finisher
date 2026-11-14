@@ -198,7 +198,7 @@ pub fn run_media(f: &RunFacts) -> JobMedia {
 
 /// What an audio job (`media.pcm`, `media.waveform`, `media.listen`) knows about itself.
 pub struct AudioFacts<'a> {
-    /// The source's codec (`MEDIA_CODECS`; `pcm` for a feed read back from the cache).
+    /// The source's codec (`MEDIA_AUDIO_CODECS`; `pcm` for a feed read back from the cache).
     pub codec: &'a str,
     /// The decoder's backend (`MEDIA_BACKENDS`; `none` when nothing was decoded).
     pub backend: &'a str,
@@ -225,7 +225,7 @@ pub fn audio_media(f: &AudioFacts<'_>) -> JobMedia {
         0
     };
     JobMedia {
-        codec: MEDIA_CODECS.get_or_other(f.codec),
+        codec: MEDIA_AUDIO_CODECS.get_or_other(f.codec),
         backend: MEDIA_BACKENDS.get_or_other(f.backend),
         hw: false,
         resolution: ResolutionBucket::Sd,
@@ -236,18 +236,19 @@ pub fn audio_media(f: &AudioFacts<'_>) -> JobMedia {
     }
 }
 
-/// `AudioCodec`'s name in `MEDIA_CODECS` (`other` for codecs the table lacks).
-pub fn audio_codec_name(codec: fin_media::AudioCodec) -> &'static str {
-    use fin_media::AudioCodec as A;
+/// `AudioCodec`'s name in `MEDIA_AUDIO_CODECS` (`other`: the table's fallback).
+pub fn audio_codec_name(codec: AudioCodec) -> &'static str {
     match codec {
-        A::Aac => "aac",
-        A::Opus => "opus",
-        A::Mp3 => "mp3",
-        A::Flac => "flac",
-        A::Alac => "alac",
-        A::Pcm => "pcm",
-        A::Vorbis => "vorbis",
-        A::Ac3 | A::Eac3 | A::Other => "other",
+        AudioCodec::Aac => "aac",
+        AudioCodec::Opus => "opus",
+        AudioCodec::Mp3 => "mp3",
+        AudioCodec::Flac => "flac",
+        AudioCodec::Alac => "alac",
+        AudioCodec::Pcm => "pcm",
+        AudioCodec::Ac3 => "ac3",
+        AudioCodec::Eac3 => "eac3",
+        AudioCodec::Vorbis => "vorbis",
+        AudioCodec::Other => "other",
     }
 }
 
@@ -309,10 +310,6 @@ fn guidance_entry(g: &Guidance) -> GuidanceEntry {
     }
 }
 
-fn audio_name(c: AudioCodec) -> String {
-    wire_name(&c)
-}
-
 /// The GPU as `media.capabilities` and `render.stats` name it: numeric ids, no name strings.
 pub fn gpu_entry(a: &GpuAdapter) -> GpuEntry {
     GpuEntry {
@@ -349,7 +346,7 @@ pub fn capabilities_event(caps: &MediaCapabilities) -> MediaCapabilitiesEvent {
             .audio
             .iter()
             .map(|a| AudioCodecEntry {
-                codec: MEDIA_AUDIO_CODECS.get_or_other(&audio_name(a.codec)),
+                codec: MEDIA_AUDIO_CODECS.get_or_other(audio_codec_name(a.codec)),
                 decode: support(a.decode),
                 encode: support(a.encode),
                 backends: a.backends.iter().map(backend_entry).collect(),

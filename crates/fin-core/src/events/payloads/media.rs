@@ -120,11 +120,13 @@ pub enum RenderPhase {
 /// decoded nothing). Kinds (6B-1 Task 19): `media.look`; `media.proxy` (frames encoded, the
 /// proxy's size; its encoder is in `render.stats`' `encode` rows); `media.thumbs` (thumbnails or
 /// sprites made, from the proxy or the original it decoded); `media.probeDeep` (its first frame).
+/// The audio kinds (6C plan Task 22: `media.pcm`, `media.waveform`, `media.listen`) name the
+/// audio codec they decoded, with `hw` false, `resolution` `sd` and `frames` samples ÷ 1,024.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct JobMedia {
-    // `MEDIA_CODECS`.
-    #[serde(deserialize_with = "names_media::media_codec")]
+    // `MEDIA_CODECS`, or `MEDIA_AUDIO_CODECS` for an audio kind.
+    #[serde(deserialize_with = "names_media::job_media_codec")]
     pub codec: Name,
     // `MEDIA_BACKENDS`.
     #[serde(deserialize_with = "names_media::media_backend")]

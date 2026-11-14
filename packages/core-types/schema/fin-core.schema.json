@@ -8813,7 +8813,7 @@
       "type": "object"
     },
     "JobMedia": {
-      "description": "The `media` object of `job.done` `kv` 2: what a media job did. `codec`, `backend` and `hw`\ndescribe the decode that served the job (the first source it decoded; `none` when it\ndecoded nothing). Kinds (6B-1 Task 19): `media.look`; `media.proxy` (frames encoded, the\nproxy's size; its encoder is in `render.stats`' `encode` rows); `media.thumbs` (thumbnails or\nsprites made, from the proxy or the original it decoded); `media.probeDeep` (its first frame).",
+      "description": "The `media` object of `job.done` `kv` 2: what a media job did. `codec`, `backend` and `hw`\ndescribe the decode that served the job (the first source it decoded; `none` when it\ndecoded nothing). Kinds (6B-1 Task 19): `media.look`; `media.proxy` (frames encoded, the\nproxy's size; its encoder is in `render.stats`' `encode` rows); `media.thumbs` (thumbnails or\nsprites made, from the proxy or the original it decoded); `media.probeDeep` (its first frame).\nThe audio kinds (6C plan Task 22: `media.pcm`, `media.waveform`, `media.listen`) name the\naudio codec they decoded, with `hw` false, `resolution` `sd` and `frames` samples ÷ 1,024.",
       "properties": {
         "backend": {
           "$ref": "#/$defs/Name"

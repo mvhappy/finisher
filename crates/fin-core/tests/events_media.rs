@@ -311,7 +311,15 @@ fn adapter_types_read_wgpus_names() {
 #[test]
 fn audio_codecs_and_phases_are_in_the_closed_schema() {
     for c in ["aac", "opus", "mp3", "flac", "alac", "vorbis", "pcm"] {
-        assert!(MEDIA_CODECS.get(c).is_some(), "MEDIA_CODECS lacks {c}");
+        assert!(
+            MEDIA_AUDIO_CODECS.get(c).is_some(),
+            "MEDIA_AUDIO_CODECS lacks {c}"
+        );
+    }
+    // One codec table per medium: no name is both a video and an audio codec, so
+    // `job.done.media.codec` reads either without ambiguity.
+    for c in MEDIA_CODECS.entries() {
+        assert!(MEDIA_AUDIO_CODECS.get(c).is_none(), "{c} is in both tables");
     }
     for (phase, name) in [
         (RenderPhase::DecodeAudio, "decodeAudio"),
@@ -342,7 +350,7 @@ fn job_done_with_an_audio_media_object_round_trips() {
         outcome: JobOutcome::Succeeded,
         code: None,
         media: Some(JobMedia {
-            codec: MEDIA_CODECS.get("opus").unwrap(),
+            codec: MEDIA_AUDIO_CODECS.get("opus").unwrap(),
             backend: MEDIA_BACKENDS.get("libopus").unwrap(),
             hw: false,
             resolution: ResolutionBucket::Sd,
@@ -358,6 +366,18 @@ fn job_done_with_an_audio_media_object_round_trips() {
     assert_eq!(v["media"]["codec"], json!("opus"));
     assert_eq!(v["media"]["backend"], json!("libopus"));
     assert_eq!(decode_payload(any.kind(), &v).unwrap(), any);
-    // A codec outside the table still reads as `other`.
-    assert_eq!(MEDIA_CODECS.get_or_other("wavpack"), Name::OTHER);
+    // Audio and video codecs both read back; a codec outside both tables reads as `other`.
+    for (codec, want) in [
+        ("vorbis", "vorbis"),
+        ("hevc", "hevc"),
+        ("none", "none"),
+        ("wavpack", "other"),
+    ] {
+        let mut w = v.clone();
+        w["media"]["codec"] = json!(codec);
+        let AnyPayload::JobDone(d) = decode_payload(any.kind(), &w).unwrap() else {
+            panic!("not job.done")
+        };
+        assert_eq!(d.media.unwrap().codec.as_str(), want, "{codec}");
+    }
 }

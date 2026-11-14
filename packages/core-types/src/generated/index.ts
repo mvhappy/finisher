@@ -4450,6 +4450,8 @@ export interface JobDone {
  * decoded nothing). Kinds (6B-1 Task 19): `media.look`; `media.proxy` (frames encoded, the
  * proxy's size; its encoder is in `render.stats`' `encode` rows); `media.thumbs` (thumbnails or
  * sprites made, from the proxy or the original it decoded); `media.probeDeep` (its first frame).
+ * The audio kinds (6C plan Task 22: `media.pcm`, `media.waveform`, `media.listen`) name the
+ * audio codec they decoded, with `hw` false, `resolution` `sd` and `frames` samples ÷ 1,024.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "JobMedia".

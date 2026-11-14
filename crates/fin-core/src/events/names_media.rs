@@ -12,14 +12,12 @@ use serde::{Deserialize, Deserializer, Serialize};
 use super::class::Name;
 use super::names::NameTable;
 
-/// Video codecs (`fin-media`'s `VideoCodec`, camel case), audio codecs (`fin-media`'s
-/// `AudioCodec`, 6C Decision 24) and `none` (a job that decoded nothing).
+/// Video codecs (`fin-media`'s `VideoCodec`, camel case) and `none` (a job that decoded
+/// nothing): a capability row's and an encoder's `codec`. An audio job's `job.done.media.codec`
+/// is in [`MEDIA_AUDIO_CODECS`] instead ([`job_media_codec`]).
 pub static MEDIA_CODECS: NameTable = NameTable::new(
     "MEDIA_CODECS",
-    &[
-        "av1", "h264", "hevc", "vp9", "vp8", "prores", "aac", "opus", "mp3", "flac", "alac",
-        "vorbis", "pcm", "none",
-    ],
+    &["av1", "h264", "hevc", "vp9", "vp8", "prores", "none"],
 );
 
 /// Video codec profiles (`fin-media`'s `jobs::Profile`, camel case): a capability row's
@@ -41,10 +39,14 @@ pub static MEDIA_PROFILES: NameTable = NameTable::new(
     ],
 );
 
-/// Audio codecs (`fin-media`'s `AudioCodec`, camel case): the capability report's audio rows.
+/// Audio codecs (`fin-media`'s `AudioCodec`, camel case): the capability report's audio rows
+/// and an audio job's (`media.pcm`, `media.waveform`, `media.listen`) `job.done.media.codec`
+/// (6C plan Task 22; `pcm` also for a feed read back from the cache).
 pub static MEDIA_AUDIO_CODECS: NameTable = NameTable::new(
     "MEDIA_AUDIO_CODECS",
-    &["aac", "opus", "mp3", "flac", "alac", "pcm", "ac3", "eac3"],
+    &[
+        "aac", "opus", "mp3", "flac", "alac", "pcm", "ac3", "eac3", "vorbis",
+    ],
 );
 
 /// Decode and encode backends (spec §6.1; the vendor class of each is [`backend_class`])
@@ -118,6 +120,15 @@ pub fn media_codec<'de, D: Deserializer<'de>>(d: D) -> Result<Name, D::Error> {
 
 pub fn media_backend<'de, D: Deserializer<'de>>(d: D) -> Result<Name, D::Error> {
     Ok(MEDIA_BACKENDS.get_or_other(&String::deserialize(d)?))
+}
+
+/// `job.done.media.codec`: a video codec ([`MEDIA_CODECS`], `none` included) or an audio one
+/// ([`MEDIA_AUDIO_CODECS`]); the two tables share no name.
+pub fn job_media_codec<'de, D: Deserializer<'de>>(d: D) -> Result<Name, D::Error> {
+    let s = String::deserialize(d)?;
+    Ok(MEDIA_CODECS
+        .get(&s)
+        .unwrap_or_else(|| MEDIA_AUDIO_CODECS.get_or_other(&s)))
 }
 
 pub fn media_audio_codec<'de, D: Deserializer<'de>>(d: D) -> Result<Name, D::Error> {
