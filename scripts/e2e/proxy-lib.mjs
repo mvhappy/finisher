@@ -1,6 +1,6 @@
 // Helpers of the "proxy" scenario (6B-1 Task 20): the H.264 rows by platform, a container-only
-// H.264 MP4 for the Linux refusal, the HTTP range check and the diagnostics assertions (the part
-// of them that 6B-1 Task 19 adds is in `task19Diagnostics`, off until that task lands).
+// H.264 MP4 for the Linux refusal, the HTTP range check and the diagnostics assertions (Task 19's
+// journal fields in `task19Diagnostics`, on; the refusal guidance in `h264Guidance`, off until Task 8).
 import { request } from "node:http";
 import { writeFileSync } from "node:fs";
 import { assertEqual } from "./lib.mjs";

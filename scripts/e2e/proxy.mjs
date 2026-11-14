@@ -12,7 +12,7 @@
 // an HTTP range request returning the exact bytes of the entry's file; `fin cache status` by
 // recipe; `fin cache gc` refused to `fin` (`HUMAN_ONLY`), the console's `gc --to 0` evicting only
 // what the open project does not pin, and everything once it closes; the journal's media entries
-// (the Task 19 fields in `task19Diagnostics`, off until that task lands). Needs a GPU adapter
+// (the Task 19 fields in `task19Diagnostics`; refusal guidance waits on Task 8). Needs a GPU adapter
 // (`FIN_GPU`): skipped without one, unless `FIN_REQUIRE_GPU=1`.
 import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
