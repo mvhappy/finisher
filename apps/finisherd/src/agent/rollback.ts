@@ -37,17 +37,18 @@
 //   `notice {rollback: …}` in the last run records every rollback. Once the undos landed the call
 //   succeeds: marking the runs or writing the notice failing (once more after a retry) is a
 //   `warning` in the answer.
-import type { FinError, Principal, Run, Session, TxGetResult } from "@finisher/contracts";
+import type { FinError, Harness, Principal, Run, Session, TxGetResult } from "@finisher/contracts";
 import type { BranchView, WriteGuard } from "@finisher/core-types";
 import { Cause, Effect, Exit, Option } from "effect";
 import type { CallMeta } from "../diagnostics.ts";
 import { finError } from "../errors.ts";
 import type { HistoryOp, HistoryPayload } from "../history.ts";
-import type { Capabilities, ProviderSession } from "./adapter.ts";
+import type { Capabilities, ProviderAdapter, ProviderSession } from "./adapter.ts";
 import type { Ids } from "./clock.ts";
 import type { OutcomeTracker } from "./outcomes.ts";
 import { sessionAuthor } from "./reach.ts";
-import { call } from "./runtime-live.ts";
+import { harnessUnknown } from "./runtime-deps.ts";
+import { call, type Live } from "./runtime-live.ts";
 import { type BranchPlan, type LaterRec, planBranch } from "./rollback-plan.ts";
 import type { AgentStore, NewNode } from "./store.ts";
 import type { SessionTx } from "./store-tables.ts";
@@ -74,6 +75,24 @@ export interface ConversationOps {
   close(sessionId: string): Promise<void>;
   append(n: NewNode): Promise<void>;
 }
+
+/** The runtime's internals a rollback's `ConversationOps` stand on (`Runtime.rollback`). */
+export interface ConversationHost {
+  readonly lives: ReadonlyMap<string, Live>;
+  adapter(harness: Harness): ProviderAdapter | undefined;
+  open(s: Session): Promise<Live>;
+  close(sessionId: string): Promise<void>;
+  append(n: NewNode): Promise<unknown>;
+}
+
+/** `ConversationOps` over the runtime's instances: a session without one has its harness's detected capabilities. */
+export const conversationOps = (h: ConversationHost): ConversationOps => ({
+  caps: async (s) => h.lives.get(s.id)?.caps ?? (await run((h.adapter(s.harness) ?? harnessUnknown(s.harness)).detect())).capabilities,
+  live: (id) => h.lives.get(id)?.provider,
+  open: async (s) => (await h.open(s)).provider,
+  close: (id) => h.close(id),
+  append: async (n) => void (await h.append(n)),
+});
 
 export interface RollbackResult {
   readonly undone: readonly string[];

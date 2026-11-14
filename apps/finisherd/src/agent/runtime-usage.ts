@@ -3,8 +3,10 @@
 // turn's tail (the `usage` an instance emits after its run was stopped, interrupted or its
 // instance replaced) goes to the run that instance served, never to another run, and its
 // crossing is enforced against the session as it is now: a run going on stops (`BUDGET_EXCEEDED`,
-// a `budget` approval); an idle session's next prompt meets the spent budget.
+// a `budget` approval); an idle session's next prompt meets the spent budget. Its 80 % notices
+// go the way a run's do (`notices`: the node, then the hooks' tap).
 import type { BudgetState, ProviderEvent, Session, Usage, WatchItem } from "@finisher/contracts";
+import type { SessionEventTap } from "../hooks/session.ts";
 import type { Budget, Crossings, Reading, Reservation } from "./budget.ts";
 import type { Pricing, RuntimeJournal } from "./runtime-deps.ts";
 import type { Live } from "./runtime-live.ts";
@@ -26,6 +28,8 @@ export interface AccountingHost {
   stop(sessionId: string, r: Reading): Promise<void>;
   /** A late event nothing can take (counted, as the engine's dropped events are). */
   dropped(): void;
+  /** The hooks' tap (`RuntimeDeps.sessionEvents`). */
+  readonly events?: SessionEventTap | undefined;
 }
 
 export class UsageAccounting {
@@ -68,8 +72,16 @@ export class UsageAccounting {
     const runId = origin.served ?? h.store.runs(sessionId).at(-1)?.id;
     if (s === undefined || runId === undefined) return h.dropped();
     const c = await this.charge(s, runId, e, null);
-    for (const n of c.notices) await h.append({ sessionId, runId, kind: "notice", payload: { budget: n.kind, used: n.used, limit: n.limit, at: 0.8 } });
+    await this.notices(sessionId, runId, c.notices);
     if (c.stop) await h.stop(sessionId, c.stop);
+  }
+
+  /** The 80 % notices of a charge: each a `notice` node in `runId`, then the hooks' tap (7F Decision 18). */
+  async notices(sessionId: string, runId: string, notices: Crossings["notices"]): Promise<void> {
+    for (const n of notices) {
+      await this.#h.append({ sessionId, runId, kind: "notice", payload: { budget: n.kind, used: n.used, limit: n.limit, at: 0.8 } });
+      this.#h.events?.budget(sessionId, n);
+    }
   }
 
   /**

@@ -258,7 +258,7 @@ fn hook_setup(node: &Path, script: &str, timeout_ms: u64) -> (Tree, LaunchReques
     std::fs::copy(node, t.p("tools/node.exe")).unwrap();
     let file = t.write("p/hooks/h.js", script);
     let i = HookInput {
-        project_dir: t.p("p"),
+        project_dir: Some(t.p("p")),
         hook_file: file,
         toolchains: vec![t.p("tools")],
         tmp: t.p("data/hooks/h1"),
@@ -278,7 +278,7 @@ fn hook_setup(node: &Path, script: &str, timeout_ms: u64) -> (Tree, LaunchReques
         };
         acl::grant(&g.path, &sid, g.mask, true).unwrap();
     }
-    let container = capability::project_container(&i.project_dir);
+    let container = capability::project_container(i.project_dir.as_ref().unwrap());
     (t, LaunchRequest::Hook(i), container)
 }
 

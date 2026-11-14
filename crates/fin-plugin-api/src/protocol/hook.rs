@@ -143,7 +143,10 @@ pub struct HookRequest {
     /// before `agent.session.start` opens the session).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<HookSession>,
-    pub project: HookProject,
+    /// Absent for a server-scoped event (a call or a job that names no project): only the
+    /// managed, user and plugin layers run for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<HookProject>,
     /// The event's payload (over 1 MiB: `{payloadOmitted: true, bytes}`).
     pub payload: Value,
 }
@@ -153,7 +156,7 @@ impl HookRequest {
     pub fn new(
         event: HookEvent,
         session: Option<HookSession>,
-        project: HookProject,
+        project: Option<HookProject>,
         payload: Value,
     ) -> Self {
         HookRequest {

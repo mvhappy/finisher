@@ -2,6 +2,9 @@
 // model. A script is a list of turns, each a list of steps: emit events (raw, through
 // `toProviderEvent`, so an unknown type becomes a notice-able event), wait for a tool result
 // or an answer, crash, and leave late events that the instance emits after it is replaced.
+// `holdSteers` holds every steer and hands the held back as Claude Code does (`notice
+// {steerReturned: {harness, steers: [{text, nodeId?, at?}]}}`): at a `returnHeld` step, in
+// the run, and at an interrupt, as the turn's tail.
 // Registered only in test builds (7A-2, Task 12).
 import { FinError } from "@finisher/contracts";
 import { type Cause, Deferred, Effect, Fiber, Queue, Scope, Stream } from "effect";
@@ -34,13 +37,17 @@ export type FakeStep =
    * agent's process, plan 7C Task 11) and emits a `notice` named `child` with its exit and
    * output (each at most 4 KiB): what the process could and could not do under the profile.
    */
-  | { readonly spawn: readonly string[] };
+  | { readonly spawn: readonly string[] }
+  /** After `ms`, the held steers handed back (`holdSteers`), in the run. */
+  | { readonly returnHeld: number };
 
 export interface FakeScript {
   readonly name?: string;
   /** `open` fails with `PROVIDER_EXITED` (the process could not start). */
   readonly spawnFails?: boolean;
   readonly capabilities?: Partial<Capabilities>;
+  /** Steers are held, never taken, and handed back (see the module docs). */
+  readonly holdSteers?: boolean;
   readonly turns: readonly (readonly FakeStep[])[];
 }
 
@@ -96,6 +103,12 @@ export function FakeAdapter(scripts: readonly FakeScript[]): ProviderAdapter & {
       let exited = false;
       let running: Fiber.Fiber<void> | null = null;
       const waits = new Map<string, Deferred.Deferred<RuntimeAnswer>>();
+      let held: { text: string; nodeId?: string; at?: number }[] = [];
+      const returnHeld = () => {
+        const steers = held;
+        held = [];
+        return steers.length === 0 ? Effect.void : emit({ type: "notice", name: "steerReturned", details: { harness: "fake", steers } });
+      };
       const early = new Map<string, RuntimeAnswer>();
 
       const emit = (event: ProviderEvent) => Queue.offer(queue, { instance, event }).pipe(Effect.asVoid);
@@ -137,6 +150,9 @@ export function FakeAdapter(scripts: readonly FakeScript[]): ProviderAdapter & {
               yield* waitFor(step.awaitAnswer);
             } else if ("spawn" in step) {
               yield* emit({ type: "notice", name: "child", details: yield* runChild(spec, step.spawn) });
+            } else if ("returnHeld" in step) {
+              yield* Effect.sleep(step.returnHeld);
+              yield* returnHeld();
             } else if ("late" in step) {
               late.push(...step.late);
             } else if ("crash" in step) {
@@ -177,10 +193,12 @@ export function FakeAdapter(scripts: readonly FakeScript[]): ProviderAdapter & {
           Effect.gen(function* () {
             if (exited) return yield* Effect.fail(exitedError());
             log.steers.push({ instance, text: i.text });
+            if (script.holdSteers) held.push({ text: i.text, ...(i.nodeId === undefined ? {} : { nodeId: i.nodeId }), ...(i.at === undefined ? {} : { at: i.at }) });
           }),
         interrupt: () =>
           Effect.gen(function* () {
             const fiber = running;
+            if (!exited) yield* returnHeld();
             if (fiber === null || fiber.pollUnsafe() !== undefined) return;
             yield* Fiber.interrupt(fiber);
             if (!exited) yield* emit({ type: "turnCompleted", stopReason: "interrupted" });

@@ -15,6 +15,7 @@ import type { SessionLimits } from "./settings.ts";
 import { type BudgetLimits, DEFAULT_BUDGET, type Reading } from "./budget.ts";
 import type { Catalogue, Usage as TokenUsage } from "./catalogue/catalogue.ts";
 import type { JournalPhase } from "./session.ts";
+import type { SessionEventTap, SessionHookPort } from "../hooks/session.ts";
 
 /** `agent.session.start`'s payload. */
 export type StartRequest = typeof AgentSessionStartPayload.Type;
@@ -267,6 +268,10 @@ export interface RuntimeDeps {
   readonly limits?: Partial<SessionLimits>;
   /** Provider permission requests (7B Task 5); none: every request is declined by policy. */
   readonly requests?: ProviderRequests;
+  /** The session hooks (7F Task 6, `hooks/session.ts`): `UserPrompt`, `SessionStart`, `SessionEnd`, context delivery. */
+  readonly hooks?: SessionHookPort;
+  /** Every status change, card and 80 % budget notice, watched or not (7F Decision 18). */
+  readonly sessionEvents?: SessionEventTap;
   /** A test's pause after a child's open, before its spawn re-reads the parent (7B Task 6). */
   readonly afterChildOpened?: (childId: string) => Promise<void>;
   /** Where the engine reports what it could not do (an outbox effect, a late provider error). */
