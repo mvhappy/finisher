@@ -368,14 +368,14 @@ describe("the proxy540 stage", () => {
   test("the stage runs for a library file: the entry is committed and isDone sees it", async () => {
     const { t, cache } = await setup();
     const s = proxy540Stage({ report: () => V1, cache: () => cache });
-    expect(await Effect.runPromise(s.isDone!("fp-lib"))).toBe(false);
+    expect(await Effect.runPromise(s.isDone!("fp-lib", stageFile(video)))).toBe(false);
     const p = s.params([stageFile(video)], { library: "l1", pools: {} as never }) as ProxyParams;
     const v: JobView = await t.runJob(MEDIA_PROXY, p, { library: "l1" });
     if (v.state === "failed" && noGpu(v.error)) return;
     expect(v.state, JSON.stringify(v.error)).toBe("succeeded");
     expect(((v.result as { items: Record<string, ProxyResult> }).items["fp-lib"])?.frames).toBe(12);
     expect(await cache.projectsOf(p.key)).toEqual([]);
-    expect(await Effect.runPromise(s.isDone!("fp-lib"))).toBe(true);
+    expect(await Effect.runPromise(s.isDone!("fp-lib", stageFile(video)))).toBe(true);
   }, 180_000);
 });
 
