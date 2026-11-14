@@ -36,7 +36,7 @@
 //   never opens a tool.
 import { lstatSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, parse, relative, resolve } from "node:path";
-import type { FinError, Rule, Session } from "@finisher/contracts";
+import type { FinError, Harness, Rule, Session } from "@finisher/contracts";
 import { Effect } from "effect";
 import { finError } from "../errors.ts";
 import { canonicalJson } from "./approvals.ts";
@@ -47,6 +47,17 @@ import { type Layer, NOTHING_RESOLVED, type RuleSource, RuleSet } from "./rules.
 export const WRITE_TOOLS: ReadonlySet<string> = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit", "apply_patch", "workspace_write"]);
 /** The shell's names (7D Decision 21): the CLI's own and Finisher's brokered one. */
 export const SHELL_TOOLS: readonly string[] = ["Bash", "mcp__finisher__shell"];
+/**
+ * The shell tools a harness's own CLI runs commands with, by its tool name, whose commands
+ * `cli/attribution.ts` matches (inferred attribution): Claude Code's `Bash`; Codex's `shell`
+ * (7E Decision 9: Finisher's dynamic tool, attributed exactly, so only the Owner question 2(b)
+ * fallback would infer through it). Other harnesses run no CLI shell.
+ */
+export function shellToolsOf(harness: Harness): ReadonlySet<string> {
+  return CLI_SHELL_TOOLS[harness] ?? NO_TOOLS;
+}
+const CLI_SHELL_TOOLS: Partial<Record<Harness, ReadonlySet<string>>> = { claudeCode: new Set(["Bash"]), codex: new Set(["shell"]) };
+const NO_TOOLS: ReadonlySet<string> = new Set();
 /** The managed rule a shell command asks under while the `agent` profile is not enforced (module docs). */
 export const UNCONFINED_SHELL_RULE = "sandbox.notEnforced";
 /** The input fields that hold a request's text, in order. */

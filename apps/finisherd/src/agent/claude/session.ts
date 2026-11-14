@@ -30,7 +30,7 @@
 //   Never SIGTERM (it records no result).
 // - **Exit**: the process's end (after its last line) is `exited {code, signal}`, then the
 //   stream ends. Closing the instance's scope drops its later lines and kills it.
-// - **One process of a session** (Task 10): `ClaudeSession` (`instances.ts`) runs a session's
+// - **One process of a session** (Task 10): `CliSession` (`../cli/instances.ts`) runs a session's
 //   successive processes behind one `ProviderSession`, each instance writing to its `sink`.
 import type { FinError, ProviderEvent } from "@finisher/contracts";
 import { Cause, Effect, Queue, Stream } from "effect";
@@ -42,7 +42,8 @@ import { type Denial, LineMapper, type UsageSource } from "./map.ts";
 import { isMcpToolCall, type McpHostPort, mcpHost } from "./mcp-host.ts";
 import { claudePermissions } from "./permissions.ts";
 import { type CheckOptions, firstTurnGate } from "./probe-check.ts";
-import type { ShellTool } from "./shell-tool.ts";
+import type { CliInstance, EventSink } from "../cli/instances.ts";
+import type { ShellTool } from "../cli/shell-tool.ts";
 import { type CliLine, type CliRequest, decodeLine, encodeAnswer, encodeControl, encodeUser, lineFramer, type SystemInit } from "./protocol.ts";
 
 /** Decision 16: how long the turn's `result` may take after the `interrupt` request. */
@@ -77,12 +78,6 @@ export interface RequestPort {
   turnEnded?(): readonly ProviderEvent[] | void;
 }
 
-/** Where an instance's events go instead of its own stream (`ClaudeSession`, Task 10). */
-export interface EventSink {
-  offer(event: ProviderEvent): void;
-  /** The process is gone (after its `exited`), or the instance closed. */
-  end(): void;
-}
 
 export interface InstanceOptions {
   /** This instance's id (a ULID): every event carries it. */
@@ -118,7 +113,7 @@ export interface InstanceOptions {
 const INITIALIZE_ID = "finisher-initialize";
 
 /** One running instance; `session()` is its `ProviderSession`. */
-export class ClaudeInstance {
+export class ClaudeInstance implements CliInstance {
   readonly #o: InstanceOptions;
   readonly #queue: Queue.Queue<BoundEvent, Cause.Done>;
   readonly #gate: ReturnType<typeof firstTurnGate>;

@@ -27,16 +27,17 @@ import type { SandboxedChild, SessionSandbox, SessionSandboxDeps } from "../sand
 import { claudeCodeSettings } from "../settings.ts";
 import { CLAUDE_CAPABILITIES, type ClaudeDetection, detectClaude } from "./detect.ts";
 import { launchPlan, SHELL_TOOL, sessionUuid, writeLaunchFiles } from "./launch.ts";
-import { instanceAccount, instanceAccountHash, labelOf } from "./account.ts";
+import { labelOf } from "./account.ts";
+import { instanceAccount, instanceAccountHash } from "../cli/account.ts";
 import type { ClaudeModelCache } from "./models.ts";
 import { completeProbe, probe, probeFlagsHash } from "./probe.ts";
 import { signInIgnored, untestedVersionNotices } from "./probe-check.ts";
-import { ClaudeSession, IDLE_CLOSE_MS } from "./instances.ts";
+import { CliSession, type EventSink, IDLE_CLOSE_MS } from "../cli/instances.ts";
 import { installTreeRead } from "./install.ts";
 import { claudePermissions } from "./permissions.ts";
-import { interruptedNote, resumeState, toldIds } from "./resume.ts";
-import { ClaudeInstance, CLOSE_EXIT_WAIT_MS, type EventSink, type RequestPort } from "./session.ts";
-import { shellTool } from "./shell-tool.ts";
+import { interruptedNote, resumeState, toldIds } from "../cli/resume.ts";
+import { ClaudeInstance, CLOSE_EXIT_WAIT_MS, type RequestPort } from "./session.ts";
+import { shellTool } from "../cli/shell-tool.ts";
 import { baselineOf, ClaudeUsage, type ResumeTotals, restoredOffset, turnProjection, ZERO_TOTALS } from "./usage.ts";
 
 export { sessionUuid } from "./launch.ts";
@@ -102,6 +103,9 @@ const asDetection = (d: ClaudeDetection): Detection => ({ installed: true, versi
 /** `f`, a throw of it a failure (`FinError` kept, anything else `INTERNAL`). */
 const attempt = <A>(f: () => A | Promise<A>) => Effect.tryPromise({ try: async () => f(), catch: toFinError });
 
+/** Claude Code keeps its own history: no rollback with or without a process (7D). */
+const noRollback = () => Effect.fail(finError("PROVIDER_UNAVAILABLE", "Claude Code keeps its own history: nothing to roll back there", { harness: "claudeCode", reason: "noRollback" }));
+
 export function ClaudeCodeAdapter(deps: ClaudeDeps): ProviderAdapter {
   const os = deps.os ?? deps.sandbox.platform ?? process.platform;
   const ids = deps.ids ?? systemIds();
@@ -130,8 +134,8 @@ export function ClaudeCodeAdapter(deps: ClaudeDeps): ProviderAdapter {
         const unseen = resumed && lastEnd(sessionDir(spec.sessionId)) === "unseen";
         const proc = startProcess(spec, box, uuid, ref, ids.ulid(), unseen);
         const note = [interruptedNote(state?.interrupted ?? []), unseen ? UNSEEN_NOTE : undefined].filter((n) => n !== undefined).join("\n\n");
-        const session = yield* ClaudeSession.open(
-          { instance: proc.instance, ref, start: proc.start, idleCloseMs, log, ...(state === undefined ? {} : { known: state.known }), ...(note === "" ? {} : { note, told: toldIds(state?.interrupted ?? []) }) },
+        const session = yield* CliSession.open(
+          { harness: "claudeCode", rollbackIdle: noRollback, instance: proc.instance, ref, start: proc.start, idleCloseMs, log, ...(state === undefined ? {} : { known: state.known }), ...(note === "" ? {} : { note, told: toldIds(state?.interrupted ?? []) }) },
           resumed,
         );
         yield* Effect.addFinalizer(() => Effect.promise(() => session.close()));
@@ -360,6 +364,6 @@ export const UNKNOWN_ACCOUNT = "unknown";
  */
 function sessionAccount(serverData: string, d: ClaudeDetection, account: unknown, newSession: boolean): { hash?: string; refused: FinError | null } {
   const label = labelOf(account);
-  if (label === undefined && d.accountHash !== undefined) return instanceAccountHash(serverData, d.accountHash, d.authMethod, { newSession });
+  if (label === undefined && d.accountHash !== undefined) return instanceAccountHash(serverData, d.accountHash, d.authMethod, { newSession, ...(d.readAt === undefined ? {} : { readAt: d.readAt }) });
   return instanceAccount(serverData, { signedIn: d.signedIn === true, ...(d.authMethod === undefined ? {} : { authMethod: d.authMethod }), ...(label === undefined ? {} : { label }) }, { newSession });
 }
