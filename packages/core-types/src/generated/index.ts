@@ -9077,6 +9077,28 @@ export interface ProjectViewText {
   text: string;
 }
 /**
+ * The proxy's audio track (recipe v2, 6C plan Task 20): the source's audio at 48 kHz in its
+ * canonical layout (a mono source stays one channel), as Opus at 128 kb/s stereo or 64 kb/s
+ * mono; its edit list presents exactly the source's samples after `priming`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProxyAudio".
+ */
+export interface ProxyAudio {
+  /**
+   * Bits a second.
+   */
+  bitrate: number;
+  /**
+   * Always `opus`.
+   */
+  codec: AudioCodec;
+  /**
+   * The encoder's delay in samples (the edit list's media time, `dOps` pre-skip).
+   */
+  priming: number;
+}
+/**
  * One move of the encode to another encoder (`ENCODER_HUNG`'s fallback, an encoder that did
  * not open), as the result records it.
  *
@@ -9144,6 +9166,11 @@ export interface ProxyParams {
  * via the `definition` "ProxyResult".
  */
 export interface ProxyResult {
+  /**
+   * The audio track; absent when the source has none, or none this build reads
+   * (`CODEC_UNAVAILABLE`, `UNSUPPORTED_CONTAINER`, `MEDIA_LIMIT`): the proxy is then video only.
+   */
+  audio?: ProxyAudio;
   /**
    * The encoder's backend (`svt-av1`, `videotoolbox`, `mf-hw`, …) and its vendor class.
    */

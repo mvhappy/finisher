@@ -15731,6 +15731,38 @@
       ],
       "type": "object"
     },
+    "ProxyAudio": {
+      "additionalProperties": false,
+      "description": "The proxy's audio track (recipe v2, 6C plan Task 20): the source's audio at 48 kHz in its\ncanonical layout (a mono source stays one channel), as Opus at 128 kb/s stereo or 64 kb/s\nmono; its edit list presents exactly the source's samples after `priming`.",
+      "properties": {
+        "bitrate": {
+          "description": "Bits a second.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "codec": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/AudioCodec"
+            }
+          ],
+          "description": "Always `opus`."
+        },
+        "priming": {
+          "description": "The encoder's delay in samples (the edit list's media time, `dOps` pre-skip).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "codec",
+        "bitrate",
+        "priming"
+      ],
+      "type": "object"
+    },
     "ProxyCodec": {
       "description": "The codec of a proxy (Decision 5).",
       "oneOf": [
@@ -15865,6 +15897,14 @@
       "additionalProperties": false,
       "description": "What `media.proxy` v1 answers for its item (the fingerprint).",
       "properties": {
+        "audio": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/ProxyAudio"
+            }
+          ],
+          "description": "The audio track; absent when the source has none, or none this build reads\n(`CODEC_UNAVAILABLE`, `UNSUPPORTED_CONTAINER`, `MEDIA_LIMIT`): the proxy is then video only."
+        },
         "backend": {
           "description": "The encoder's backend (`svt-av1`, `videotoolbox`, `mf-hw`, …) and its vendor class.",
           "type": "string"

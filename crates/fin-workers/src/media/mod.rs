@@ -38,6 +38,7 @@ mod pcm;
 mod pixels;
 mod probe_deep;
 mod proxy;
+mod proxy_audio;
 mod proxy_source;
 pub mod replay;
 mod scale;

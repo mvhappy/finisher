@@ -534,3 +534,274 @@ fn a_source_without_frames_is_media_corrupt() {
     assert_eq!(outcome(&run(&job, &p), "fp").unwrap_err(), "MEDIA_CORRUPT");
     assert!(!entry(&job, &p.key).join(META_FILE).exists());
 }
+
+// Proxy recipe v2 (6C plan Task 20; spec §7.1): Opus audio inside the proxy.
+
+use fin_audio::testing::analyse::rms_dbfs;
+use fin_audio::testing::signals::{sine, tone_burst};
+use fin_codecs::audio::{AudioEncoderConfig, AudioLimits, AudioReader, open_audio_encoder};
+use fin_container::{AudioTrackConfig, CodecConfig, Mp4Options, Mp4Writer, VideoTrackConfig};
+use fin_media::AudioCodec;
+use fin_media::backend::EncodePurpose;
+use fin_media::cache::{KeyInput, PROXY_540, PROXY_1080};
+use fin_media::jobs::ProxyAudio;
+
+/// The audio of a test clip: interleaved `f32` at 48 kHz, its channel count, and the codec
+/// it is stored in (`Other` packets are not audio: no decoder reads them).
+struct AudioSpec {
+    pcm: Vec<f32>,
+    channels: u16,
+    codec: AudioCodec,
+}
+
+/// `pcm` encoded with this build's encoder for `codec` (a test fixture), as an MP4 audio
+/// track's configuration, priming, presented length and packets of `frame` samples.
+fn encoded_audio(a: &AudioSpec) -> (AudioTrackConfig, u32, Vec<Vec<u8>>) {
+    if a.codec == AudioCodec::Other {
+        let frames = a.pcm.len() / a.channels as usize;
+        let packets = vec![vec![0x5a; 64]; frames.div_ceil(1536).max(1)];
+        let cfg = AudioTrackConfig {
+            config: CodecConfig::Other { fourcc: *b"ac-3" },
+            sample_rate: 48_000,
+            channels: a.channels,
+            priming: 0,
+            presented: Some(frames as u64),
+        };
+        return (cfg, 1536, packets);
+    }
+    let cfg = AudioEncoderConfig {
+        codec: a.codec,
+        rate: 48_000,
+        channels: a.channels,
+        bitrate: 64_000 * a.channels as u32,
+    };
+    let mut enc = open_audio_encoder(&cfg, EncodePurpose::TestFixture).unwrap();
+    enc.send(&a.pcm, 0).unwrap();
+    let len = enc.finish().unwrap();
+    let mut packets = Vec::new();
+    while let Some(p) = enc.receive().unwrap() {
+        packets.push(p.data);
+    }
+    let track = AudioTrackConfig {
+        config: enc.config(),
+        sample_rate: 48_000,
+        channels: a.channels,
+        priming: len.priming,
+        presented: Some(len.valid),
+    };
+    (track, enc.frame_size(), packets)
+}
+
+/// A pattern clip (frame `i` carries id `i`) with `audio` beside it, as one MP4.
+fn av_clip(spec: &ClipSpec, audio: &AudioSpec) -> Clip {
+    use fin_codecs::fixture::{encode_all, fixture_config};
+    use fin_codecs::{RawFrame, open_encoder};
+    let mut enc = open_encoder(
+        &fixture_config(spec, fin_media::VideoCodec::Av1),
+        &ProbeResult::software_only(),
+    )
+    .unwrap();
+    let packets = encode_all(&mut enc, spec.frames, |i| {
+        let p = fin_media::testing::pattern(i, spec.size.width, spec.size.height, spec.seed);
+        RawFrame::i420(spec.size, p.y, p.u, p.v)
+    })
+    .unwrap();
+    let (timescale, tick) = timing(spec.rate);
+    let mut w = Mp4Writer::new(std::io::Cursor::new(Vec::new()), Mp4Options::default()).unwrap();
+    let v = w
+        .add_video(VideoTrackConfig {
+            config: enc.config().unwrap(),
+            coded: spec.size,
+            timescale,
+            rotation: Rotation::R0,
+            pixel_aspect: Rational::from_int(1),
+            colour: ColourTags::BT709,
+            hdr: None,
+        })
+        .unwrap();
+    let (cfg, frame, audio_packets) = encoded_audio(audio);
+    let a = w.add_audio(cfg).unwrap();
+    for pk in &packets {
+        let at = pk.pts * tick as i64;
+        w.write(v, &pk.data, at, at, tick, pk.keyframe).unwrap();
+    }
+    for (k, p) in audio_packets.iter().enumerate() {
+        let at = k as i64 * frame as i64;
+        w.write(a, p, at, at, frame, true).unwrap();
+    }
+    let bytes = w.finish().unwrap().into_inner();
+    let dir = tempfile::tempdir().unwrap();
+    let path = std::fs::canonicalize(dir.path()).unwrap().join("clip.mp4");
+    std::fs::write(&path, bytes).unwrap();
+    Clip { _dir: dir, path }
+}
+
+/// `path`'s audio, decoded and trimmed (priming and padding): interleaved, and its channels.
+fn decoded_audio(path: &Path) -> (Vec<f32>, usize) {
+    let mut r = AudioReader::open(File::open(path).unwrap(), &AudioLimits::default()).unwrap();
+    let ch = r.info().channels as usize;
+    let mut out = Vec::new();
+    while let Some(d) = r.next().unwrap() {
+        out.extend_from_slice(&d.interleaved);
+    }
+    (out, ch)
+}
+
+/// `n` frames of a 440 Hz sine at −12 dBFS on `channels` identical channels.
+fn tone(n: usize, channels: u16) -> Vec<f32> {
+    let s = sine(440.0, -12.0, (n + 48) as f64 / 48_000.0, 48_000);
+    s[..n]
+        .iter()
+        .flat_map(|x| std::iter::repeat_n(*x, channels as usize))
+        .collect()
+}
+
+#[test]
+fn proxy_v2_has_opus_audio() {
+    if !gpu_or_skip("proxy_v2_has_opus_audio") {
+        return;
+    }
+    // Lengths that are not a multiple of Opus's 960-sample frame.
+    let mut cases = vec![
+        ("opus stereo", AudioCodec::Opus, 2u16, 30_017usize),
+        ("opus mono", AudioCodec::Opus, 1, 29_999),
+    ];
+    // AAC decodes on Linux only (symphonia; the OS decoders arrive with 6C Tasks 15-16).
+    if cfg!(target_os = "linux") {
+        cases.push(("aac stereo", AudioCodec::Aac, 2, 31_234));
+    }
+    for (name, codec, channels, n) in cases {
+        let c = av_clip(
+            &spec(20, Size::new(320, 180)),
+            &AudioSpec {
+                pcm: tone(n, channels),
+                channels,
+                codec,
+            },
+        );
+        let job = job_for("fp", &c.path);
+        let r = outcome(&run(&job, &params("fp", ProxyTier::Scrub)), "fp").expect(name);
+        let path = entry(&job, &r.key).join(PROXY_FILE);
+        // The video is untouched by the audio track: proxy frame i shows original frame i.
+        assert_eq!(ids(&path), ids(&c.path), "{name}");
+        let info = demux(&path).info().audio.clone().expect(name);
+        assert_eq!(info.codec, AudioCodec::Opus, "{name}");
+        assert_eq!(info.sample_rate, 48_000, "{name}");
+        // A mono source stays one channel (6C plan Decision 3), at half the stereo bitrate.
+        assert_eq!(info.channels, channels, "{name}");
+        let bitrate = if channels == 1 {
+            ProxyAudio::MONO_BITRATE
+        } else {
+            ProxyAudio::STEREO_BITRATE
+        };
+        assert_eq!(
+            r.audio,
+            Some(ProxyAudio {
+                codec: AudioCodec::Opus,
+                bitrate,
+                priming: info.priming,
+            }),
+            "{name}"
+        );
+        // Exactly the source's samples after the priming (± 0), and its level within 0.3 dB.
+        let (want, wch) = decoded_audio(&c.path);
+        let (got, gch) = decoded_audio(&path);
+        assert_eq!((gch, wch), (channels as usize, channels as usize), "{name}");
+        assert_eq!(got.len() / gch, want.len() / wch, "{name}: frames");
+        assert_eq!(
+            want.len() / wch,
+            n,
+            "{name}: the source decodes to its frames"
+        );
+        let (a, b) = (rms_dbfs(&got), rms_dbfs(&want));
+        assert!((a - b).abs() <= 0.3, "{name}: {a:.3} dBFS vs {b:.3} dBFS");
+        let m = meta(&job, &r.key);
+        m.check().unwrap();
+        assert_eq!(m.recipe_version, 2, "{name}");
+    }
+}
+
+#[test]
+fn proxy_without_audio_stays_video_only() {
+    if !gpu_or_skip("proxy_without_audio_stays_video_only") {
+        return;
+    }
+    let (_c, job, r) = made(&spec(6, Size::new(320, 180)), ProxyTier::Scrub);
+    assert_eq!(r.audio, None);
+    let path = entry(&job, &r.key).join(PROXY_FILE);
+    assert!(demux(&path).info().audio.is_none());
+    // An audio track nothing here decodes (AC-3) also gives a video-only proxy: the preview
+    // keeps its frames.
+    let c = av_clip(
+        &spec(6, Size::new(320, 180)),
+        &AudioSpec {
+            pcm: tone(9_600, 2),
+            channels: 2,
+            codec: AudioCodec::Other,
+        },
+    );
+    let job = job_for("fp", &c.path);
+    let r = outcome(&run(&job, &params("fp", ProxyTier::Scrub)), "fp").unwrap();
+    assert_eq!(r.audio, None);
+    let path = entry(&job, &r.key).join(PROXY_FILE);
+    assert!(demux(&path).info().audio.is_none());
+    assert_eq!(ids(&path), ids(&c.path));
+}
+
+#[test]
+fn proxy_v1_keys_invalidated() {
+    // Recipe v2 carries audio, so a v1 (video-only) entry of the same source is another key.
+    assert_eq!((PROXY_540.version, PROXY_1080.version), (2, 2));
+    for tier in ProxyTier::ALL {
+        let v2 = proxy_key("fp", tier, ProxyCodec::Av1, VendorClass::Software);
+        let mut v1: KeyInput =
+            fin_media::jobs::key_input("fp", tier, ProxyCodec::Av1, VendorClass::Software);
+        assert_eq!(v1.recipe_version, 2, "{tier:?}");
+        v1.recipe_version = 1;
+        assert_ne!(
+            fin_media::cache::CacheKey::compute(&v1),
+            v2,
+            "{tier:?}: same source, new key"
+        );
+    }
+}
+
+#[test]
+fn proxy_audio_starts_with_video() {
+    if !gpu_or_skip("proxy_audio_starts_with_video") {
+        return;
+    }
+    // A beep at frame 12's time (0.4 s at 30 fps) for 0.1 s, in 1 s of silence.
+    let (flash, rate) = (12u32, 30.0);
+    let burst = tone_burst(1_000.0, -6.0, flash as f64 / rate, 0.1, 1.0, 48_000);
+    let pcm: Vec<f32> = burst.iter().flat_map(|x| [*x, *x]).collect();
+    let c = av_clip(
+        &spec(30, Size::new(320, 180)),
+        &AudioSpec {
+            pcm,
+            channels: 2,
+            codec: AudioCodec::Opus,
+        },
+    );
+    let job = job_for("fp", &c.path);
+    let r = outcome(&run(&job, &params("fp", ProxyTier::Scrub)), "fp").unwrap();
+    let path = entry(&job, &r.key).join(PROXY_FILE);
+    // The proxy frame showing the flash frame's id, at the proxy's CFR rate.
+    let at = ids(&path)
+        .iter()
+        .position(|id| *id == Some(flash))
+        .expect("the flash frame") as f64;
+    let video_s = at / rate;
+    // The beep's onset: the first sample above half its amplitude.
+    let (pcm, ch) = decoded_audio(&path);
+    let half = 0.5 * fin_audio::testing::signals::db_to_amp(-6.0) as f32;
+    let onset = pcm
+        .chunks(ch)
+        .position(|f| f[0].abs() > half)
+        .expect("the beep") as f64;
+    let audio_s = onset / 48_000.0;
+    assert!(
+        (audio_s - video_s).abs() <= 0.001,
+        "audio at {audio_s:.5} s, video at {video_s:.5} s"
+    );
+}

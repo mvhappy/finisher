@@ -88,7 +88,7 @@ fn key_is_blake3_of_the_canonical_input() {
         "fingerprint": "b3:0123",
         "params": { "codec": "h264", "tier": "t1080" },
         "recipe": "proxy-1080",
-        "recipeVersion": 1,
+        "recipeVersion": PROXY_1080.version,
         "renderVersion": RENDER_VERSION,
     }));
     let want = blake3::hash(text.as_bytes()).to_hex().to_string();
@@ -109,7 +109,7 @@ fn key_is_blake3_of_the_canonical_input() {
             ..i.clone()
         },
         KeyInput {
-            recipe_version: 2,
+            recipe_version: PROXY_1080.version + 1,
             ..i.clone()
         },
         KeyInput {

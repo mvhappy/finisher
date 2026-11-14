@@ -17,6 +17,9 @@
 //!   params {codec}, renderVersion, decoderClass}`, computed by the host when it submits and
 //!   again by the worker from the decoder it opened (`PLAN_MISMATCH {reason: cacheKey}` when
 //!   they differ).
+//! - **Audio** (recipe v2, 6C plan Task 20): the source's audio as Opus at 48 kHz in its
+//!   canonical layout, 128 kb/s stereo or 64 kb/s for a mono source ([`ProxyAudio`]), beside the
+//!   video in `proxy.mp4`; a source without audio this build reads gives a video-only proxy.
 //! - **Source**: a project asset (`asset`, through the job's `in/manifest.json`), or a library
 //!   file (`file`, the `proxy540` library stage of 5D: opened through `fin-library`'s opener
 //!   with the catalogue's raw chain and `Expect`). Exactly one of the two.
@@ -29,7 +32,7 @@ use serde_json::{Value, json};
 use super::invalid;
 use crate::backend::VendorClass;
 use crate::cache::{CacheKey, KeyInput, PROXY_540, PROXY_1080, Recipe};
-use crate::format::VideoCodec;
+use crate::format::{AudioCodec, VideoCodec};
 use crate::info::Size;
 
 /// A proxy tier (spec §7.1).
@@ -310,6 +313,27 @@ pub struct ProxyFallback {
     pub reason: String,
 }
 
+/// The proxy's audio track (recipe v2, 6C plan Task 20): the source's audio at 48 kHz in its
+/// canonical layout (a mono source stays one channel), as Opus at 128 kb/s stereo or 64 kb/s
+/// mono; its edit list presents exactly the source's samples after `priming`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProxyAudio {
+    /// Always `opus`.
+    pub codec: AudioCodec,
+    /// Bits a second.
+    pub bitrate: u32,
+    /// The encoder's delay in samples (the edit list's media time, `dOps` pre-skip).
+    pub priming: u32,
+}
+
+impl ProxyAudio {
+    /// Spec §7.1: 128 kb/s for a stereo (or downmixed) source.
+    pub const STEREO_BITRATE: u32 = 128_000;
+    /// A mono source keeps one channel (6C plan Decision 3) at half the stereo rate.
+    pub const MONO_BITRATE: u32 = 64_000;
+}
+
 /// What `media.proxy` v1 answers for its item (the fingerprint).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -333,6 +357,11 @@ pub struct ProxyResult {
     pub tone_mapped: Option<ToneMapped>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fell_back: Vec<ProxyFallback>,
+    /// The audio track; absent when the source has none, or none this build reads
+    /// (`CODEC_UNAVAILABLE`, `UNSUPPORTED_CONTAINER`, `MEDIA_LIMIT`): the proxy is then video only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "ProxyAudio")]
+    pub audio: Option<ProxyAudio>,
 }
 
 /// One tier of `media.proxy.status`: its entry when the cache holds one, the job making it.

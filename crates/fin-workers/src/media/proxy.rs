@@ -16,6 +16,10 @@
 //!    `out/<key>/table.bin` (the original's sample table) and `out/<key>/meta.json` (the
 //!    `EntryMeta` the host's cache commit checks). Progress every 1 % of frames; cancel
 //!    between frames.
+//! 4. **The audio** (recipe v2, 6C plan Task 20): when the original has an audio track, it is
+//!    opened again and encoded as Opus before the frames (`proxy_audio`), then muxed beside
+//!    them (`encode_pipeline::encode_with_audio`); `ProxyResult.audio` says how. A source
+//!    without one, or with one this build cannot read, gives a video-only proxy.
 //!
 //! The item fails with the source's or the codec's own error (`CODEC_UNAVAILABLE` for a codec
 //! nothing here encodes, with `open_encoder`'s guidance, and for Dolby Vision profile 5: Decision
@@ -46,7 +50,7 @@ use serde_json::{Value, json};
 use super::encode_pipeline::{self, Frames, Track};
 use super::inputs::{self, MANIFEST_CAP};
 use super::open_cache::{WORKER_MAX_PIXELS, open_original_in};
-use super::{Warm, job_error, look, scale};
+use super::{Warm, job_error, look, proxy_audio, scale};
 
 /// The proxy's video file in its entry.
 pub const PROXY_FILE: &str = "proxy.mp4";
@@ -258,6 +262,16 @@ fn make(p: &ProxyParams, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<ProxyR
             json!({ "reason": "noFrames" }),
         ));
     }
+    let audio = match info.audio {
+        Some(_) => {
+            let file = open_source(p, ctx, &dir, warm)?;
+            proxy_audio::encode(file, || match ctx.cancelled() {
+                Some(_) => Err(CoreError::new("JOB_CANCELLED", "the proxy was cancelled")),
+                None => Ok(()),
+            })?
+        }
+        None => None,
+    };
     let size = p.tier.fit(video.coded);
     let (timescale, tick) = encode_pipeline::timing(video.nominal_rate)?;
     let (every, intra_only) = gop(
@@ -305,7 +319,7 @@ fn make(p: &ProxyParams, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<ProxyR
         dir: &dir,
         tone_mapped: &mut tone_mapped,
     };
-    let encoded = encode_pipeline::encode(
+    let encoded = encode_pipeline::encode_with_audio(
         &caps,
         &cfg,
         &Track {
@@ -315,6 +329,7 @@ fn make(p: &ProxyParams, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<ProxyR
         },
         frames,
         &mut src,
+        audio.as_ref(),
     )?;
     write_file(&dir, &out.join(TABLE_FILE), &table_bin::encode(&table))?;
     let files = vec![
@@ -355,6 +370,7 @@ fn make(p: &ProxyParams, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<ProxyR
         size,
         tone_mapped,
         fell_back: encoded.fell_back,
+        audio: audio.map(|a| a.result),
     })
 }
 
