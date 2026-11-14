@@ -1,0 +1,53 @@
+[
+  {
+    "type": "usage",
+    "input": 2,
+    "output": 4,
+    "cacheRead": 6319,
+    "cacheWrite": 450,
+    "reasoning": 0,
+    "costMicros": 0,
+    "costBasis": "reported"
+  },
+  {
+    "type": "messageDelta",
+    "text": "ok"
+  },
+  {
+    "type": "message",
+    "role": "assistant",
+    "blocks": [
+      {
+        "type": "text",
+        "text": "ok"
+      }
+    ]
+  },
+  {
+    "type": "usage",
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "reasoning": 0,
+    "costMicros": 155,
+    "costBasis": "reported"
+  },
+  {
+    "type": "notice",
+    "name": "modelUsage",
+    "details": {
+      "claude-haiku-5-5": {
+        "input": 2,
+        "output": 4,
+        "cacheRead": 6319,
+        "cacheWrite": 450,
+        "costMicros": 155
+      }
+    }
+  },
+  {
+    "type": "turnCompleted",
+    "stopReason": "endTurn"
+  }
+]

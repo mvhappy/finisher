@@ -1,0 +1,16 @@
+[
+  {
+    "type": "turnFailed",
+    "error": {
+      "code": "PROVIDER_AUTH",
+      "message": "Claude Code is not signed in on this server",
+      "details": {
+        "harness": "claudeCode",
+        "subtype": "success",
+        "terminalReason": "api_error",
+        "reason": "notLoggedIn"
+      },
+      "fix": "finisherd provider signin claudeCode"
+    }
+  }
+]

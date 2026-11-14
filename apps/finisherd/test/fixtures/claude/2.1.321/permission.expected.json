@@ -1,0 +1,155 @@
+[
+  {
+    "type": "usage",
+    "input": 2,
+    "output": 16,
+    "cacheRead": 6319,
+    "cacheWrite": 703,
+    "reasoning": 0,
+    "costMicros": 0,
+    "costBasis": "reported"
+  },
+  {
+    "type": "toolStarted",
+    "providerId": "toolu_0001",
+    "tool": "Bash",
+    "input": {
+      "command": "echo first",
+      "description": "Print first"
+    }
+  },
+  {
+    "type": "request",
+    "id": "00000000-0000-4000-8000-000000000021#1",
+    "kind": "approval",
+    "tool": "Bash",
+    "input": {
+      "command": "echo first",
+      "description": "Print first"
+    },
+    "providerId": "toolu_0001"
+  },
+  {
+    "type": "usage",
+    "input": 0,
+    "output": 56,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "reasoning": 0,
+    "costMicros": 0,
+    "costBasis": "reported"
+  },
+  {
+    "type": "toolCompleted",
+    "providerId": "toolu_0001",
+    "ok": true,
+    "output": "first"
+  },
+  {
+    "type": "usage",
+    "input": 2,
+    "output": 16,
+    "cacheRead": 7022,
+    "cacheWrite": 102,
+    "reasoning": 0,
+    "costMicros": 0,
+    "costBasis": "reported"
+  },
+  {
+    "type": "toolStarted",
+    "providerId": "toolu_0002",
+    "tool": "Bash",
+    "input": {
+      "command": "echo second",
+      "description": "Print second"
+    }
+  },
+  {
+    "type": "request",
+    "id": "00000000-0000-4000-8000-000000000041#2",
+    "kind": "approval",
+    "tool": "Bash",
+    "input": {
+      "command": "echo second",
+      "description": "Print second"
+    },
+    "providerId": "toolu_0002"
+  },
+  {
+    "type": "usage",
+    "input": 0,
+    "output": 56,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "reasoning": 0,
+    "costMicros": 0,
+    "costBasis": "reported"
+  },
+  {
+    "type": "toolCompleted",
+    "providerId": "toolu_0002",
+    "ok": false,
+    "output": "Denied by the person."
+  },
+  {
+    "type": "usage",
+    "input": 2,
+    "output": 4,
+    "cacheRead": 7124,
+    "cacheWrite": 114,
+    "reasoning": 0,
+    "costMicros": 0,
+    "costBasis": "reported"
+  },
+  {
+    "type": "messageDelta",
+    "text": "Denied"
+  },
+  {
+    "type": "message",
+    "role": "assistant",
+    "blocks": [
+      {
+        "type": "text",
+        "text": "Denied"
+      }
+    ]
+  },
+  {
+    "type": "usage",
+    "input": 0,
+    "output": 1,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "reasoning": 0,
+    "costMicros": 0,
+    "costBasis": "reported"
+  },
+  {
+    "type": "usage",
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "reasoning": 0,
+    "costMicros": 464,
+    "costBasis": "reported"
+  },
+  {
+    "type": "notice",
+    "name": "modelUsage",
+    "details": {
+      "claude-haiku-5-5": {
+        "input": 6,
+        "output": 149,
+        "cacheRead": 20465,
+        "cacheWrite": 919,
+        "costMicros": 464
+      }
+    }
+  },
+  {
+    "type": "turnCompleted",
+    "stopReason": "endTurn"
+  }
+]

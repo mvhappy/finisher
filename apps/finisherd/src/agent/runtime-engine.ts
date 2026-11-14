@@ -219,6 +219,8 @@ export abstract class RuntimeEngine {
   protected async after(sessionId: string, applied: Applied): Promise<void> {
     for (const effect of applied.effects) {
       if (effect.kind === "closeRun") this.#budgets.get(sessionId)?.endRun();
+      // Its provider requests leave with the run (an interrupt, an exit, an end: `provider-requests.ts`).
+      if (effect.kind === "closeRun") await this.deps.requests?.dropRun(sessionId, effect.runId, effect.stop);
     }
     if (applied.effects.some((e) => e.kind === "stopProvider")) await this.stopLive(sessionId);
     this.flush(sessionId);
