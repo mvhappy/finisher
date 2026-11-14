@@ -1,0 +1,12 @@
+{
+  "id": "01m6pef13850475g39b46wx4p4",
+  "name": "4A fixture",
+  "schemaVersion": 1,
+  "formatVersion": 1,
+  "minReaderVersion": 1,
+  "storage": "local",
+  "genesis": {
+    "name": "4A fixture",
+    "rate": "30"
+  }
+}

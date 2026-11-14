@@ -1,0 +1,15 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+#
+# A generator gap (an internal restore into a stale link group), kept as a regression.
+cc 5c9d10b491e2b75f3920c9090a63f5f01719cb01a12bf02783b2fde18949bd2e # shrinks to shape = Shape { lens: [[12], [12], []], linked: true, transitions: false, captions: 0, effects: false, pinned: false }, txs = [[Remove { t: 0, k: 0, lift: false }], [Restore { k: 0, fresh: false, lift: false }], [Restore { k: 0, fresh: true, lift: false }]]
+# Prop 6's overwrite at 1/1001 s that left an item shorter than a frame (2026-11-08) is the fixed
+# case `overwrite_at_a_sub_frame_time_keeps_a_frame_4c`: its seed was not kept, and 400,000 fresh
+# cases did not find it again.
+cc dade0ec847b7b3984aeb7e294252a631c51e5fd128c42451583ed712880bd6df # shrinks to shape = Shape { lens: [[12], [], []], linked: false, transitions: false, captions: 0, effects: false, pinned: false }, txs = [[KeySet { t: 0, k: 0, which: 0, at: 0, v: 0, interp: 0 }]]
+cc 828b66b74402e3cca311312007514dc9a739556193af045a617620f744dbdffd # shrinks to shape = Shape { lens: [[], [], []], linked: false, transitions: false, captions: 1, effects: false, pinned: false }, gs = [KeySet { t: 2, k: 0, which: 0, at: 0, v: 0, interp: 0 }]
+cc e689f67f7984381c61a4251a8812dd72d16e2f78a263b4b2b91c6d75c8424491 # shrinks to shape = Shape { lens: [[12], [], []], linked: false, transitions: false, captions: 0, effects: true, pinned: false }, txs = [[EffectRemove { t: 0, k: 0, e: 2 }]]

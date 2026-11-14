@@ -1,0 +1,34 @@
+# `cargo fuzz` targets for fin-container (plan 6A Task 5; `webm` from 6B-1 Task 12). Not a
+# workspace member: run with `cargo fuzz run demux` (or `webm`) from this directory (nightly, or
+# `RUSTC_BOOTSTRAP=1 ... -s none` on stable). Seed the corpora with `cargo run -p fin-container
+# --example fuzz_seeds --features testing -- crates/fin-container/fuzz/corpus/demux
+# crates/fin-container/fuzz/corpus/webm`.
+[package]
+name = "fin-container-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+fin-container = { path = ".." }
+libfuzzer-sys = "0.4"
+
+[[bin]]
+name = "demux"
+path = "fuzz_targets/demux.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "webm"
+path = "fuzz_targets/webm.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]

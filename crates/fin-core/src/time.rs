@@ -7,7 +7,7 @@ use std::str::FromStr;
 
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::error::CoreError;
 
@@ -18,9 +18,9 @@ pub struct Rational {
     den: i64,
 }
 
-fn gcd(mut a: i128, mut b: i128) -> i128 {
-    a = a.abs();
-    b = b.abs();
+/// The gcd of `|a|` and `|b|`, on magnitudes so `i128::MIN` cannot overflow a negation.
+fn gcd(a: i128, b: i128) -> u128 {
+    let (mut a, mut b) = (a.unsigned_abs(), b.unsigned_abs());
     while b != 0 {
         (a, b) = (b, a % b);
     }
@@ -36,7 +36,7 @@ fn invalid_time(input: &str, why: &str) -> CoreError {
     .with_fix("use 12.4s, 00:12.4, 01:00:12.4, f300 or a rational like 62/5")
 }
 
-fn overflow() -> CoreError {
+pub(crate) fn overflow() -> CoreError {
     CoreError::new("TIME_OVERFLOW", "rational time overflowed 64 bits")
         .with_fix("use smaller times, or a frame rate with a smaller denominator")
 }
@@ -71,11 +71,17 @@ impl Rational {
         if den == 0 {
             return Err(invalid_time("", "denominator is zero"));
         }
+        // Reduced on magnitudes (u128): every i128 input, `i128::MIN` too, has one.
         let g = gcd(num, den).max(1);
-        let sign = if den < 0 { -1 } else { 1 };
-        let (n, d) = (sign * num / g, sign * den / g);
-        match (i64::try_from(n), i64::try_from(d)) {
-            (Ok(num), Ok(den)) => Ok(Rational { num, den }),
+        let (n, d) = (num.unsigned_abs() / g, den.unsigned_abs() / g);
+        let negative = (num < 0) != (den < 0) && n != 0;
+        let num = if negative {
+            0i64.checked_sub_unsigned(u64::try_from(n).map_err(|_| overflow())?)
+        } else {
+            i64::try_from(n).ok()
+        };
+        match (num, i64::try_from(d)) {
+            (Some(num), Ok(den)) => Ok(Rational { num, den }),
             _ => Err(overflow()),
         }
     }
@@ -100,6 +106,19 @@ impl Rational {
         self.num > 0
     }
 
+    pub fn is_negative(&self) -> bool {
+        self.num < 0
+    }
+
+    /// `num as f64 / den as f64`: each part is converted, then divided, every step IEEE-754
+    /// round-to-nearest, so the result is the same on every platform. It is the nearest `f64`
+    /// to `num / den` while both parts fit in 2^53; beyond, a part is rounded before the
+    /// division and the result may be one rounding further off. For evaluation only: positions
+    /// stay rational.
+    pub fn to_f64(self) -> f64 {
+        self.num as f64 / self.den as f64
+    }
+
     pub fn is_zero(&self) -> bool {
         self.num == 0
     }
@@ -114,12 +133,43 @@ impl Rational {
         Self::from_i128(a * d + c * b, b * d)
     }
 
+    /// `a/b − c/d` as `(a·d − c·b) / (b·d)` in i128 (each product is below 2^126), so a
+    /// right side whose negation overflows (`MIN − MIN`) still subtracts exactly.
     pub fn checked_sub(self, rhs: Rational) -> Result<Rational, CoreError> {
-        self.checked_add(rhs.checked_neg()?)
+        let (a, b, c, d) = (
+            self.num as i128,
+            self.den as i128,
+            rhs.num as i128,
+            rhs.den as i128,
+        );
+        Self::from_i128(a * d - c * b, b * d)
     }
 
     pub fn checked_neg(self) -> Result<Rational, CoreError> {
         Self::from_i128(-(self.num as i128), self.den as i128)
+    }
+
+    /// `self × rhs` (a time scaled by a speed, plan 4C Decision 14).
+    pub fn checked_mul(self, rhs: Rational) -> Result<Rational, CoreError> {
+        Self::from_i128(
+            self.num as i128 * rhs.num as i128,
+            self.den as i128 * rhs.den as i128,
+        )
+    }
+
+    /// `self ÷ rhs`; `INVALID_TIME` when `rhs` is zero.
+    pub fn checked_div(self, rhs: Rational) -> Result<Rational, CoreError> {
+        Self::from_i128(
+            self.num as i128 * rhs.den as i128,
+            self.den as i128 * rhs.num as i128,
+        )
+    }
+}
+
+/// Zero.
+impl Default for Rational {
+    fn default() -> Self {
+        Rational::zero()
     }
 }
 
@@ -172,13 +222,38 @@ fn all_digits(s: &str) -> bool {
 
 impl FromStr for Rational {
     type Err = CoreError;
-    /// Accepts `n` or `n/d` (integers only; floats are rejected).
+    /// Accepts only the canonical form that `Display` writes: `n`, or `n/d` in lowest terms
+    /// with `d > 1`; no sign but a leading `-` on a non-zero numerator, no leading zeros
+    /// (floats are rejected). Anything else that reads as a rational (`2/4`, `-0`, `+1`,
+    /// `01`, `0/5`, `3/1`) is `INVALID_TIME` naming the canonical form (`details.canonical`):
+    /// one value has one spelling, so stored and hashed data compare byte for byte.
     fn from_str(s: &str) -> Result<Self, CoreError> {
         parse_rational(s).map_err(|e| overflow_at(s, e))
     }
 }
 
+/// `INVALID_TIME` for a rational written in another form than its canonical one.
+fn noncanonical(input: &str, canonical: Rational) -> CoreError {
+    CoreError::new(
+        "INVALID_TIME",
+        format!("time {input:?} is not in canonical form (\"{canonical}\")"),
+    )
+    .with_details(json!({ "input": input, "canonical": canonical.to_string() }))
+    .with_fix(format!(
+        "write it as \"{canonical}\" (lowest terms, no sign but a leading -, no leading zeros)"
+    ))
+}
+
 fn parse_rational(s: &str) -> Result<Rational, CoreError> {
+    let unsigned = s.strip_prefix('+').filter(|rest| !rest.starts_with('-'));
+    let r = parse_rational_lenient(unsigned.unwrap_or(s))?;
+    if r.to_string() != s {
+        return Err(noncanonical(s, r));
+    }
+    Ok(r)
+}
+
+fn parse_rational_lenient(s: &str) -> Result<Rational, CoreError> {
     let (n, d) = match s.split_once('/') {
         Some((n, d)) => (n, Some(d)),
         None => (s, None),
@@ -201,10 +276,67 @@ impl Serialize for Rational {
     }
 }
 
+/// Decoding is lenient: a rational in another form than its canonical one (`"30/1"`, `"2/4"`,
+/// `"+1"`) is read and normalised, so stored data a person edited by hand (a project file's
+/// genesis rate) stays readable. Input from users and clients is strict: `FromStr` for typed
+/// values, [`check_canonical_times`] for decoded documents (an RPC `tx.commit`).
 impl<'de> Deserialize<'de> for Rational {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let s = String::deserialize(d)?;
-        s.parse().map_err(serde::de::Error::custom)
+        parse_lenient(&s).map_err(serde::de::Error::custom)
+    }
+}
+
+/// Any rational form `n` or `n/d` (a leading `+` too), reduced.
+fn parse_lenient(s: &str) -> Result<Rational, CoreError> {
+    let unsigned = s.strip_prefix('+').filter(|rest| !rest.starts_with('-'));
+    parse_rational_lenient(unsigned.unwrap_or(s)).map_err(|e| overflow_at(s, e))
+}
+
+/// `INVALID_TIME` (with `details {input, canonical, path}` and a fix) for the first string in
+/// `input` (a client's JSON) that `decoded` (the same document decoded and encoded again)
+/// holds in another, canonical, rational form: the strict check for documents, since decoding
+/// itself normalises. `path` is a JSON pointer into `input`. Fields only one side has are
+/// skipped.
+pub fn check_canonical_times(input: &Value, decoded: &Value) -> Result<(), CoreError> {
+    walk(input, decoded, &mut String::new())
+}
+
+fn walk(input: &Value, decoded: &Value, path: &mut String) -> Result<(), CoreError> {
+    let len = path.len();
+    let at = |path: &mut String, key: &str, a: &Value, b: &Value| {
+        path.push('/');
+        path.push_str(&key.replace('~', "~0").replace('/', "~1"));
+        let r = walk(a, b, path);
+        path.truncate(len);
+        r
+    };
+    match (input, decoded) {
+        (Value::String(x), Value::String(y)) if x != y => {
+            if let (Ok(canonical), Ok(read)) = (y.parse::<Rational>(), parse_lenient(x))
+                && canonical == read
+            {
+                let mut e = noncanonical(x, canonical);
+                e.details["path"] = Value::String(path.clone());
+                return Err(e);
+            }
+            Ok(())
+        }
+        (Value::Object(a), Value::Object(b)) => {
+            for (k, va) in a {
+                if let Some(vb) = b.get(k) {
+                    at(path, k, va, vb)?;
+                }
+            }
+            Ok(())
+        }
+        (Value::Array(a), Value::Array(b)) => {
+            for (i, (va, vb)) in a.iter().zip(b).enumerate() {
+                at(path, &i.to_string(), va, vb)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
     }
 }
 
@@ -216,8 +348,10 @@ impl JsonSchema for Rational {
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
         json_schema!({
             "type": "string",
-            "pattern": r"^-?\d+(/[1-9]\d*)?$",
-            "description": "Exact rational seconds: \"n/d\" in lowest terms, or \"n\" when d is 1."
+            // Zero is "0" alone (not "0/5"); a denominator is 2 or more (not "3/1"). Lowest
+            // terms (gcd 1) is beyond a regex: the parser enforces it.
+            "pattern": r"^(0|-?[1-9]\d*(/([2-9]\d*|1\d+))?)$",
+            "description": "Exact rational seconds in canonical form: \"n/d\" in lowest terms with d > 1, or \"n\" when d is 1; no leading zeros, no \"+\", no \"-0\". The pattern checks the shape; lowest terms is checked by the parser."
         })
     }
 }
@@ -232,6 +366,19 @@ pub fn frame_duration(rate: Rational) -> Result<Rational, CoreError> {
         );
     }
     Rational::from_i128(rate.den as i128, rate.num as i128)
+}
+
+/// The NTSC rate `n×1000/1001` fps that a decimal `fps` stands for (`29.97` → `30000/1001`,
+/// `23.976` → `24000/1001`, `59.94` → `60000/1001`): `fps` is not whole and within a
+/// thousandth of one. `None` otherwise. The Lottie probe and `fin`'s rate values share it.
+pub fn ntsc_rate(fps: f64) -> Option<Rational> {
+    if !(fps.is_finite() && fps > 0.0 && fps <= 1000.0) || (fps - fps.round()).abs() < 1e-6 {
+        return None;
+    }
+    let k = (fps * 1.001).round();
+    ((k * 1000.0 / 1001.0 - fps).abs() < 1e-3)
+        .then(|| Rational::new(k as i64 * 1000, 1001).ok())
+        .flatten()
 }
 
 /// Parses `12.4s`, `12s`, `-0.5s`, `00:12.4`, `01:00:12.4`, `f300` (frames at `rate`),
@@ -251,7 +398,8 @@ fn parse_time_inner(input: &str, rate: Rational) -> Result<Rational, CoreError> 
             return Err(bad("frame times need a positive rate"));
         }
         let n: i128 = frames.parse().map_err(|_| overflow())?;
-        return Rational::from_i128(n * rate.den as i128, rate.num as i128);
+        let n = n.checked_mul(rate.den as i128).ok_or_else(overflow)?;
+        return Rational::from_i128(n, rate.num as i128);
     }
     if let Some(sec) = input.strip_suffix('s') {
         return parse_decimal(sec).ok_or_else(|| bad("expected decimal seconds like 12.4s"))?;
@@ -259,9 +407,13 @@ fn parse_time_inner(input: &str, rate: Rational) -> Result<Rational, CoreError> 
     if input.contains(':') {
         return parse_clock(input);
     }
-    if input.contains('/') || all_digits(input.strip_prefix('-').unwrap_or(input)) {
+    let unsigned = input
+        .strip_prefix('-')
+        .or_else(|| input.strip_prefix('+'))
+        .unwrap_or(input);
+    if input.contains('/') || all_digits(unsigned) {
         return input.parse().map_err(|e: CoreError| {
-            if e.code == "INVALID_TIME" {
+            if e.code == "INVALID_TIME" && e.details.get("canonical").is_none() {
                 bad("invalid rational")
             } else {
                 e
@@ -285,7 +437,10 @@ fn parse_decimal(s: &str) -> Option<Result<Rational, CoreError>> {
         return Some(Err(overflow()));
     }
     let scale = 10i128.pow(frac.len() as u32);
-    let digits: i128 = format!("{int}{frac}").parse().ok()?;
+    // Only digits, so a parse failure is a value beyond i128.
+    let Ok(digits) = format!("{int}{frac}").parse::<i128>() else {
+        return Some(Err(overflow()));
+    };
     let n = if neg { -digits } else { digits };
     Some(Rational::from_i128(n, scale))
 }

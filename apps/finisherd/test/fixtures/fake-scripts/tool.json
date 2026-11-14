@@ -1,0 +1,17 @@
+{
+  "name": "tool",
+  "turns": [
+    [
+      { "emit": [{ "type": "toolStarted", "providerId": "call_1", "tool": "fin", "input": { "argv": ["view", "--budget", "2000"] } }] },
+      { "awaitTool": "call_1" },
+      { "emit": [
+        { "type": "toolStarted", "providerId": "call_2", "tool": "fin", "input": { "argv": ["item", "trim", "c1", "--end", "-1"] } }
+      ] },
+      { "awaitTool": "call_2" },
+      { "emit": [
+        { "type": "message", "role": "assistant", "blocks": [{ "type": "text", "text": "Trimmed c1." }] },
+        { "type": "usage", "input": 3000, "output": 80, "cacheRead": 2500, "cacheWrite": 0, "reasoning": 0, "costMicros": 120 }
+      ] }
+    ]
+  ]
+}

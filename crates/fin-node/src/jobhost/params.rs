@@ -1,0 +1,202 @@
+//! `validateJobParams` and `jobKindVersions` (5C-1 plan, Decision 27): each kind's params are
+//! decoded by its Rust type, registered by the family's crate in one static list.
+
+use fin_jobs::KindParams;
+use fin_jobs::kinds::{find, schema_as, validate_as};
+use fin_media::jobs::{
+    CapabilitiesParams, ListenParams, LookParams, PcmParams, ProbeDeepParams, ProxyParams,
+    ThumbsParams, WaveParams,
+};
+use napi_derive::napi;
+use serde_json::{Value, json};
+
+/// Every family's params, in registration order. Families append theirs (6A-2: `fin_media`).
+static PARAMS: &[&[KindParams]] = &[
+    fin_library::params::PARAMS,
+    #[cfg(feature = "test-hooks")]
+    fin_jobs::test_kinds::PARAMS,
+    #[cfg(feature = "test-hooks")]
+    fin_library::params_test::PARAMS,
+    MEDIA,
+    PLUGIN,
+];
+
+/// Sub-project 8B's plugin kinds: a command run (`fin_plugin_api::protocol::CommandRun`) and a
+/// hook handler's run (`HookRun`, 7F Task 10); the kinds themselves are registered by
+/// finisherd's plugin host.
+static PLUGIN: &[KindParams] = &[
+    KindParams {
+        kind: fin_plugin_api::protocol::COMMAND_KIND,
+        version: fin_plugin_api::protocol::COMMAND_KIND_VERSION,
+        validate: validate_as::<fin_plugin_api::protocol::CommandRun>,
+        schema: schema_as::<fin_plugin_api::protocol::CommandRun>,
+    },
+    KindParams {
+        kind: fin_plugin_api::protocol::HOOK_KIND,
+        version: fin_plugin_api::protocol::HOOK_KIND_VERSION,
+        validate: validate_as::<fin_plugin_api::protocol::HookRun>,
+        schema: schema_as::<fin_plugin_api::protocol::HookRun>,
+    },
+];
+
+/// Sub-project 6's media kinds (`fin_media::jobs`; the worker side is `fin-workers media`).
+static MEDIA: &[KindParams] = &[
+    KindParams {
+        kind: "media.look",
+        version: 1,
+        validate: validate_look,
+        schema: schema_as::<LookParams>,
+    },
+    KindParams {
+        kind: "media.capabilities",
+        version: 1,
+        validate: validate_as::<CapabilitiesParams>,
+        schema: schema_as::<CapabilitiesParams>,
+    },
+    KindParams {
+        kind: "media.probeDeep",
+        version: 1,
+        validate: validate_as::<ProbeDeepParams>,
+        schema: schema_as::<ProbeDeepParams>,
+    },
+    KindParams {
+        kind: "media.proxy",
+        version: 1,
+        validate: validate_proxy,
+        schema: schema_as::<ProxyParams>,
+    },
+    KindParams {
+        kind: "media.thumbs",
+        version: 1,
+        validate: validate_thumbs,
+        schema: schema_as::<ThumbsParams>,
+    },
+    KindParams {
+        kind: "media.pcm",
+        version: 1,
+        validate: validate_pcm,
+        schema: schema_as::<PcmParams>,
+    },
+    KindParams {
+        kind: "media.waveform",
+        version: 1,
+        validate: validate_wave,
+        schema: schema_as::<WaveParams>,
+    },
+    KindParams {
+        kind: "media.listen",
+        version: 1,
+        validate: validate_listen,
+        schema: schema_as::<ListenParams>,
+    },
+];
+
+/// `WaveParams`, then a named asset and well-formed keys (6C Task 19).
+fn validate_wave(params: &Value) -> Result<Value, Vec<String>> {
+    let filled = validate_as::<WaveParams>(params)?;
+    let p: WaveParams = serde_json::from_value(filled.clone()).map_err(|e| vec![e.to_string()])?;
+    p.check().map_err(|e| vec![e.message])?;
+    Ok(filled)
+}
+
+/// `ListenParams`, then its range, as the worker checks them; the plan samples are the host's
+/// (6C Task 21).
+fn validate_listen(params: &Value) -> Result<Value, Vec<String>> {
+    let filled = validate_as::<ListenParams>(params)?;
+    let p: ListenParams =
+        serde_json::from_value(filled.clone()).map_err(|e| vec![e.to_string()])?;
+    p.check().map_err(|e| vec![e.message])?;
+    if !p.plan_samples.is_empty() {
+        return Err(vec![
+            "params.planSamples: computed by the kind's prepare; leave it out".to_string(),
+        ]);
+    }
+    Ok(filled)
+}
+
+/// `PcmParams`, then one source, a well-formed key and a layout its recipe has (6C Task 18).
+fn validate_pcm(params: &Value) -> Result<Value, Vec<String>> {
+    let filled = validate_as::<PcmParams>(params)?;
+    let p: PcmParams = serde_json::from_value(filled.clone()).map_err(|e| vec![e.to_string()])?;
+    p.check().map_err(|e| vec![e.message])?;
+    Ok(filled)
+}
+
+/// `ProxyParams`, then one source and a well-formed key (6B-1 Task 14).
+fn validate_proxy(params: &Value) -> Result<Value, Vec<String>> {
+    let filled = validate_as::<ProxyParams>(params)?;
+    let p: ProxyParams = serde_json::from_value(filled.clone()).map_err(|e| vec![e.to_string()])?;
+    p.check().map_err(|e| vec![e.message])?;
+    Ok(filled)
+}
+
+/// `ThumbsParams`, then its counts, sizes and key (6B-1 Task 15).
+fn validate_thumbs(params: &Value) -> Result<Value, Vec<String>> {
+    let filled = validate_as::<ThumbsParams>(params)?;
+    let p: ThumbsParams =
+        serde_json::from_value(filled.clone()).map_err(|e| vec![e.to_string()])?;
+    p.check().map_err(|e| vec![e.message])?;
+    Ok(filled)
+}
+
+/// `LookParams`, then the checks serde cannot make (counts, sizes, the output name), as the
+/// worker makes them.
+fn validate_look(params: &Value) -> Result<Value, Vec<String>> {
+    let filled = validate_as::<LookParams>(params)?;
+    let p: LookParams = serde_json::from_value(filled.clone()).map_err(|e| vec![e.to_string()])?;
+    p.check().map_err(|e| vec![e.message])?;
+    // The plan samples are the host's: `prepare` computes them from the snapshot it writes. A
+    // submitter's would only ever be ignored (the worker prefers the kind's), so say so.
+    if !p.plan_samples.is_empty() {
+        return Err(vec![
+            "params.planSamples: computed by the kind's prepare; leave it out".to_string(),
+        ]);
+    }
+    Ok(filled)
+}
+
+/// The longest params JSON a job may carry: a `start` must fit a 1 MiB line (Decision 4)
+/// beside its other fields, so longer params would make a job that can never run.
+pub(crate) const MAX_PARAMS_BYTES: usize = 512 << 10;
+
+/// `{ok: true, params}` (defaults filled) or `{ok: false, errors}`, each error naming the field
+/// when it can. `len` is the JSON's length as given.
+pub(crate) fn validate(kind: &str, version: u32, params: &Value, len: usize) -> Value {
+    if len > MAX_PARAMS_BYTES {
+        let error = format!("params: {len} bytes of JSON, over the {MAX_PARAMS_BYTES} limit");
+        return json!({ "ok": false, "errors": [error] });
+    }
+    match find(PARAMS, kind, version) {
+        None => json!({ "ok": false, "errors": [format!("no params type for {kind}@{version}")] }),
+        Some(k) => match (k.validate)(params) {
+            // Defaults may lengthen it: what the job carries is checked too.
+            Ok(params) if params.to_string().len() > MAX_PARAMS_BYTES => {
+                let error =
+                    format!("params: over {MAX_PARAMS_BYTES} bytes once defaults are filled");
+                json!({ "ok": false, "errors": [error] })
+            }
+            Ok(params) => json!({ "ok": true, "params": params }),
+            Err(errors) => json!({ "ok": false, "errors": errors }),
+        },
+    }
+}
+
+/// A kind and version `validateJobParams` knows.
+#[napi(object)]
+pub struct JobKindVersion {
+    pub kind: String,
+    pub version: u32,
+}
+
+/// The kinds and versions `validateJobParams` knows (release builds: the library and media kinds).
+#[napi(catch_unwind)]
+pub fn job_kind_versions() -> Vec<JobKindVersion> {
+    PARAMS
+        .iter()
+        .flat_map(|family| family.iter())
+        .map(|k| JobKindVersion {
+            kind: k.kind.to_owned(),
+            version: k.version,
+        })
+        .collect()
+}

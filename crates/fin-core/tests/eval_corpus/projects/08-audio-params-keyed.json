@@ -1,0 +1,266 @@
+{
+  "what": "audio.gain and audio.pan keyed with bézier on an audio track; ranges cut segments",
+  "timeline": "tl1",
+  "frames": [
+    "0",
+    "2",
+    "5"
+  ],
+  "audio": [
+    [
+      "0",
+      "10"
+    ],
+    [
+      "1/2",
+      "7/2"
+    ],
+    [
+      "5/2",
+      "13/2"
+    ],
+    [
+      "59/6",
+      "12"
+    ],
+    [
+      "4",
+      "121/30"
+    ]
+  ],
+  "project": {
+    "id": "p1",
+    "name": "Corpus",
+    "schemaVersion": 6,
+    "rate": "30",
+    "timelines": [
+      {
+        "id": "tl1",
+        "name": "tl1",
+        "rate": "30",
+        "resolution": {
+          "width": 1080,
+          "height": 1920
+        },
+        "tracks": [
+          {
+            "id": "t1",
+            "kind": "video",
+            "name": "T1",
+            "items": [
+              {
+                "id": "c1",
+                "start": "0",
+                "duration": "10",
+                "kind": "clip",
+                "asset": "a1",
+                "sourceIn": "0",
+                "link": "lk1"
+              }
+            ]
+          },
+          {
+            "id": "t2",
+            "kind": "audio",
+            "name": "T2",
+            "gain": -1.5,
+            "items": [
+              {
+                "id": "c2",
+                "start": "0",
+                "duration": "10",
+                "kind": "clip",
+                "asset": "a1",
+                "sourceIn": "0",
+                "link": "lk1",
+                "audio": {
+                  "gain": -3.0,
+                  "pan": 0.25
+                },
+                "keyframes": {
+                  "audio.gain": [
+                    {
+                      "id": "kf1",
+                      "at": "0",
+                      "value": -24.0,
+                      "interp": {
+                        "type": "bezier",
+                        "x1": 0.25,
+                        "y1": 0.1,
+                        "x2": 0.25,
+                        "y2": 1.0
+                      }
+                    },
+                    {
+                      "id": "kf2",
+                      "at": "3",
+                      "value": 0.0,
+                      "interp": {
+                        "type": "hold"
+                      }
+                    },
+                    {
+                      "id": "kf3",
+                      "at": "6",
+                      "value": -6.0,
+                      "interp": {
+                        "type": "bezier",
+                        "x1": 0.68,
+                        "y1": -0.55,
+                        "x2": 0.265,
+                        "y2": 1.55
+                      }
+                    },
+                    {
+                      "id": "kf4",
+                      "at": "10",
+                      "value": -96.0,
+                      "interp": {
+                        "type": "bezier",
+                        "x1": 0.25,
+                        "y1": 0.1,
+                        "x2": 0.25,
+                        "y2": 1.0
+                      }
+                    }
+                  ],
+                  "audio.pan": [
+                    {
+                      "id": "kf5",
+                      "at": "1",
+                      "value": -1.0,
+                      "interp": {
+                        "type": "bezier",
+                        "x1": 0.42,
+                        "y1": 0.0,
+                        "x2": 0.58,
+                        "y2": 1.0
+                      }
+                    },
+                    {
+                      "id": "kf6",
+                      "at": "9",
+                      "value": 1.0,
+                      "interp": {
+                        "type": "bezier",
+                        "x1": 0.25,
+                        "y1": 0.1,
+                        "x2": 0.25,
+                        "y2": 1.0
+                      }
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "assets": {
+      "a1": {
+        "id": "a1",
+        "kind": "media",
+        "path": "a1.bin",
+        "fingerprint": "fp-a1",
+        "duration": "600",
+        "video": {
+          "width": 1920,
+          "height": 1080,
+          "rate": "30"
+        },
+        "audio": {
+          "sampleRate": 48000,
+          "channels": 2
+        }
+      },
+      "a2": {
+        "id": "a2",
+        "kind": "image",
+        "path": "a2.bin",
+        "fingerprint": "fp-a2",
+        "image": {
+          "width": 800,
+          "height": 600
+        }
+      },
+      "a3": {
+        "id": "a3",
+        "kind": "lottieTemplate",
+        "path": "a3.bin",
+        "fingerprint": "fp-a3",
+        "duration": "3",
+        "lottie": {
+          "width": 1080,
+          "height": 1920,
+          "rate": "30",
+          "duration": "3",
+          "slots": [
+            {
+              "id": "title",
+              "kind": "text"
+            },
+            {
+              "id": "tint",
+              "kind": "color"
+            },
+            {
+              "id": "size",
+              "kind": "number"
+            },
+            {
+              "id": "logo",
+              "kind": "image"
+            }
+          ]
+        }
+      },
+      "a4": {
+        "id": "a4",
+        "kind": "media",
+        "path": "a4.bin",
+        "fingerprint": "fp-a4",
+        "duration": "300",
+        "audio": {
+          "sampleRate": 44100,
+          "channels": 1
+        }
+      },
+      "a5": {
+        "id": "a5",
+        "kind": "lut",
+        "path": "a5.bin",
+        "fingerprint": "fp-a5",
+        "lut": {
+          "size": 33
+        }
+      },
+      "a6": {
+        "id": "a6",
+        "kind": "svg",
+        "path": "a6.bin",
+        "fingerprint": "fp-a6",
+        "image": {
+          "width": 512,
+          "height": 512
+        }
+      },
+      "a7": {
+        "id": "a7",
+        "kind": "media",
+        "path": "a7.bin",
+        "fingerprint": "fp-a7",
+        "duration": "1200",
+        "video": {
+          "width": 1920,
+          "height": 1080,
+          "rate": "30000/1001"
+        },
+        "audio": {
+          "sampleRate": 48000,
+          "channels": 2
+        }
+      }
+    }
+  }
+}

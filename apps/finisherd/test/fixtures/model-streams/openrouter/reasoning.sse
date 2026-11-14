@@ -1,0 +1,14 @@
+data: {"id":"gen-rsn-1","provider":"Anthropic","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","reasoning":"The intro","reasoning_details":[{"type":"reasoning.text","text":"The intro","format":"anthropic-claude-v1","index":0}]},"finish_reason":null}]}
+
+data: {"id":"gen-rsn-1","provider":"Anthropic","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"reasoning":" is 4 s.","reasoning_details":[{"type":"reasoning.text","text":" is 4 s.","format":"anthropic-claude-v1","index":0}]},"finish_reason":null}]}
+
+data: {"id":"gen-rsn-1","provider":"Anthropic","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"reasoning_details":[{"type":"reasoning.text","signature":"c2lnbmF0dXJl","format":"anthropic-claude-v1","index":0}]},"finish_reason":null}]}
+
+data: {"id":"gen-rsn-1","provider":"Anthropic","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"reasoning_details":[{"type":"reasoning.encrypted","data":"ZW5jcnlwdGVk","format":"anthropic-claude-v1","index":1}]},"finish_reason":null}]}
+
+data: {"id":"gen-rsn-1","provider":"Anthropic","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"Trim it."},"finish_reason":"stop"}]}
+
+data: {"id":"gen-rsn-1","provider":"Anthropic","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1000,"completion_tokens":120,"total_tokens":1120,"cost":0.0032,"completion_tokens_details":{"reasoning_tokens":90}}}
+
+data: [DONE]
+

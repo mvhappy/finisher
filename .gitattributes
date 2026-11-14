@@ -2,3 +2,8 @@
 *.png binary
 *.mp4 binary
 *.wav binary
+*.finpkg binary
+# Signed TUF vectors are compared byte for byte (hashes, signatures).
+crates/fin-registry/tests/fixtures/tuf/** -text
+# Bundled plugins are hashed byte for byte (8A Decision 24).
+resources/plugins/bundled/** -text

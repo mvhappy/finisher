@@ -1,0 +1,46 @@
+[package]
+name = "fin-fonts"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "The pinned font catalog, the content-addressed font cache and its fetcher (server side)."
+
+[features]
+default = ["fetch"]
+# The fetcher (`Fetcher`, `FetchOptions`, downloads and archive extraction) and its HTTP/TLS
+# stack. Without it, `FontCache`, the catalog types and the plan build alone: media workers
+# read the cache and never fetch (sub-project 6 spec §18; `scripts/check-crate-deps.mjs`).
+fetch = ["dep:rustls", "dep:ureq", "dep:zip"]
+# Plain `http` to loopback (the tests' local server) and `FIN_FONT_CATALOG`. Never in a
+# shipped build (scripts/check-test-hooks.mjs).
+test-hooks = []
+
+[dependencies]
+fin-core = { path = "../fin-core" }
+fin-text = { path = "../fin-text" }
+# ring, not aws-lc-rs (no C/cmake build); the OS trust store through the platform verifier.
+rustls = { version = "0.23", optional = true, default-features = false, features = ["ring", "std", "tls12", "logging"] }
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.11"
+ureq = { version = "3.5", optional = true, default-features = false, features = ["rustls-no-provider", "platform-verifier"] }
+zip = { version = "9", optional = true, default-features = false, features = ["deflate-flate2-zlib-rs"] }
+
+[target.'cfg(windows)'.dependencies]
+ureq = { version = "3.5", optional = true, default-features = false, features = ["rustls-no-provider", "platform-verifier", "win-system-proxy"] }
+
+[dev-dependencies]
+# Without default features, so `--no-default-features` tests the crate without `fetch`.
+fin-fonts = { path = ".", default-features = false, features = ["test-hooks"] }
+fin-testfonts = { path = "../fin-testfonts" }
+# Both providers in the test binaries, as in a `fin-node` that also links `tough`
+# (`tests/provider.rs`).
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "ring", "std"] }
+tempfile = "3"
+
+[[example]]
+name = "warm_cache"
+required-features = ["fetch"]

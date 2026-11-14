@@ -14,9 +14,42 @@ jobs:
       fail-fast: false
       matrix:
         os: [macos-15, windows-2025, ubuntu-24.04]
+        include:
+          # The GPU the media tests and the look scenario render on (FIN_GPU, spec §5.2):
+          # lavapipe on Ubuntu and WARP on Windows are software adapters every runner has, so a
+          # missing one fails the run (FIN_REQUIRE_GPU=1) instead of skipping the GPU tests.
+          # macOS lets wgpu choose (Metal, when the runner exposes it) and skips without one.
+          # The platform codecs (6B-1: VideoToolbox, Media Foundation) run on macOS and Windows
+          # with FIN_REQUIRE_PLATFORM_CODECS=0: hosted runners lack the HEVC Video Extensions and
+          # hardware encoders, so those rows skip with a notice here; validation hosts set 1
+          # (plan Task 21). Linux has no platform codec before 6B-2 (VA-API).
+          - os: macos-15
+            gpu: auto
+            require-gpu: "0"
+            require-platform-codecs: "0"
+          - os: windows-2025
+            gpu: software
+            require-gpu: "1"
+            require-platform-codecs: "0"
+          - os: ubuntu-24.04
+            gpu: software
+            require-gpu: "1"
+            require-platform-codecs: "0"
     runs-on: ${{ matrix.os }}
+    env:
+      FIN_GPU: ${{ matrix.gpu }}
+      FIN_REQUIRE_GPU: ${{ matrix.require-gpu }}
+      FIN_REQUIRE_PLATFORM_CODECS: ${{ matrix.require-platform-codecs }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # third_party/svt-av1, third_party/dav1d, third_party/opus and third_party/vo-aacenc
+          # (fin-svt-sys, fin-dav1d-sys, fin-opus-sys and, on Linux, fin-aacenc-sys build SVT-AV1,
+          # dav1d, libopus and vo-aacenc from them; shallow per .gitmodules).
+          submodules: true
+          # The whole history: scripts/check-a0-history.mjs (in `pnpm gates`) checks every
+          # commit that touched the A0 hashes, and fails on a shallow clone.
+          fetch-depth: 0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .node-version
@@ -26,21 +59,176 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Install Rust toolchain from rust-toolchain.toml
         run: rustup show active-toolchain || rustup toolchain install
+      - name: Install cmake and nasm (SVT-AV1's build and its and dav1d's x86_64 assembly) and Mesa's lavapipe
+        if: runner.os == 'Linux'
+        # mesa-vulkan-drivers is lavapipe (the software Vulkan adapter FIN_GPU=software picks);
+        # libvulkan1 is the loader the `ash` crate opens at run time.
+        run: sudo apt-get update && sudo apt-get install -y cmake nasm mesa-vulkan-drivers libvulkan1
+      - name: Check cmake (every runner image ships it; SVT-AV1 is built with it)
+        if: runner.os != 'Linux'
+        shell: bash
+        run: cmake --version
+      - name: Install nasm (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install nasm -y --no-progress
+          "C:\Program Files\NASM" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       - name: Build fin-node (finisherd needs it for the fin online tests)
         run: pnpm --filter @finisher/fin-node build
+      - name: Restore the warmed font cache (keyed by the font catalog)
+        id: font-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/fin-font-cache
+          key: fin-fonts-${{ runner.os }}-${{ hashFiles('crates/fin-fonts/catalog/catalog.json') }}
+      - name: Warm the font cache (the catalog changed)
+        if: steps.font-cache.outputs.cache-hit != 'true'
+        # Fetches every catalog file and checks its faces and scripts against the catalog.
+        run: cargo run --release -p fin-fonts --example warm_cache -- "${{ runner.temp }}/fin-font-cache"
+      - name: Clippy (the whole workspace, tests and examples included; warnings fail)
+        # Linux only: that is where the workspace is verified clean; the macOS and Windows
+        # `cfg` code has not been linted yet (TASKS.md).
+        if: runner.os == 'Linux'
+        run: |
+          cargo clippy --workspace --all-targets -- -D warnings
+          # The shipped code alone: --all-targets builds the dev-dependencies, and several crates
+          # depend on themselves with `test-hooks`, so the line above never lints them without it.
+          cargo clippy -- -D warnings
+          # Each `test-hooks` crate with the feature on, alone: fin-node's (its test registries)
+          # is on in neither line above, and the other two outside the workspace's unification.
+          cargo clippy -p fin-node --all-targets --features test-hooks -- -D warnings
+          cargo clippy -p fin-jobhost --all-targets --features test-hooks -- -D warnings
+          cargo clippy -p fin-workers --all-targets --features test-hooks -- -D warnings
       - name: Rust tests
-        run: cargo test --workspace --release
+        # The default members: everything but the cross-host harness, whose `test-hooks`
+        # must not unify into fin or fin-node (scripts/check-test-hooks.mjs). With
+        # FIN_REQUIRE_GPU=1 (Ubuntu, Windows) the compositor's and the media worker's GPU tests
+        # (media_look.rs, media_diag.rs) run on lavapipe or WARP and fail rather than skip.
+        run: cargo test --release
         env:
           # fin's online and contract tests must run against a live finisherd, never skip.
           FIN_REQUIRE_SERVER: "1"
+          # The real-font tests read the warmed cache and fail rather than skip without it.
+          FIN_FONT_CACHE: ${{ runner.temp }}/fin-font-cache
+          FIN_REQUIRE_FONTS: "1"
+      - name: Plugin conformance (both example plugins through `fin-plugin test --profile command`; the harness's tests)
+        # The plugin tooling and the examples are outside the default members, so they are tested
+        # here: the Rust example runs from its build output (`--exec`), the TypeScript one from
+        # its bundle (`dist/` is git-ignored) on the runner's Node. A finding fails the step
+        # (PLUGIN_TEST_FAILED, exit 3, the findings on stderr).
+        shell: bash
+        # One cargo invocation for the three packages (one feature resolution); it also builds
+        # the `fin-plugin` and `rust-tools` binaries the two runs after it use.
+        run: |
+          node examples/plugins/ts-tools/build.mjs
+          cargo test --release -p fin-plugin-test -p fin-plugin-cli -p example-rust-tools
+          exe=""
+          if [ "$RUNNER_OS" = "Windows" ]; then exe=".exe"; fi
+          target/release/fin-plugin$exe test examples/plugins/rust-tools --profile command --exec target/release/rust-tools$exe
+          target/release/fin-plugin$exe test examples/plugins/ts-tools --profile command
+      - name: Codecs and platform codecs (the fixture writers behind the `testing` feature; needs cmake, nasm on x86_64, the submodules)
+        # The OS backends' tests (VideoToolbox on macOS, Media Foundation on Windows) are compiled
+        # only on their OS; with FIN_REQUIRE_PLATFORM_CODECS=0 (the matrix above) a missing OS
+        # feature skips its rows with a notice. `--nocapture` keeps those notices in the log.
+        run: cargo test --release -p fin-codecs --features testing -- --nocapture
+      - name: Audio codecs (libopus built from source with cc, run by name on all three OSes)
+        # Part of the step above too; named here so a libopus failure shows by its own name.
+        run: cargo test --release -p fin-codecs --features testing --test audio_opus
+      - name: Encode golden of this machine class (informational, prints whether SVT-AV1's bytes match and the entry to record)
+        # The test asserts only with FIN_ENCODE_GOLDEN=1. A class without an entry in
+        # crates/fin-codecs/tests/golden/encode.json (Windows, until one is recorded from this
+        # log) shows up here as "no entry"; the record line is the JSON to add.
+        shell: bash
+        run: |
+          cargo test --release -p fin-codecs --features testing --test encode_golden -- --nocapture
+          FIN_ENCODE_GOLDEN=record cargo test --release -p fin-codecs --features testing --test encode_golden -- --nocapture
+      - name: Install wasmtime (the wasm32 determinism runs)
+        if: runner.os == 'Linux'
+        uses: bytecodealliance/actions/wasmtime/setup@9152e710e9f7182e4c29ad218e4f335a7b203613 # v1.1.3
+        with:
+          version: "50.0.1"
+      - name: Eval, text and audio (A0) corpora on wasm32-wasip1 (the hashes must equal the native ones)
+        if: runner.os == 'Linux'
+        run: |
+          rustup target add wasm32-wasip1
+          cargo test -p fin-core --target wasm32-wasip1 --test eval_corpus
+          cargo test -p fin-text --target wasm32-wasip1 --test measure --test corpus_real
+          cargo test -p fin-compositor --target wasm32-wasip1 --test reference --test geometry
+          cargo test -p fin-audio --features testing --target wasm32-wasip1 --test a0 -- --nocapture
+        env:
+          # `--dir .` gives the tests their corpus files (cargo runs them in the package
+          # directory); the second `--dir` and the `--env`s give corpus_real the warmed cache.
+          CARGO_TARGET_WASM32_WASIP1_RUNNER: wasmtime --dir . --dir ${{ runner.temp }}/fin-font-cache --env FIN_FONT_CACHE --env FIN_REQUIRE_FONTS
+          FIN_FONT_CACHE: ${{ runner.temp }}/fin-font-cache
+          FIN_REQUIRE_FONTS: "1"
+      - name: Cross-host harness builds (alone)
+        run: cargo build --release -p fin-store-xhost
       - name: TypeScript tests
         run: pnpm test
       - name: Gate tests
         run: pnpm test:gates
-      - name: End-to-end (fin → finisherd → WebSocket subscriber)
+      - name: End-to-end (fin → finisherd → WebSocket subscriber; the look scenario renders on FIN_GPU)
         run: pnpm e2e
+        env:
+          # The reel scenario's real-font pass seeds its server's cache from the warmed one.
+          FIN_FONT_CACHE: ${{ runner.temp }}/fin-font-cache
+          FIN_REQUIRE_FONTS: "1"
       - name: Install cargo-deny
         if: runner.os != 'Windows'
         run: cargo install cargo-deny --locked --version 0.20.2
       - name: Gates
         run: pnpm gates
+
+  # The escape suites as one runner (plan 7C Task 13): every profile's cases on each OS, as
+  # the runner's own non-root user. Linux runs with FIN_REQUIRE_LANDLOCK=1 (set by the script),
+  # so a runner without Landlock fails instead of skipping; the namespace cases skip here with
+  # the launcher's reason (Ubuntu restricts unprivileged user namespaces) and run in
+  # `sandbox-namespaces`. Windows runs the container configuration suites; escape attempts
+  # there are left to a person (Decision 27).
+  sandbox:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-2025, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+      - name: Install pnpm
+        run: npm install -g pnpm@12.15.0
+      - name: Install Rust toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Escape suites (prints the per-profile table)
+        run: pnpm sandbox:suite
+
+  # The socket-namespace cases (Decision 26) on a host that allows the launcher a user
+  # namespace: Finisher's AppArmor profile (resources/linux/apparmor), attached to the test
+  # build's launcher as the installer attaches it to the installed one. With
+  # FIN_REQUIRE_NAMESPACES=1 a missing namespace fails instead of skipping.
+  sandbox-namespaces:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+      - name: Install pnpm
+        run: npm install -g pnpm@12.15.0
+      - name: Install Rust toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Build the sandbox tests and binaries
+        run: cargo test -p fin-sandbox --tests --no-run
+      - name: Allow the test launcher a user namespace (Finisher's AppArmor profile)
+        run: |
+          exe="$GITHUB_WORKSPACE/target/debug/fin-sandbox-exec"
+          test -x "$exe"
+          sed "s|/{opt/finisher/bin,usr/lib/finisher}/fin-sandbox-exec|$exe|" \
+            resources/linux/apparmor/finisher-sandbox-exec > "$RUNNER_TEMP/finisher-sandbox-exec"
+          grep -q "profile finisher-sandbox-exec $exe " "$RUNNER_TEMP/finisher-sandbox-exec"
+          sudo install -m 0644 "$RUNNER_TEMP/finisher-sandbox-exec" /etc/apparmor.d/finisher-sandbox-exec
+          sudo apparmor_parser -r /etc/apparmor.d/finisher-sandbox-exec
+      - name: Escape suites with the namespace required
+        run: pnpm sandbox:suite --require-namespaces

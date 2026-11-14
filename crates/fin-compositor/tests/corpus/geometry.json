@@ -1,0 +1,682 @@
+[
+ {
+  "name": "rotated-portrait-source",
+  "out": [
+   320,
+   180
+  ],
+  "plan": {
+   "timeline": "tl1",
+   "t": "0",
+   "resolution": {
+    "width": 320,
+    "height": 180
+   },
+   "layers": [
+    {
+     "item": "c1",
+     "kind": "clip",
+     "track": "V1",
+     "local": "0",
+     "source": {
+      "asset": "a1",
+      "time": "3/30"
+     },
+     "transform": {
+      "position": [
+       0,
+       0
+      ],
+      "scale": [
+       1,
+       1
+      ],
+      "rotation": 0,
+      "anchor": [
+       0.5,
+       0.5
+      ]
+     },
+     "crop": {
+      "left": 0,
+      "right": 0,
+      "top": 0,
+      "bottom": 0
+     },
+     "opacity": 1.0,
+     "blend": "normal"
+    }
+   ]
+  },
+  "sources": {
+   "a1": {
+    "pattern": {
+     "width": 320,
+     "height": 180,
+     "seed": 1
+    },
+    "rate": "30",
+    "rotation": 90,
+    "colour": {
+     "primaries": "bt709",
+     "transfer": "bt709",
+     "matrix": "bt709",
+     "range": "limited",
+     "siting": "left"
+    }
+   }
+  }
+ },
+ {
+  "name": "rotation-180-source",
+  "out": [
+   320,
+   180
+  ],
+  "plan": {
+   "timeline": "tl1",
+   "t": "0",
+   "resolution": {
+    "width": 320,
+    "height": 180
+   },
+   "layers": [
+    {
+     "item": "c1",
+     "kind": "clip",
+     "track": "V1",
+     "local": "0",
+     "source": {
+      "asset": "a1",
+      "time": "3/30"
+     },
+     "transform": {
+      "position": [
+       0,
+       0
+      ],
+      "scale": [
+       1,
+       1
+      ],
+      "rotation": 0,
+      "anchor": [
+       0.5,
+       0.5
+      ]
+     },
+     "crop": {
+      "left": 0,
+      "right": 0,
+      "top": 0,
+      "bottom": 0
+     },
+     "opacity": 1.0,
+     "blend": "normal"
+    }
+   ]
+  },
+  "sources": {
+   "a1": {
+    "pattern": {
+     "width": 320,
+     "height": 180,
+     "seed": 1
+    },
+    "rate": "30",
+    "rotation": 180,
+    "colour": {
+     "primaries": "bt709",
+     "transfer": "bt709",
+     "matrix": "bt709",
+     "range": "limited",
+     "siting": "left"
+    }
+   }
+  }
+ },
+ {
+  "name": "rotation-30-degrees",
+  "out": [
+   320,
+   180
+  ],
+  "plan": {
+   "timeline": "tl1",
+   "t": "0",
+   "resolution": {
+    "width": 320,
+    "height": 180
+   },
+   "layers": [
+    {
+     "item": "c1",
+     "kind": "clip",
+     "track": "V1",
+     "local": "0",
+     "source": {
+      "asset": "a1",
+      "time": "0"
+     },
+     "transform": {
+      "position": [
+       0,
+       0
+      ],
+      "scale": [
+       0.7,
+       0.7
+      ],
+      "rotation": 30,
+      "anchor": [
+       0.5,
+       0.5
+      ]
+     },
+     "crop": {
+      "left": 0,
+      "right": 0,
+      "top": 0,
+      "bottom": 0
+     },
+     "opacity": 1.0,
+     "blend": "normal"
+    }
+   ]
+  },
+  "sources": {
+   "a1": {
+    "pattern": {
+     "width": 320,
+     "height": 180,
+     "seed": 1
+    },
+    "rate": "30",
+    "rotation": 0,
+    "colour": {
+     "primaries": "bt709",
+     "transfer": "bt709",
+     "matrix": "bt709",
+     "range": "limited",
+     "siting": "left"
+    }
+   }
+  }
+ },
+ {
+  "name": "mirrored-and-cropped",
+  "out": [
+   320,
+   180
+  ],
+  "plan": {
+   "timeline": "tl1",
+   "t": "0",
+   "resolution": {
+    "width": 320,
+    "height": 180
+   },
+   "layers": [
+    {
+     "item": "c1",
+     "kind": "clip",
+     "track": "V1",
+     "local": "0",
+     "source": {
+      "asset": "a1",
+      "time": "0"
+     },
+     "transform": {
+      "position": [
+       0,
+       0
+      ],
+      "scale": [
+       -1,
+       1
+      ],
+      "rotation": 0,
+      "anchor": [
+       0.5,
+       0.5
+      ]
+     },
+     "crop": {
+      "left": 0.1,
+      "right": 0.2,
+      "top": 0.05,
+      "bottom": 0.15
+     },
+     "opacity": 1.0,
+     "blend": "normal"
+    }
+   ]
+  },
+  "sources": {
+   "a1": {
+    "pattern": {
+     "width": 320,
+     "height": 180,
+     "seed": 1
+    },
+    "rate": "30",
+    "rotation": 0,
+    "colour": {
+     "primaries": "bt709",
+     "transfer": "bt709",
+     "matrix": "bt709",
+     "range": "limited",
+     "siting": "left"
+    }
+   }
+  }
+ },
+ {
+  "name": "fractional-position",
+  "out": [
+   320,
+   180
+  ],
+  "plan": {
+   "timeline": "tl1",
+   "t": "0",
+   "resolution": {
+    "width": 320,
+    "height": 180
+   },
+   "layers": [
+    {
+     "item": "c1",
+     "kind": "clip",
+     "track": "V1",
+     "local": "0",
+     "source": {
+      "asset": "a1",
+      "time": "0"
+     },
+     "transform": {
+      "position": [
+       10.25,
+       -5.75
+      ],
+      "scale": [
+       0.5,
+       0.5
+      ],
+      "rotation": 0,
+      "anchor": [
+       0.5,
+       0.5
+      ]
+     },
+     "crop": {
+      "left": 0,
+      "right": 0,
+      "top": 0,
+      "bottom": 0
+     },
+     "opacity": 1.0,
+     "blend": "normal"
+    }
+   ]
+  },
+  "sources": {
+   "a1": {
+    "pattern": {
+     "width": 320,
+     "height": 180,
+     "seed": 1
+    },
+    "rate": "30",
+    "rotation": 0,
+    "colour": {
+     "primaries": "bt709",
+     "transfer": "bt709",
+     "matrix": "bt709",
+     "range": "limited",
+     "siting": "left"
+    }
+   }
+  }
+ },
+ {
+  "name": "off-frame",
+  "out": [
+   320,
+   180
+  ],
+  "plan": {
+   "timeline": "tl1",
+   "t": "0",
+   "resolution": {
+    "width": 320,
+    "height": 180
+   },
+   "layers": [
+    {
+     "item": "c1",
+     "kind": "clip",
+     "track": "V1",
+     "local": "0",
+     "source": {
+      "asset": "a1",
+      "time": "0"
+     },
+     "transform": {
+      "position": [
+       1000,
+       0
+      ],
+      "scale": [
+       1,
+       1
+      ],
+      "rotation": 0,
+      "anchor": [
+       0.5,
+       0.5
+      ]
+     },
+     "crop": {
+      "left": 0,
+      "right": 0,
+      "top": 0,
+      "bottom": 0
+     },
+     "opacity": 1.0,
+     "blend": "normal"
+    }
+   ]
+  },
+  "sources": {
+   "a1": {
+    "pattern": {
+     "width": 320,
+     "height": 180,
+     "seed": 1
+    },
+    "rate": "30",
+    "rotation": 0,
+    "colour": {
+     "primaries": "bt709",
+     "transfer": "bt709",
+     "matrix": "bt709",
+     "range": "limited",
+     "siting": "left"
+    }
+   }
+  }
+ },
+ {
+  "name": "mips-4k-into-1080p",
+  "out": [
+   480,
+   270
+  ],
+  "plan": {
+   "timeline": "tl1",
+   "t": "0",
+   "resolution": {
+    "width": 1920,
+    "height": 1080
+   },
+   "layers": [
+    {
+     "item": "c1",
+     "kind": "clip",
+     "track": "V1",
+     "local": "0",
+     "source": {
+      "asset": "a1",
+      "time": "2/30"
+     },
+     "transform": {
+      "position": [
+       0,
+       0
+      ],
+      "scale": [
+       1,
+       1
+      ],
+      "rotation": 0,
+      "anchor": [
+       0.5,
+       0.5
+      ]
+     },
+     "crop": {
+      "left": 0,
+      "right": 0,
+      "top": 0,
+      "bottom": 0
+     },
+     "opacity": 1.0,
+     "blend": "normal"
+    }
+   ]
+  },
+  "sources": {
+   "a1": {
+    "pattern": {
+     "width": 3840,
+     "height": 2160,
+     "seed": 1
+    },
+    "rate": "30",
+    "rotation": 0,
+    "colour": {
+     "primaries": "bt709",
+     "transfer": "bt709",
+     "matrix": "bt709",
+     "range": "limited",
+     "siting": "left"
+    }
+   }
+  }
+ },
+ {
+  "name": "minified-0.3",
+  "out": [
+   320,
+   180
+  ],
+  "plan": {
+   "timeline": "tl1",
+   "t": "0",
+   "resolution": {
+    "width": 320,
+    "height": 180
+   },
+   "layers": [
+    {
+     "item": "c1",
+     "kind": "clip",
+     "track": "V1",
+     "local": "0",
+     "source": {
+      "asset": "a1",
+      "time": "0"
+     },
+     "transform": {
+      "position": [
+       0,
+       0
+      ],
+      "scale": [
+       0.3,
+       0.3
+      ],
+      "rotation": 0,
+      "anchor": [
+       0.5,
+       0.5
+      ]
+     },
+     "crop": {
+      "left": 0,
+      "right": 0,
+      "top": 0,
+      "bottom": 0
+     },
+     "opacity": 1.0,
+     "blend": "normal"
+    }
+   ]
+  },
+  "sources": {
+   "a1": {
+    "pattern": {
+     "width": 960,
+     "height": 540,
+     "seed": 1
+    },
+    "rate": "30",
+    "rotation": 0,
+    "colour": {
+     "primaries": "bt709",
+     "transfer": "bt709",
+     "matrix": "bt709",
+     "range": "limited",
+     "siting": "left"
+    }
+   }
+  }
+ },
+ {
+  "name": "bt601-full-range-centre-siting",
+  "out": [
+   320,
+   180
+  ],
+  "plan": {
+   "timeline": "tl1",
+   "t": "0",
+   "resolution": {
+    "width": 320,
+    "height": 180
+   },
+   "layers": [
+    {
+     "item": "c1",
+     "kind": "clip",
+     "track": "V1",
+     "local": "0",
+     "source": {
+      "asset": "a1",
+      "time": "0"
+     },
+     "transform": {
+      "position": [
+       0,
+       0
+      ],
+      "scale": [
+       1,
+       1
+      ],
+      "rotation": 0,
+      "anchor": [
+       0.5,
+       0.5
+      ]
+     },
+     "crop": {
+      "left": 0,
+      "right": 0,
+      "top": 0,
+      "bottom": 0
+     },
+     "opacity": 1.0,
+     "blend": "normal"
+    }
+   ]
+  },
+  "sources": {
+   "a1": {
+    "pattern": {
+     "width": 320,
+     "height": 180,
+     "seed": 1
+    },
+    "rate": "30",
+    "rotation": 0,
+    "colour": {
+     "primaries": "bt601_525",
+     "transfer": "bt709",
+     "matrix": "bt601",
+     "range": "full",
+     "siting": "center"
+    }
+   }
+  }
+ },
+ {
+  "name": "bt2020-gamut",
+  "out": [
+   320,
+   180
+  ],
+  "plan": {
+   "timeline": "tl1",
+   "t": "0",
+   "resolution": {
+    "width": 320,
+    "height": 180
+   },
+   "layers": [
+    {
+     "item": "c1",
+     "kind": "clip",
+     "track": "V1",
+     "local": "0",
+     "source": {
+      "asset": "a1",
+      "time": "0"
+     },
+     "transform": {
+      "position": [
+       0,
+       0
+      ],
+      "scale": [
+       1,
+       1
+      ],
+      "rotation": 0,
+      "anchor": [
+       0.5,
+       0.5
+      ]
+     },
+     "crop": {
+      "left": 0,
+      "right": 0,
+      "top": 0,
+      "bottom": 0
+     },
+     "opacity": 1.0,
+     "blend": "normal"
+    }
+   ]
+  },
+  "sources": {
+   "a1": {
+    "pattern": {
+     "width": 320,
+     "height": 180,
+     "seed": 1
+    },
+    "rate": "30",
+    "rotation": 0,
+    "colour": {
+     "primaries": "bt2020",
+     "transfer": "bt709",
+     "matrix": "bt2020Ncl",
+     "range": "limited",
+     "siting": "topLeft"
+    }
+   }
+  }
+ }
+]

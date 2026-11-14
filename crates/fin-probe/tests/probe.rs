@@ -1,6 +1,6 @@
 use fin_core::Rational;
-use fin_probe::fixtures::{FixtureOpts, write_fixture_mp4};
-use fin_probe::{fingerprint, probe};
+use fin_probe::fixtures::{FixtureOpts, write_fixture_mov, write_fixture_mp4};
+use fin_probe::{Probe, fingerprint, probe};
 
 fn write_fixture(path: &std::path::Path) {
     write_fixture_mp4(path, FixtureOpts::default());
@@ -29,7 +29,8 @@ fn probes_generated_fixture() {
     let path = dir.path().join("clip.mp4");
     write_fixture(&path);
     let p = probe(&path).unwrap();
-    assert_eq!(p.duration, r(2, 1));
+    assert_eq!(p.kind, fin_core::AssetKind::Media);
+    assert_eq!(p.duration, Some(r(2, 1)));
     let v = p.video.unwrap();
     assert_eq!((v.width, v.height, v.rate), (320, 180, r(25, 1)));
     let a = p.audio.unwrap();
@@ -91,7 +92,7 @@ fn spaces_and_cyrillic_paths_work() {
     std::fs::create_dir(&sub).unwrap();
     let path = sub.join("кліп 1.mp4");
     write_fixture(&path);
-    assert_eq!(probe(&path).unwrap().duration, r(2, 1));
+    assert_eq!(probe(&path).unwrap().duration, Some(r(2, 1)));
 }
 
 #[test]
@@ -159,8 +160,10 @@ fn boxed(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
     b
 }
 
+/// Sub-project 2 refused fragmented MP4; `fin-container` reads it (6A Task 8). A fragmented
+/// header with no track is still not media.
 #[test]
-fn fragmented_mp4_is_rejected() {
+fn a_fragmented_header_without_tracks_is_not_media() {
     // ftyp + moov{mvhd(v0, zero duration), mvex{trex}}: what a fragmented file starts with.
     let mut mvhd = vec![0u8; 100];
     mvhd[12..16].copy_from_slice(&1000u32.to_be_bytes()); // timescale
@@ -181,5 +184,52 @@ fn fragmented_mp4_is_rejected() {
     std::fs::write(&path, bytes).unwrap();
     let err = probe(&path).unwrap_err();
     assert_eq!(err.code, "UNSUPPORTED_CONTAINER");
-    assert_eq!(err.details["reason"], "fragmented mp4", "{err:?}");
+    assert_eq!(err.details["reason"], "no video or audio track", "{err:?}");
+}
+
+#[test]
+fn probe_mov_fixture() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("clip.mov");
+    write_fixture_mov(&path, FixtureOpts::default());
+    let bytes = std::fs::read(&path).unwrap();
+    // A QuickTime file: `ftyp` with major brand `qt  `.
+    assert_eq!(&bytes[4..12], b"ftypqt  ");
+    let p = probe(&path).unwrap();
+    assert_eq!(p.duration, Some(r(2, 1)));
+    let v = p.video.unwrap();
+    assert_eq!((v.width, v.height, v.rate), (320, 180, r(25, 1)));
+    let a = p.audio.unwrap();
+    assert_eq!((a.sample_rate, a.channels), (48_000, 2));
+    assert_eq!(p.size, bytes.len() as u64);
+}
+
+/// The JSON fin-node sends for a probe is `Probe`'s serde form, which the generated TS type
+/// (`@finisher/core-types`) describes.
+#[test]
+fn probe_json_is_the_serde_form() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("clip.mp4");
+    write_fixture(&path);
+    let p = probe(&path).unwrap();
+    let v = serde_json::to_value(&p).unwrap();
+    let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        [
+            "audio",
+            "duration",
+            "fingerprint",
+            "kind",
+            "media",
+            "size",
+            "video"
+        ]
+    );
+    assert_eq!(v["kind"], "media");
+    assert_eq!(v["duration"], "2");
+    assert_eq!(v["video"]["rate"], "25");
+    assert_eq!(v["audio"]["sampleRate"], 48_000);
+    assert_eq!(serde_json::from_value::<Probe>(v).unwrap(), p);
 }

@@ -1,15 +1,17 @@
 //! Where `finisherd`'s local socket is (plan decisions 5 and 6).
 //!
-//! `FIN_SERVER` names it directly: a Unix socket path, or `pipe:<name>` for the Windows named
-//! pipe `\\.\pipe\<name>`. Otherwise `<server-data>/finisherd.json` (written by the running
+//! `FIN_SERVER` names it directly: a Unix socket path, `pipe:<name>` for the Windows named
+//! pipe `\\.\pipe\<name>`, or `tcp:<loopback address>:<port>` for the Linux agent listener
+//! (plan 7C Decision 13: the `agent` profile has no `AF_UNIX`; any other address is `USAGE`). Otherwise `<server-data>/finisherd.json` (written by the running
 //! server) gives its `socket`. Server-data is `FIN_SERVER_DATA`, else the per-OS default.
 
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use fin_core::CoreError;
 use serde_json::{Value, json};
 
-use crate::output::unavailable;
+use crate::output::{unavailable, usage};
 use crate::paths;
 
 pub const SERVER_ENV: &str = "FIN_SERVER";
@@ -17,7 +19,7 @@ pub const SERVER_DATA_ENV: &str = "FIN_SERVER_DATA";
 const INFO_FILE: &str = "finisherd.json";
 const PIPE_PREFIX: &str = r"\\.\pipe\";
 /// The `protocolVersion` this client speaks (`@finisher/contracts` `PROTOCOL_VERSION`).
-pub const PROTOCOL_VERSION: u64 = 1;
+pub const PROTOCOL_VERSION: u64 = 2;
 
 /// A local socket address.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,24 +28,45 @@ pub enum Endpoint {
     Socket(PathBuf),
     /// A Windows named pipe, as the full `\\.\pipe\<name>` path.
     Pipe(String),
+    /// The agent listener on a loopback address (Linux, plan 7C Decision 13).
+    Tcp(SocketAddr),
 }
 
 impl Endpoint {
-    /// `pipe:<name>` or a `\\.\pipe\...` path is a named pipe; anything else is a socket path.
-    pub fn parse(spec: &str) -> Endpoint {
+    /// `pipe:<name>` or a `\\.\pipe\...` path is a named pipe, `tcp:<ip>:<port>` the agent
+    /// listener (loopback only, else `USAGE`); anything else is a socket path.
+    pub fn parse(spec: &str) -> Result<Endpoint, CoreError> {
         if let Some(name) = spec.strip_prefix("pipe:") {
-            return Endpoint::Pipe(format!("{PIPE_PREFIX}{name}"));
+            return Ok(Endpoint::Pipe(format!("{PIPE_PREFIX}{name}")));
         }
         if spec.starts_with(PIPE_PREFIX) {
-            return Endpoint::Pipe(spec.to_string());
+            return Ok(Endpoint::Pipe(spec.to_string()));
         }
-        Endpoint::Socket(paths::resolve_str(spec))
+        if let Some(addr) = spec.strip_prefix("tcp:") {
+            let bad = |why: &str| {
+                usage(
+                    format!("the endpoint tcp:{addr} is not a loopback TCP address: {why}"),
+                    json!({ "endpoint": spec }),
+                    "use tcp:127.0.0.1:<port>, the agent listener finisherd names in FIN_SERVER",
+                )
+            };
+            let addr: SocketAddr = addr.parse().map_err(|_| bad("not <ip>:<port>"))?;
+            if !addr.ip().is_loopback() {
+                return Err(bad("only loopback addresses are allowed"));
+            }
+            if addr.port() == 0 {
+                return Err(bad("port 0 is not a port"));
+            }
+            return Ok(Endpoint::Tcp(addr));
+        }
+        Ok(Endpoint::Socket(paths::resolve_str(spec)))
     }
 
     pub fn display(&self) -> String {
         match self {
             Endpoint::Socket(p) => p.display().to_string(),
             Endpoint::Pipe(p) => p.clone(),
+            Endpoint::Tcp(a) => format!("tcp:{a}"),
         }
     }
 }
@@ -71,12 +94,22 @@ fn os_default(home: Option<PathBuf>) -> Option<PathBuf> {
         .map(|d| d.join("finisher"))
 }
 
-/// Plan decision 6: `FIN_SERVER_DATA`, else the per-OS application data directory.
+/// Plan decision 6: `FIN_SERVER_DATA`, else the per-OS application data directory. None at
+/// all while `FIN_CREDENTIAL` is set (plan 7A Decision 14b): a credential's `fin` reads nothing
+/// in server data (no `local.key`, no `finisherd.json`, no `fin-config.json`), and its endpoint
+/// comes from `FIN_SERVER` alone.
 pub fn server_data() -> Option<PathBuf> {
+    if credential_set() {
+        return None;
+    }
     match std::env::var_os(SERVER_DATA_ENV) {
         Some(dir) if !dir.is_empty() => Some(paths::resolve(Path::new(&dir))),
         _ => os_default(paths::home()),
     }
+}
+
+fn credential_set() -> bool {
+    std::env::var_os(crate::auth::CREDENTIAL_ENV).is_some_and(|v| !v.is_empty())
 }
 
 /// Reads `socket` (and checks `protocolVersion`) from a `finisherd.json` document.
@@ -84,6 +117,7 @@ fn from_info(file: &Path, text: &str) -> Result<Endpoint, CoreError> {
     let bad =
         |why: &str| unavailable(json!({ "infoFile": file.display().to_string(), "reason": why }));
     let info: Value = serde_json::from_str(text).map_err(|e| bad(&format!("not JSON: {e}")))?;
+    crate::diag::note_discovery(&info);
     let socket = info
         .get("socket")
         .and_then(Value::as_str)
@@ -91,22 +125,62 @@ fn from_info(file: &Path, text: &str) -> Result<Endpoint, CoreError> {
         .ok_or_else(|| bad("no \"socket\""))?;
     let version = info.get("protocolVersion").and_then(Value::as_u64);
     if version != Some(PROTOCOL_VERSION) {
-        let shown = version.map_or_else(
-            || "no protocol version".to_string(),
-            |v| format!("protocol {v}"),
-        );
-        return Err(CoreError::new("PROTOCOL_MISMATCH", format!("finisherd speaks {shown}, fin speaks {PROTOCOL_VERSION}"))
-            .with_details(json!({ "server": version, "client": PROTOCOL_VERSION, "infoFile": file.display().to_string() }))
-            .with_fix("update fin or finisherd so both come from the same Finisher release"));
+        let at = json!({ "infoFile": file.display().to_string() });
+        return Err(protocol_mismatch(version, at));
     }
-    Ok(Endpoint::parse(socket))
+    Endpoint::parse(socket)
+}
+
+/// `PROTOCOL_MISMATCH`: the server speaks `version` (`None`: says none), not
+/// [`PROTOCOL_VERSION`]. `at` (an object) says where it was read: discovery's info file, or the
+/// endpoint whose hello said it (fin and finisherd ship version-locked, arch §21).
+pub fn protocol_mismatch(version: Option<u64>, at: Value) -> CoreError {
+    let shown = version.map_or_else(
+        || "no protocol version".to_string(),
+        |v| format!("protocol {v}"),
+    );
+    let mut details = json!({ "server": version, "client": PROTOCOL_VERSION });
+    if let (Some(map), Some(at)) = (details.as_object_mut(), at.as_object()) {
+        map.extend(at.clone());
+    }
+    CoreError::new(
+        "PROTOCOL_MISMATCH",
+        format!("finisherd speaks {shown}, fin speaks {PROTOCOL_VERSION}"),
+    )
+    .with_details(details)
+    .with_fix("update fin or finisherd so both come from the same Finisher release")
+}
+
+/// The `envId` the running server published in `finisherd.json` (5A Task 2), unless `FIN_SERVER`
+/// names the endpoint: the handshake expects it (5A Decision 10).
+///
+/// Why `FIN_SERVER` drops the binding: it names a server directly (a test server, one run with
+/// other server data), and `finisherd.json` in this fin's server data then describes some other
+/// server, whose `envId` would refuse the right one. The proof still binds what matters: only a
+/// holder of the key can make it, and the canonical endpoint is inside both MACs. A credential
+/// file's own `env` is still expected under `FIN_SERVER` (`auth::target`).
+pub fn info_env_id() -> Option<String> {
+    if std::env::var_os(SERVER_ENV).is_some_and(|v| !v.is_empty()) {
+        return None;
+    }
+    let text = std::fs::read_to_string(server_data()?.join(INFO_FILE)).ok()?;
+    let info: Value = serde_json::from_str(&text).ok()?;
+    info.get("envId")
+        .and_then(Value::as_str)
+        .map(str::to_string)
 }
 
 /// The endpoint to connect to; `SERVER_UNAVAILABLE` (fix "start finisherd") when no server
 /// has published one.
 pub fn resolve() -> Result<Endpoint, CoreError> {
     if let Some(spec) = std::env::var_os(SERVER_ENV).filter(|v| !v.is_empty()) {
-        return Ok(Endpoint::parse(&spec.to_string_lossy()));
+        return Endpoint::parse(&spec.to_string_lossy());
+    }
+    if credential_set() {
+        return Err(unavailable(json!({
+            "reason": "FIN_CREDENTIAL is set: the server is the one FIN_SERVER names, and it is not set",
+            "env": SERVER_ENV,
+        })));
     }
     let Some(sd) = server_data() else {
         return Err(unavailable(
@@ -131,28 +205,51 @@ mod tests {
     #[test]
     fn specs_parse_to_sockets_and_pipes() {
         assert_eq!(
-            Endpoint::parse("pipe:finisher-ann"),
+            Endpoint::parse("pipe:finisher-ann").unwrap(),
             Endpoint::Pipe(r"\\.\pipe\finisher-ann".into())
         );
         assert_eq!(
-            Endpoint::parse(r"\\.\pipe\finisher-ann"),
+            Endpoint::parse(r"\\.\pipe\finisher-ann").unwrap(),
             Endpoint::Pipe(r"\\.\pipe\finisher-ann".into())
         );
         #[cfg(unix)]
         assert_eq!(
-            Endpoint::parse("/tmp/sd/fin.sock"),
+            Endpoint::parse("/tmp/sd/fin.sock").unwrap(),
             Endpoint::Socket("/tmp/sd/fin.sock".into())
         );
-        assert!(matches!(Endpoint::parse("sd/fin.sock"), Endpoint::Socket(p) if p.is_absolute()));
+        assert!(
+            matches!(Endpoint::parse("sd/fin.sock").unwrap(), Endpoint::Socket(p) if p.is_absolute())
+        );
+    }
+
+    #[test]
+    fn tcp_is_loopback_only() {
+        let e = Endpoint::parse("tcp:127.0.0.1:4100").unwrap();
+        assert_eq!(e, Endpoint::Tcp("127.0.0.1:4100".parse().unwrap()));
+        assert_eq!(e.display(), "tcp:127.0.0.1:4100");
+        assert!(matches!(
+            Endpoint::parse("tcp:[::1]:9").unwrap(),
+            Endpoint::Tcp(_)
+        ));
+        for bad in [
+            "tcp:10.0.0.1:1",
+            "tcp:0.0.0.0:80",
+            "tcp:localhost:80",
+            "tcp:127.0.0.1",
+            "tcp:127.0.0.1:0",
+            "tcp:[::]:1",
+        ] {
+            assert_eq!(Endpoint::parse(bad).unwrap_err().code, "USAGE", "{bad}");
+        }
     }
 
     #[test]
     fn info_file_gives_the_socket_and_checks_the_protocol() {
         let file = Path::new("/sd/finisherd.json");
-        let ok = r#"{"pid":1,"wsPort":2,"socket":"/sd/fin.sock","token":"t","protocolVersion":1}"#;
+        let ok = r#"{"pid":1,"wsPort":2,"socket":"/sd/fin.sock","protocolVersion":2}"#;
         assert_eq!(
             from_info(file, ok).unwrap().display(),
-            Endpoint::parse("/sd/fin.sock").display()
+            Endpoint::parse("/sd/fin.sock").unwrap().display()
         );
         assert_eq!(from_info(file, "{").unwrap_err().code, "SERVER_UNAVAILABLE");
         assert_eq!(
@@ -165,11 +262,13 @@ mod tests {
                 .code,
             "PROTOCOL_MISMATCH"
         );
-        let newer = r#"{"socket":"/sd/fin.sock","protocolVersion":2}"#;
-        assert_eq!(
-            from_info(file, newer).unwrap_err().code,
-            "PROTOCOL_MISMATCH"
-        );
+        for other in [1, 3] {
+            let text = format!(r#"{{"socket":"/sd/fin.sock","protocolVersion":{other}}}"#);
+            assert_eq!(
+                from_info(file, &text).unwrap_err().code,
+                "PROTOCOL_MISMATCH"
+            );
+        }
     }
 
     #[test]

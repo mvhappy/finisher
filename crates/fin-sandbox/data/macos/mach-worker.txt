@@ -1,0 +1,8 @@
+# macOS `mach-lookup` allow-list of the `worker` profile (plan 7C Task 8). Source: spike S9
+# step B6 (Apple silicon), confirmed by leave-one-out under `(deny default)` and by the real
+# media worker under the profile (`fin-workers` tests/self_sandbox_macos.rs).
+# Metal shader compilation (without it `request_device` returns Device(Lost)).
+com.apple.MTLCompilerService
+# VideoToolbox (S9: com.apple.coremedia.videodecoder, com.apple.coremedia.videoencoder and
+# com.apple.trustd.agent for encode) joins with the VideoToolbox decoder of sub-project 6,
+# with a test that fails without each entry; nothing in the media engine uses it yet.

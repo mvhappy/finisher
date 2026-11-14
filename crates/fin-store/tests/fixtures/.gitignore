@@ -1,0 +1,4 @@
+# Opening a fixture DB in place leaves SQLite side files.
+*.fdb-wal
+*.fdb-shm
+*.fdb-journal

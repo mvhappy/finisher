@@ -1,0 +1,19 @@
+{
+  "note": "SAME-MACHINE ONLY. SVT-AV1 v4.3.0 (third_party/svt-av1, e3d63405), built by fin-svt-sys (cmake Release, static, LOG_QUIET). Input: 20 frames of fin_media::testing::pattern(i, 320, 180, seed 9), 8-bit 4:2:0, BT.709 limited. Settings: preset 10, crf 35, keyint 15, lp 1, fps 30/1, input-depth 8, colour 1/1/1, range 0. Hashed: the av1C record followed by every packet's bytes. Bytes may differ between machine classes (floating-point contraction in SVT-AV1's C code); compare within a class, assert with FIN_ENCODE_GOLDEN=1.",
+  "entries": [
+    {
+      "class": "macos-aarch64",
+      "machine": "Apple M4 (arm64), macOS, Apple clang via cmake, rustc 1.99.1",
+      "recorded": "2026-11-07",
+      "blake3": "5adee1c0d6e845461c18ba5b5393ab9c79985a0b56cc7d3f59fc5d1a8d093655",
+      "bytes": 26109
+    },
+    {
+      "class": "linux-x86_64",
+      "machine": "AMD Ryzen 7 7800X3D, Ubuntu 24.04.5, gcc 13.3 via cmake 3.28, rustc 1.99.1",
+      "recorded": "2026-11-08",
+      "blake3": "5adee1c0d6e845461c18ba5b5393ab9c79985a0b56cc7d3f59fc5d1a8d093655",
+      "bytes": 26109
+    }
+  ]
+}

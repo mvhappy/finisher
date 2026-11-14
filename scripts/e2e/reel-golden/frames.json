@@ -1,0 +1,101 @@
+[
+  {
+    "t": "0",
+    "sha256": "2eea555711de32eadd6b59e89ffe00538615794e976e9a8558ee6794c468381f",
+    "captions": [
+      {
+        "item": "cap1",
+        "lines": 2,
+        "faces": [
+          "d0dad936f1e9e7b2e519ed012e39bbecad8e09ca2bc7ce1e99fe4aad172ee4c1"
+        ],
+        "width": 44698,
+        "height": 11060,
+        "words": 5,
+        "missing": []
+      }
+    ],
+    "layers": [
+      "c1 clip t1 src 0",
+      "cap1 caption t4 2 lines, 1 faces, 44698x11060/64 px"
+    ]
+  },
+  {
+    "t": "0.5s",
+    "sha256": "50730977cb70a472c5dbbb2f70ff3c2caadcca2b081a1d50be96e40d92da1f58",
+    "captions": [
+      {
+        "item": "cap1",
+        "lines": 2,
+        "faces": [
+          "d0dad936f1e9e7b2e519ed012e39bbecad8e09ca2bc7ce1e99fe4aad172ee4c1"
+        ],
+        "width": 44698,
+        "height": 11060,
+        "words": 5,
+        "missing": []
+      }
+    ],
+    "layers": [
+      "c1 clip t1 src 1/2",
+      "cap1 caption t4 2 lines, 1 faces, 44698x11060/64 px"
+    ]
+  },
+  {
+    "t": "4.9s",
+    "sha256": "e2dd4c521e5e9da9b82a867ca3dcb99f7972a0beb697b7351285bd1c263cca15",
+    "captions": [
+      {
+        "item": "cap2",
+        "lines": 1,
+        "faces": [
+          "d0dad936f1e9e7b2e519ed012e39bbecad8e09ca2bc7ce1e99fe4aad172ee4c1",
+          "5c54d42b6178df4d24d644b33b84e5406bd88a3eb6bd7f305efb4d891949c36a"
+        ],
+        "width": 41012,
+        "height": 5530,
+        "words": 4,
+        "missing": []
+      }
+    ],
+    "layers": [
+      "c1 clip t1 src 49/10",
+      "cap2 caption t4 1 lines, 2 faces, 41012x5530/64 px",
+      "img1 image t5 src 0 opacity 0.9988512587765868"
+    ]
+  },
+  {
+    "t": "9.8s",
+    "sha256": "2e323f2065c9465076ddb5d62de19722b35b9e4fa8a2ce95bfc93c185a9b7386",
+    "captions": [],
+    "layers": [
+      "c1 clip t1 src 49/5 tr1 out 0.3",
+      "c3 clip t1 src 17/10 tr1 in 0.3",
+      "g1 graphic t5 src 9/5"
+    ]
+  },
+  {
+    "t": "12s",
+    "sha256": "cc3706a6305b1e3ce506de503ea3b4aecac9af774dff5ff8a48ef9578049996e",
+    "captions": [],
+    "layers": [
+      "c3 clip t1 src 5"
+    ]
+  },
+  {
+    "t": "20s",
+    "sha256": "ceec48c19541495a2ebf27d876c22471ad4f1a7c724b17aac3c4d9acef6fad30",
+    "captions": [],
+    "layers": [
+      "c5 clip t1 src 5"
+    ]
+  },
+  {
+    "t": "29.9s",
+    "sha256": "172880f5b09815d70de4cb469005f8ee3ab7991e2d68da430fc0ccc61ce752b7",
+    "captions": [],
+    "layers": [
+      "c5 clip t1 src 149/10"
+    ]
+  }
+]

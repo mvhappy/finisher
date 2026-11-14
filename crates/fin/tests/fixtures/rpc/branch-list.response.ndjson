@@ -1,0 +1,1 @@
+{"_tag":"Exit","requestId":"1","exit":{"_tag":"Success","value":{"branches":[{"id":"main","name":"main","display":"main","parent":null,"forkSeq":0,"head":6,"state":"active","createdBy":""},{"id":"br1","name":"feature","display":"feature","parent":"main","forkSeq":5,"head":5,"state":"active","createdBy":"fixture"}]}}}

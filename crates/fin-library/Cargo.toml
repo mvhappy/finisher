@@ -1,0 +1,60 @@
+[package]
+name = "fin-library"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+# The fake filesystem (`source::fake`, plan 5D Task 1) and, from Task 4, the test overlay.
+# Never enabled by a shipped build (`scripts/check-test-hooks.mjs`).
+test-hooks = []
+
+[dependencies]
+# `CoreError`: what `asset.probe` of a library file answers (`asset`).
+fin-core = { path = "../fin-core" }
+# The throttle of a probe or hash: `ReadBudget` (Decision 36).
+fin-jobs = { path = "../fin-jobs" }
+# `probe_reader` and `PROBE_VERSION` (Decision 35); fin-probe never opens a library file itself.
+fin-probe = { path = "../fin-probe" }
+# Raw name bytes and file ids on the wire (`RawRel`, `ScanEntry`, `Expect`).
+base64 = "0.23"
+# `VolumeIdentity.key`: BLAKE3-16 of the OS's volume fields.
+blake3 = "1.8.7"
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+# The fake spec and `in/dirs.ndjson` (`walk::KnownDirs`).
+serde_json = "1"
+thiserror = "2"
+# NFC display names and lookup keys (Decision 10).
+unicode-normalization = "0.1"
+
+[target.'cfg(unix)'.dependencies]
+# The Linux and macOS sources, volume identity and the safe opener (plan 5D Task 2).
+libc = "0.2.191"
+
+[target.'cfg(windows)'.dependencies]
+# The Windows source, volume identity and the safe opener (plan 5D Task 3): relative opens
+# (`NtCreateFile`), directory queries (`NtQueryDirectoryFileEx`) and handle facts.
+windows-sys = { version = "0.61", features = [
+    "Wdk_Foundation",
+    "Wdk_Storage_FileSystem",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+] }
+
+[target.'cfg(windows)'.dev-dependencies]
+# A real Cloud Files sync root in the tests (`tests/cfapi_windows.rs`); never shipped.
+windows-sys = { version = "0.61", features = [
+    "Win32_Storage_CloudFilters",
+    "Win32_System_CorrelationVector",
+] }
+
+[dev-dependencies]
+fin-library = { path = ".", features = ["test-hooks"] }
+# `write_png` for the probe tests.
+fin-probe = { path = "../fin-probe", features = ["fixtures"] }
+serde_json = "1"
+tempfile = "3"

@@ -1,0 +1,32 @@
+[package]
+name = "fin-container"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "MP4/MOV sample tables, edit lists, fragments, limits and codec configurations over mp4-atom; MP4 mux; WebM/Matroska demux (pure; builds for wasm32)."
+
+[dependencies]
+fin-core = { path = "../fin-core" }
+fin-media = { path = "../fin-media" }
+# The ISOBMFF box layer (spec §6.1): encodes and decodes boxes; fin-container interprets them
+# and checks every size and count before handing a box over (plan 6A Decision 10).
+mp4-atom = { version = "0.17", default-features = false }
+serde_json = "1"
+
+[features]
+# Test-only muxer knobs (custom matrices, empty edits, colour-box variants, fragmented
+# output) and the WebM writer (`testing::webm_writer`) so demuxer tests can produce edge cases;
+# never in a shipped build.
+testing = []
+
+[dev-dependencies]
+# Pins the bytes of video-only files (tests/audio_gapless.rs).
+blake3 = "1"
+fin-container = { path = ".", features = ["testing"] }
+mp4-atom = { version = "0.17", default-features = false }
+
+[[example]]
+name = "fuzz_seeds"
+required-features = ["testing"]

@@ -1,0 +1,32 @@
+# The base toolchain read list for macOS (spec §8.1 item 1; plan 7C Decision 6).
+# Source: spike S9 step B6 (plan 7C Task 0), verified for the `agent` shape on macOS 27.0.1
+# (Apple silicon). Each entry is resolved when the policy is built (`/etc` is
+# `/private/etc`); a missing entry is dropped. `/usr/bin` holds the developer shims (`git`):
+# with an empty `xcrun` cache they run `xcodebuild`, which the sandbox refuses, so the agent's
+# PATH puts the real developer directory (`xcode-select -p`) first (7D/7E). `/usr` is listed
+# by directory so `/usr/local/var` and `/usr/local/etc` (Intel Homebrew's data and
+# configuration) stay out, as `/opt/homebrew/{var,etc}` do.
+/bin
+/sbin
+/usr/bin
+/usr/sbin
+/usr/lib
+/usr/libexec
+/usr/share
+/usr/standalone
+/usr/local/bin
+/usr/local/lib
+/usr/local/opt
+/usr/local/Cellar
+/System
+/Library/Apple
+/Library/Developer/CommandLineTools
+/Library/Preferences/Logging
+/private/etc
+/private/var/db/timezone
+/private/var/db/dyld
+/private/var/select/sh
+/opt/homebrew/bin
+/opt/homebrew/lib
+/opt/homebrew/opt
+/opt/homebrew/Cellar

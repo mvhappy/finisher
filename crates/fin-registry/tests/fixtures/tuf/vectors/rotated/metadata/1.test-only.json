@@ -1,0 +1,33 @@
+{
+  "signed": {
+    "_type": "targets",
+    "spec_version": "1.0.0",
+    "version": 1,
+    "expires": "2027-11-07T23:53:01Z",
+    "targets": {
+      "test-only/pack/1.0.0.finpkg": {
+        "length": 435,
+        "hashes": {
+          "sha256": "30efcca13c2bbda9de04d79abf37a0c45b11c7531599a1a947da25309c9f221a"
+        },
+        "custom": {
+          "hostApi": "^1.0",
+          "permissionsDigest": "d53d18c23212ea7b6300594bb89bce60218f6eff2b9d628b8cc42d3e79bbd5ab",
+          "platforms": [],
+          "bytesUnpacked": 245,
+          "version": "1.0.0",
+          "kind": "content",
+          "manifestSha256": "ff36828ee8d8425e3cb6561ffaecf4e0f626cdc0599a9b10930b8d68e6f9d098",
+          "id": "@test-only/pack",
+          "license": "MIT"
+        }
+      }
+    }
+  },
+  "signatures": [
+    {
+      "keyid": "7ee18a2b6a6b96f82b5358b8438b6825e4af90c41a00c10122d4155bd63dabff",
+      "sig": "523fdd76607c48e5d4979055201f8247fdaac1edf0bf96d33907fdeaea6bd5bbef007bbf9a9bf8c06b619979fd3e339ab0c43370c84e2cebc88f26237dcd0209"
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+[package]
+name = "fin-plugin-sdk"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+# Published to crates.io by sub-project 11's release work, not before.
+publish = false
+description = "The Rust SDK for Finisher code plugins: the fin-jobs envelope's plugin side, typed host calls and command handlers (sub-project 8B)."
+
+[features]
+# Readers and declared-size writers for cold kinds' `in/` and `out/` (8C onward); command-only
+# plugins leave it off and do not link `fin-shm`.
+files = ["dep:fin-shm"]
+
+[dependencies]
+fin-core = { path = "../fin-core" }
+fin-jobs = { path = "../fin-jobs" }
+fin-plugin-api = { path = "../fin-plugin-api" }
+fin-shm = { path = "../fin-shm", optional = true }
+# `net.read` pages and snapshot pages are base64 in the reply (Decision 11).
+base64 = "0.23"
+serde = "1"
+serde_json = "1"
+
+[dev-dependencies]
+# The tests cover `files` too.
+fin-plugin-sdk = { path = ".", features = ["files"] }
+tempfile = "3"

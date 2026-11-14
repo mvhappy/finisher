@@ -4,6 +4,7 @@
 - **Date:** 2026-11-02
 - **Scope:** Top-level architecture for the Finisher rewrite. Every numbered sub-project in §24 gets its own spec → plan → implementation cycle. This document fixes the boundaries between them.
 - **Predecessor:** `video-creater` (working name, now the legacy reference app).
+- **Amended 2026-11-07:** the owner decisions for sub-projects 5–8 (each sub-project spec's "Owner decisions (2026-11-07)" section) change D7, D8, D13, D14, D28, D30, D31 and D34 and add D35 and D36; §8, §12.1, §14, §15, §16, §18, §21, §21.1 and §26 follow them. **Follow-up decisions of the same day** (local models for the built-in agent, Landlock-disabled hosts, proxy encoders, the desktop shell's ffmpeg) change D10, D13, D30 and D36 and §8.2, §8.4 and §18.
 
 ---
 
@@ -24,7 +25,7 @@ Finisher is a commercial, agent-first video editor for creators. It ships to ext
 6. Reviewer: deterministic QA gate, critic loop (optional per run), review markers, shareable review page.
 7. Clients: Electron desktop (macOS, Windows, Linux) and web client; headless server on all three OSes.
 8. Agents: **Codex (bundled)** and **Claude Code (user-installed)**, plus the built-in agent loop on user API keys.
-9. Plugins: full plugin system, with bundled plugins plus local-folder and git registries.
+9. Plugins: full plugin system, with bundled plugins plus local-folder registries (a git registry is a local folder the user pulls).
 
 **Deferred after v1:**
 - public signed registry (the protocol is designed in v1);
@@ -49,18 +50,18 @@ Finisher is a commercial, agent-first video editor for creators. It ships to ext
 |---|---|---|
 | D1 | Audience | Product for creators from day one; paid hosted features later |
 | D2 | Content focus | Short-form social first |
-| D3 | Codebase | New repo `/Volumes/Storage/Projects/finisher`; legacy `video-creater` stays in place as read-only salvage reference |
+| D3 | Codebase | New repo (this one); legacy `video-creater` stays in place as read-only salvage reference |
 | D4 | Server platforms | macOS, Windows, Linux (including NAS/Docker) |
 | D5 | Collaboration | Async sharing first; foundation for multi-user editing |
 | D6 | Deployment | Local by default (embedded in desktop); remote/headless optional |
-| D7 | Agents | Agent CLIs as providers: Codex bundled (Apache-2.0), Claude Code user-installed (not openly licensed), plus a built-in fallback loop on user API keys |
-| D8 | Plugins | First-class, out-of-process, any language, JSON-RPC; registry protocol from day one |
+| D7 | Agents | Agent CLIs as providers: Codex bundled (Apache-2.0), Claude Code user-installed (not openly licensed), each signed in by the user through the CLI's own flow; plus a built-in loop on the user's OpenRouter key (D30) |
+| D8 | Plugins | First-class, out-of-process, any language, JSON-RPC; registry protocol from day one. Third-party code plugins are allowed from the start, before sub-project 7C's OS sandbox: installing one shows a high-risk warning, its permissions need a person's explicit approval, and nothing auto-updates; the env allow-list, no credentials, brokered egress and the in/out rules apply throughout, and the plugin sandbox profile is enforced automatically once 7C lands (§14.4) |
 | D9 | Server language | Hybrid: TypeScript/Effect 4 control plane + Rust edit domain and media |
-| D10 | Desktop shell | Electron |
+| D10 | Desktop shell | Electron, **provisionally**: whether it stays (with a documented ffmpeg exception and the open-codecs build), or the desktop app moves to Tauri or the OS webviews or a custom build, is decided in sub-project 9 (§18) |
 | D11 | Rendering | One Rust/wgpu compositor, native for export and WASM/WebGPU for preview |
 | D12 | Timeline model | Own versioned model, OTIO-shaped, native `.otio` adapters |
-| D13 | Codecs | OS/hardware codecs only plus royalty-free AV1/VP9 software; **no LGPL/GPL in the shipped app** |
-| D14 | Agent edits | Live draft branches + review/merge |
+| D13 | Codecs | Decode through OS/hardware codecs plus royalty-free software (AV1/VP9; AAC on Linux through symphonia). Export of H.264 only through **OS-vendor encoders** (VideoToolbox; Microsoft's own H.264 encoder MFT), never GPU-vendor encoders. That rule covers **exports** (QA renders and mattes follow it); internal preview proxies, which are never distributed, may use any hardware encoder, GPU-vendor ones included. Elsewhere AV1, or H.264 through the codec plugin. No built-in HEVC export template: HEVC export only through a plugin. AAC export on Linux through vendored vo-aacenc. **No LGPL/GPL in Finisher's code**; Electron's bundled ffmpeg is a **provisional** exception that affects the desktop app only; the desktop shell is decided in sub-project 9 (§18). Patents: counsel (§26) |
+| D14 | Agent edits | Live draft branches + review/merge. An `auto` session may merge into `main` only under a per-project owner policy: off by default, enabled by a human-only setting, merging only when the QA gate and the critic pass, every merge audited (§8.3) |
 | D15 | State model | Server-authoritative append-only op log with branches |
 | D16 | CLI | `fin`: agent-only, a thin client, the primary agent interface; MCP is a thin adapter |
 | D17 | Graphics | Lottie templates with slots (v1); raw Lottie later; native caption engine |
@@ -74,12 +75,15 @@ Finisher is a commercial, agent-first video editor for creators. It ships to ext
 | D25 | Timeline UI | `dnd-timeline` + `@dnd-kit/core` (from legacy) |
 | D26 | Skills / critic | Borrowed from Uncut (MIT, attributed) |
 | D27 | Storage | NAS and cloud-synced folders are first-class for media and projects; SQLite never lives on network or synced storage (§6.7) |
-| D28 | Providers v1 | Claude Code via the user-installed `claude` CLI in stream-JSON mode (Agent SDK not bundled); Codex app-server bundled, T3's client vendored |
+| D28 | Providers v1 | Claude Code via the user-installed `claude` CLI in stream-JSON mode (Agent SDK not bundled); Codex app-server bundled, T3's client vendored. The user signs in to each unmodified CLI through the CLI's own flow (subscription or API key); Finisher never copies, stores or intermediates CLI credentials (§8.2) |
 | D29 | Library indexing | Semantic embeddings run locally by default (SigLIP2 via ONNX); cloud embeddings (Gemini/Qwen) are opt-in per library |
-| D30 | Built-in agent APIs | Anthropic (Messages API), OpenAI (Responses API), and one OpenAI-compatible adapter (OpenRouter, Ollama, LM Studio, others) |
-| D31 | Minimums | macOS 14+ on Apple Silicon; Windows 11 and Windows 10 22H2 x64 with a WebGPU-capable GPU; Linux glibc 2.35+ (Ubuntu 22.04+). Intel Macs are not supported |
+| D30 | Built-in agent APIs | **One OpenAI-compatible adapter** in v1, with two presets (owner decision, follow-up of 2026-11-07): **OpenRouter**, on a key the user pastes (the only agent-provider credential Finisher stores; the fal.ai generation key is the other pasted key, §14.3), and **local** (Ollama, LM Studio or a user-supplied OpenAI-compatible base URL), which needs no API key. Loopback URLs are allowed for the built-in agent only, because it runs in `finisherd` and needs no sandbox egress change. The direct Anthropic (Messages) and OpenAI (Responses) adapters are not in v1 |
+| D31 | Minimums | macOS 14+ on Apple Silicon; **Windows 11** x64 with a WebGPU-capable GPU (Windows 10 is not supported); Linux glibc 2.35+ and **kernel 6.2+** (Landlock ABI 3 or later), for desktops and for hosts of the server's Docker image alike: Ubuntu 22.04's stock 5.15 kernel and Debian 12's 6.1 are below it. Intel Macs are not supported (D36) |
 | D32 | Distribution | Direct download + auto-update: notarised DMG, signed Windows installer, AppImage/deb/rpm, Docker image for the server. No app stores in v1 |
 | D33 | Internationalisation | i18n-ready from the first commit, English-only at launch: every user-facing string is an ICU message in a catalogue, never a literal; translations are added later without code changes (§17.1). UI language and content language (transcripts, captions, generated text) are separate settings |
+| D34 | Diagnostics and training data | One versioned event envelope (types in `fin-core`, one closed payload enum, TS generated) written to a local, append-only, size- and age-capped journal in `<server-data>/events/` by `finisherd` only, with content-addressed blobs whose lifecycle follows the entries that reference them. Two purposes with separate consent: **diagnostics** (metadata only, edit outcomes included; on by default everywhere with an opt-out) and **training** (adds user and model content, edit intents and LLM traffic; only after an explicit opt-in by a person, never from `fin`; closed-model outputs may be training targets, every example carries its model provenance, and counsel must clear the first training run and the first upload); a per-project `collect: never` flag in `finisher.project.json` binds every collaborator; env overrides; off means nothing is recorded. Every payload field is classed `meta`, `scrubbed` or `content`; paths, host details and free-form names are never stored raw. Events link to the op log by `txId` and actor. No upload until a later sub-project; the upload view (`export --as-upload`) fixes what it may ship, and the dataset builder runs locally (§21.1) |
+| D35 | Node runtime | `finisherd`, `fin` and the repository's tooling target **Node 24**, the major Electron embeds (24.x), so the server the desktop starts as an `ELECTRON_RUN_AS_NODE` child is the server CI tests. Only APIs present in Node 24 are used, `node:sqlite` included. The switch from Node 26 is a TASKS item, with a check that `node:sqlite` and every API in use work on Node 24 |
+| D36 | Platform changes (2026-11-07) | **Windows 11 only** (Windows 10 22H2 dropped: sub-project 6 decision 9) and **Linux kernel ≥ 6.2** (sub-project 7 decision 3). Every supported Linux host therefore has Landlock ABI 3; sandbox fallbacks and partial-ABI code paths that existed only for older kernels are gone. A supported kernel with Landlock disabled (not built in, or left out of the boot `lsm=` list) is still supported (owner decision, follow-up of 2026-11-07): **everything runs** (agents, hooks, media workers and plugins), unconfined, each profile with a persistent status warning (`server.status` and `fin status`) and a diagnostics event. Nothing is refused and there is no override setting (sub-project 6, 7 and 8 specs). NAS and cloud folders used as storage (D27) are unaffected; a NAS that runs the server's Docker image must meet the kernel minimum. D31 carries the result |
 
 ---
 
@@ -172,7 +176,7 @@ MyProject/                      (may live on local disk, NAS, or a cloud-synced 
 - `Timeline` → `Track`s → `Item`s: clip, gap, caption block, Lottie graphic, SVG/image, adjustment layer.
 - Items carry typed `Effect`s, a `mask` (§12.6), audio params (§12.7) and `Keyframe` lanes.
 - Time is rational.
-- **Analysis artifacts** attach to assets and are referenced by ops but are not timeline state: transcripts, alignments, scenes, embeddings, face tracks, mattes, loudness, beats.
+- **Analysis artifacts** attach to assets and are referenced by ops but are not timeline state: transcripts, alignments, scenes, embeddings, face tracks, loudness, beats. **Mattes are project assets** in `assets/` (owner decision of 2026-11-07, sub-project 8 decision 3; project schema version 7), not regenerable cache, because a matte producer's output may not be reproducible.
 
 ### 6.3 Operations
 
@@ -194,6 +198,7 @@ MyProject/                      (may live on local disk, NAS, or a cloud-synced 
   - **Merge** rebases the branch's transactions onto `main` with re-validation. Conflicts become review items.
   - Cherry-pick works per transaction.
   - `checkpoint` names a revision; `try` makes a throwaway sub-branch.
+  - *As built (5E):* conflicts become `mergeConflict` review items, a rejection is a durable `drop` record, and a merge can be limited to what was reviewed: control-plane spec §8 (item 25 of §27).
 - **Undo appends; the log is never truncated.**
   - Undoing transaction *T* = append the inverse of *T*, rebased onto the current head. If it can't be rebased, the result is a typed `Conflict`.
   - Undo/redo stacks are kept per (author, branch).
@@ -228,6 +233,8 @@ MyProject/                      (may live on local disk, NAS, or a cloud-synced 
 - **Proxies are always cached locally**, so editing and preview never stream originals over the network. Final export reads originals.
 - **Offline libraries:** when a NAS is unreachable, the cached proxies and analysis keep working for editing and preview. Export waits and reports exactly which originals are missing.
 - **Remote media:** a remote `finisherd` (for example one on the NAS) reads libraries it can mount. Client-local files reach a remote server through **remote ingest**: chunked, resumable upload into `sources/` of a server-side project.
+
+**Server data is local (as built, review #4):** the server-data root and every project's data folder (`<server-data>/projects/<id>/`, the `project.fdb` with its WAL and OS locks) must be on a known local filesystem, judged where the path really lands (symlinks and ancestors resolved; the nearest existing ancestor for a path not made yet). Known local: Linux ext2/3/4, XFS, Btrfs, ZFS, F2FS, bcachefs, tmpfs, ramfs; macOS APFS, HFS+; Windows NTFS, ReFS on a fixed drive; and in each case not a sync client's folder. Anything else is `SERVER_DATA_NOT_LOCAL` (details `path`, `resolved`, `filesystem`, `override`), including a container's overlayfs, which hides the disk under it: a Docker `finisherd` keeps its server data on a mounted volume. `FIN_ALLOW_NONLOCAL_SERVER_DATA=1` accepts any filesystem at the person's risk. `finisherd` checks the root at every start before it creates anything (fin-node `checkServerDataLocal`); `Store::create` and `Store::open` check the project's data folder before writing (`fin_store::locality`; `OpenOptions::allow_nonlocal` for tests). The restart shortcut's own local-disk test (which accepts overlayfs: OS locks work there between processes of one host) is unchanged.
 
 **Projects in synced or network folders**
 - The working `project.fdb` stays on the server's local disk.
@@ -269,7 +276,9 @@ MyProject/                      (may live on local disk, NAS, or a cloud-synced 
 | `fin-audio` | Audio mixer (native + WASM), §12.7 |
 | `fin-codecs` | OS/hardware codecs + process-based backend trait |
 | `fin-captions` | Caption rasterisation |
-| `fin-workers` | Worker binaries (decode, encode, render, Lottie, SVG, analysis) |
+| `fin-jobs` | The job envelope (NDJSON protocol types, Rust → JSON Schema → generated TS) and the worker and helper runtimes every family links, with host calls and the self-sandbox entry; creates no process (sub-project 5C-1) |
+| `fin-jobhost` | The host side of the job system (an rlib linked into `fin-node` as its `jobhost` module): spawning behind the `Spawner` hook, host-owned kill domains on every OS, framing, timers, memory limits, the Unix watchdog client (sub-project 5C-1) |
+| `fin-workers` | The one worker binary, `fin-workers <family> [--warm]`, found beside the `fin-node` `.node` file; 5C-1 ships the `test` family (behind `test-hooks`), the Unix `watchdog` and the Windows `--spawn-broker`; sub-projects 5D, 6 and 8C add the `library`, `media` and `analyze` families (decode, encode, render, Lottie, SVG, analysis); a worker never starts a process |
 | `fin` | Agent CLI; links `fin-core` |
 
 - **TypeScript (Effect 4)** owns gateway, contracts, auth, environments, agent runtime, jobs, library indexer, plugin host, hooks, review workflow, broadcast and settings. It has its own SQLite for non-edit state, on local disk.
@@ -298,9 +307,10 @@ MyProject/                      (may live on local disk, NAS, or a cloud-synced 
   - The Agent SDK is not bundled. Its npm licence is "SEE LICENSE IN README.md", not an open licence.
   - T3's Claude adapter is a reference for event mapping only.
   - Detection, version check and first-run guidance are in onboarding (§21).
+  - **Sign-in (owner decision of 2026-11-07):** the user signs in to the unmodified CLI themselves, with the CLI's own flow. Finisher never runs that flow on the user's behalf (it only prints the command), and never opens, copies, stores or proxies the credentials. The user signs in once per CLI in a Finisher sign-in home under server data; every session shares that one sign-in file in place, and everything else (settings, transcripts, hooks, `projects/`) is per session. Trade-off: any session of that CLI can read or swap the shared sign-in file, so an account change stops new sessions until a person confirms (sub-project 7 spec §8.6).
   - **Risk:** permission callbacks and other control requests must be implemented against the CLI protocol. The spike validates this (§24 #1).
-- **Built-in agent (v1):** Finisher's own loop on user API keys, emitting the same events. Model APIs: Anthropic (Messages), OpenAI (Responses), and one OpenAI-compatible adapter covering OpenRouter, Ollama, LM Studio and similar endpoints. More can come via plugins.
-- **Codex (v1, bundled):** `codex` app-server shipped with Finisher (Apache-2.0, verified at repo level on 2026-11-02; re-check binary dependencies of the pinned release at bundling time). The user signs in with their own OpenAI account or API key. The JSON-RPC client is vendored from T3's `effect-codex-app-server` and pinned to the bundled Codex version, so protocol drift is caught at upgrade time. A user-installed newer `codex` may be selected in Settings.
+- **Built-in agent (v1):** Finisher's own loop, emitting the same events, on **one OpenAI-compatible adapter** (D30) with two presets: **OpenRouter**, on the key the user pastes (the only agent-provider credential Finisher stores), or a **local** OpenAI-compatible server (Ollama, LM Studio, a user-supplied base URL) that needs no key and may be on loopback, because the loop runs in `finisherd`, not in a sandbox; CLI sign-ins stay with the CLIs. Direct Anthropic and OpenAI adapters are not in v1. More can come via plugins.
+- **Codex (v1, bundled):** `codex` app-server shipped with Finisher (Apache-2.0, verified at repo level on 2026-11-02; re-check binary dependencies of the pinned release at bundling time). The user signs in to it with their own OpenAI account or API key, through Codex's own flow; Finisher does not hold or relay that credential. The JSON-RPC client is vendored from T3's `effect-codex-app-server` and pinned to the bundled Codex version, so protocol drift is caught at upgrade time. A user-installed newer `codex` may be selected in Settings.
 - More providers come via plugins.
 
 ### 8.3 Roles, modes, permissions
@@ -309,7 +319,7 @@ MyProject/                      (may live on local disk, NAS, or a cloud-synced 
 - **Modes:**
   - `plan`: read-only.
   - `draft`: own branch only.
-  - `auto`: also renders and runs the critic within budget.
+  - `auto`: also renders and runs the critic within budget. It may merge into `main` only where the project's owner policy allows it (D14): off by default, switched on by a human-only setting, and only when the QA gate and the critic both pass; each such merge is audited.
 - **Rules:** allow/ask/deny on command patterns, enforced in the command registry for every transport.
 - **Layered settings:** `managed` > `project` > `user` > `local`.
 - **Plugin installation is human-only by default.** `fin plugin install` from an agent is `deny` unless the user explicitly allows installs from already-trusted registries. Agents may `search`/`info` and *suggest* a plugin, which appears as a UI suggestion and not as an approval card worded by the agent.
@@ -321,13 +331,15 @@ MyProject/                      (may live on local disk, NAS, or a cloud-synced 
 
   | OS | Mechanism | Rules |
   |---|---|---|
-  | macOS | Seatbelt profile | writable `workspace/` + temp + provider config dirs; read-only project; deny `.finisher/` and `assets/` |
-  | Linux | Landlock (bwrap fallback) | same |
-  | Windows | restricted token / AppContainer with ACLs on `workspace/` | same; **feasibility validated in the spike** |
+  | macOS | Seatbelt profile | writable `workspace/` + temp + the session's own provider config dir + the CLI's shared sign-in file (never its folder); read-only project; deny `.finisher/` and `assets/` |
+  | Linux | Landlock + seccomp (kernel ≥ 6.2, D31; where Landlock is disabled everything runs unconfined with a status warning, D36) | same |
+  | Windows | AppContainer with ACLs on `workspace/` | same |
+
+  *As built (7C): sub-project 7 spec §25 and item 22 of §27.* No bubblewrap (LGPL; sub-project 7 spec §8.3). The seccomp half is deferred; agents and hooks get a user and mount namespace that hides the usual socket folders instead.
 
 - Provider permission rules (Claude Code allow/deny, Codex `workspace-write`) are a second layer, not the guarantee.
 - **Integrity regardless of sandbox:** assets are referenced by content hash, and the server verifies the hash whenever an asset is used. `.finisher/` and `assets/` are server-written only, so tampering is detected and rejected.
-- **Environment allow-list:** `PATH`, `HOME` (or a per-session home), `LANG`/`LC_*`, `TMPDIR`, the provider's own config/auth dir variables, `FIN_SERVER`, `FIN_SESSION`. Everything else is removed.
+- **Environment allow-list:** `PATH`, `HOME` (or a per-session home), `LANG`/`LC_*`, `TMPDIR`, the provider's own config/auth dir variables, `FIN_SERVER`, `FIN_SESSION`, `FIN_CREDENTIAL` (the path of the session's credential file, never the secret itself; sub-project 5 spec §4.1). Everything else is removed.
 - **Token delivery:** `FIN_TOKEN` is **not** in the environment. `fin` obtains a scoped credential from a per-session 0600 credential file inside the session sandbox, or from peer-credential checks on the local socket. Subprocesses cannot inherit it from the environment.
 
 ### 8.5 Workspace artifacts
@@ -363,7 +375,7 @@ MyProject/                      (may live on local disk, NAS, or a cloud-synced 
    - entities: `c12`, `t1`, `m3`, `s7`, `face:2`
    - relative and time: `after:c12`, `+2s`, `12.4s`, `00:12.4`, `f300`
    - handles: `r:3`
-   - Resolved values are always echoed.
+   - Resolved values are always echoed. A keyed retry, a lost answer found again or a rebased commit echoes what the commit made; a value the commit cannot tell (an edge once later edits moved it) is `null`, never a fresh plan's.
 3. **Views:**
    - `fin view` (screenplay-style, `--budget`, `--range`)
    - `fin status`
@@ -389,17 +401,17 @@ MyProject/                      (may live on local disk, NAS, or a cloud-synced 
 | `SessionStart` / `SessionEnd` | add context, log |
 | `UserPrompt` | add context, block |
 | `PreCommand` / `PostCommand` | block with reason, add context |
-| `PreOp` / `PostOp` | veto, annotate, trigger follow-ups |
+| `PreOp` / `PostOp` | veto, annotate, trigger follow-ups (**cut from v1**, see the pointer below) |
 | `BranchReady` | extra QA, gate the critic |
 | `PreMerge` / `PostMerge` | enforce policy, notify |
 | `PreRender` / `PostRender`, `JobDone` | validate, publish, notify |
 | `Approval`, `Notification` | route to phone, Slack, etc. |
 
 - **Replies:** `allow | block | context` by default.
-- **`modify`** (rewriting a prompt, command arguments or an op) requires an explicit `hooks:modify` permission granted per hook. The original and modified payloads are both logged and shown in the session timeline.
-- **Handlers:** commands (JSON on stdin) or plugin RPC methods. Timeouts and fixed ordering apply.
+- **`modify`** (rewriting a prompt, command arguments or an op) **is cut from v1** (sub-project 7 spec §9.1, as built in 7F): a hook that rewrote a payload would make what the agent asked and what was committed differ in ways the training record, the audit log and the agent could not see. `hooks:modify` stays a valid manifest permission and grants nothing; a later release can add `modify` with per-hook human-only grants and both payloads in the audit log.
+- **Handlers:** commands (JSON on stdin) or plugin handlers (`plugin.hook` jobs). Timeouts and fixed ordering apply. **Configuration is files** (as built in 7F): `hooks` in the managed and user settings files, `finisher.hooks.json` in the project, `hooks.json` in the project's local server data, and enabled plugins' manifests; it is not a settings RPC.
 - **Every hook command runs with the same cleared environment, sandbox and timeouts**, whatever its source: user config, project config or plugin.
-- **Project-config hooks stay disabled until the user trusts the project.**
+- **Project-config hooks stay disabled until the user trusts the project**; the trusted hash covers the hooks file and every project file a hook names, and a change disables them again at the next event.
 
 ---
 
@@ -417,7 +429,7 @@ MyProject/                      (may live on local disk, NAS, or a cloud-synced 
    - a read-only session with sampled frames, contact sheet, transcript, QA report and brief;
    - rubrics borrowed from Uncut (intent, stills, motion/jitter, legibility, colour, mix, beat sync) plus hook strength and pacing;
    - fixes come as a child branch; rounds are capped (default 3); a summary lists what is still open.
-3. **Markers** (`open/review/resolved`), per-transaction change list with accept/reject, A/B compare.
+3. **Markers** (`open/review/resolved`), per-transaction change list with accept/reject, A/B compare. *As built (5E):* the change list, per-transaction decisions, durable rejections and reviewed-only merges are control-plane spec §8; markers and A/B compare are not built.
 4. **Share page:** exported HTML with timecode comments that come back as markers. Hosted links come later through `ShareService`.
 
 ---
@@ -430,9 +442,10 @@ MyProject/                      (may live on local disk, NAS, or a cloud-synced 
 - **Backends:**
   - macOS: VideoToolbox / AVFoundation
   - Windows: Media Foundation
-  - Linux: VA-API, NVDEC/NVENC
-  - software: dav1d, SVT-AV1, libvpx
+  - Linux: VA-API (decode; encode for proxies only); NVIDIA on Linux arrives in 6G
+  - software: dav1d, SVT-AV1, libvpx; on Linux, AAC decode through symphonia and AAC export through vendored vo-aacenc
 - Muxing is in Rust.
+- **Export encoders (owner decision of 2026-11-07, sub-project 6 decision 9):** H.264 export uses OS-vendor encoders only (VideoToolbox on macOS, Microsoft's own H.264 encoder MFT on Windows), never a GPU vendor's encoder (NVENC, AMD's or Intel's MFTs, VA-API drivers) even where present. GPU vendors' encoders serve proxies only, which never leave the cache; QA renders and mattes follow the export rule. Elsewhere, export is AV1, or H.264 through the codec plugin, so Linux has no built-in H.264 export. There is no built-in HEVC encoding or HEVC export template; HEVC export comes only through the codec plugin.
 - No software H.264/HEVC encoders are shipped.
 - **Process-based backend trait** for plugin codecs (FFmpeg plugin interface plus conformance suite).
 - **Capability report** per machine drives presets and import decisions.
@@ -472,7 +485,7 @@ MyProject/                      (may live on local disk, NAS, or a cloud-synced 
 
 ### 12.6 Masks (core primitive, v1)
 
-- `mask` takes alpha from a matte artifact (luma-encoded greyscale video), with feather, choke, invert and keyframes.
+- `mask` takes alpha from a matte asset (luma-encoded greyscale video), with feather, choke, invert and keyframes.
 - Producers are plugins. The background-removal plugin comes after v1. Its model licences are to be verified: BiRefNet (MIT), MODNet (Apache-2.0), SAM2 (Apache-2.0), MediaPipe (Apache-2.0), Apple Vision. **Excluded:** RVM (GPL-3.0; copyleft repo only) and RMBG-2.0 (non-commercial).
 
 ### 12.7 Audio (`fin-audio`)
@@ -543,7 +556,8 @@ MyProject/                      (may live on local disk, NAS, or a cloud-synced 
 
 ### 14.3 Generation providers
 
-- Modalities: image, video, voice, music, SFX, dubbing (for example ElevenLabs, OpenAI images, fal.ai).
+- Modalities: image, video, voice, music, SFX, dubbing.
+- **First-party providers in v1: OpenRouter and fal.ai** (owner decision of 2026-11-07). The user pastes a fal.ai key; OpenRouter shares the built-in agent's key. Modalities neither catalogue covers (dubbing and voice cloning, unless confirmed at 8G's start) are a known v1 gap, left to third-party provider plugins.
 - **Catalog as data:** models, parameter schemas, cost, terms, output licence.
 - **Calls:** submit, poll, cancel, fetch. The job ID is persisted before waiting, so a paid call is never re-submitted.
 - Credentials are passed per call via `ModelGateway`.
@@ -553,25 +567,27 @@ MyProject/                      (may live on local disk, NAS, or a cloud-synced 
 ### 14.4 Data, permissions, lifecycle
 
 - **Data:** shared-memory frames and PCM; content-addressed outputs.
-- **Permissions:** `project:read`, `project:write` (ops only), `media:read`, `net`, `gpu`, `fs:<scope>`, `hooks:modify`. Approved at install; re-approved when an update adds permissions.
+- **Permissions:** `project:read`, `project:write` (ops only), `media:read`, `net`, `gpu`, `fs:<scope>`, `hooks:modify`. Approved at install by a person; re-approved when an update adds permissions.
 - **Isolation:** cleared env, sandbox, scoped credentials (not env), lazy start, crash isolation, timeouts.
+- **Third-party code plugins before sub-project 7C** (D8): allowed. Installing one shows a high-risk warning, its permissions need a person's explicit approval, and it never auto-updates. Until 7C's `plugin` sandbox profile exists, the env allow-list, the absence of credentials, brokered egress and the in/out rules are the boundary; the profile is then enforced on every code plugin automatically, with no reinstall.
 - **Python plugins:** **wheels only.** The package bundles a hash-pinned lockfile, and `uv` installs with `--no-build` and `--require-hashes`, so no sdist builds run at install.
 - **Versioning:** `host-api` range enforced; per-project lockfile pins versions and hashes.
-- **Developer loop:** `finisherd --plugin-dir`, `fin plugin validate`.
+- **Developer loop:** `finisherd --plugin-dir` (8B), `fin-plugin validate <dir>` (the publisher tool; `fin` does not link the font and catalog readers an offline check needs). The manifest, permissions, plans and approvals of this section are recorded as built in `docs/specs/2026-11-07-sub-project-8-plugins-design.md` §4–5 and §23 (item 17 of §27).
 - **SDKs (MIT):** Rust, TS, Python. `fin-plugin-test`; conformance suites for codec backends, generation providers and matte producers.
 
 ---
 
 ## 15. Registry
 
-- **v1:** bundled plugins, plus **local-folder and git registries**. The **public signed registry comes after v1**, with the protocol designed and implemented in the client from v1.
-- **Package:** signed archive with manifest, content hash, publisher, licence (copyleft flagged), permissions, `host-api` range, platforms, previews.
+- **v1:** bundled plugins, plus **local-folder registries**. **A git registry is a local folder** the user keeps current with `git pull` (or a sync tool): Finisher never runs git and trusts nothing about its history, and TUF refuses a pull that rolls the repository back. The **public signed registry comes after v1**, with the protocol designed and implemented in the client from v1.
+- **Package:** a zip archive (`.finpkg`) with the manifest (id, version, licence, permissions, `host-api` range, platforms); copyleft is flagged in the install plan. A package carries no signature of its own: its identity is the hash and length in signed TUF targets metadata, whose custom fields repeat the manifest's id, version, kind, licence and permissions digest.
 - **Trust model: TUF** (The Update Framework):
   - Roles: `root` (offline keys, threshold signing), `targets` (delegated per publisher scope `@publisher/*`), `snapshot`, `timestamp`.
+  - First-party root: the owner holds 3 offline keys with a 2-of-3 threshold, created in a key ceremony before the first registry is published.
   - This gives key rotation, revocation, freshness and protection against rollback and freeze attacks, all serveable as static files.
   - Publisher keys are bound to scopes by `targets` delegations.
   - Optional Sigstore keyless signing with a transparency log for publishers via CI OIDC (after v1).
-- **Git and local registries** use the same package format and signature verification. Trust is per-registry, configured by the user or team policy.
+- **Local-folder registries** (git ones included) use the same package format and TUF verification as the public registry will. Trust is per root: the owner pins a root (a file or its SHA-256) when adding a registry, with no trust on first use, and the trusted metadata survives removing the registry.
 
 **Rules learned from npm, PyPI and crates.io**
 1. No install-time code execution (wheels-only for Python, no build scripts).
@@ -579,7 +595,7 @@ MyProject/                      (may live on local disk, NAS, or a cloud-synced 
 3. Publisher scopes, reserved names, typosquat checks.
 4. 2FA plus signing, verified through TUF metadata.
 5. No plugin-to-plugin dependencies.
-6. Permission changes require re-approval; code plugins don't auto-update by default.
+6. Permission changes require re-approval; code plugins never auto-update.
 7. Signed advisories and revocation.
 8. Rollback- and freeze-resistant metadata.
 
@@ -599,7 +615,8 @@ MyProject/                      (may live on local disk, NAS, or a cloud-synced 
   - Devices can be listed and revoked.
 - **Transport:**
   - local socket and `127.0.0.1` locally;
-  - TLS remotely with a self-signed certificate pinned at pairing;
+  - TLS remotely with a self-signed certificate pinned at pairing (desktop shell and native clients);
+  - browsers reach a remote server only over a route whose certificate they trust (owner-supplied files or a reverse proxy) or over loopback through an SSH tunnel; no ACME client and no click-through (owner decision 3 of 2026-11-07, as the 5B plan `docs/superpowers/plans/2026-11-08-sub-project-5b-pairing-and-remote-access.md` records it; built as control-plane spec §5.5);
   - public TLS when hosted.
 - **Certificate rotation:** the server signs a new certificate's fingerprint with the old key before rotating. Paired clients accept it automatically. A lost key means re-pairing, with a clear UI explanation.
 - **Handshake:** protocol version (HTTP 426 on mismatch) plus capabilities.
@@ -607,7 +624,8 @@ MyProject/                      (may live on local disk, NAS, or a cloud-synced 
 - **Connect relay** is in `finisher-cloud`; it is not in the data path.
 - **Secrets:** OS keychain (encrypted file on headless servers and NAS); read only by `finisherd` at call time; never sent to clients, env, plugins (except per-call `ModelGateway` grants), logs or projects.
 - **Outbound:** HTTPS only, size caps, allow-lists, hash pins.
-- **Audit log:** pairing, tokens, grants, hook blocks, hook modifications, sandbox violations.
+- **Audit log:** pairing, tokens, grants, hook blocks, hook modifications, sandbox violations, `auto` merges into `main`. It keeps device names and remote addresses only for pairing, revocation and failed authentication; it is local and owner-only, kept 180 days, and never uploaded.
+- **Human-only operations** are human-only from sub-project 5A, through the TTY-gated `finisherd` console until the UI exists. Until sub-project 7C's sandbox, this is advisory against an agent run in a raw shell (it can read the key files); the README's security model says so.
 - **Threat priority:** injected agent > malicious plugin > stolen device > network attacker.
 
 ---
@@ -658,7 +676,8 @@ MyProject/                      (may live on local disk, NAS, or a cloud-synced 
 ## 18. Licensing and third-party reuse
 
 - **Finisher:** MIT (core, SDKs, protocol).
-- **Shipped app:** no LGPL/GPL. Enforced by `cargo-deny` + a JS licence gate.
+- **No LGPL/GPL in Finisher's code.** Enforced by `cargo-deny` + a JS licence gate.
+- **Provisional exception: Electron's bundled ffmpeg** (LGPL; first decided 2026-11-07 in sub-project 6 decision 2, then made provisional by the owner's follow-up decision of the same day). Electron does not run without it. If the desktop shell stays Electron, Finisher would ship **Electron's open-codecs-only build** in place of the default one, as a dynamically linked browser-runtime component that the user can replace and that Finisher's code never calls, with its notice in `THIRD_PARTY_NOTICES`, and the run-time library gate would list exactly that library (sub-project 6 spec §16). **The desktop-shell options (Electron with a documented exception plus the open-codecs build, Tauri or the OS webviews, or a custom build) are decided in sub-project 9.** Only the desktop app is affected: the server, `fin` and the media engine contain no ffmpeg. `AGENTS.md` stays unchanged until that decision.
 - **Claude Code:** never bundled; the user installs it (D28). No licence-gate exception is needed.
 - **Codex:** bundled under Apache-2.0, with its licence and NOTICE shipped. Its bundled binary is included in the licence gate and in signing and notarisation.
 - **Copyleft plugin repo** (`finisher-plugins-copyleft`): plugins that are copyleft **or pull copyleft dependencies**. Candidates:
@@ -667,12 +686,12 @@ MyProject/                      (may live on local disk, NAS, or a cloud-synced 
   - sentrysearch (Apache-2.0, but uses ffmpeg)
   - RVM-based matting (GPL-3.0)
   - an FFmpeg codec backend
-- **Codec patents:** H.264/HEVC via OS or hardware only.
+- **Codec patents:** H.264/HEVC decode via OS or hardware only; H.264 export via OS-vendor encoders only, never GPU-vendor encoders; no built-in HEVC export (D13). AAC on Linux (symphonia, vendored vo-aacenc) waits on counsel's patent check.
 - **`THIRD_PARTY_NOTICES`:** T3 Code (MIT, vendored paths), Uncut (MIT, skills/rubrics), PySceneDetect (BSD-3, ported), TransNetV2 (MIT), sentrysearch (design reference), thorvg, resvg, whisper.cpp, sherpa-onnx, ONNX Runtime, LanceDB, dav1d, SVT-AV1, libvpx, OTIO.
 - **Model licences** are recorded and shown at download; non-commercial models are excluded.
 - **Fonts:** bundled caption fonts are OFL or similarly permissive only, with licences shipped. User fonts are referenced, not redistributed. Project bundles embed only fonts whose licence allows it.
 - **Not used:** T3 name, logo and relay, Clerk, Palmier code.
-- **Open item:** codec patent posture review with counsel before commercial launch.
+- **Open item:** codec patent posture review with counsel before commercial launch, as part of TASKS.md's "Counsel before release/upload" item.
 
 ---
 
@@ -690,7 +709,7 @@ MyProject/                      (may live on local disk, NAS, or a cloud-synced 
 
 - **Project folders are portable by sync** (§6.7). Opening on another machine imports segments.
 - **Bundle export** (`.finisher-bundle`): op-log snapshot + segments, assets, optionally sources, and embeddable fonts. Proxies and caches are excluded because they can be regenerated. **Import** rebuilds the database and re-indexes in the background.
-- **Relinking:** sources are matched by fingerprint and then full hash across registered libraries. Library roots are mapped per machine (for example `/Volumes/NAS/Media` ↔ `\\nas\media` ↔ `/mnt/media`), stored per server, not in the project.
+- **Relinking:** sources are matched by fingerprint and then full hash across registered libraries. Library roots are mapped per machine (for example `/Volumes/NAS/Media` ↔ `\\nas\media` ↔ `/mnt/media`), stored per server, not in the project. A library's root belongs to one server; its aliases (the other machines' paths of the same root) resolve paths for the system only (`locate`) and never grant reach: reading a library file from a project needs a catalogued row (control-plane spec §7.8, 5D plan Decision 47).
 - **Remote ingest:** chunked, resumable uploads from a client to a remote server's project `sources/`, with progress and integrity checks.
 
 ---
@@ -699,17 +718,120 @@ MyProject/                      (may live on local disk, NAS, or a cloud-synced 
 
 | Concern | v1 decision |
 |---|---|
-| Telemetry | Opt-in only, anonymous, documented events; off by default in self-hosted servers |
-| Crash reporting | Opt-in; minidumps from Electron, server and workers; scrubbed of paths and prompts |
+| Telemetry | D34 (§21.1): a local event journal with consent per purpose (diagnostics, training), a per-project never-collect flag and documented, versioned kinds. Basic diagnostics is on by default with an opt-out; training content needs an explicit opt-in by a person, which an agent's `fin` cannot give (§21.1). No network upload in v1 until the uploader sub-project ships |
+| Crash reporting | Panics and uncaught errors are `error.panic` journal events (§21.1). Under diagnostics they hold metadata only: the repo-relative `file:line` (or none, for a third-party location), a keyed hash of the scrubbed message, the process and the thread; no backtrace frames. The scrubbed message itself is training content. Minidumps from Electron, server and workers come with the uploader, under the same consent |
 | Model downloads | Guided first-run: shows size and purpose, resumable, verified, pausable; app usable before models finish; offline after download |
 | Offline clients | Read cached projections; edits queue only while the local embedded server is reachable (no client-only offline editing in v1) |
 | Localisation | All UI strings externalised from day one (ICU messages); English at launch |
 | Accessibility | Keyboard-operable timeline and inspector, focus management, screen-reader labels for controls, reduced-motion setting |
 | Updates | Electron auto-update; `finisherd` and worker binaries ship with the app and are version-locked to it; headless servers update via package or Docker image; protocol version and capabilities prevent mismatches |
-| Onboarding | Codex sign-in (bundled); detect Claude Code (optional); set up API keys, add a library, take a sample project tour, explain the codec capability report |
-| Minimum platforms | D31: macOS 14+ Apple Silicon only (no Intel Macs); Windows 11 / 10 22H2 x64 with a WebGPU-capable GPU; Linux glibc 2.35+. Machines below minimum fall back to server-rendered preview or headless use |
+| Onboarding | Codex sign-in by the user through Codex's own flow (bundled); detect Claude Code (optional; the user signs in to it themselves); paste an OpenRouter key (optional), add a library, take a sample project tour, explain the codec capability report |
+| Minimum platforms | D31: macOS 14+ Apple Silicon only (no Intel Macs); Windows 11 x64 with a WebGPU-capable GPU; Linux glibc 2.35+ and kernel 6.2+. Machines below minimum fall back to server-rendered preview or headless use |
 | Distribution | D32: notarised DMG, signed Windows installer, AppImage/deb/rpm, server Docker image; auto-update; no app stores in v1 |
 | Indexing cost and privacy | D29: local embeddings by default. Cloud indexing shows an estimated cost and upload notice per library before starting |
+
+### 21.1 Diagnostics and training data (D34)
+
+**Why.** Finisher collects data for two purposes: to improve the app (**diagnostics**), and to fine-tune an open-weight model on video editing, i.e. what belongs in an edit and what does not (**training**). Training includes everything that goes through an LLM. This section fixes the plumbing so that later sub-projects only add sources, the uploader and the dataset builder, never a rewrite. Implementation plan: `docs/superpowers/plans/2026-11-07-diagnostics-and-training-data-hooks.md`.
+
+**Phasing**
+
+| Phase | Delivers |
+|---|---|
+| Now (sub-project 4C branch) | Envelope, kinds and the payload enum, the journal and its blob lifecycle, consent and the project flag, the first sources (edits and history with their outcomes, intents and actors, `fin`, RPC, eval, fonts, errors, sessions), `fin diagnostics`, and the upload view (`export --as-upload`). No uploader, no network |
+| Sub-project 5A | Sources and actors from principals; export of content, purge, `project default` and consent changes human-only (the console confirms them: y/N, or the target's name typed back for a purge, with the server's challenge code sent by the console itself); exports redacted unless they ask for content, which only a person may (built, §27 item 18) |
+| Sub-project 7 | Fills the reserved agent kinds (turns, tool calls and results, edit verdicts) and sets `FIN_CALL` |
+| Sub-project 9 | `ui.*` events, the UI's actor on commits, the onboarding consent question (content, no pre-selected answer) and the diagnostics notice, a "what we collect" page |
+| Sub-project 10 | `review.*` verdicts (marker resolve, accept/reject per transaction) |
+| Sub-project 11 or the cloud phase | The **local** dataset builder (below); the uploader (its trait, batching, backoff, cursor), which ships the builder's examples and the upload view's metadata entries; the receiving service; the first-upload notice |
+
+**Events are data.** One envelope, versioned, with its types in `fin-core::events` (pure: no clock, no randomness; the emitter supplies `id` and `ts`) and the TypeScript types generated like every model type. In memory a payload is one variant of a closed enum, serialised on the journal's writer thread:
+
+```json
+{"v":1,"id":"01JC…","ts":1794571200123,"session":"01JC…","source":"finNode",
+ "kind":"log.commit","kv":2,
+ "consent":{"rev":3,"purposes":["diagnostics"],"basis":"default"},
+ "ctx":{"project":"01jb…","branch":"br1","txId":"01JC…","author":"k1:3f…",
+        "actor":{"kind":"agent","session":"01JC…","call":"k1:9a…"}},
+ "payload":{"record":"edit","outcome":"rebased","baseRev":41,"rebasedOver":2,"ops":{"item.trim":1},"micros":812}}
+```
+
+- `v` is the envelope version; `kv` the version of the kind's payload. Kinds are `domain.verb` (lower camel case within a segment) from one closed registry in `fin-core`; version 0 marks a **reserved** kind whose payload may still change.
+- `session` is the emitting process run (ULID), bracketed by `session.start` and `session.end`. `source` ∈ `fin`, `finisherd`, `finNode`, `ui`, `agent` (additive later). `console` and `mcp` were added by 5A. The server sets `source` from the connection's principal (`local` and `agent` → `fin`, `mcp` → `mcp`, `console` → `console`, `device` → `ui`; sub-project 5 spec §3.4), never from the payload or the transport.
+- `ctx` links an event to the op log: project id, branch id, `txId`, the author as a keyed hash, and the **actor** (`user|agent|plugin|system|unknown`, with the agent or UI session and the tool call). `fin` sends its actor in the headers of every RPC request (`FIN_SESSION`, and `FIN_CALL`, the tool-call id an agent harness sets), so commits carry it too; a commit without one has actor `unknown`. Only a `local` principal's headers set the kind and session: an `agent` or `mcp` credential is always `{agent, session: <its id>}` and only its `call` comes from the header (5A).
+- Ids are stored raw only when they are ULIDs; any other id (an idempotency key, a session name) is keyed-hashed.
+
+**Field classes.** Every payload field has exactly one class, in its type and in the JSON Schema (`x-fin-class`):
+- **`meta`:** numbers, booleans, closed enums, error codes, ids, keyed hashes, repo-relative source locations (`crates/…`, `apps/…`), coarse platform facts (OS family and major version, arch, core count, memory bucket), and **names** (commands, flags, RPC methods, media extensions), which come only from code or static tables, never from user input. Payloads cannot hold a free-form string as `meta`; a schema test enforces it.
+- **`scrubbed`:** free text authored by Finisher code (error and panic messages) with absolute paths, the home and server-data directories, the user name and the host name replaced by placeholders *before* it is written.
+- **`content`:** user text, captions, transcripts, file and library names, prompts, model outputs, tool arguments and results, media hashes, edit intents (the ops of a transaction), error messages, and frames and audio. Each content field names its kind (`userText`, `caption`, `fileName`, `prompt`, `modelInput`, `modelOutput`, `toolArgs`, `toolResult`, `mediaHash`, `txIntent`, `errorMessage`, `frame`, `audio`). Content is scrubbed too where it is Finisher's text.
+- **Large content is a blob:** `BlobRef {hash, bytes, mediaType}`, only inside a content field, with the bytes in `<server-data>/events/blobs/<hash>` (keyed, content-addressed). A blob lives exactly as long as an entry references it: purge, retention, the size cap and `never` remove it with its last entry, by reference counting at rotation and purge. Frames and audio are always blobs; nothing writes one in the first phase, and a later sub-project adds their sources.
+- **Never stored, in any class:** raw paths (a path becomes `{root: project|library|workspace|serverData|other, ext, hash}`), host names, IPs, MAC addresses, user names, serial numbers, credentials, raw `fin` arguments.
+- Keyed hashes are BLAKE3 keyed with a per-install key (`events/key`, 0600), so they join records on this machine without being reversible by dictionary elsewhere. `purge --all` deletes the key.
+
+**Consent** (owner decisions of 2026-11-07)
+- **Two tiers.**
+  - **Basic diagnostics** is metadata only. It includes edit outcomes: which ops an edit used, and whether it was kept, undone, reverted, rebased, deduped or conflicted. It serves both purposes: improving the app, and training on metadata alone. It is on by default everywhere (desktop, headless, Docker) with an opt-out, and is disclosed in the terms, the privacy notice and a first-run notice. It holds no content, but the absence of content alone does not establish legitimate interest (GDPR Art. 6(1)(f)): that basis holds only with a documented purpose, necessity and balancing assessment, which counsel reviews with the rest of the consent model (TASKS.md, "Counsel before release/upload", D34). Storing it on the device (ePrivacy Art. 5(3)) is already a counsel item; whether *uploading* diagnostics needs consent under ePrivacy is a further counsel question.
+  - **Training content** adds captions, transcripts, prompts, LLM conversations, edit intents, error messages, file names, media hashes and, later, sampled frames and audio. It needs an explicit opt-in **by a person**: the onboarding question (sub-project 9, no pre-selected answer), a hand edit of `privacy.training` in `settings.json`, or `FIN_TRAINING=on` in `finisherd`'s own environment. Until then training is `undecided` and records no content. The build default can never turn it on; a test enforces it.
+  - **Agents cannot opt in.** `fin` runs in the agent sandbox, so `fin diagnostics consent training` accepts only `off` and `unset`, and `on` is a usage error that names the ways in. The `diagnostics.consent` RPC refuses `training: on` from every principal but a `device` (the app's onboarding question), the server's console included (`CONSENT_UI_ONLY`). The sandbox's env allow-list does not pass `FIN_TRAINING`.
+  - **Prior art.** Cursor's and Copilot's individual plans train on code by default and are criticised for it; their business plans default off. Zed keeps telemetry on and takes training data only by opt-in, and VS Code sends telemetry by default with a notice. Finisher follows Zed for content and VS Code for metadata, because footage, faces and voices are riskier than code (Art. 9).
+- `<server-data>/settings.json` `privacy: {diagnostics: on|off, training: on|off, retentionDays, maxMiB}`, written by `diagnostics.consent` and `fin diagnostics consent` through a settings writer that changes only those keys and keeps everything else in a hand-edited file. An absent key takes the build default and records `basis: default`; a present one `basis: user`.
+- Env overrides (`finisherd`'s): `FIN_DIAGNOSTICS`, `FIN_TRAINING` (`on|off`, `basis: env`); `DO_NOT_TRACK=1` forces both off. Off always wins over on. `fin` also honours its own `DO_NOT_TRACK` and `FIN_DIAGNOSTICS=off` and then sends nothing.
+- The journal opens with the consent already resolved from the settings and the env, so nothing is written before they apply. An unreadable `privacy` section keeps the last good settings; only before the first good read does it mean both off (fail closed, as with fonts).
+- **Training implies content; diagnostics never does.** With only diagnostics on, content fields are removed at write time and training-only kinds are written as their metadata part. The writer applies the consent in force when the entry was recorded **and** when it is written, so content queued before a withdrawal never reaches disk. Content entries always carry `basis: user` or `env`, never `default`.
+- **Per project:** `finisher.project.json` `collect: "never"` (absent means "follow each user's settings"). It travels with the folder, so every collaborator's server honours it when it re-reads the file. Setting it needs the writer lease; clearing it is human-only once permissions exist (sub-project 7). While a project's flag is unknown (the project is not open on this server), new entries for it are dropped, but nothing is purged. An explicit `never` purges that project's entries and blobs from this server's journal, and the built examples derived from them (see **Dataset builder**); each collaborator's server does the same when it sees the flag.
+- **Off means off.** When no purpose is on, nothing is recorded anywhere: no file, no directory, no in-memory ring. The gate is one atomic load before a payload is even built. Normal stderr logs are unaffected.
+- Each entry carries the consent it was written under (`rev`, `purposes`, `basis`). Changes are journaled as `consent.changed` on a path that never drops, under the old consent, just before they take effect. **The upload view re-checks current consent per entry**: withdrawing a purpose stops the upload of everything already recorded for it, and deletes the built examples derived from those entries (see **Dataset builder**).
+
+**The journal** (`fin-journal`, linked by `fin-node`)
+- **One writer per server data:** `finisherd` (the `fin-node` journal). Other processes send events to it: `fin` over the local socket, the UI over the WebSocket later. Offline `fin` records nothing.
+- `<server-data>/events/j-<yyyymmdd>-<ulid>.jsonl`: one JSON object per `\n`-terminated line, append-only. Files rotate at 8 MiB or a day; an idle file is closed by the hourly caps pass once its day has passed, so retention reaches its entries too. Retention defaults are 30 days and 128 MiB in total, blobs included, oldest first: files are in write order (their ULID, which stays monotonic when the clock goes back), the age cap removes every closed file past it and the size cap the first written. An entry of another envelope version is unknown to readers, like an unknown kind.
+- **Crash-safe:** a torn last line is truncated on open and skipped by readers; closed files are fsynced; a blob is on disk before the line that references it; a panic or shutdown flushes synchronously, with a timeout.
+- **Never blocks editing:** emitters enqueue onto a data channel bounded by entries and by bytes. A full channel drops the event and counts it (`journal.dropped`). Consent, project policy, purge and export use a separate control path that never drops. A failing disk suspends the journal and editing goes on. A writer thread serialises, batches and flushes every second or 64 KiB, and owns every file operation, purge and export included. Data never wakes it (a wake would cost every commit a cross-CPU interrupt): it parks until its flush timer, unless 64 KiB are in flight or a control message arrives, so an entry reaches disk within ~2 s (two flush intervals) at worst.
+- **High-rate signals are aggregated:** RPC and eval timings become per-minute histograms (`rpc.stats`, `eval.stats`), not one event per call. Streaming RPCs (`ops.subscribe`, `project.events`) are not timed.
+- **Cost is measured** (`journal_cost`): disabled emit, enqueue latency, writer throughput, and the commit-path overhead in `fin-node` with diagnostics and with training on. The budgets live in the plan.
+
+**Kinds now:**
+- `session.start|end|unclean`, `consent.changed`;
+- `log.commit`, one per attempt to append to the op log (edits, undo, redo, merge, pick, revert, checkpoint, branch create and set, recovery), classified in `fin-node` from typed results and the store's dedupe signal: `record` with the txIds it links to, outcome `accepted|rebased|deduped|noOp|conflict|refused|dryRun`, error code, op-kind counts, `baseRev` and the number of revs it was rebased over, conflict codes and duration; with training, also the intent as committed (or as requested, on failure). No state snapshot is stored: a training example's context is only what was captured under training consent (see **Dataset builder**);
+- `cli.command` (registry name, flag names, keyed `argsHash`, duration, exit code, error code, online, dry run, txIds);
+- `rpc.stats`, `eval.stats`, `fonts.fetch`, `storage.state`, `error.internal`, `error.panic` (location and message hash; the message as content), `journal.dropped`.
+
+**Agent kinds (sub-project 7):** the v0 reservations are replaced by version 1 of `agent.session`, `agent.turn`, `agent.toolCall` and `agent.toolResult`, the new `agent.approval`, and the retirement of `agent.editVerdict` (verdicts are `review.verdict`). The kinds, their provenance fields, the agent-trace store that holds their content and the join to commits are in `docs/specs/2026-11-07-sub-project-7-agent-runtime-design.md` §12 (as built by 7A, §24), which wins over this document.
+
+Also reserved: `ui.action` (9) and `review.verdict` (10).
+
+**"Show me what's collected."**
+- `fin diagnostics show` gives the consent and its basis, the project flags, the files, blobs and sizes, counts per kind, the oldest and newest entries and the drops.
+- `fin diagnostics export [--since] [--project] [--kind] [--limit] [--as-upload <purpose>]` writes JSONL to stdout. `--as-upload` shows exactly what an uploader would send now.
+- `fin diagnostics purge (--all | --project <id> | --before <date>)` (it also deletes the built examples derived from the purged entries); `fin diagnostics project never|default`.
+- The same calls are RPCs for the UI. Until sub-project 7, exporting content, purging and `project default` are open to `fin` too, so an agent can read the user's recorded content; content is served only to the `fin` and `ui` sources.
+
+**The upload view (no network now).** `export --as-upload <purposes>` (`Journal::export` with an upload filter) is the contract a future uploader ships: closed files only, entries whose stamped purposes and the **current** consent share a purpose, projects not `never` or unknown now, content and blob references removed unless training is both current and stamped. The uploader sub-project adds the `Uploader` trait, batching, a cursor per uploader (at least once, deduplicated by event `id`) and pseudonymisation of project, branch and tx ids with its own key before sending. It reads through this view, so nothing in the journal changes.
+
+**Dataset builder (planned, out of scope now).** It runs **locally**, on the user's machine, over the journal and the agent-trace store only. **It never reads the op log**, so it sees only what was captured under training consent (`crates/fin-dataset-inputs` reads the journal's `events/` and `agent-traces/` and links nothing else; `scripts/check-crate-deps.mjs` enforces it). The uploader ships the examples it built, plus the upload view's metadata entries; raw journals, trace stores and op logs never leave the machine.
+- **Decision (2026-11-09, owner): consented capture only.** A training example's context is whatever the journal or the agent-trace store recorded at event time under training consent, and nothing rebuilt afterwards. Rebuilding the state at `log.commit.baseRev` from the op log would re-read project content (captions, file names, footage identity) that no consent covered and that purge, withdrawal and `collect: never` do not reach.
+- **Example:** the instruction (the agent turn joined by `actor.call` and `txId`, or the `fin` command), the intent, and the **context captured with the edit**. For an **agent edit** the context is the agent's own `fin view` output and other tool results for that call, read from the agent-trace store (sp7 §12). For a **human edit** it is the ops, the intent and the label only: no state is reconstructed.
+- **Possible later extension (sub-project 11):** capture a redacted context at event time, under the same consent, so human edits can carry a view too. **Rejected:** per-entity provenance filtering over the op log (tracking which entities each consent covered): it would put the op log back in the builder's inputs and make every purge a graph problem.
+- **Examples are a regenerable cache** keyed by their source entry ids (journal entry ids and trace-store ids). Purge, consent withdrawal and `collect: never` delete every example derived from an affected entry and drop it from each uploader's cursor, so a withdrawn entry cannot be uploaded later in a built example; regenerating from what remains is always possible.
+- **Label:** kept, undone or reverted (a `log.commit` with `record: undo|revert` naming that txId, and how soon), merged into `main`, branch abandoned, or a conflict and its resolution (the next commit by the same actor on that branch), plus agent edit verdicts.
+- Pairs of kept and undone edits from the same context give preference data. Exports are versioned and licence-tagged, and only made from entries recorded under the training purpose.
+- **Training targets (owner decision of 2026-11-07, sub-project 7 decision 1):** human edits and model outputs, **closed-model outputs included**, may be training targets. This goes against the recommendation (human edits and open-weight outputs only), and closed-model providers' terms forbid using their outputs to train other models.
+  - **Counsel before the first training run or upload** is mandatory and recorded as the gate `training.closedModelTargets: pendingCounsel|cleared|excluded`, default `pendingCounsel`, set only by a person after counsel's review and audited (sub-project 7 spec §12.7). While it is `pendingCounsel` or `excluded`, the dataset builder and every upload path drop each example whose target comes from a closed- or unknown-weights turn, and refuse a run that needs them.
+  - **Reversible by design:** every example is tagged with its model provenance, `{provider, model, harness}` plus the weights class (`open|closed|unknown`), taken from `agent.session` and `agent.turn`; a person's edit has no model. Closed-model targets can be filtered out later without re-collection.
+
+**As built (plan D, D1–D7, 2026-11-07).** The plumbing above is implemented on the sub-project 4C branch; `TASKS.md` "Diagnostics hooks" has the per-task detail.
+- **Crates and seams:** the model in `fin-core::events` (20 kinds: 13 v1, 7 reserved v0); the journal in `fin-journal` (writer thread, consent, key, blobs, project policies, purge, export, sessions); the napi `Journal` and the edit-path sources in `fin-node` (`commit_log.rs` classifies outcomes from typed results and the store's `WriteOutcome` note); `finisherd`'s `diagnostics.ts` (six `diagnostics.*` RPCs, the source per transport, a token bucket per source of 50/s with a burst of 200, the settings watch); `fin`'s `diag.rs` and `fin diagnostics`.
+- **Measured cost** (release, Linux VM): the disabled gate 0.4–0.8 ns (budget ≤ 5 ns); `record` p99 1–2.6 µs (≤ 5 µs); writer 468–616k diagnostics entries/s (≥ 100k) and 350–397 MiB/s of content (≥ 20 MiB/s); `record_sync` against a stalled writer returns at its 250 ms / 1 s timeout; 482 B per diagnostics entry, 792 B with a 2-op intent. On the commit path (`commit_overhead`, 1k-item project, median paired difference against `off` in the same round): diagnostics +3.2–7.3 µs (+0.14–0.33 %; budget ≤ 2 % and ≤ 20 µs), training +5.1–10.6 µs (+0.23–0.47 %; ≤ 5 % and ≤ 50 µs).
+- **Deviations from the design text:**
+  - The writer is not woken by data (Decision 18). It parks until its flush timer, so an entry reaches disk within ~2 s; `export`, `status` and a consent change flush first. A wake on every `try_send` cost a commit 13 µs.
+  - The age and size caps also delete while recording is off (deletion only).
+  - Merge and recovery entries carry the first record's txId, `<requestTxId>-1` (keyed, since it is not a ULID), on every path; `fin`'s `cli.command` for a merge names the same id.
+  - `consent.changed` is journaled only for a change while a server runs (`diagnostics.consent`, a hand edit the settings watch applies). A restart under a different consent (an env override added or removed) writes none: the new `rev` and the stamps of the entries show it.
+  - `--as-upload training` keeps only entries stamped `training` and allowed by the consent in force now (Decision 31; D7 corrected `fin-node`, which had mapped it to every purpose). With training on, metadata kinds are stamped with both purposes, so the training view also carries the metadata recorded while training was on.
+  - Rate-limited `diagnostics.record` calls answer `recorded: false` and are counted in the service, not the journal. An unknown kind is `EVENT_KIND_UNKNOWN`. A consent write that fails is `SETTINGS_WRITE_FAILED` (exit 5); a merged `privacy` section that breaks the journal's rules is `SETTINGS_INVALID`.
+  - `fin diagnostics show` has no `--limit` (`export --limit n` lists the newest entries). `fin` records no `cli.command` for `diagnostics purge`, so `purge --all` leaves no key behind. `help`, `schema` and usage errors are recorded with `online: false` when a server is reachable.
+- **End to end** (`pnpm e2e diagnostics`, `scripts/e2e/diagnostics.mjs`): off by env leaves no `events/`. By default diagnostics are on and training is `undecided`, with no content. One `cli.command` per `fin` run. Outcomes `accepted`, `rebased` (`rebasedOver`), `deduped` and `conflict`, the undo's links, and matching actors on `cli.command` and `log.commit`. Every committed `log.commit` txId resolves through `tx.get`; keyed ids are computed with the install key through the test-hooks `Journal.idRefForTest`. The leak grep covers the temp dir, `$HOME`, `$USER`, the host name, argument markers and unkeyed `blake3:`. A `never` project is purged and dropped, also by a second server following the folder. `fin` cannot opt in; `FIN_TRAINING=on` records an intent; a hand edit opts in and `consent training off` withdraws (two `consent.changed`), which empties the training upload view; `purge --all` leaves no key and no blobs.
 
 ---
 
@@ -751,11 +873,13 @@ MyProject/                      (may live on local disk, NAS, or a cloud-synced 
 | 5 | Control plane breadth | Pairing/auth/environments, scopes, review workflow, jobs, library indexer |
 | 6 | Media engine | Codecs, proxies, compositor, `fin-audio`, captions, Lottie templates, SVG, masks, colour/VFR, export |
 | 7 | Agent runtime | Codex adapter (bundled), Claude Code CLI adapter, built-in agent, sessions/branches, subagents, roles, modes, OS sandbox, hooks, workspace artifacts, full `fin`, eval harness |
-| 8 | Plugins + registry | Host, manifest, SDKs, local/git registries with TUF verification, bundled analyzers (transcription + alignment, scenes, search, reframe, audio), generation providers, codec-backend and matte interfaces |
+| 8 | Plugins + registry | Host, manifest, SDKs, local-folder registries (git ones are folders) with TUF verification, bundled analyzers (transcription + alignment, scenes, search, reframe, audio), generation providers, codec-backend and matte interfaces |
 | 9 | Frontend + Electron | Editor, libraries UI, timeline, transcript view, branch bar, conversation, review mode; macOS/Windows/Linux packaging |
 | 10 | Reviewer + skills | QA gate, critic, markers, share page; Uncut skills/rubrics ported |
 | 11 | v1 features + hardening | Clip finder, reframe, caption templates, Lottie template packs, onboarding, signing/notarisation, release |
 | 12 | After v1 | Public registry, raw Lottie, background-removal plugin, mobile, `finisher-cloud`, copyleft plugin repo |
+
+**Mobile (owner decisions 2026-11-08):** native iOS/Android with limited offline editing becomes sub-project 12, "mobile core and offline editing" (not designed yet); see `docs/specs/2026-11-08-mobile-offline-editing-decisions.md`.
 
 **Spike (#1) measures**
 1. napi apply/rebase on a 10k-item project with 1k-op branches. **Electron ABI prebuild** on all three OSes; if it's problematic, evaluate the sidecar fallback.
@@ -808,7 +932,7 @@ Ported deliberately:
 | Scope | v1 cuts (§1); skeleton at #3 |
 
 **Open questions**
-1. Codec patent posture review with counsel before commercial launch.
+1. Codec patent posture review with counsel before commercial launch (TASKS.md "Counsel before release/upload").
 2. Per-language aligner and model choices, decided after spike #1.6 and licence checks.
 3. Lease heartbeat interval and polling cadence defaults, tuned after spike #1.10.
 
@@ -817,7 +941,7 @@ Ported deliberately:
 5. GitHub: owning account or org, public-from-day-one vs private until v1, and when the legacy `video-creater` repo name is replaced.
 6. Contribution policy: DCO sign-off (recommended) vs CLA.
 7. Windows code signing: procure Azure Trusted Signing or an EV certificate. Apple Developer ID exists.
-8. Which generation-provider plugins ship first-party in v1 (candidates: ElevenLabs, OpenAI images, fal.ai).
+8. ~~Which generation-provider plugins ship first-party in v1.~~ Decided 2026-11-07: OpenRouter and fal.ai (§14.3).
 9. Authoring and licensing of the starter Lottie template packs and caption presets.
 10. Rights-cleared test footage for the eval harness, alignment fixtures and golden frames.
 11. Direct publishing to TikTok, YouTube, Instagram (proposed: after v1).
@@ -906,7 +1030,7 @@ Spike code, evidence and the report are throwaway and live in the git-ignored `a
      - p95 against MFA ≤ 50 ms is tracked, not gated.
      - p95 ≤ 50 ms against humans can't be a gate: published evaluations put only 89 % of MFA's word boundaries within 50 ms of hand labels (Rousso et al., Interspeech 2024).
      - On MFA references (held out), 95.9 % of starts and 96.9 % of ends are in the window.
-     - **Reference set (S6c–S6e):** the owner's reel (187 words) plus 12 ElevenLabs clips (en, uk, de, es, fr, pt-BR; 1,450 words). The owner checked English and Ukrainian word by word and corrected what was wrong; unchanged edges there are confirmed correct. The other four languages are unverified references (mostly the generator's own timing). Labels came from an independent prefill, never from the pipeline under test. ElevenLabs audio is evaluation-only: never used to train or tune.
+     - **Reference set (S6c–S6e):** the owner's reel (187 words) plus 12 ElevenLabs clips (en, uk, de, es, fr, pt-BR; 1,450 words). The owner checked English and Ukrainian word by word and corrected what was wrong; unchanged edges there are confirmed correct. The other four languages are unverified references (mostly the generator's own timing). Labels came from an independent prefill, never from the pipeline under test. ElevenLabs audio is evaluation-only: never used to train or tune. **Retired 2026-11-07** (sub-project 8 decision 6): the generated clips leave the evaluation set; permissive human speech is relabelled in their place, the owner's footage stays evaluation-only under a written licence, and MUSAN is filtered per file (PD/CC0/CC-BY).
      - **English, measured vs those labels:** the pipeline above puts 95.7 % of starts but only 75.7 % of ends in the window (reel 89.8 / 70.6). Every miss is late: the boundary correction, trained on MFA conventions, extends ends about 60 ms past where people place them.
      - **Decision:** starts use the learned correction; **ends use the raw CTC span end** (95.7 / 91.5 % pooled, 89.8 / 83.4 % on the reel). This was chosen on a small set from about 40 candidates (listed in the archive), so expect some selection optimism.
      - **Next step (sub-project 8):** retrain the boundary correction on permissive public data with the gate window as its objective, with music mixed in (the reel's misses are under background music). Fitted end offsets reached 96.8 % in leave-one-clip-out, which shows the headroom.
@@ -947,7 +1071,7 @@ Spike code, evidence and the report are throwaway and live in the git-ignored `a
    - The signed bundle needs only `com.apple.security.cs.allow-jit`.
    - Release builds prune per-platform binaries (ONNX Runtime ships all platforms) and download optional components on demand; the spike bundle was 645 MB.
    - The shell build lists `node_modules` in `extraResources` explicitly, because electron-builder drops them silently.
-   - **macOS: notarised.** Publisher is Maryna Vdovenko's team `9XN7WN8JN2`.
+   - **macOS: notarised.** Publisher is the owner's Apple Developer team.
      - The app is signed with that team's Developer ID Application certificate and notarised with an App Store Connect API key (`notarytool --key/--key-id/--issuer`, the same path CI will use).
      - Stapled; Gatekeeper reports "Notarized Developer ID"; all native parts launch.
      - Apple's queue took about 30 minutes, so release CI must not use a short notarisation timeout.
@@ -999,7 +1123,7 @@ Spike code, evidence and the report are throwaway and live in the git-ignored `a
     - **Text slots (S11b): thorvg text is not used for slots.**
       - Slot text is laid out and rasterised by the shared Rust text engine (`fin-text`: cosmic-text + swash, the same path as captions). It is oversampled for animated scale and injected as an image slot.
       - The spike's `fin-text` rendered native and wasm32 bit-identically in 10/10 cases, with Arabic shaping, bidi, kerning and font fallback.
-      - Its output is also byte-identical across x86-64 Linux and arm64 macOS (20/20), on condition that fonts are always bundled, never taken from the system.
+      - Its output is also byte-identical across x86-64 Linux and arm64 macOS (20/20), on condition that fonts are always bundled, never taken from the system. *Since 4C (item 15): always pinned bytes, fetched on demand, never taken from the system.*
       - Why not thorvg: it lacks shaping, bidi, kerning, colour emoji, per-glyph font fallback and OTF/CFF fonts. Its text layout also differs across versions, and a wrapped 7-line box took 12 ms per frame.
       - Per-character animators work only on baked-glyph templates.
       - **Colour emoji is open:** swash has no COLRv1, so this needs a bitmap or COLRv0 font, or a COLRv1 painter.
@@ -1017,5 +1141,105 @@ Spike code, evidence and the report are throwaway and live in the git-ignored `a
     2. **Rational JSON form:** a string `"n/d"` in lowest terms with `d > 0`, or `"n"` when `d == 1` (e.g. `"1001/30000"`, `"12"`). Parsing rejects floats.
     3. **Entity IDs:** short, readable, project-global: `a<n>` assets, `t<n>` tracks, `c<n>` clips, `tl<n>` timelines. Allocated by `fin-store` from one per-project counter table at commit time (one writer per project makes this unique across branches). Transactions refer to entities they create with placeholders `$<name>`; the committed transaction and the response carry the resolved bindings.
     4. **Editing semantics (sub-project 2):** all three clip ops are **ripple** edits on one track (later items on the same track shift; other tracks untouched). Inserting strictly inside a clip is rejected (`INSERT_INSIDE_CLIP`, fix: insert at the clip's start or end). Minimum clip duration is one frame at the timeline rate.
-    5. **Local transport:** Effect RPC with NDJSON serialization on a Unix socket `<server-data>/fin.sock` (mode 0600) or the Windows named pipe `\\.\pipe\finisher-<username>` (for the default server-data; any other server-data uses `finisher-<username>-<hash>`, 12 hex chars of SHA-256 of its lower-cased path, because pipe names are machine-global — clients read the name from `finisherd.json`); WebSocket on `127.0.0.1` (port written to `<server-data>/finisherd.json`, mode 0600, with a random bearer token the WS client must send). Pairing/remote auth is sub-project 5.
+    5. **Local transport:** Effect RPC with NDJSON serialization on a Unix socket `<server-data>/fin.sock` (mode 0600) or the Windows named pipe `\\.\pipe\finisher-<username>` (for the default server-data; any other server-data uses `finisher-<username>-<hash>`, 12 hex chars of SHA-256 of its lower-cased path, because pipe names are machine-global — clients read the name from `finisherd.json`); WebSocket on `127.0.0.1` (port written to `<server-data>/finisherd.json`, mode 0600, with a random bearer token the WS client must send; **superseded by item 18**: the token is gone, a WebSocket needs a one-time ticket minted over a proved connection, and the socket moved to `<server-data>/run/fin.sock`). Pairing/remote auth is sub-project 5.
     6. **Server data dir:** `FIN_SERVER_DATA` if set; else macOS `~/Library/Application Support/Finisher`, Linux `${XDG_DATA_HOME:-~/.local/share}/finisher`, Windows `%LOCALAPPDATA%\Finisher`.
+
+13. **Sub-project 4A, durable storage (as built, 2026-11-05):** the design of §6.7 and §6.8 as implemented is recorded in `docs/specs/2026-11-04-sub-project-4-core-breadth-design.md` §3, which wins over this document where they differ.
+    - **The §27.9 "v3" lease is implemented** (`fin-store::lease`), with these amendments (sub-project 4 spec §3.5):
+      - stale after 45 s of server time on every storage kind, not 30 s;
+      - takeover needs two stale probes ≥ 5 s apart, each with a round trip ≤ TTL/4, *and* the identical record seen for ≥ 25 s on the observer's monotonic clock. A live NAS holder is never taken over, even with `--confirm`;
+      - probe samples landing more than 1 s below the extrapolated server time are rejected;
+      - the monotonic clock counts time asleep;
+      - a claim above the holder's epoch that is younger than 45 s loses the lease (claims are the authority on epochs), and each acquisition creates a single claim at `base + 1`;
+      - a commit trusts a full check that passed within the last 1 s;
+      - a restart re-takes its own lease at once through an OS lock in server data, never in the project folder.
+      - a clean close with nothing left unexported writes a final `released` record, which any server takes at once through a fresh claim on local and network storage; on a sync folder another server needs `takeover --confirm` (the holder may re-take it offline, and an automatic take there would fork), while the releasing server re-takes its own at once. A crash or a drop releases nothing.
+    - **The folder:** hash-chained, write-once segments labelled by commit epoch; reader-side epoch rule with rewind of a lost applied line; quarantine instead of deletion; rebuild with salvage; verify; daily and pre-migration backups; two-phase compaction into packs that keep full history.
+    - **§6.7 polling:** project folders are polled (local 2 s, network 1 s, sync 10 s), not watched, and the heartbeat is 5 s, not 15 s.
+    - **Still outstanding:** cross-host and sync-folder validation (sub-project 4 spec §3.13). This replaces the "Still to validate" line of item 9 for the lease.
+
+14. **Sub-project 4B, history (as built, 2026-11-06):** the design of §6.3–6.6 for branches, undo, merge and live sync as implemented is recorded in `docs/specs/2026-11-04-sub-project-4-core-breadth-design.md` §4 (with the §3 places it changed), which wins over this document where they differ.
+    - **All branch state is derived from the log** (`branch` and `branchSet` records on the parent's log; `merged` from merge copies), so branches sync through the folder like edits; branch ids are `br<n>`, names are display only. A branch made under one id on two servers across a takeover is told apart by its `branch` record (epoch, then hash).
+    - **§6.4 amendments:** undo and redo append records and never truncate; a redo is a unit of its own; stacks are dropped only when one of the branch's records is copied by a merge *from that branch into a branch that is not its descendant*, never by a cherry-pick; merges are transitive and judge "already there" by origin root; merged copies keep the source's entity ids and are one unit of the merging author on the target. Merge conflicts are returned as a list (`CONFLICT` `details.conflicts`); turning them into review items is sub-project 5.
+    - **Rebase (§6.5):** positions map through the item edge they were written against (sub-project 4 §4.3 *Anchor mapping*, 2026-11-09), falling back to exact per-track shift maps with ProseMirror-style mirrored mappings; per-entity conflicts (`REMOVED`, `SAME_EDGE`, …); every op re-run at the head with full policy.
+    - **§6.8 branch archiving:** archived branches are kept and hidden; squashing them is deferred beyond sub-project 4.
+    - **Rewinds cascade** to descendant branches whose `branch` record was lost; quarantined records come back as `recovered-*` branches (`fin project recover`).
+    - **Still outstanding:** cross-host validation (sub-project 4 spec §4.8).
+
+15. **Sub-project 4C, edit breadth (as built, 2026-11-07):** the model, edits, evaluation, captions and text measurement of §6.2–6.4, §7, §9 and §12.3–12.7 as implemented are recorded in `docs/specs/2026-11-04-sub-project-4-core-breadth-design.md` §5 (with the §3 and §4 places it changed), which wins over this document where they differ.
+    - **Model and edits:** several timelines, bins and markers; video, audio and caption tracks; items of kind clip, caption, graphic, image, adjustment and nested with common fields, effects, keyframes and link groups; transitions at cuts; a settings registry behind generic `param.set`, `keyframe.*` and `effect.*`; structural edits with explicit modes, each with an exact inverse, a footprint, a shift map and a content map. Schema version 2, with frozen upcasters, so every earlier project opens with the same state.
+    - **Evaluation:** `fin-core::eval` produces deterministic frame and audio plans (`f64` with `+ − × ÷ sqrt` only, a float gate, a plan-hash corpus byte-identical on Linux, macOS, Windows and wasm32). The compositor and mixer of sub-project 6 consume only these plans.
+    - **§27.10 amended: fonts are fetched and pinned, not bundled.** `fin-text` (cosmic-text, no swash) measures from fonts named by SHA-256: projects pin exact files, the server fetches them on demand from a pinned, licence-gated catalog into a content-addressed cache, and a missing font leaves a caption unmeasured without blocking an edit. Item 10's condition for identical output, "fonts always bundled, never taken from the system", now reads **"always pinned bytes, never taken from the system"**.
+    - **Still outstanding:** cross-platform validation (sub-project 4 spec §5.10).
+
+16. **Sub-project 5C-1, the job engine (as built, 2026-11-08):** the shared job system of §9.9 as implemented is recorded in `docs/specs/2026-11-07-sub-project-5-control-plane-design.md` §6 (§6.0–6.6 and §6.8–6.12; §6.10 maps every decision of its plan to As built or Deviation), which wins over this document where they differ.
+    - **Shape:** `fin-jobs`, `fin-jobhost` and `fin-workers` (§7); spawning in `finisherd`'s process through `fin-node`, behind a `Spawner` hook that sub-project 7's `fin-sandbox` implements; jobs persisted in `control.db`; a pure, property-tested scheduler over resource pools; warm workers, helpers and mapped files; retries, poison handling and isolation; `job.done` and `worker.exit` into the diagnostics journal.
+    - **Kill trees are host-owned on every OS:** a host, group and leaf Job Object hierarchy on Windows (processes created suspended, spawned through a broker so no pipe handle is ever inheritable), delegated cgroup v2 on Linux where available, process groups elsewhere, and on Unix a watchdog process that reaps the groups if the host dies.
+    - **Deviations from this document and from the sub-project 5 design:** with process groups (macOS; Linux without a delegated cgroup) a `setsid` grandchild survives cancel and host death until sub-project 7 denies process creation to workers; a graceful stop spends no attempt of a resumable job; warm kinds run cold under a sandbox until 7C grants per-job paths.
+    - **Still outstanding:** the cross-platform run of the whole engine on macOS and Windows 11 (5C-1 Task 14), the held-files check there, an endpoint-security check of the Windows spawn broker, and the job RPCs (5C-2).
+
+17. **Sub-project 8A, packages, registries and lifecycle (as built, 2026-11-08):** the plugin manifest, `.finpkg` packages, local-folder TUF registries, install plans and approvals, bundled plugins and the first content consumers of §14 and §15 as implemented are recorded in `docs/specs/2026-11-07-sub-project-8-plugins-design.md` §4–6 and §23 (§23.1 maps every decision of its plan to As built or Deviation), which wins over this document where they differ.
+    - **Shape:** `fin-plugin-api` (pure), `fin-registry` (the TUF client and editor over `tough` 0.24 on `aws-lc-rs`, the strict package reader, the store, plans), `fin-plugin` (publisher tooling, not shipped); `fin-node` runs the registry on its worker thread; `finisherd` keeps registries, plugins, grants and plans in `control.db` and drives **plan, then approve, then install**. Nothing a plugin ships runs in 8A: font catalogs and caption styles are active at install, and code plugins install disabled until 8B.
+    - **Amendments to §14 and §15:** git registries are local folders (§15); packages carry no signature of their own; third-party code plugins install behind a high-risk `thirdPartyCode` warning and an explicit acceptance on every install and update (§14.4, D8); only a person's plan can be approved, and only a person approves it; registry folder paths are shown to people only; `fin-plugin validate`, not `fin plugin validate`, is the offline check.
+    - **Still outstanding:** the cross-platform run of 8A on macOS and Windows 11 (Task 15), the code-signature check of bundled plugins (`bundledIntegrity` is `hashesOnly` until sub-project 11), the first-party signing-key ceremony, and `finisherd --plugin-dir` and the code runtimes (8B).
+
+18. **Sub-project 5A, principals, local credentials and scopes (as built, 2026-11-08):** §16 (auth, security), §21.1 (sources and human-only operations) and item 12.5's local transport as implemented are recorded in `docs/specs/2026-11-07-sub-project-5-control-plane-design.md` §3 and §4 (§4.15 maps every decision of its plan to As built or Deviation), which wins over this document where they differ.
+    - **Trust comes from credentials, never from transports:** every connection proves a key in a mutual HMAC handshake bound to the environment id and the canonical endpoint (`local.key` for `fin` and the user's tools, `console.key` for `finisherd <command>`, a derived key for each `agent` and `mcp` credential); keys rotate at every start; `fin` sends nothing without a credential and checks the server's proof before anything else. The Unix socket lives in `<server-data>/run/` apart from `<server-data>/auth/`; on Windows `fin-node` serves the named pipe itself with its own security descriptor and peer checks. The WebSocket has no bearer token: it needs a one-time ticket in `Sec-WebSocket-Protocol`, behind Host and Origin checks. Protocol 2.
+    - **One middleware chain** (authenticate, resolve, authorise, policy, confirmation, handler, after) gives every RPC its scopes, all required; references are resolved by the store before any rule; branch limits and a revoked credential are re-checked inside the store's write transaction. `fin` gains exit code 7 (denied).
+    - **§21.1 amended:** sources and actors come from the principal, not the transport (`console` and `mcp` are new sources); consent changes, purges, `project default`, content exports, confirmed takeovers and relocations are human-only, done through a TTY-gated console that asks for a typed, server-issued code; training is turned on only by a device (the app's onboarding), by hand in `settings.json` or through `FIN_TRAINING`; exports carry content only on request.
+    - **Not a boundary yet:** until sub-project 7's sandbox (7C), an unsandboxed agent harness runs as the owner and can read `auth/console.key` and `auth/local.key`, so human-only operations and credential scopes bind only harnesses that use `fin` or MCP (owner decision 6, documented in the README).
+    - **Still outstanding:** the cross-platform run of 5A on macOS and Windows 11 and its measurements (5A Task 14; Windows has run only the pipe listener's own tests), pairing and devices (5B).
+19. **Sub-project 6A, media foundations (as built, 2026-11-08):** the first sub-batch of the media engine as implemented is recorded in `docs/specs/2026-11-07-sub-project-6-media-engine-design.md` §25 (§25.1 marks every decision As built or Deviation), which wins over this document where they differ.
+    - **Shape:** `fin-media`, `fin-container` (over `mp4-atom`), `fin-codecs` (dav1d decode and SVT-AV1 encode, each behind a C shim), `fin-compositor` (a wgpu 30 compositor beside the CPU reference that is its oracle), `fin-shm` (the mapped-file channel); the `media` family of `fin-workers` with `media.look` and `media.capabilities`; `fin look` and `fin media caps`; media fields in `job.done` and the `media.capabilities` and `render.stats` diagnostics kinds.
+    - **Amendments to §12.1 and §27.3:** AV1 decodes with dav1d (built with the `cc` crate; `rav1d` was measured and dropped); mip levels are separate textures; a frame's file name carries its size; workers write and the host moves outputs through `fin-shm`, by copy from a warm worker.
+    - **Still outstanding:** the cross-platform run of 6A on macOS and Windows 11 and a hardware Linux GPU (spec §25.6), a green CI run on GitHub, the worker sandbox (6B-1 Landlock, 6G the full profile).
+20. **Sub-project 7A, the agent runtime core and the built-in agent (as built, 2026-11-08):** §8 (sessions, providers, the built-in agent, budgets), §9's `FIN_CALL` and agent credentials, §16's `ModelGateway` and secrets, and §21.1's agent kinds as implemented are recorded in `docs/specs/2026-11-07-sub-project-7-agent-runtime-design.md` §1–13 (each 7A part marked *As built (7A)*) and §24 (§24.1 maps every decision of its plan to As built or Deviation), which wins over this document where they differ.
+    - **Shape:** the runtime in `finisherd` (`apps/finisherd/src/agent/`): sessions, runs and nodes in `control.db` (the `agent` migration chain), interrupted on a crash and resumed without re-running a tool; one adapter contract with the scripted `fake` harness and the built-in loop over one OpenAI-compatible Chat Completions client with an OpenRouter preset (the pasted key, the only secret Finisher stores) and a local preset (no key); the tools `fin` (argv, no shell) and three workspace file tools.
+    - **Sessions are principals:** each has its own root branch (`agent.<role>-<n>`) and an `agent` credential whose id is the session id, scopes from its mode (`plan`, `draft`, `auto`), writes confined to its branch subtree and paths to its project, its workspace and its project's libraries; `fin` under that credential never falls back to `local.key`, keeps its default branch and tries per session on the server, and takes its project folder from `FIN_PROJECT_DIR`; the server sets every credential principal's author and records every agent commit in `session_txs`, kept for the project's life.
+    - **Recording:** metadata to the diagnostics journal, content only under training to the separate agent-trace store, with provenance on every session and turn; outcomes (merged, undone, reverted, abandoned) are tracked for 5E's `review.verdict` (registered at version 1 by 5E, so the tracker now emits it; outcomes stored before that are not back-filled, §27 item 25); the counsel gate `training.closedModelTargets` exists with the default `pendingCounsel`.
+    - **Not a boundary yet:** before 7C every host runs agent tools unsandboxed, with the persistent warning `SANDBOX_DISABLED {reason: before7C}`.
+    - **Still outstanding:** real-provider sessions and the cross-platform run on macOS and Windows 11 (7A Task 15); 7B–7H.
+
+21. **Sub-project 5D, the library indexer (as built, 2026-11-08):** the library design of §6.7 and §20 (scanning, volume identity, placeholders, the catalog, stages, search and lookup) as implemented is recorded in `docs/specs/2026-11-07-sub-project-5-control-plane-design.md` §7 (§7.8 maps every decision of its plan to As built or Deviation), which wins over this document where they differ.
+    - **Shape:** `fin-library` (types, raw paths, enumeration per OS, the walker, the safe opener, probe and hash entry points; no process of its own), the `library` family of `fin-workers`, root probes in `fin-node`; in `finisherd` one catalog writer thread and one reader thread, with `control.db` holding only the `libraries` table.
+    - **Every reader of a library file uses `fin_library::open_for_read`** (raw name chain, no links followed, placeholders refused, identity checked), enforced by clippy `disallowed-methods` in the crates that read originals; sub-projects 6 and 8 follow the same rule.
+    - **Deviations:** no listing refresh on macOS shares (libraries are read-only); Linux FUSE sync roots are metadata-only unless `hydrate`; pools per volume with a separate poll slot; library aliases never grant reach.
+    - **Still outstanding:** cold scans, the macOS and Windows end-to-end runs and the share figures (5D Task 17).
+22. **Sub-project 7C, the OS sandbox (as built, 2026-11-09):** §8.4 as implemented is recorded in `docs/specs/2026-11-07-sub-project-7-agent-runtime-design.md` §25 (what is built, the deviations, the `READY` table and the residual risks), which wins over this document where they differ.
+    - **Shape:** `fin-sandbox` builds one `SandboxPolicy` per process from typed inputs and applies the `agent`, `hook`, `worker` and `plugin` profiles: Linux Landlock (ABI ≥ 3) through the launcher `fin-sandbox-exec` (which stays the parent as a subreaper), a worker's self-sandbox or a plugin's `pre_exec` steps; macOS Seatbelt; Windows AppContainer with per-session capability SIDs, job objects and the ACL broker in `fin-node`. 5C's job host spawns through `SandboxSpawner`; warm workers get per-job grants (Linux); `fin` reaches the server from a Linux sandbox over the loopback agent listener (`tcp:`).
+    - **Deviations:** the seccomp filter is deferred to a person (owner decision 2026-11-08), so Linux pathname sockets are hidden from agents and hooks by a namespace (where user namespaces work) instead of refused; the Windows suites prove the configuration and compute denials with `AccessCheck` (no escape attempts, owner decision); Node tools with piped stdio fail fast in a Windows container (`WINDOWS_NODE_PIPES`).
+    - **Not a boundary yet by default:** `fin_sandbox::READY` is empty until the validation hosts pass each profile (7C Task 16), so a release build still runs every profile unconfined with `SANDBOX_DISABLED {reason: profileNotReady}` (item 20's `before7C` is gone). Supersedes item 18's and item 20's "Not a boundary yet" on each OS once its profiles are in `READY`.
+    - **Still outstanding:** Task 16 (validation on the three OSes), the seccomp filter, the Windows escape tests, the macOS launcher's `setsid` handling, per-job grants on Windows.
+
+23. **Sub-project 5B, pairing, devices, remote access and environments (as built, 2026-11-09):** §16 (pairing, sessions, transport, secrets) as implemented is recorded in `docs/specs/2026-11-07-sub-project-5-control-plane-design.md` §5 (§5.12 maps every decision of its plan to As built or Deviation, §5.13 lists the owner decisions and review fixes, §5.14 the residuals), which wins over this document where they differ.
+    - **Shape:** one-time pairing offers (a `finisher://pair` link and QR code, a 256-bit secret in the fragment, at most 10 minutes) approved by the owner on the console or a device after comparing a six-digit safety code; devices are human principals holding every scope, proving with a P-256 key through DPoP (RFC 9449, server nonces) for 15-minute tokens and 30-second WebSocket tickets; revocation ends tokens, tickets and live connections at once.
+    - **Transport:** remote access is off until `finisherd remote enable` or `FIN_LISTEN`; off loopback it is TLS only, with a self-signed certificate made from the environment's identity key (pinned by SPKI) or the owner's certificate files (verified normally, then the `envId`); per-listener Host and Origin checks and connection pools.
+    - **Amendments to §16:** certificate rotation is re-pairing (`finisherd tls rotate`), not a statement signed by the old key; device confirmations: only a device's `server.stop` needs a challenge code, sent by the app after its own dialog; devices name server paths only inside allowed roots; copied server data is refused (`ENV_MOVED`) until `env adopt` or `env reset`; secrets live in the OS keychain when it answers without a prompt, else in private files, optionally wrapped with `FIN_SECRETS_KEY_FILE`.
+    - **Still outstanding:** the cross-platform and cross-host run (5B Task 15); sub-project 9's device key storage, pairing pages, `TLS_PIN_MISMATCH` and the `server.stop` dialog.
+24. **Sub-project 8B, the plugin runtime (as built, 2026-11-12):** the plugin host as implemented is recorded in `docs/specs/2026-11-07-sub-project-8-plugins-design.md` §3 and §24 (§24.1 maps every decision of its plan to As built or Deviation), which wins over this document where they differ.
+    - **Shape:** a code plugin is a worker of one `plugin` family on the `fin-jobs` envelope (not a separate JSON-RPC stream, amending D8 for plugins), keyed by plugin, version, project and effective authority; commands are `plugin.command` jobs committed through the chain's `tx.commit` under the invoker with `Tx.via`; host calls are `project.snapshot`, `project.view`, `log`, `net.fetch`, `net.read`; the Rust and TypeScript SDKs and developer mode (`finisherd --plugin-dir`) are built.
+    - **Amendments to §16:** no plugin is OS-confined before 7C's `plugin` profile is enforced on an OS (the sandbox wording of §16 should say so, plugins spec §22 item 23); egress is brokered HTTPS with the address checks of §16 and no secret injection until 8G; `PLUGINS_UNCONFINED` shows while any enabled code plugin runs unconfined.
+    - **Still outstanding:** confinement (Task 16, on 7C), the cross-platform run and budgets (Task 19), and the open owner question on an empty plugin transaction. (Hook handlers, Task 17, are built by 7F: item 27; the `fin-plugin-test` harness, Task 14, is built: plugins spec §24.4.)
+25. **Sub-project 5E, the review workflow (as built, 2026-11-12):** §6.4 ("conflicts become review items") and §11.3 (per-transaction accept/reject) as implemented are recorded in `docs/specs/2026-11-07-sub-project-5-control-plane-design.md` §8 (§8.8 maps every decision of its plan to As built or Deviation, §8.9 lists the owner decisions and review fixes, §8.10 the residuals), which wins over this document where they differ.
+    - **Shape:** a `branchReview` item holds a change list planned at a snapshot of both heads; a person accepts or rejects each origin transaction, and a merge copies only what was reviewed (`include` and `sourceUpTo`, checked inside the merge's write transaction), so a commit that lands on the source afterwards is never merged by it. A rejection is a **`drop` record in the op log** of the target branch (record format 3 for that kind only; derived index `m0004_drops`), so it syncs, survives moves and rebuilds, and keeps a later plain `fin merge` from bringing the transaction back; `DROPPED` is reported in `excluded`, not `skipped`. Merge conflicts and plugin suggestions are review items too.
+    - **Protected branches** (default `main`) refuse writes from principals without `branch.protected`, at the chain's policy stage and again inside the store's write transaction; `local` keeps the scope, agents and MCP credentials do not. Before 7C this binds credentials, not a raw shell that can read `local.key` (README "Security model").
+    - **Auto merge** exists as a server-internal path with all its checks and tests, and enabling it answers `AUTO_MERGE_UNAVAILABLE` until sub-project 10 records QA-gate and critic verdicts. `review.verdict` v1 is registered, so 7A's outcome tracker emits.
+    - **Still outstanding:** the cross-platform and mixed-version run (5E Task 13); sub-project 10's verdicts and the flag; sub-project 7's delivery of `changesRequested` as a turn.
+26. **Sub-project 7B, subagents, roles, rules and approvals (as built, 2026-11-12):** §8.3 (roles, modes, command rules, approvals), §8.6 (saved prompts) and §9's `fin agent` and `fin approval` as implemented are recorded in `docs/specs/2026-11-07-sub-project-7-agent-runtime-design.md` §3–7, §9.1, §9.4, §13.1 and §15 (each 7B part marked *As built (7B)*) and §26 (§26.1 maps every decision of its plan to As built or Deviation), which wins over this document where they differ.
+    - **Shape:** command rules (`allow|ask|deny` on command globs) from the `managed`, `local`, `project` (trusted only), `user` and `role` layers, combined deny > ask > allow and enforced in `finisherd`'s chain for every `agent` call against the exported registry (`packages/contracts/registry.json`); an `ask` for a running session is a durable approval card (`APPROVAL_PENDING`, exit 8) with one-time exact grants and `remember` writing a visible rule; roles are complete data (prompts, rules, tools, spawn); a session spawns children on child branches (`fin agent spawn|wait|ls|send|stop|rollback`) with budgets carved from its own, up to depth 3 and 8 live per root; per-server live limits queue runs; rollback to a run; compaction in the built-in loop; saved prompts for people.
+    - **Deviations:** child and critic branches are named with `.` (`<parent root>.<role>-<n>`, `<reviewed>.critic-<n>`); a grant is consumed in `control.db` before the write (a crash loses it, never doubles a write; owner decision); a `review.request` leaves a notice instead of ending the run; only tokens and money are carved.
+    - **Not a boundary yet:** rules and approvals bind calls through the server; before 7C's profiles are in `READY` an agent's tools run unconfined (item 22).
+    - **Still outstanding:** cross-platform validation (7B Task 14); 7D/7E's permission mapping and provider rollback; sub-project 10's verdicts, `AUTO_MERGE_AVAILABLE` and the `autoMerge.roles|into` console flag, so nothing merges automatically yet. (7F's `PreMerge` and `BranchReady` hooks are built: item 27.)
+27. **Sub-project 7F, hooks (as built, 2026-11-14):** §10 as implemented is recorded in `docs/specs/2026-11-07-sub-project-7-agent-runtime-design.md` §9 (§9.5 maps every decision of its plan to As built or Deviation) and §27, which wins over this document where they differ.
+    - **Shape:** the events of §10 except `PreOp`/`PostOp` fire at the points the spec names; a hook answers `allow | block {reason} | context {text}`; command hooks run in 7C's `hook` profile with a cleared environment and a private temp, project hooks only after a person trusts a hash that covers the hooks file and every project file they name, plugin handlers as `plugin.hook` v1 jobs (host API 1.2.0) gated by `hooks:observe`; a block is audited `hook.block` and answered `HOOK_BLOCKED`; 7B's `PreMerge` and `BranchReady` points and the 80 % `Notification` are wired.
+    - **Amendments to §10:** `modify` and `PreOp`/`PostOp` are cut from v1, so `hooks:modify` grants nothing; hook configuration is files, not settings RPCs; a point with no hook costs one map lookup plus one `stat` per configuration file that applies, the trust record and the plugin rows, not a bare lookup.
+    - **Still outstanding:** cross-platform validation on macOS and Windows 11 and the latency figures (7F Task 13); `PreRender`/`PostRender`, which parse and stay inert until 6E registers a render job kind.
+28. **Sub-project 7D, the Claude Code adapter (as built, 2026-11-14):** §27.5 (the Claude Code launch and its stream-JSON protocol), §27.6 (the Windows shell) and §22's Claude Code rows as implemented are recorded in `docs/specs/2026-11-07-sub-project-7-agent-runtime-design.md` §4.5 (rewritten as built), §4.7, §8.6, §12.3, §13.1, §15, §16.1 and §28 (§28.1 maps every decision of its plan to As built or Deviation), which wins over this document where they differ.
+    - **Shape:** the unmodified CLI (floor 2.1.321, never bundled) runs per session in the `agent` sandbox on the user's own sign-in, which the user creates with the CLI's own flow (`finisherd provider signin claudeCode` prints the command and runs nothing); isolation without `--bare` comes from a per-session config dir, `--setting-sources user`, `--strict-mcp-config`, a `--tools` allow-list and a free capability probe plus a per-instance `system/init` check; every tool call is routed to the runtime by `ask` rules and decided by 7B's `permissions.ts`; usage is charged per turn to the ledger; steers are held and handed back; a crashed `finisherd`'s orphan CLI is swept at recovery; a CLI's own `fin` calls are attributed by the argument hash `fin` now sends. The harness is off until `agents.claudeCode.enabled`.
+    - **Deviations:** `--tools` is an allow-list, not a deny-list built from `init.tools`; the brokered Windows shell is served by `finisherd`, not `fin-sandbox`, and is off until the Windows validation; the sign-in store is a directory the sandbox grants, not a link.
+    - **Still outstanding:** cross-platform validation with the real CLI (7D Task 18: macOS, Windows 11, a signed-in run under the launcher, token refresh under the sandbox); the counsel item in `TASKS.md` before the harness is enabled by default.
+29. **Sub-project 6B-1, stateful platform codecs and proxies (as built on Linux, 2026-11-14):** the second sub-batch of the media engine as implemented is recorded in `docs/specs/2026-11-07-sub-project-6-media-engine-design.md` §26 (§26.1 marks every decision of its plan As built or Deviation), which wins over this document where they differ.
+    - **Shape:** backend vendor classes and one encoder policy function (`fin_media::backend::encoder_allowed`: exports, QA renders and mattes never on a `gpu` encoder; proxies on any hardware encoder; no built-in HEVC encoding), backend choice and the `ENCODER_HUNG` fallback in `fin-codecs`; HDR tone mapping (BT.2390) and edge-only gamut compression at `RENDER_VERSION` 2; model v5 `VideoInfo` display, rotation and pixel aspect with `asset.reprobe` and `media.probeDeep`; WebM/Matroska demux; the media cache (`cache/media/index.db`, written by `fin-node` only) with pins and LRU eviction; `media.proxy` (one frame per original frame, the original's sample table kept) and the `proxy540` library stage; `media.thumbs`; `media.look` from proxies; capability URLs as the only HTTP route to media bytes; media workers on 7C's Linux Landlock `worker` profile where it is enforced (its `READY` row is not set yet, so release builds run them unconfined with the `SANDBOX_DISABLED` warning); `media.capabilities` journal `kv` 2.
+    - **Amendments to §12.1, §12.2 and §27.3:** proxies were video-only until 6C's recipe v2 (landed: Opus audio); every proxy is SVT-AV1 until a hardware H.264 encoder lands; VP9 decode through libvpx moves to 6B-2; media bytes are served only through `GET /media/cap/<token>/<file>`.
+    - **Not built:** VideoToolbox, Media Foundation and the capability probe (6B-1 plan Tasks 4–8), carried forward to macOS and Windows 11 hosts; until then H.264, HEVC, VP9 and ProRes are `CODEC_UNAVAILABLE` on every OS.
+    - **Still outstanding:** Tasks 4–8; the cross-platform validation (spec §26.8, plan Task 21) and a green CI run on all three OSes; the open owner questions of spec §26.7 (the proxy quality tolerance, cold proxy-read looks under Landlock, among others).

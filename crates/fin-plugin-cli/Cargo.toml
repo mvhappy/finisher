@@ -1,0 +1,29 @@
+[package]
+name = "fin-plugin-cli"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "fin-plugin: publisher tooling to scaffold, validate and pack plugins and to run local-folder registries (not shipped with the app)."
+
+[[bin]]
+name = "fin-plugin"
+path = "src/main.rs"
+
+[dependencies]
+# `validate` (and `pack`, `registry publish`) check caption styles and font catalogs as the host
+# does at install (8A Task 12c): `fin_core::captions::parse_style_file`, `FontCatalog::from_json`
+# and the catalog merge rule.
+fin-core = { path = "../fin-core" }
+fin-fonts = { path = "../fin-fonts" }
+fin-plugin-api = { path = "../fin-plugin-api" }
+# `test`: the fake host and the conformance profiles (8B Task 14).
+fin-plugin-test = { path = "../fin-plugin-test" }
+fin-registry = { path = "../fin-registry" }
+semver = "1"
+serde_json = "1"
+sha2 = "0.11"
+
+[dev-dependencies]
+tempfile = "3"

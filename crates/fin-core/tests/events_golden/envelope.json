@@ -1,0 +1,37 @@
+{
+  "v": 1,
+  "id": "01JC0000000000000000000000",
+  "ts": 1794571200123,
+  "session": "01JC0000000000000000000001",
+  "source": "finNode",
+  "kind": "log.commit",
+  "kv": 2,
+  "consent": {
+    "rev": 3,
+    "purposes": [
+      "diagnostics"
+    ],
+    "basis": "default"
+  },
+  "ctx": {
+    "project": "01jb0000000000000000000000",
+    "branch": "br1",
+    "txId": "01JC0000000000000000000002",
+    "author": "k1:3f000000000000000000000000000000",
+    "actor": {
+      "kind": "agent",
+      "session": "01JC0000000000000000000003",
+      "call": "k1:9a000000000000000000000000000000"
+    }
+  },
+  "payload": {
+    "baseRev": 41,
+    "micros": 812,
+    "ops": {
+      "item.trim": 1
+    },
+    "outcome": "rebased",
+    "rebasedOver": 2,
+    "record": "edit"
+  }
+}

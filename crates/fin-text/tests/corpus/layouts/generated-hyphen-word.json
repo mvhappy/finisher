@@ -1,0 +1,43 @@
+{
+  "lines": [
+    {
+      "x": 160,
+      "top": 0,
+      "width": 14080,
+      "height": 4000,
+      "baseline": 2960,
+      "rtl": false,
+      "firstWord": 0,
+      "endWord": 1
+    },
+    {
+      "x": 160,
+      "top": 4000,
+      "width": 1280,
+      "height": 4000,
+      "baseline": 6960,
+      "rtl": false,
+      "firstWord": 1,
+      "endWord": 2
+    }
+  ],
+  "words": [
+    {
+      "line": 0,
+      "x": 160,
+      "width": 14080
+    },
+    {
+      "line": 1,
+      "x": 160,
+      "width": 1280
+    }
+  ],
+  "width": 14080,
+  "height": 8000,
+  "overflow": true,
+  "missing": [],
+  "faces": [
+    "d8ae94c9ece87aa4c4e33962270ae9aa08d0385f67c26157a9029ab203666363"
+  ]
+}

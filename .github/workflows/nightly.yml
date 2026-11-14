@@ -1,0 +1,55 @@
+name: nightly
+
+# Fuzzing that is too slow for every push (sub-project 6 spec §13.5): the MP4 demuxer
+# (`fin-container`, with `mp4-atom` underneath) and the shared-memory ring header (`fin-shm`),
+# 60 s each with `cargo fuzz`. The targets are not workspace members (crates/*/fuzz has its own
+# `[workspace]`); the stable toolchain from rust-toolchain.toml runs them with RUSTC_BOOTSTRAP=1
+# and no sanitizer (`-s none`). A crash fails the run and is printed as base64 in the log.
+# Each fuzz crate commits its own Cargo.lock (checked by `pnpm check:crate-age` for the 7-day
+# dependency-age rule); `cargo fuzz` has no --locked flag, so `cargo fetch --locked` first fails
+# the run if the lock is missing or out of date with Cargo.toml, and the build then uses it as is.
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      RUSTC_BOOTSTRAP: "1"
+      FUZZ_SECONDS: "60"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked --version 0.13.1
+      - name: Seed the demux and webm corpora with the writers' files
+        run: cargo run -p fin-container --example fuzz_seeds --features testing -- crates/fin-container/fuzz/corpus/demux crates/fin-container/fuzz/corpus/webm
+      - name: Check the fuzz lockfiles are committed and current
+        run: |
+          cargo fetch --locked --manifest-path crates/fin-container/fuzz/Cargo.toml
+          cargo fetch --locked --manifest-path crates/fin-shm/fuzz/Cargo.toml
+      - name: Fuzz fin-container (demux)
+        working-directory: crates/fin-container/fuzz
+        run: cargo fuzz run demux -s none -- -max_total_time="$FUZZ_SECONDS"
+      - name: Fuzz fin-container (webm)
+        working-directory: crates/fin-container/fuzz
+        run: cargo fuzz run webm -s none -- -max_total_time="$FUZZ_SECONDS"
+      - name: Fuzz fin-shm (ring_header)
+        working-directory: crates/fin-shm/fuzz
+        run: cargo fuzz run ring_header -s none -- -max_total_time="$FUZZ_SECONDS"
+      - name: Print the crashing inputs
+        if: failure()
+        run: |
+          for f in crates/fin-container/fuzz/artifacts/*/crash-* crates/fin-shm/fuzz/artifacts/*/crash-*; do
+            [ -f "$f" ] || continue
+            echo "== $f"
+            base64 "$f"
+          done

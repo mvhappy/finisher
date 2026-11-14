@@ -1,7 +1,7 @@
 //! A real `finisherd` for `fin`'s online tests, and a `fin` runner.
 //!
 //! `Server::start()` spawns `node apps/finisherd/src/main.ts --server-data <tmp>` and waits for
-//! `finisherd.json`. When Node 26+, `pnpm install` or the fin-node binary is missing it returns
+//! `finisherd.json`. When Node 24+, `pnpm install` or the fin-node binary is missing it returns
 //! `None` (after printing why) — but never silently: each test binary also has
 //! `server_tests_ran_or_explicitly_skipped`, which fails in that case unless
 //! `FIN_SKIP_SERVER_TESTS=1` says the skip is intended. With `FIN_REQUIRE_SERVER=1` (CI) every
@@ -10,13 +10,37 @@
 
 #![allow(dead_code)]
 
-use std::ffi::OsStr;
+pub mod agent_host;
+pub mod auth;
+pub mod console;
+pub mod fontserver;
+pub mod settings;
+
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use tempfile::TempDir;
+
+/// Where a fake server listens: `<root>/<file>` (a socket file) on Unix, a named pipe unique to
+/// this process and call on Windows, whose local sockets are named pipes only (`fin` takes a
+/// `\\.\pipe\` path in `FIN_SERVER` or `finisherd.json`). Tests in one binary run in parallel,
+/// so a pipe name shared by two of them makes the second listener fail with access denied.
+pub fn fake_endpoint(root: &Path, file: &str) -> PathBuf {
+    if cfg!(windows) {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let stem = file.trim_end_matches(".sock");
+        PathBuf::from(format!(
+            r"\\.\pipe\fin-test-{stem}-{}-{n}",
+            std::process::id()
+        ))
+    } else {
+        root.join(file)
+    }
+}
 
 pub fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -48,9 +72,9 @@ fn why_unavailable(root: &Path) -> Option<String> {
         .next()
         .and_then(|m| m.parse().ok())
         .unwrap_or(0);
-    if major < 26 {
+    if major < 24 {
         return Some(format!(
-            "finisherd needs Node 26+, found {version} (source .superpowers/env.sh)"
+            "finisherd needs Node 24+, found {version} (source .superpowers/env.sh)"
         ));
     }
     if !root.join("apps/finisherd/node_modules").is_dir() {
@@ -101,53 +125,134 @@ pub struct Server {
     pub root: PathBuf,
     pub sd: PathBuf,
     pub socket: String,
+    /// Extra environment for finisherd (kept across restarts).
+    pub env: Vec<(String, OsString)>,
+    /// The script node runs (default `apps/finisherd/src/main.ts`) and its extra arguments.
+    pub script: PathBuf,
+    pub args: Vec<OsString>,
 }
 
 impl Server {
     /// Starts a server, or prints why it cannot and returns `None`.
     pub fn start(test: &str) -> Option<Server> {
+        Server::start_with(test, Vec::new(), None)
+    }
+
+    /// Starts a server with extra environment; `extra` is one more reason it may be unable to
+    /// run (a missing test-hooks binary), treated like the others.
+    pub fn start_with(
+        test: &str,
+        env: Vec<(String, OsString)>,
+        extra: Option<String>,
+    ) -> Option<Server> {
         let repo = repo_root();
-        if let Some(reason) = why_unavailable(&repo) {
+        if let Some(reason) = why_unavailable(&repo).or(extra) {
             assert!(!env_on(REQUIRE_ENV), "{test}: {REQUIRE_ENV}=1 but {reason}");
             eprintln!("SKIPPED {test}: {reason}");
             return None;
         }
         let (tmp, root) = real_tempdir();
         let sd = root.join("server-data");
-        let log = std::fs::File::create(root.join("finisherd.log")).unwrap();
+        let mut server = Server {
+            child: None,
+            _tmp: tmp,
+            root,
+            sd,
+            socket: String::new(),
+            env,
+            script: repo.join("apps/finisherd/src/main.ts"),
+            args: Vec::new(),
+        };
+        server.spawn();
+        Some(server)
+    }
+
+    /// Like [`Server::start`], but node runs `script` (relative to the repository) with `args`
+    /// after `--server-data <sd>`; `args` may name paths under `root` (`{root}` is replaced).
+    pub fn start_script(test: &str, script: &str, args: &[&str]) -> Option<Server> {
+        Server::start_script_with(test, script, args, Vec::new(), None)
+    }
+
+    /// [`Server::start_script`] with extra environment and one more reason it may be unable to
+    /// run, as [`Server::start_with`].
+    pub fn start_script_with(
+        test: &str,
+        script: &str,
+        args: &[&str],
+        env: Vec<(String, OsString)>,
+        extra: Option<String>,
+    ) -> Option<Server> {
+        let repo = repo_root();
+        if let Some(reason) = why_unavailable(&repo).or(extra) {
+            assert!(!env_on(REQUIRE_ENV), "{test}: {REQUIRE_ENV}=1 but {reason}");
+            eprintln!("SKIPPED {test}: {reason}");
+            return None;
+        }
+        let (tmp, root) = real_tempdir();
+        let sd = root.join("server-data");
+        let args = args
+            .iter()
+            .map(|a| OsString::from(a.replace("{root}", &root.display().to_string())))
+            .collect();
+        let mut server = Server {
+            child: None,
+            _tmp: tmp,
+            root,
+            sd,
+            socket: String::new(),
+            env,
+            script: repo.join(script),
+            args,
+        };
+        server.spawn();
+        Some(server)
+    }
+
+    /// Starts the server again on the same server data (after [`Server::stop`]).
+    pub fn restart(&mut self) {
+        self.stop();
+        self.spawn();
+    }
+
+    fn spawn(&mut self) {
+        let info = self.sd.join("finisherd.json");
+        // A killed server leaves its finisherd.json behind: wait for the new one.
+        let _ = std::fs::remove_file(&info);
+        let log = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.root.join("finisherd.log"))
+            .unwrap();
         let child = Command::new("node")
-            .arg(repo.join("apps/finisherd/src/main.ts"))
+            .arg(&self.script)
             .arg("--server-data")
-            .arg(&sd)
+            .arg(&self.sd)
+            .args(&self.args)
             .env_remove("FIN_SERVER")
+            // Tests never touch the OS keychain (5B Decision 4); a test's own env may override it.
+            .env("FIN_SECRETS", "file")
+            .envs(self.env.iter().map(|(k, v)| (k, v)))
             .stdin(Stdio::null())
             .stdout(log.try_clone().unwrap())
             .stderr(log)
             .spawn()
             .expect("spawn finisherd");
-        let mut server = Server {
-            child: Some(child),
-            _tmp: tmp,
-            root,
-            sd,
-            socket: String::new(),
-        };
-        let info = server.sd.join("finisherd.json");
+        self.child = Some(child);
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             if let Ok(text) = std::fs::read_to_string(&info)
                 && let Ok(json) = serde_json::from_str::<Value>(&text)
             {
-                server.socket = json["socket"].as_str().unwrap().to_string();
-                return Some(server);
+                self.socket = json["socket"].as_str().unwrap().to_string();
+                return;
             }
-            if let Some(status) = server.child.as_mut().unwrap().try_wait().unwrap() {
-                panic!("finisherd exited with {status}: {}", server.log());
+            if let Some(status) = self.child.as_mut().unwrap().try_wait().unwrap() {
+                panic!("finisherd exited with {status}: {}", self.log());
             }
             assert!(
                 Instant::now() < deadline,
                 "finisherd did not start: {}",
-                server.log()
+                self.log()
             );
             std::thread::sleep(Duration::from_millis(25));
         }
@@ -185,9 +290,22 @@ pub fn fin_cmd(sd: &Path, cwd: &Path, args: &[&str]) -> Command {
     cmd.args(args)
         .current_dir(cwd)
         .env("FIN_SERVER_DATA", sd)
+        // A server `fin` starts keeps its secrets in files, never the OS keychain (5B Decision 4).
+        .env("FIN_SECRETS", "file")
         .env_remove("FIN_SERVER")
         .env_remove("FIN_OFFLINE_SNAPSHOT")
         .env_remove("FIN_TEST_COMMIT_GATE")
+        .env_remove("FIN_DEADLINE_S")
+        // What `fin` tells the server about itself follows these (plan D, Task D6).
+        .env_remove("DO_NOT_TRACK")
+        .env_remove("FIN_DIAGNOSTICS")
+        .env_remove("FIN_SESSION")
+        .env_remove("FIN_CALL")
+        .env_remove("FIN_CALL_IDEM")
+        .env_remove("FIN_TEST_PANIC")
+        .env_remove("FIN_CREDENTIAL")
+        .env_remove("FIN_PROJECT_DIR")
+        .env_remove("FIN_TEST_AUTH_GATE")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -248,8 +366,19 @@ pub fn assert_error(run: &Run, code: i32, error: &str) {
     );
 }
 
-/// Writes a small MP4 (H.264 video + AAC audio) the server can probe.
+/// Writes a small video-only MP4 (H.264) the server can probe: `fin clip insert` of it adds no
+/// linked audio (plan 4C Decision 21), so tests about other things keep one item per insert.
 pub fn media(path: &Path, seconds: u32) {
+    write_media(path, seconds, false);
+}
+
+/// Writes a small MP4 with H.264 video and AAC audio: `fin clip insert` of it on a video track
+/// adds a linked audio clip by default.
+pub fn media_av(path: &Path, seconds: u32) {
+    write_media(path, seconds, true);
+}
+
+fn write_media(path: &Path, seconds: u32, audio: bool) {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).unwrap();
     }
@@ -257,7 +386,42 @@ pub fn media(path: &Path, seconds: u32) {
         path,
         fin_probe::fixtures::FixtureOpts {
             seconds,
+            audio,
             ..Default::default()
         },
     );
+}
+
+/// Runs `fin` against the `FIN_OFFLINE_SNAPSHOT` hook holding `snapshot` (every write is a dry
+/// run), with server data pointed at an empty folder so no real finisherd is reached.
+pub fn offline(snapshot: &Value, args: &[&str]) -> Run {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("snapshot.json");
+    std::fs::write(&file, snapshot.to_string()).unwrap();
+    let mut cmd = fin_cmd(&dir.path().join("no-server"), dir.path(), args);
+    cmd.env("FIN_OFFLINE_SNAPSHOT", &file);
+    finish(args, cmd.output().unwrap())
+}
+
+/// The item lines of a `fin view` answer as `(id, start, end)`, the times as the lines print
+/// them (`00:01.0`); headers, markers and transitions are skipped.
+#[allow(dead_code)]
+pub fn view_items(view: &Value) -> Vec<(String, String, String)> {
+    view["lines"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no lines: {view}"))
+        .iter()
+        .filter_map(|l| {
+            let l = l.as_str()?;
+            let mut cols = l.splitn(3, "  ");
+            let (span, label, body) = (cols.next()?, cols.next()?, cols.next()?);
+            let id = body.split(' ').next()?;
+            let transition = body.contains('→');
+            if l.starts_with("== ") || label == "──" || transition {
+                return None;
+            }
+            let (start, end) = span.split_once('–').unwrap_or((span, span));
+            Some((id.to_string(), start.to_string(), end.to_string()))
+        })
+        .collect()
 }

@@ -1,0 +1,10 @@
+# The base toolchain read list for Windows (spec §8.1 item 1; plan 7C Decision 6).
+# Source: PLACEHOLDER from the spec's categories (the shell, git, fin, system libraries,
+# certificates, fonts). `%SystemRoot%` and `%ProgramFiles%` are expanded by the caller.
+# Spike S9 step B7 (plan 7C Task 0) replaces it; Task 9 re-validates it.
+%SystemRoot%\System32
+%SystemRoot%\SysWOW64
+%SystemRoot%\Fonts
+%SystemRoot%\Globalization
+%ProgramFiles%\Git
+%ProgramFiles%\PowerShell

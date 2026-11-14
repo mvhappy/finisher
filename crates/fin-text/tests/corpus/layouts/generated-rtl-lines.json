@@ -1,0 +1,53 @@
+{
+  "lines": [
+    {
+      "x": 640,
+      "top": 0,
+      "width": 12000,
+      "height": 4000,
+      "baseline": 2960,
+      "rtl": true,
+      "firstWord": 0,
+      "endWord": 2
+    },
+    {
+      "x": 640,
+      "top": 4000,
+      "width": 12000,
+      "height": 4000,
+      "baseline": 6960,
+      "rtl": true,
+      "firstWord": 2,
+      "endWord": 4
+    }
+  ],
+  "words": [
+    {
+      "line": 0,
+      "x": 7200,
+      "width": 5440
+    },
+    {
+      "line": 0,
+      "x": 640,
+      "width": 5440
+    },
+    {
+      "line": 1,
+      "x": 7200,
+      "width": 5440
+    },
+    {
+      "line": 1,
+      "x": 640,
+      "width": 5440
+    }
+  ],
+  "width": 12000,
+  "height": 8000,
+  "overflow": false,
+  "missing": [],
+  "faces": [
+    "5c54d42b6178df4d24d644b33b84e5406bd88a3eb6bd7f305efb4d891949c36a"
+  ]
+}

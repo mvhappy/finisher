@@ -2,228 +2,201 @@
 // End-to-end check: fin → finisherd → WebSocket subscriber.
 //
 // Builds `fin` (release) and fin-node, starts finisherd in a temp server-data dir, opens an
-// `ops.subscribe` stream from rev 0 over the bearer-token WebSocket, runs the editing flow
+// `ops.subscribe` stream from rev 0 over the ticketed WebSocket, runs the editing flow
 // through the `fin` binary, and asserts the subscriber saw every committed rev in order and
 // that its last rev equals `snapshot.get`'s. The server and the temp dir are always cleaned up.
 //
-// Usage: node scripts/e2e.mjs [--skip-build]
+// Usage: node scripts/e2e.mjs [--skip-build] [basic|storage|history|reel|diagnostics|plugins|plugin-code|auth|look|listen|agent|library|sandbox|remote|review|subagents|hooks|claude|proxy ...]  (default: every scenario)
 //
-// After the builds, the run has a deadline (E2E_DEADLINE_MS, default 120 s): when it passes,
+// Builds go to `CARGO_TARGET_DIR` when it is set (else `target/`), and so does the run's
+// `fin` and `fin-plugin`. Scenario temp dirs fall back to `/tmp` when `TMPDIR` is so deep that the
+// server's unix socket path would pass 104 bytes.
+//
+// The "storage" scenario (scripts/e2e/storage.mjs) edits, exports, deletes the database,
+// rebuilds from the folder and checks a second finisherd follows the folder read-only.
+//
+// The "history" scenario (scripts/e2e/history*.mjs) drives branches, merges (conflicting, skipped,
+// both directions), undo/redo, checkpoints, try, cherry-pick, revert, dry runs and a real
+// `project recover --create` (a second server on a lease-less folder copy diverges, ~12 s of
+// lease catch-up), with WebSocket subscribers checking each record lands on its own branch.
+//
+// The "reel" scenario (scripts/e2e/reel*.mjs) builds a 30 s reel by `fin` only (linked audio,
+// speed, overlays, a graphic, music, captions, keyframes, transitions) on a test font catalog
+// served from loopback: captions are unmeasured while fetching is off, then the fonts fetch by
+// themselves and eval lays them out with the records unchanged; view, frame and audio plans
+// equal `scripts/e2e/reel-golden/` (`E2E_REEL_BLESS=1` rewrites them, refused under CI). Its
+// real-font pass needs `FIN_FONT_CACHE` (skipped without it, unless `FIN_REQUIRE_FONTS=1`).
+//
+// The "diagnostics" scenario (scripts/e2e/diagnostics*.mjs) drives the diagnostics journal by
+// `fin` with an agent session: off by env, on by default, every commit outcome, the join of
+// `log.commit`, `cli.command` and the op log, the leak grep, a `never` project on two servers,
+// training by env only, withdrawal and `purge --all` (plan D7).
+//
+// The "plugins" scenario (scripts/e2e/plugins*.mjs) drives the plugin lifecycle end to end with
+// `fin-plugin`-built registries (a plain folder and a git clone the run resets): the console adds
+// them by their root's hash, a person installs, `fin` and agents are refused, packs, fonts and
+// code plugins, widening updates, advisories, a `TUF_ROLLBACK`, trust kept on removal, the bundled
+// pack's owner switch across tampering, the journal's free-text grep and each step's audit row.
+//
+// The "plugin-code" scenario (scripts/e2e/plugin-code*.mjs) runs code plugins end to end (plan 8B
+// Task 18): both SDK examples and the test probe from a `fin-plugin` registry, installed and
+// enabled by a person, commands committed with `via` by the invoker, `fetch-title` through the
+// egress broker to a loopback origin (its test hooks: finisherd runs `plugin-code-server.mjs`) and
+// `EGRESS_PRIVATE_ADDRESS`, an agent session's reach, authority isolation of memory, temp and
+// pluginData between the person, an agent session and its child, the crash loop, disable,
+// `PLUGINS_UNCONFINED`'s count and the journal's free-text grep.
+//
+// The "auth" scenario (scripts/e2e/auth*.mjs) drives principals and credentials over `fin.sock` and
+// the ticketed WebSocket: an unproved connection, `fin` as `local`, the human-only refusals and the
+// console's challenge codes, ticket and Host/Origin checks, agent credentials (scopes, `branch own`,
+// journal actors, revocation ending live streams, expiry, `TICKET_LIMIT`), a squatted socket, a
+// restart that rotates the keys, the audit rows and a leak grep over every log and the journal.
+//
+// The "look" scenario (scripts/e2e/look*.mjs) renders a project of two generated AV1 clips (CFR,
+// and VFR rotated 90°) with `fin look` through the real media worker: plan hashes against
+// `scripts/e2e/look-golden/`, frame ids read back from the PNGs against the nearest-frame rule,
+// every PNG against the CPU reference over a copy of the job directory (tolerance T1, T0 hashes
+// per fixture set), `fin-workers media --replay`, `skipped`, and a worker killed mid-job and
+// retried (`E2E_LOOK_BLESS=1` rewrites the goldens, refused under CI). It needs a GPU adapter
+// (`FIN_GPU=software` on lavapipe) and is skipped without one unless `FIN_REQUIRE_GPU=1`.
+//
+// The "listen" scenario (scripts/e2e/listen*.mjs) puts a WAV (two tones around a silence) and an MP4
+// with Opus audio (on Linux also AAC-LC) on two audio tracks with an EQ, a compressor and a fade,
+// makes their `media.pcm` and `media.waveform` entries (`fin cache status`), checks `fin listen
+// --json` against `listen-golden/listen.json` (±0.2 LU, ±0.2 dB, silence edges exact at the
+// detector's 10 ms), `fin view`, the audio `media` of the journal's `job.done`, the audio phases of
+// `render.stats` and that no payload names a path (`E2E_LISTEN_BLESS=1` rewrites the golden,
+// refused under CI; plan 6C Task 22).
+//
+// The "agent" scenario (scripts/e2e/agent*.mjs) runs a built-in agent session against a scripted model
+// server on loopback (the local preset, no key, no network): from the prompt to the merged verdict
+// with the session branch's commits and refusals, the journal's call join and replayable trace
+// deltas, a `finisherd` killed during a tool call and resumed, a budget stop and its approval, and
+// the leak grep (plan 7A Task 13).
+//
+// The "library" scenario (scripts/e2e/library*.mjs) adds a library from the console, waits for its
+// scan with `fin wait`, lists, searches and shows its files, renames, moves, rewrites and deletes
+// some and scans again; NFC/NFD twins answer `PATH_AMBIGUOUS`, placeholders and a Nextcloud stub
+// stay `cloudOnly` and unopened, a nested mount unmounted through the test overlay goes offline
+// with nothing missing, and no scan changes a byte or a timestamp under the root (plan 5D Task 15).
+//
+// The "sandbox" scenario (scripts/e2e/sandbox.mjs) runs a `fake` session whose turn starts a scripted
+// child through the session sandbox (Linux: the launcher, its subreaper and Landlock): `fin` lands
+// on the session's branch over the agent listener, `auth/local.key` and writes outside the
+// workspace are denied, `/etc/hosts` is `PATH_NOT_ALLOWED`, no `before7C` warning; with a GPU, a
+// warm look per project under the worker profile (plan 7C Task 14).
+//
+// The "remote" scenario (scripts/e2e/remote.mjs, device-lib.mjs) pairs a device written apart from
+// the server (WebCrypto P-256, its own DPoP proofs, a pinned TLS client) over the remote listener on
+// loopback: the descriptor's pin, one-use offers and safety codes, nonces, tokens and tickets, a
+// `wss` subscription, a device's `server.stop`, allowed roots, revocation within 100 ms, a copied
+// server data (`ENV_MOVED`, `env reset`) and the leak grep (plan 5B Task 13).
+//
+// The "review" scenario (scripts/e2e/review.mjs) drives the review workflow with an agent credential
+// on its own branches and `fin` as the local reviewer: a protected `main`, a review of four edits
+// (reject one, accept two, leave one), the partial merge and the rest after a stale snapshot, the
+// drop kept out of a plain merge, a `mergeConflict` item superseded by a later merge, the project
+// copied to a second server data (the drop holds, the agent branch is re-derived), the policy
+// (`AUTO_MERGE_UNAVAILABLE`, `HUMAN_ONLY`) and what `events/` and the audit hold (plan 5E Task 11).
+//
+// The "subagents" scenario (scripts/e2e/subagents*.mjs) runs built-in sessions of the local preset
+// against a scripted model server: a rule `ask` waits on a card (`APPROVAL_PENDING`, exit 8) and a
+// `remember: session` answer lets the next identical call pass; an editor spawns two clip finders,
+// waits with `fin agent wait --any`, the carves settle on it, it merges one child and a person rolls
+// the merge back; a spawn chain stops at depth 3 (`DEPTH_EXCEEDED`); a saved prompt starts a
+// session; a run past 75 % of the window compacts; an `auto` session's review request leaves the
+// item open, the `auto` merge trigger answering `unavailable` (plan 7B Task 13).
+//
+// The "hooks" scenario (scripts/e2e/hooks*.mjs) runs `fake` sessions whose turns run `fin item trim`
+// against a project's `finisher.hooks.json` and a user-layer `PreMerge` hook: untrusted hooks do
+// nothing and the start warns `PROJECT_HOOKS_UNTRUSTED`; trust binds the file's hash; a
+// `PreCommand` hook blocks the trim (`HOOK_BLOCKED`, exit 7, one `hook.block` row); a `UserPrompt`
+// hook's context is a `notice {hookContext}` in `agent.watch`; a person's merge is refused by
+// `PreMerge`; editing the file turns the hooks off until trusted again; `server.status.hooks`
+// counts the runs. On Linux a probe hook runs under the `hook` profile's launcher and cannot write
+// the project folder (plan 7F Task 11).
+// The "claude" scenario (scripts/e2e/claude*.mjs) runs Claude Code sessions from the console with
+// `fake-claude` as the CLI (`agents.claudeCode.path`, laid out as `claude/versions/<v>`): `agent
+// providers` and a `provider signin` that runs nothing, an `ask tool:Bash(curl *)` rule answered by a
+// person, edits through `fin` on the session's branch, a steer held for the next turn, an interrupt,
+// a restart mid-call and a resume that refuses the re-asked call (no repeated commit), an account
+// change that refuses the next start until confirmed, a budget stop whose approval gates the next
+// turn, the credential revoked at the end and the leak grep. On Linux it runs again under the
+// launcher (`FIN_TEST_SANDBOX_READY=agent`, the test-hooks fin-node; `FIN_REQUIRE_LANDLOCK=1` fails
+// instead of skipping where the profile cannot be enforced) (plan 7D Task 16).
+//
+// The "proxy" scenario (scripts/e2e/proxy*.mjs) makes proxies through the real media worker (6B-1
+// Task 20): a library's `proxy540` stage over generated AV1 clips (CFR, and VFR rotated 90°), the
+// `1080` tier by `fin media proxy`, `fin look` reading the proxies with the frame ids of
+// `--originals`, `fin media thumbs --strip`, `media.url` and an HTTP range request, `fin cache
+// status` and the console's `gc --to 0` around an open and a closed project, and the journal's
+// media entries. H.264: proxied from the OS encoder's clip where the report names one (macOS,
+// Windows), `CODEC_UNAVAILABLE` with `laterBatch` guidance on Linux. Needs a GPU adapter, as "look".
+//
+// After the builds, each scenario has a deadline (E2E_DEADLINE_MS, default 180 s): when it passes,
 // the server is killed and the script exits non-zero. Test hooks (scripts/e2e.test.mjs):
 // E2E_SERVER_CMD (a JSON array, `{serverData}` substituted) replaces the finisherd command,
 // and E2E_START_TIMEOUT_MS bounds the wait for its `finisherd.json` (default 30 s).
-import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
-import { isDeepStrictEqual } from "node:util";
+import { pathToFileURL } from "node:url";
+import { assertNoTestHooks, build, live, removeTmp } from "./e2e/lib.mjs";
+import { checkRevs, run as runBasic } from "./e2e/basic.mjs";
+import { run as runStorage } from "./e2e/storage.mjs";
+import { run as runHistory } from "./e2e/history.mjs";
+import { run as runReel } from "./e2e/reel.mjs";
+import { run as runDiagnostics } from "./e2e/diagnostics.mjs";
+import { run as runPlugins } from "./e2e/plugins.mjs";
+import { run as runPluginCode } from "./e2e/plugin-code.mjs";
+import { run as runAuth } from "./e2e/auth.mjs";
+import { run as runLook } from "./e2e/look.mjs";
+import { run as runListen } from "./e2e/listen.mjs";
+import { run as runAgent } from "./e2e/agent.mjs";
+import { run as runLibrary } from "./e2e/library.mjs";
+import { run as runSandbox } from "./e2e/sandbox.mjs";
+import { run as runRemote } from "./e2e/remote.mjs";
+import { run as runReview } from "./e2e/review.mjs";
+import { run as runSubagents } from "./e2e/subagents.mjs";
+import { run as runHooks } from "./e2e/hooks.mjs";
+import { run as runClaude } from "./e2e/claude.mjs";
+import { run as runProxy } from "./e2e/proxy.mjs";
 
-const ROOT = fileURLToPath(new URL("..", import.meta.url));
-const WIN = process.platform === "win32";
-const FIN = join(ROOT, "target", "release", WIN ? "fin.exe" : "fin");
-const DEADLINE_MS = Number(process.env.E2E_DEADLINE_MS ?? 120_000);
-const START_TIMEOUT_MS = Number(process.env.E2E_START_TIMEOUT_MS ?? 30_000);
+// The servers of every scenario keep their secrets in files, never in the OS keychain (5B Decision 4).
+process.env.FIN_SECRETS ??= "file";
 
-/** What the watchdog must clean up: the spawned server and the temp dir, once they exist. */
-const live = { child: undefined, tmp: undefined };
+export { parseFrames } from "./e2e/lib.mjs";
+export { checkRevs };
 
-/** Splits WebSocket message text into NDJSON frames (a message may carry several lines). */
-export function parseFrames(text) {
-  return text
-    .split("\n")
-    .filter((line) => line.trim().length > 0)
-    .map((line) => JSON.parse(line));
-}
-
-/**
- * Checks that `seen` (the subscriber's revs, in arrival order) is exactly `committed`
- * (the revs `fin` reported, in commit order). Returns an error message or `undefined`.
- */
-export function checkRevs(seen, committed) {
-  const want = [...committed].sort((a, b) => a - b);
-  for (let i = 1; i < want.length; i++) {
-    if (want[i] !== want[i - 1] + 1) return `fin's revs are not contiguous: ${JSON.stringify(committed)}`;
-  }
-  if (JSON.stringify(seen) !== JSON.stringify(want)) {
-    return `subscriber saw revs ${JSON.stringify(seen)}, expected ${JSON.stringify(want)} in order`;
-  }
-  return undefined;
-}
-
-function log(message) {
-  process.stdout.write(`e2e: ${message}\n`);
-}
-
-function build(cmd, args) {
-  log(`$ ${cmd} ${args.join(" ")}`);
-  // `pnpm` is a .cmd shim on Windows, which only a shell can run; the args are fixed words,
-  // passed as one command line (Node deprecates separate args with `shell`).
-  const shell = WIN && cmd === "pnpm";
-  const { status } = shell
-    ? spawnSync(`${cmd} ${args.join(" ")}`, { cwd: ROOT, stdio: "inherit", shell })
-    : spawnSync(cmd, args, { cwd: ROOT, stdio: "inherit" });
-  if (status !== 0) throw new Error(`${cmd} ${args.join(" ")} failed (exit ${status})`);
-}
-
-/** Runs `fin` and returns its single JSON document; throws on a non-zero exit. */
-function fin(serverData, cwd, args) {
-  const env = { ...process.env, FIN_SERVER_DATA: serverData };
-  delete env.FIN_SERVER; // find the server through <server-data>/finisherd.json
-  // fin has its own 30 s server timeouts; this bounds a hang the watchdog cannot interrupt
-  // (spawnSync blocks the event loop).
-  const out = spawnSync(FIN, args, { cwd, encoding: "utf8", env, timeout: 60_000 });
-  if (out.error) throw out.error;
-  const text = out.stdout.trim();
-  if (out.status !== 0) throw new Error(`fin ${args.join(" ")} exited ${out.status}: ${text} ${out.stderr}`);
-  log(`fin ${args.join(" ")} → ${text.length > 160 ? `${text.slice(0, 160)}…` : text}`);
-  return JSON.parse(text);
-}
-
-async function waitFor(what, predicate, timeoutMs, onTimeout = () => "") {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const value = predicate();
-    if (value) return value;
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}${onTimeout()}`);
-    await new Promise((r) => setTimeout(r, 25));
-  }
-}
-
-function serverCommand(serverData) {
-  if (process.env.E2E_SERVER_CMD) {
-    const [cmd, ...args] = JSON.parse(process.env.E2E_SERVER_CMD).map((a) => a.replaceAll("{serverData}", serverData));
-    return [cmd, args];
-  }
-  return [process.execPath, [join(ROOT, "apps", "finisherd", "src", "main.ts"), "--server-data", serverData]];
-}
-
-/**
- * Starts `finisherd --server-data <dir>` and waits for its `finisherd.json`. If it never
- * becomes ready, the child is stopped before the error propagates.
- */
-async function startServer(serverData) {
-  const [cmd, args] = serverCommand(serverData);
-  const child = spawn(cmd, args, { cwd: ROOT, stdio: ["ignore", "ignore", "pipe"] });
-  live.child = child;
-  let stderr = "";
-  child.stderr.setEncoding("utf8").on("data", (d) => (stderr += d));
-  const exited = new Promise((resolve) => child.once("exit", (code, signal) => resolve(code ?? signal)));
-  const file = join(serverData, "finisherd.json");
-  const server = { child, exited, stderr: () => stderr };
-  try {
-    server.info = await waitFor(
-      "finisherd.json",
-      () => {
-        if (child.exitCode !== null) throw new Error(`finisherd exited ${child.exitCode}: ${stderr}`);
-        if (!existsSync(file)) return undefined;
-        try {
-          return JSON.parse(readFileSync(file, "utf8"));
-        } catch {
-          return undefined; // mid-write
-        }
-      },
-      START_TIMEOUT_MS,
-      () => `: ${stderr}`,
-    );
-  } catch (e) {
-    await stopServer(server);
-    throw e;
-  }
-  log(`finisherd pid=${server.info.pid} wsPort=${server.info.wsPort} socket=${server.info.socket}`);
-  return server;
-}
-
-async function stopServer(server) {
-  if (server.child.exitCode !== null || server.child.signalCode !== null) return;
-  server.child.kill("SIGTERM"); // TerminateProcess on Windows
-  const result = await Promise.race([server.exited, new Promise((r) => setTimeout(() => r("timeout"), 10_000))]);
-  if (result === "timeout") {
-    server.child.kill("SIGKILL");
-    await server.exited;
-  }
-  log(`finisherd stopped (${result})`);
-}
-
-/** A minimal Effect-RPC client over the bearer-token WebSocket (NDJSON frames). */
-async function connectWs({ wsPort, token }) {
-  // Node's WebSocket (undici) accepts `headers` in its options object.
-  const ws = new WebSocket(`ws://127.0.0.1:${wsPort}`, { headers: { Authorization: `Bearer ${token}` } });
-  await new Promise((resolve, reject) => {
-    ws.onopen = resolve;
-    ws.onerror = () => reject(new Error("websocket failed to open"));
-  });
-  let nextId = 1;
-  const exits = new Map();
-  const chunks = new Map();
-  ws.onmessage = (event) => {
-    for (const frame of parseFrames(String(event.data))) {
-      if (frame._tag === "Chunk") {
-        chunks.get(frame.requestId)?.(frame.values);
-        ws.send(`${JSON.stringify({ _tag: "Ack", requestId: frame.requestId })}\n`);
-      } else if (frame._tag === "Exit") {
-        chunks.delete(frame.requestId);
-        exits.get(frame.requestId)?.(frame.exit);
-        exits.delete(frame.requestId);
-      }
-    }
-  };
-  const request = (tag, payload, onValues) => {
-    const id = String(nextId++);
-    if (onValues) chunks.set(id, onValues);
-    const done = new Promise((resolve) => exits.set(id, resolve));
-    ws.send(`${JSON.stringify({ _tag: "Request", id, tag, payload, headers: [] })}\n`);
-    return { id, done };
-  };
-  return {
-    async call(tag, payload) {
-      const exit = await request(tag, payload).done;
-      if (exit._tag !== "Success") throw new Error(`${tag} failed: ${JSON.stringify(exit)}`);
-      return exit.value;
-    },
-    subscribe(payload, onValue) {
-      return request("ops.subscribe", payload, (values) => values.forEach(onValue));
-    },
-    interrupt(id) {
-      ws.send(`${JSON.stringify({ _tag: "Interrupt", requestId: id })}\n`);
-    },
-    close() {
-      ws.close();
-    },
-  };
-}
-
-/** Writes a real 10 s MP4 with fin-probe's fixture writer (fin-node `test-hooks` build). */
-async function writeFixture(path) {
-  process.env.FIN_NODE_BINARY_DIR = join(ROOT, "packages", "fin-node", "test", "native");
-  const { testHooks } = await import(pathToFileURL(join(ROOT, "packages", "fin-node", "index.js")).href);
-  if (!testHooks) throw new Error("fin-node test-hooks build is missing (pnpm --filter @finisher/fin-node build:test)");
-  testHooks.writeFixtureMp4(path, { seconds: 10, fps: 30, audio: true, sampleRate: 48000 });
-}
-
-function assertEqual(actual, expected, what) {
-  if (!isDeepStrictEqual(actual, expected)) {
-    throw new Error(`${what}: got ${JSON.stringify(actual)}, expected ${JSON.stringify(expected)}`);
-  }
-}
+const DEADLINE_MS = Number(process.env.E2E_DEADLINE_MS ?? 180_000);
+const SCENARIOS = { basic: runBasic, storage: runStorage, history: runHistory, reel: runReel, diagnostics: runDiagnostics, plugins: runPlugins, "plugin-code": runPluginCode, auth: runAuth, look: runLook, listen: runListen, agent: runAgent, library: runLibrary, sandbox: runSandbox, remote: runRemote, review: runReview, subagents: runSubagents, hooks: runHooks, claude: runClaude, proxy: runProxy };
 
 async function main(argv) {
+  const names = argv.filter((a) => !a.startsWith("--"));
   if (!argv.includes("--skip-build")) {
     build("cargo", ["build", "--release", "-p", "fin"]);
+    build("cargo", ["build", "--release", "-p", "fin-plugin-cli"]); // publisher tooling: the plugins scenario builds registries with it
+    if (names.length === 0 || names.includes("plugin-code")) build("cargo", ["build", "--release", "-p", "example-rust-tools", "--bin", "rust-tools"]); // the Rust example plugin
     build("pnpm", ["--filter", "@finisher/fin-node", "build"]);
     build("pnpm", ["--filter", "@finisher/fin-node", "build:test"]);
+    // The fake Claude Code CLI the claude scenario runs as `agents.claudeCode.path`.
+    if (names.length === 0 || names.includes("claude")) build("cargo", ["build", "--release", "-p", "fin-agent-fakes", "--bin", "fake-claude"]);
+    // The listen scenario's Opus (and, on Linux, AAC-LC) MP4 writer.
+    if (names.length === 0 || names.includes("listen")) build("cargo", ["build", "--release", "-p", "fin-codecs", "--features", "testing", "--example", "make_audio_fixture"]);
+    if (names.length === 0 || names.includes("look") || names.includes("sandbox") || names.includes("proxy")) {
+      // The look scenario's fixture writer and CPU oracle (it runs them with `cargo run`, which finds them built); the sandbox and proxy scenarios' AV1 clips.
+      build("cargo", ["build", "--release", "-p", "fin-codecs", "--features", "testing", "--example", "make_fixture"]);
+      build("cargo", ["build", "--release", "-p", "fin-workers", "--example", "reference_render"]);
+    }
   }
+  // A fake server (E2E_SERVER_CMD) never reaches `fin`, so the release binary is not needed (or checked).
+  if (!process.env.E2E_SERVER_CMD) assertNoTestHooks();
   // The builds run synchronously (a cold release build can take minutes in CI), so the
   // deadline covers the run itself.
-  await withDeadline(run(), DEADLINE_MS);
-}
-
-/** Removes the temp dir; a failure (a Windows file lock) is logged, never thrown. */
-function removeTmp(tmp) {
-  try {
-    rmSync(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
-  } catch (e) {
-    process.stderr.write(`e2e: cleanup: cannot remove ${tmp}: ${e instanceof Error ? e.message : String(e)}\n`);
+  const unknown = names.filter((n) => !(n in SCENARIOS));
+  if (unknown.length > 0) throw new Error(`unknown scenario ${unknown.join(", ")}; known: ${Object.keys(SCENARIOS).join(", ")}`);
+  // The deadline is per scenario: the sum of the scenarios outgrew one budget (review made it 12).
+  for (const name of names.length > 0 ? names : Object.keys(SCENARIOS)) {
+    process.stdout.write(`e2e: scenario ${name}\n`);
+    // The claude scenario runs twice (direct, then under the launcher): twice the budget.
+    await withDeadline(SCENARIOS[name](), name === "claude" ? 2 * DEADLINE_MS : DEADLINE_MS);
   }
 }
 
@@ -232,7 +205,7 @@ async function withDeadline(work, ms) {
   let timer;
   const expired = new Promise((_, reject) => {
     timer = setTimeout(() => {
-      live.child?.kill("SIGKILL");
+      for (const child of live.children) child.kill("SIGKILL");
       if (live.tmp) removeTmp(live.tmp);
       reject(new Error(`watchdog: the run did not finish within ${ms / 1000}s; killed finisherd`));
     }, ms);
@@ -244,83 +217,6 @@ async function withDeadline(work, ms) {
   }
 }
 
-async function run() {
-  const started = Date.now();
-
-  // realpath: macOS tmp is a symlink (/var → /private/var), and fin echoes resolved paths.
-  const tmp = realpathSync(mkdtempSync(join(tmpdir(), "finisher-e2e-")));
-  live.tmp = tmp;
-  const serverData = join(tmp, "server-data");
-  let server;
-  let ws;
-  try {
-    server = await startServer(serverData);
-    const project = join(tmp, "мій фільм");
-    const created = fin(serverData, tmp, ["project", "create", project, "--name", "E2E"]);
-    const projectId = created.project.projectId;
-    assertEqual(created.project.rev, 0, "new project rev");
-
-    ws = await connectWs(server.info);
-    const seen = [];
-    const sub = ws.subscribe({ projectId, branch: "main", fromRev: 0 }, (tx) => seen.push(tx));
-    let subExit;
-    sub.done.then((exit) => (subExit = exit));
-
-    await writeFixture(join(project, "кліп 1.mp4"));
-    const writes = [
-      ["asset", "add", "кліп 1.mp4"],
-      ["clip", "insert", "--track", "t1", "--at", "0", "--asset", "a1", "--dur", "4s"],
-      ["clip", "insert", "--track", "t1", "--at", "end", "--asset", "a1", "--in", "4s", "--dur", "3s"],
-      ["clip", "trim", "c1", "--end", "-1s"],
-      ["clip", "delete", "c1"],
-    ];
-    const committed = writes.map((args) => fin(serverData, project, args));
-    const view = fin(serverData, project, ["view"]);
-    assertEqual(
-      view.tracks,
-      [
-        { id: "t1", kind: "video", clips: [{ id: "c2", start: "0", end: "3", asset: "a1", sourceIn: "4" }] },
-        { id: "t2", kind: "audio", clips: [] },
-      ],
-      "fin view tracks",
-    );
-
-    const revs = committed.map((w) => w.rev);
-    await waitFor(
-      `${revs.length} revs on the subscriber`,
-      () => {
-        if (subExit) throw new Error(`subscription ended early: ${JSON.stringify(subExit)}`);
-        return seen.length >= revs.length;
-      },
-      15_000,
-      () => ` (saw ${JSON.stringify(seen.map((t) => t.rev))})`,
-    );
-    // Anything duplicated or late would arrive within a short grace period.
-    await new Promise((r) => setTimeout(r, 300));
-    const problem = checkRevs(
-      seen.map((t) => t.rev),
-      revs,
-    );
-    if (problem) throw new Error(problem);
-    assertEqual(
-      seen.map((t) => t.tx.txId),
-      committed.map((w) => w.txId),
-      "subscriber txIds",
-    );
-
-    const snapshot = await ws.call("snapshot.get", { projectId, branch: "main" });
-    assertEqual(snapshot.rev, seen.at(-1).rev, "snapshot.get rev vs last CommittedTx.rev");
-
-    ws.interrupt(sub.id);
-    await sub.done;
-    log(`subscriber saw revs ${JSON.stringify(seen.map((t) => t.rev))}; snapshot.get rev ${snapshot.rev}`);
-    log(`PASS in ${((Date.now() - started) / 1000).toFixed(1)}s`);
-  } finally {
-    ws?.close();
-    if (server) await stopServer(server);
-    removeTmp(tmp);
-  }
-}
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   main(process.argv.slice(2)).catch((e) => {

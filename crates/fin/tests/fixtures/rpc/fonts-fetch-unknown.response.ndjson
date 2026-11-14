@@ -1,0 +1,1 @@
+{"_tag":"Exit","requestId":"1","exit":{"_tag":"Failure","cause":[{"_tag":"Fail","error":{"_tag":"FinError","code":"FONT_NOT_IN_CATALOG","message":"the font catalog has no entry no-such-entry","details":{"entry":"no-such-entry"},"fix":"fin fonts ls --catalog"}}]}}

@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use fin_core::{CoreError, Op, Project, Rational, SCHEMA_VERSION, Tx, VideoInfo};
-use fin_store::{MAIN, Store, StoreError, db_path, read_project_file, replay};
+use fin_store::{MAIN, Store, StoreError, db_path, read_project_file, replay_record};
 use tempfile::TempDir;
 
 fn secs(n: i64) -> Rational {
@@ -28,7 +28,7 @@ fn env() -> Env {
 }
 
 fn create(e: &Env) -> Store {
-    Store::create(&e.data, &e.dir, "Demo", secs(30)).unwrap()
+    Store::create(&e.data, &e.dir, "Demo", secs(30), None).unwrap()
 }
 
 fn tx(id: &str, base_rev: u64, ops: Vec<Op>) -> Tx {
@@ -38,38 +38,49 @@ fn tx(id: &str, base_rev: u64, ops: Vec<Op>) -> Tx {
         branch: MAIN.into(),
         base_rev,
         schema_version: SCHEMA_VERSION,
+        args_hash: None,
+        via: None,
         ops,
     }
 }
 
 fn asset(id: &str) -> Op {
-    Op::AssetAdd {
-        id: id.into(),
-        path: "/media/a.mov".into(),
-        duration: secs(60),
-        video: Some(VideoInfo {
+    fin_core::AssetAdd::media(
+        id,
+        "/media/a.mov",
+        secs(60),
+        Some(VideoInfo {
             width: 1920,
             height: 1080,
             rate: secs(30),
+            display: None,
+            rotation: None,
+            pixel_aspect: None,
         }),
-        audio: None,
-        fingerprint: "fp".into(),
-    }
+        None,
+        "fp",
+    )
+    .into()
 }
 
 fn insert(id: &str, at: i64, asset: &str, duration: i64) -> Op {
-    Op::ClipInsert {
+    fin_core::ItemInsert {
         id: id.into(),
         track: "t1".into(),
         at: secs(at),
-        asset: asset.into(),
-        source_in: secs(0),
         duration: secs(duration),
+        mode: fin_core::InsertMode::Ripple,
+        body: fin_core::ItemBody::Clip {
+            asset: asset.into(),
+            source_in: secs(0),
+            speed: fin_core::Rational::from_int(1),
+        },
     }
+    .into()
 }
 
 fn clips(p: &Project) -> Vec<(String, Rational, Rational)> {
-    p.timeline.tracks[0]
+    p.timelines[0].tracks[0]
         .items
         .iter()
         .map(|c| (c.id.clone(), c.start, c.duration))
@@ -81,6 +92,31 @@ fn with_asset(e: &Env) -> Store {
     let mut s = create(e);
     s.commit(tx("tx-asset", 0, vec![asset("$a")])).unwrap();
     s
+}
+
+/// Replays the first `n` stored records of `main` onto `zero` through `replay_record`.
+fn replay_all(s: &Store, zero: Project, n: usize) -> Project {
+    let conn = rusqlite::Connection::open(s.db_path()).unwrap();
+    let mut stmt = conn
+        .prepare("SELECT record_bytes FROM txs WHERE branch = ?1 ORDER BY seq")
+        .unwrap();
+    let rows: Vec<Vec<u8>> = stmt
+        .query_map([MAIN], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(rows.len(), n);
+    rows.iter()
+        .fold(zero, |p, b| replay_record(&p, b).unwrap().project)
+}
+
+/// Folds `ops_since` output (intent + bindings) onto `zero` with `apply_committed`.
+fn fold_history(zero: Project, history: &[fin_core::CommittedTx]) -> Project {
+    history.iter().fold(zero, |p, c| {
+        fin_core::apply_committed(&p, &c.tx, &c.bindings)
+            .unwrap()
+            .project
+    })
 }
 
 fn code(e: StoreError) -> CoreError {
@@ -122,7 +158,7 @@ fn create_then_open_round_trips() {
 fn create_refuses_an_existing_project() {
     let e = env();
     create(&e);
-    let err = code(Store::create(&e.data, &e.dir, "Again", secs(30)).unwrap_err());
+    let err = code(Store::create(&e.data, &e.dir, "Again", secs(30), None).unwrap_err());
     assert_eq!(err.code, "PROJECT_EXISTS");
 }
 
@@ -133,7 +169,7 @@ fn create_under_a_file_is_project_dir_unwritable() {
     let file = e.dir.join("not-a-dir");
     std::fs::write(&file, b"x").unwrap();
     let dir = file.join("film");
-    let err = code(Store::create(&e.data, &dir, "Film", secs(30)).unwrap_err());
+    let err = code(Store::create(&e.data, &dir, "Film", secs(30), None).unwrap_err());
     assert_eq!(err.code, "PROJECT_DIR_UNWRITABLE");
     assert_eq!(err.details["path"], dir.to_string_lossy().as_ref());
     assert!(
@@ -147,20 +183,28 @@ fn create_under_a_file_is_project_dir_unwritable() {
 #[test]
 fn create_rejects_a_bad_rate_without_touching_disk() {
     let e = env();
-    let err = code(Store::create(&e.data, &e.dir, "Demo", secs(0)).unwrap_err());
+    let err = code(Store::create(&e.data, &e.dir, "Demo", secs(0), None).unwrap_err());
     assert_eq!(err.code, "INVALID_RANGE");
     assert!(!e.dir.exists() && !e.data.exists());
 }
 
 #[test]
 fn open_without_db_is_project_db_missing() {
+    // A project file without a genesis (sub-project 2, never backfilled) cannot be rebuilt.
+    // (With one, the database is rebuilt from the folder: tests/integration.)
     let e = env();
     let s = create(&e);
     let db = s.db_path().to_path_buf();
     drop(s);
     std::fs::remove_dir_all(db.parent().unwrap()).unwrap();
+    let path = e.dir.join("finisher.project.json");
+    let mut file: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    file.as_object_mut().unwrap().remove("genesis");
+    std::fs::write(&path, file.to_string()).unwrap();
     let err = code(Store::open(&e.data, &e.dir).unwrap_err());
     assert_eq!(err.code, "PROJECT_DB_MISSING");
+    assert!(!db.exists(), "nothing created");
 }
 
 #[test]
@@ -185,6 +229,38 @@ fn open_rejects_an_id_that_is_not_a_ulid() {
         code(Store::open(&e.data, &e.dir).unwrap_err()).code,
         "PROJECT_INVALID"
     );
+}
+
+/// A project file written by a newer Finisher (a higher `schemaVersion`) opens read-only
+/// (`NEWER_FORMAT`) instead of failing: reads work, commits are refused, and the file is
+/// never rewritten.
+#[test]
+fn newer_project_file_opens_read_only() {
+    let e = env();
+    let mut s = create(&e);
+    s.commit(tx("tx-1", 0, vec![asset("$a"), insert("$c", 0, "$a", 5)]))
+        .unwrap();
+    let before = s.snapshot(MAIN).unwrap();
+    drop(s);
+    let path = e.dir.join("finisher.project.json");
+    let mut file: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    file["schemaVersion"] = (SCHEMA_VERSION + 1).into();
+    std::fs::write(&path, serde_json::to_vec_pretty(&file).unwrap()).unwrap();
+    let written = std::fs::read(&path).unwrap();
+
+    let mut s = Store::open(&e.data, &e.dir).unwrap();
+    assert_eq!(s.read_only(), Some(fin_store::ReadOnlyReason::NewerFormat));
+    let status = serde_json::to_value(s.status()).unwrap();
+    assert_eq!(status["readOnly"]["reason"], "NEWER_FORMAT", "{status}");
+    assert_eq!(s.snapshot(MAIN).unwrap(), before);
+    assert_eq!(s.ops_since(MAIN, 0).unwrap().len(), 1);
+    let err = code(s.commit(tx("tx-2", 1, vec![asset("$a")])).unwrap_err());
+    assert_eq!(err.code, "PROJECT_READ_ONLY", "{err:?}");
+    assert_eq!(err.details["reason"], "NEWER_FORMAT");
+    assert_eq!(s.head(MAIN), 1);
+    drop(s);
+    assert_eq!(std::fs::read(&path).unwrap(), written, "the file is kept");
 }
 
 #[test]
@@ -222,7 +298,7 @@ fn commit_stale_base_rebases() {
     assert_eq!((a.rev, b.rev), (3, 4));
     assert_eq!(b.tx.base_rev, 3, "the stored tx is the rebased one");
     match &b.tx.ops[0] {
-        Op::ClipInsert { at, .. } => assert_eq!(*at, secs(8)),
+        Op::ItemInsert(i) => assert_eq!(i.at, secs(8)),
         op => panic!("unexpected {op:?}"),
     }
     let (rev, p) = s.snapshot(MAIN).unwrap();
@@ -243,17 +319,140 @@ fn conflicting_stale_tx_is_conflict_with_both_tx_ids() {
     let mut s = with_asset(&e);
     s.commit(tx("tx-base", 1, vec![insert("$c", 0, "a1", 5)]))
         .unwrap();
-    s.commit(tx("tx-del", 2, vec![Op::ClipDelete { clip: "c1".into() }]))
-        .unwrap();
+    s.commit(tx(
+        "tx-del",
+        2,
+        vec![
+            fin_core::ItemDelete {
+                item: "c1".into(),
+                mode: fin_core::DeleteMode::Ripple,
+            }
+            .into(),
+        ],
+    ))
+    .unwrap();
     let before = s.snapshot(MAIN).unwrap();
     let err = code(
-        s.commit(tx("tx-late", 2, vec![Op::ClipDelete { clip: "c1".into() }]))
-            .unwrap_err(),
+        s.commit(tx(
+            "tx-late",
+            2,
+            vec![
+                fin_core::ItemDelete {
+                    item: "c1".into(),
+                    mode: fin_core::DeleteMode::Ripple,
+                }
+                .into(),
+            ],
+        ))
+        .unwrap_err(),
     );
     assert_eq!(err.code, "CONFLICT");
     assert_eq!(err.details["againstTx"], "tx-del");
     assert_eq!(err.details["txId"], "tx-late");
     assert_eq!(s.snapshot(MAIN).unwrap(), before);
+    assert_eq!(s.head(MAIN), 3);
+}
+
+/// 4A refused a position after our own delete on a track the committed side moved; the frame
+/// at the base (`state_at`) lets the engine map it exactly.
+#[test]
+fn commit_rebases_after_own_delete_exactly() {
+    let e = env();
+    let mut s = with_asset(&e);
+    s.commit(tx(
+        "tx-base",
+        1,
+        vec![insert("$c", 0, "a1", 5), insert("$d", 5, "a1", 3)],
+    ))
+    .unwrap();
+    // A inserts 3 s at 0: x [0, 3), c1 [3, 8), c2 [8, 11).
+    s.commit(tx("tx-a", 2, vec![insert("$x", 0, "a1", 3)]))
+        .unwrap();
+    // B read rev 2: deletes c1, then inserts at c2's end, 3 s after the delete.
+    let b = s
+        .commit(tx(
+            "tx-b",
+            2,
+            vec![
+                fin_core::ItemDelete {
+                    item: "c1".into(),
+                    mode: fin_core::DeleteMode::Ripple,
+                }
+                .into(),
+                insert("$y", 3, "a1", 1),
+            ],
+        ))
+        .unwrap();
+    assert_eq!(b.tx.base_rev, 3);
+    match &b.tx.ops[1] {
+        Op::ItemInsert(i) => assert_eq!(i.at, secs(6)),
+        op => panic!("unexpected {op:?}"),
+    }
+    let (rev, p) = s.snapshot(MAIN).unwrap();
+    assert_eq!(rev, 4);
+    assert_eq!(
+        clips(&p),
+        vec![
+            ("c3".to_string(), secs(0), secs(3)),
+            ("c2".to_string(), secs(3), secs(3)),
+            ("c4".to_string(), secs(6), secs(1)),
+        ]
+    );
+    // The stored record replays to the same state.
+    let zero = fin_core::new_project(s.project_id().into(), "Demo".into(), secs(30)).unwrap();
+    assert_eq!(fold_history(zero, &s.ops_since(MAIN, 0).unwrap()), p);
+}
+
+#[test]
+fn conflict_details_list_conflicts() {
+    let e = env();
+    let mut s = with_asset(&e);
+    s.commit(tx("tx-base", 1, vec![insert("$c", 0, "a1", 5)]))
+        .unwrap();
+    s.commit(tx(
+        "tx-trim",
+        2,
+        vec![
+            fin_core::ItemTrim {
+                item: "c1".into(),
+                edge: fin_core::Edge::End,
+                delta: secs(1),
+                mode: fin_core::TrimMode::Ripple,
+                alone: false,
+            }
+            .into(),
+        ],
+    ))
+    .unwrap();
+    let err = code(
+        s.commit(tx(
+            "tx-late",
+            2,
+            vec![
+                fin_core::ItemTrim {
+                    item: "c1".into(),
+                    edge: fin_core::Edge::End,
+                    delta: secs(2),
+                    mode: fin_core::TrimMode::Ripple,
+                    alone: false,
+                }
+                .into(),
+            ],
+        ))
+        .unwrap_err(),
+    );
+    assert_eq!(err.code, "CONFLICT");
+    assert_eq!(err.details["reason"], "SAME_EDGE");
+    assert_eq!(
+        err.details["conflicts"],
+        serde_json::json!([{
+            "txId": "tx-late",
+            "opIndex": 0,
+            "reason": "SAME_EDGE",
+            "againstTx": "tx-trim",
+            "fix": "the same edit was made since; read the project at the current head and decide",
+        }])
+    );
     assert_eq!(s.head(MAIN), 3);
 }
 
@@ -277,6 +476,45 @@ fn duplicate_tx_id_returns_the_committed_tx() {
         "dedupe survives reopen"
     );
     assert_eq!(s.head(MAIN), 2);
+}
+
+fn hash(c: char) -> Option<String> {
+    Some(format!("blake3:{}", c.to_string().repeat(64)))
+}
+
+#[test]
+fn idem_key_same_key_different_args_rejected() {
+    let e = env();
+    let mut s = with_asset(&e);
+    let mut t = tx("key-1", 1, vec![insert("$c", 0, "a1", 5)]);
+    t.args_hash = hash('a');
+    let first = s.commit(t.clone()).unwrap();
+    assert_eq!(first.tx.args_hash, hash('a'));
+    // The same command again (even rebuilt against a newer base): the commit.
+    let mut retry = t.clone();
+    retry.ops = vec![insert("$c", 5, "a1", 5)];
+    assert_eq!(s.commit(retry).unwrap(), first);
+    // No hash (a client that does not send one): the commit, as before.
+    let mut bare = t.clone();
+    bare.args_hash = None;
+    assert_eq!(s.commit(bare).unwrap(), first);
+    // Another command under the same key.
+    let mut other = t.clone();
+    other.args_hash = hash('b');
+    let err = code(s.commit(other.clone()).unwrap_err());
+    assert_eq!(err.code, "IDEM_KEY_REUSED", "{err:?}");
+    assert_eq!(err.details["txId"], "key-1");
+    assert_eq!(err.details["rev"], 2);
+    assert!(err.fix.is_some());
+    assert_eq!(s.head(MAIN), 2);
+    // The hash is stored with the record: it survives a reopen.
+    drop(s);
+    let mut s = Store::open(&e.data, &e.dir).unwrap();
+    assert_eq!(code(s.commit(other).unwrap_err()).code, "IDEM_KEY_REUSED");
+    // A malformed hash is refused before anything else.
+    let mut bad = tx("key-2", 2, vec![asset("$b")]);
+    bad.args_hash = Some("md5:abc".into());
+    assert_eq!(code(s.commit(bad).unwrap_err()).code, "INVALID_OP");
 }
 
 #[test]
@@ -381,8 +619,18 @@ fn ids_are_never_reused_after_reopen() {
     let mut s = with_asset(&e);
     s.commit(tx("tx-1", 1, vec![insert("$c", 0, "a1", 5)]))
         .unwrap();
-    s.commit(tx("tx-2", 2, vec![Op::ClipDelete { clip: "c1".into() }]))
-        .unwrap();
+    s.commit(tx(
+        "tx-2",
+        2,
+        vec![
+            fin_core::ItemDelete {
+                item: "c1".into(),
+                mode: fin_core::DeleteMode::Ripple,
+            }
+            .into(),
+        ],
+    ))
+    .unwrap();
     drop(s);
     let mut s = Store::open(&e.data, &e.dir).unwrap();
     let c = s
@@ -407,24 +655,40 @@ fn ops_since_zero_replays_to_the_snapshot() {
     s.commit(tx(
         "tx-2",
         2,
-        vec![Op::ClipTrim {
-            clip: "c1".into(),
-            edge: fin_core::Edge::End,
-            delta: secs(-1),
-        }],
+        vec![
+            fin_core::ItemTrim {
+                item: "c1".into(),
+                edge: fin_core::Edge::End,
+                delta: secs(-1),
+                mode: fin_core::TrimMode::Ripple,
+                alone: false,
+            }
+            .into(),
+        ],
     ))
     .unwrap();
     s.commit(tx("tx-3", 2, vec![insert("$e", 0, "a1", 2)]))
         .unwrap(); // stale: rebased
-    s.commit(tx("tx-4", 4, vec![Op::ClipDelete { clip: "c2".into() }]))
-        .unwrap();
+    s.commit(tx(
+        "tx-4",
+        4,
+        vec![
+            fin_core::ItemDelete {
+                item: "c2".into(),
+                mode: fin_core::DeleteMode::Ripple,
+            }
+            .into(),
+        ],
+    ))
+    .unwrap();
     let history = s.ops_since(MAIN, 0).unwrap();
     assert_eq!(history.len() as u64, s.head(MAIN));
     let head = s.snapshot(MAIN).unwrap().1;
     let zero =
         fin_core::new_project(s.project_id().to_string(), head.name.clone(), head.rate).unwrap();
-    let replayed = history.iter().try_fold(zero, |p, c| replay(&p, c)).unwrap();
+    let replayed = replay_all(&s, zero.clone(), history.len());
     assert_eq!(replayed, head);
+    assert_eq!(fold_history(zero, &history), head);
     drop(s);
     assert_eq!(
         Store::open(&e.data, &e.dir)
@@ -459,7 +723,7 @@ fn ukrainian_name_and_dir_round_trip() {
     let tmp = tempfile::tempdir().unwrap();
     let data = tmp.path().join("дані сервера");
     let dir: &Path = &tmp.path().join("Проєкти").join("Мій фільм — ґанок");
-    let s = Store::create(&data, dir, "Літній відпочинок у Львові", secs(25)).unwrap();
+    let s = Store::create(&data, dir, "Літній відпочинок у Львові", secs(25), None).unwrap();
     let id = s.project_id().to_string();
     drop(s);
     let raw = std::fs::read_to_string(dir.join("finisher.project.json")).unwrap();
@@ -478,6 +742,10 @@ fn two_stores_on_one_project_interleave_commits() {
     let mut a = with_asset(&e);
     let mut b = Store::open(&e.data, &e.dir).unwrap();
     assert_eq!(b.head(MAIN), 1);
+    // The second store of this process on the folder follows (A holds the lease); give it
+    // A's epoch to exercise two writers on one database.
+    assert_eq!(b.read_only(), Some(fin_store::ReadOnlyReason::LeaseHeld));
+    b.set_test_lease(a.lease().unwrap().epoch(), true);
 
     let a1 = a
         .commit(tx("tx-a1", 1, vec![insert("$x", 0, "a1", 5)]))
@@ -494,7 +762,17 @@ fn two_stores_on_one_project_interleave_commits() {
         .commit(tx("tx-a2", 3, vec![insert("$z", 7, "a1", 1)]))
         .unwrap();
     let b2 = b
-        .commit(tx("tx-b2", 4, vec![Op::ClipDelete { clip: "c3".into() }]))
+        .commit(tx(
+            "tx-b2",
+            4,
+            vec![
+                fin_core::ItemDelete {
+                    item: "c3".into(),
+                    mode: fin_core::DeleteMode::Ripple,
+                }
+                .into(),
+            ],
+        ))
         .unwrap();
     assert_eq!([a1.rev, b1.rev, a2.rev, b2.rev], [2, 3, 4, 5]);
     assert_eq!(
@@ -529,4 +807,90 @@ fn same_tx_id_via_two_stores_is_idempotent() {
         .unwrap();
     assert_eq!(again, first);
     assert_eq!((a.head(MAIN), b.head(MAIN)), (2, 2));
+}
+
+fn copy_dir(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let dest = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_dir(&entry.path(), &dest);
+        } else {
+            std::fs::copy(entry.path(), dest).unwrap();
+        }
+    }
+}
+
+/// The committed sub-project 2 fixture opens (snapshot at rev 200 + tail) and replays from rev 0
+/// (every tx, through `apply_committed`) to the state it was generated with.
+#[test]
+fn sp2_fixture_opens_and_replays_to_expected_state() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sp2");
+    let tmp = tempfile::tempdir().unwrap();
+    copy_dir(&fixture, tmp.path());
+    let expected: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(tmp.path().join("expected_v2.json")).unwrap())
+            .unwrap();
+    let store = Store::open(&tmp.path().join("server-data"), &tmp.path().join("folder")).unwrap();
+    let (rev, head) = store.snapshot(MAIN).unwrap();
+    assert_eq!(rev, expected["rev"].as_u64().unwrap());
+    assert_eq!(
+        serde_json::to_value(&head).unwrap(),
+        current(&expected["project"])
+    );
+
+    let history = store.ops_since(MAIN, 0).unwrap();
+    assert_eq!(history.len() as u64, rev);
+    let zero = fin_core::new_project(head.id.clone(), head.name.clone(), head.rate).unwrap();
+    let replayed = replay_all(&store, zero.clone(), history.len());
+    assert_eq!(replayed, head);
+    assert_eq!(fold_history(zero, &history), head);
+}
+
+/// The checks a commit runs through `Store::write`, in 4A's order: the dedupe answers before
+/// the read-only state, the read-only state before `BASE_REV_AHEAD`, and the generation
+/// (`HISTORY_REWOUND`) before `BASE_REV_AHEAD`.
+#[test]
+fn commit_through_write_keeps_4a_order() {
+    let e = env();
+    let mut a = with_asset(&e);
+    let first = a
+        .commit(tx("tx-1", 1, vec![insert("$c", 0, "a1", 5)]))
+        .unwrap();
+    let mut b = Store::open(&e.data, &e.dir).unwrap();
+    assert_eq!(b.read_only(), Some(fin_store::ReadOnlyReason::LeaseHeld));
+    // A retry of a committed tx is answered on a follower.
+    assert_eq!(b.commit(tx("tx-1", 0, vec![asset("$x")])).unwrap(), first);
+    // Read-only before a bad base.
+    let err = code(b.commit(tx("tx-2", 9, vec![asset("$x")])).unwrap_err());
+    assert_eq!(err.code, "PROJECT_READ_ONLY", "{err:?}");
+    // The generation before a bad base; the dedupe before the generation.
+    let other = fin_store::Generation {
+        incarnation: "another-db".into(),
+        n: 0,
+    };
+    let err = code(
+        a.commit_at_generation(tx("tx-2", 9, vec![asset("$x")]), Some(&other))
+            .unwrap_err(),
+    );
+    assert_eq!(err.code, "HISTORY_REWOUND", "{err:?}");
+    assert_eq!(
+        a.commit_at_generation(tx("tx-1", 9, vec![asset("$x")]), Some(&other))
+            .unwrap(),
+        first
+    );
+    let current = a.generation_token(MAIN);
+    let err = code(
+        a.commit_at_generation(tx("tx-2", 9, vec![asset("$x")]), Some(&current))
+            .unwrap_err(),
+    );
+    assert_eq!(err.code, "BASE_REV_AHEAD", "{err:?}");
+    assert_eq!((a.head(MAIN), b.head(MAIN)), (2, 2));
+}
+
+/// A v2 golden project as this Finisher reads it: upcast to the current model (the fixtures
+/// stay as written; spec §5.12.2).
+fn current(v: &serde_json::Value) -> serde_json::Value {
+    serde_json::to_value(fin_core::upcast_snapshot(v.clone()).unwrap()).unwrap()
 }

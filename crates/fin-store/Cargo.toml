@@ -11,13 +11,49 @@ repository.workspace = true
 test-hooks = []
 
 [dependencies]
+blake3 = "1.8.7"
+crc32c = "0.6.8"
 fin-core = { path = "../fin-core" }
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled", "fallible_uint"] }
+schemars = "1"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["raw_value"] }
 thiserror = "2"
 ulid = "1"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.191"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_CloudFilters", "Win32_Storage_FileSystem", "Win32_System_Registry", "Win32_System_Time", "Win32_System_WindowsProgramming"] }
+
 [dev-dependencies]
+# Only for `examples/export_schema.rs`, which puts `fin_probe::Probe` and the font wire types
+# (`fin_fonts::{FontCatalog, FileState, FontsStatus, FontsPlan}`) in the TS contract.
+fin-core = { path = "../fin-core", features = ["test-measurer"] }
+fin-fonts = { path = "../fin-fonts" }
+# Only for `examples/export_schema.rs`: the job envelope and the test kinds' params and
+# results in the TS contract (`test-hooks` holds the test kinds; dev-only, never shipped).
+fin-jobs = { path = "../fin-jobs", features = ["test-hooks"] }
+# Only for `examples/export_schema.rs`: the JSON shapes of fin-node's `JobHost`.
+fin-jobhost = { path = "../fin-jobhost" }
+# Only for `examples/export_schema.rs`: the journal's settings, consent, status, filter and
+# purge types in the TS contract. fin-store itself never depends on fin-journal.
+fin-journal = { path = "../fin-journal" }
+# Only for `examples/export_schema.rs`: the library indexer's wire types (sub-project 5D).
+fin-library = { path = "../fin-library" }
+# Only for `examples/export_schema.rs`: the media wire types (`MediaInfo`, sub-project 6).
+fin-media = { path = "../fin-media" }
+# Only for `examples/export_schema.rs`: the plugin manifest, permission, risk and licence
+# types (`fin_plugin_api::schema::register_schemas`).
+fin-plugin-api = { path = "../fin-plugin-api" }
+fin-registry = { path = "../fin-registry" }
+fin-probe = { path = "../fin-probe" }
+# Only for `examples/export_schema.rs`: the sandbox profiles' typed inputs (sub-project 7C).
+fin-sandbox = { path = "../fin-sandbox" }
 fin-store = { path = ".", features = ["test-hooks"] }
+# `tests/measure.rs`: real layouts from generated fonts.
+fin-testfonts = { path = "../fin-testfonts" }
+fin-text = { path = "../fin-text" }
+proptest = "1"
 tempfile = "3"

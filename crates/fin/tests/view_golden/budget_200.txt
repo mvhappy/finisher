@@ -1,0 +1,12 @@
+== tl1 "Main" 1080x1920 30fps 00:10.0  V1=t1 V2=t2 A1=t3(mute) C1=t4
+00:00.0–00:02.0  ──  marker m2 "intro"
+00:00.0–00:10.0  V1  c1…c3 3 clips
+00:00.0–00:07.5  A1  c4…c5 2 clips
+00:00.0–00:10.0  C1  cap1…cap3 3 captions
+00:01.0–00:03.0  V2  img1 image a3
+00:05.0–00:08.0  V2  g1 graphic a2
+00:06.0  ──  marker m1 "drop"
+00:08.0–00:10.0  V2  nst1 nested tl2
+== tl2 "Alt" 1920x1080 29.97fps 00:02.001  V1=t5
+00:00.0–00:01.001  V1  c6 clip a1
+00:01.001–00:02.001  V1  adj1 adjustment

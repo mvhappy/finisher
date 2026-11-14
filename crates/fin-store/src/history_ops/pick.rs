@@ -1,0 +1,248 @@
+//! `Store::cherry_pick` and `Store::revert` (spec §4.4; plan 4B Task 14): one record each,
+//! planned by `fin_core::history::{plan_cherry_pick, plan_revert}` over the write's own
+//! transaction and appended through the one write path. A request with nothing to do (the
+//! target already holds the record; the merge group's effect is already gone) writes nothing
+//! and answers with no records and `noOp` (`ALREADY_PRESENT`, `ALREADY_REVERTED`), so
+//! repeating one is harmless. A follower replays the record's
+//! intent like any other: nothing is re-planned there.
+
+use fin_core::history::{Outcome, Planned, plan_cherry_pick, plan_revert};
+use fin_core::{CommittedTx, Link, RecordKind, Tx};
+use rusqlite::{OptionalExtension, params};
+
+use super::{SqlLog, origins};
+use crate::branch::create::{check_key, key_reused};
+use crate::commit::{check_args_hash, same_args_hash};
+use crate::db::{self, Counters};
+use crate::write::{Draft, WriteCtx};
+use crate::{HistoryResult, Store, StoreError};
+
+/// [`Store::cherry_pick`]'s request.
+///
+/// - `tx_id`: the idempotency key, the record's txId (Decision 26);
+/// - `author`: the record's author;
+/// - `origin`: the txId of the record to copy (on any branch);
+/// - `into`: the branch reference to copy it onto;
+/// - `dry_run`: plan against the local database and keep nothing, on a follower too;
+/// - `args_hash`: the command input's hash, stored on the record's intent.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CherryPickReq {
+    pub tx_id: String,
+    pub author: String,
+    pub origin: String,
+    pub into: String,
+    #[serde(default)]
+    pub dry_run: bool,
+    pub args_hash: Option<String>,
+}
+
+/// [`Store::revert`]'s request: as [`CherryPickReq`], with `merge_id` (the group to revert)
+/// and `branch` (the reference of the branch whose history holds it).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RevertReq {
+    pub tx_id: String,
+    pub author: String,
+    pub merge_id: String,
+    pub branch: String,
+    #[serde(default)]
+    pub dry_run: bool,
+    pub args_hash: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Which {
+    CherryPick,
+    Revert,
+}
+
+impl Which {
+    fn kind(self) -> RecordKind {
+        match self {
+            Which::CherryPick => RecordKind::CherryPick,
+            Which::Revert => RecordKind::Revert,
+        }
+    }
+}
+
+/// The parts both requests share.
+struct Common<'a> {
+    tx_id: &'a str,
+    dry_run: bool,
+    args_hash: Option<&'a str>,
+}
+
+impl Store {
+    /// Copies record `origin` onto branch `into` as one `cherryPick` record (spec §4.4): the
+    /// record re-run at the head through the rebase engine, keeping its entity ids, with
+    /// `origin` (and `originHash`) naming its origin root. `committed` is empty when `into`
+    /// already holds that root or a copy of it.
+    ///
+    /// Errors, in order: `INVALID_OP` (empty txId, bad `argsHash`); a retried txId answers
+    /// from the log (`IDEM_KEY_REUSED` when it holds another kind, another `argsHash`);
+    /// `PROJECT_READ_ONLY`; `IDEM_KEY_REUSED` when the txId is a merge group's id;
+    /// `BRANCH_NOT_FOUND`, `BRANCH_ARCHIVED`; `NOT_FOUND` (`details.kind` `tx`); `INVALID_OP`
+    /// (a record with no ops, no common history); `CONFLICT` (`details.conflicts`). A dry run
+    /// plans against the local database and keeps nothing, on a follower too.
+    pub fn cherry_pick(&mut self, r: CherryPickReq) -> Result<HistoryResult, StoreError> {
+        let common = Common {
+            tx_id: &r.tx_id,
+            dry_run: r.dry_run,
+            args_hash: r.args_hash.as_deref(),
+        };
+        self.pick(&common, Which::CherryPick, |ctx| {
+            let txn = ctx.txn;
+            let into = ctx.target(&r.into)?.id;
+            let measurer = ctx.measurer.clone();
+            let when_lost = ctx.when_lost;
+            let head = ctx.head(&into)?;
+            let log = SqlLog::with_head(txn, &into, head.rev, &head.project)
+                .measuring(measurer.as_deref())
+                .losing(when_lost);
+            let mut p = match plan_cherry_pick(&log, &r.origin, &into, &r.author, &r.tx_id)? {
+                Outcome::Append(p) => p,
+                Outcome::Nothing(why) => return Ok(Err(why)),
+            };
+            if let Link::CherryPick {
+                origin,
+                origin_hash,
+                ..
+            } = &mut p.link
+            {
+                *origin_hash = tx_hash(txn, origin)?;
+            }
+            Ok(Ok((into, p)))
+        })
+    }
+
+    /// Reverts merge group `merge_id` on `branch` as one `revert` record (spec §4.4): the
+    /// inverses of the group's records, newest first, rebased over the branch's records since
+    /// the group. `undone` names the group. `committed` is empty when the group's effect is
+    /// gone already (reverted or undone, and not brought back).
+    ///
+    /// Errors: as [`Store::cherry_pick`], with `NOT_FOUND` (`details.kind` `merge`) for a
+    /// group that is unknown or not on the branch's history.
+    pub fn revert(&mut self, r: RevertReq) -> Result<HistoryResult, StoreError> {
+        let common = Common {
+            tx_id: &r.tx_id,
+            dry_run: r.dry_run,
+            args_hash: r.args_hash.as_deref(),
+        };
+        self.pick(&common, Which::Revert, |ctx| {
+            let txn = ctx.txn;
+            let branch = ctx.target(&r.branch)?.id;
+            let mut ids = Counters::load(txn)?;
+            let measurer = ctx.measurer.clone();
+            let when_lost = ctx.when_lost;
+            let head = ctx.head(&branch)?;
+            let log = SqlLog::with_head(txn, &branch, head.rev, &head.project)
+                .measuring(measurer.as_deref())
+                .losing(when_lost);
+            let planned = plan_revert(&log, &r.merge_id, &branch, &r.author, &r.tx_id, &mut ids)?;
+            ids.save(txn)?;
+            Ok(match planned {
+                Outcome::Append(p) => Ok((branch, p)),
+                Outcome::Nothing(why) => Err(why),
+            })
+        })
+    }
+
+    /// `r` with `origins` (7A Decision 27): a cherry-pick's origin, or the records of the
+    /// group a revert reverts, with their origin chains. Nothing committed, nothing named.
+    fn pick_origins(&self, mut r: HistoryResult) -> Result<HistoryResult, StoreError> {
+        let named = match r.committed.first().and_then(|c| c.link.as_deref()) {
+            Some(Link::CherryPick { origin, .. }) => vec![origin.clone()],
+            Some(Link::Revert { reverts }) => origins::merge_group(&self.conn, reverts)?,
+            _ => Vec::new(),
+        };
+        r.origins = origins::chains(&self.conn, named)?;
+        Ok(r)
+    }
+
+    fn pick(
+        &mut self,
+        c: &Common<'_>,
+        which: Which,
+        plan: impl Fn(&mut WriteCtx<'_>) -> Result<Result<(String, Planned), &'static str>, StoreError>,
+    ) -> Result<HistoryResult, StoreError> {
+        check_key(c.tx_id)?;
+        check_args_hash(c.args_hash, c.tx_id)?;
+        loop {
+            let wrote = self.write(c.tx_id, c.dry_run, |ctx| {
+                super::merge_id_taken(ctx.txn, c.tx_id)?;
+                let (branch, p) = match plan(ctx)? {
+                    Ok(planned) => planned,
+                    Err(why) => return Ok(Err(why)),
+                };
+                let placements = p.placements;
+                ctx.append_placed(
+                    Draft {
+                        branch,
+                        link: p.link,
+                        intent: Tx {
+                            args_hash: c.args_hash.map(str::to_string),
+                            ..p.intent
+                        },
+                        inverse: p.applied.inverse,
+                        bindings: p.applied.bindings,
+                        diff: p.applied.diff,
+                        project: p.applied.project,
+                    },
+                    placements.clone(),
+                )
+                .map(|c| Ok((c, placements)))
+            })?;
+            if let Some(out) = wrote {
+                return self.pick_origins(result(out, c.dry_run));
+            }
+            // Deduped; gone again (an import rewound it since): the operation runs again.
+            if let Some(existing) = db::find_tx(&self.conn, c.tx_id)? {
+                if existing.link.as_deref().map(Link::kind) != Some(which.kind()) {
+                    return Err(key_reused(&existing));
+                }
+                let r = result(
+                    Ok((
+                        same_args_hash(c.args_hash, existing)?,
+                        db::placements_of(&self.conn, c.tx_id)?,
+                    )),
+                    false,
+                );
+                return self.pick_origins(r);
+            }
+        }
+    }
+}
+
+/// The answer: the record and where its items went back (a retry: as the record stored them),
+/// or nothing and why (`noOp`).
+fn result(
+    c: Result<(CommittedTx, Vec<fin_core::rebase::placement::Placement>), &'static str>,
+    dry_run: bool,
+) -> HistoryResult {
+    let (c, placements) = match c {
+        Ok((c, p)) => (Ok(c), p),
+        Err(why) => (Err(why), Vec::new()),
+    };
+    let undone = match c.as_ref().ok().and_then(|c| c.link.as_deref()) {
+        Some(Link::Revert { reverts }) => vec![reverts.clone()],
+        _ => vec![],
+    };
+    let no_op = c.as_ref().err().map(|why| why.to_string());
+    HistoryResult {
+        committed: c.into_iter().collect(),
+        undone,
+        dry_run,
+        no_op,
+        origins: Vec::new(),
+        placements,
+    }
+}
+
+/// The `txHash` of the record `tx_id` (`None` when this database does not hold it).
+fn tx_hash(conn: &rusqlite::Connection, tx_id: &str) -> Result<Option<String>, StoreError> {
+    Ok(conn
+        .prepare_cached("SELECT tx_hash FROM txs WHERE tx_id = ?1")?
+        .query_row(params![tx_id], |r| r.get(0))
+        .optional()?)
+}

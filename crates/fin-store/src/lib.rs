@@ -1,32 +1,134 @@
 //! Finisher's local store: one SQLite op log per project at
 //! `<server-data>/projects/<id>/project.fdb`, with rebase-on-commit (spec §6.1, D27).
 //!
-//! The project folder only holds `finisher.project.json` (`{id, name, schemaVersion}`); the
-//! live database never lives there. One `Store` is the single writer for its project.
+//! The project folder holds `finisher.project.json` ([`ProjectFile`]) and `.finisher/`: the
+//! lease (one writer per folder), and under `segments/` the write-once export of the
+//! committed records; the live database never lives there. [`Store::open`] acquires the lease
+//! when it can and imports what other servers exported before it returns; [`Store::tick`]
+//! then follows the folder, exports, and retries or re-checks the lease. One `Store` is the
+//! single writer for its project database.
 
+mod backup;
+mod branch;
+pub mod chain;
+mod collect;
 mod commit;
+mod compact;
+pub mod conflict_names;
+mod copies;
+mod counters;
+mod create;
 mod db;
+mod dblock;
+mod derived;
+mod diffs;
+mod drops_index;
+mod export;
+pub mod fsio;
+mod guard;
+mod history;
+mod history_ops;
+pub mod identity;
+mod import;
+pub mod lease;
+mod link_records;
+mod localdate;
+pub mod locality;
+mod migrations;
+pub mod names;
+mod newer;
+mod open;
+pub mod orphans;
 mod paths;
+pub mod project_file;
+mod rebuild;
+mod recover;
+mod reserved;
+pub mod scan;
+pub mod segment;
+pub mod server_id;
+pub mod snapfile;
+mod status;
+pub mod storage_kind;
+mod tick;
+mod verify;
+pub mod wire;
+mod write;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::fs;
 use std::path::{Path, PathBuf};
 
-use fin_core::{CommittedTx, CoreError, Project, Rational, SCHEMA_VERSION, new_project};
-use serde::{Deserialize, Serialize};
+use fin_core::{CommittedTx, CoreError, Project};
 use serde_json::json;
 
-pub use db::{SNAPSHOT_EVERY, replay};
+pub use backup::{BackupCancel, BackupOutcome, DailyBackup};
+pub use branch::create::{At, BranchCreate, BranchSet};
+pub use collect::{CollectPolicy, policy_of};
+#[cfg(any(test, feature = "test-hooks"))]
+pub use compact::CompactFail;
+pub use compact::{
+    CompactReport, CompactionStatus, PendingCompaction, TRIGGER as COMPACT_TRIGGER,
+    grace as compaction_grace,
+};
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub use copies::mount_root_for_test as copies_mount_root_for_test;
+pub use create::validate_name;
+#[cfg(any(test, feature = "test-hooks"))]
+pub use create::{
+    crash_next_create_after_db_rename_for_test, delay_next_create_start_for_test,
+    fail_next_create_marker_for_test,
+};
+pub use db::{SNAPSHOT_EVERY, replay_record};
+pub use export::ExportReport;
+#[cfg(any(test, feature = "test-hooks"))]
+pub use export::FailPoint;
+pub use guard::{WriteGuard, credential_ended, end_credential, live_credential};
+pub use history::Generation;
+pub use history_ops::checkpoint::CheckpointReq;
+pub use history_ops::merge::MergeReq;
+pub use history_ops::pick::{CherryPickReq, RevertReq};
+pub use history_ops::review_plan::REVIEW_PLAN_MAX;
+pub use history_ops::undo::HistoryReq;
+pub use import::{ForeignFile, ImportReport, ReadOnlyReason, Rewind};
+#[cfg(any(test, feature = "test-hooks"))]
+pub use migrations::fail_next_migration_step;
+pub use migrations::{APPLICATION_ID, DB_VERSION};
+pub use open::OpenOptions;
 pub use paths::{PROJECT_FILE, db_path, project_file, server_data_dir};
+pub use project_file::{Genesis, ProjectFile, read_project_file};
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub use rebuild::fail_next_rebuild_swap_for_test;
+pub use rebuild::{RebuildReport, rebuild_project};
+pub use recover::{RecoverReq, RecoverSel};
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub use reserved::fail_link_checks_for_test;
+pub use server_id::{ServerIdentity, server_id, server_identity};
+pub use status::{
+    BranchStatus, INCOMPLETE_POLLS, ProjectStatus, QuarantineSummary, ReadOnly, StoreEvent, Warning,
+};
+#[cfg(any(test, feature = "test-hooks"))]
+pub use tick::hooks::{TickHooks, TickPoint};
+pub use tick::{DueWork, StoreAccess, TickOptions, TickReport};
+pub use verify::{Check, VerifyReport};
+pub use wire::{
+    BranchCreated, BranchView, Busy, DropReq, EngineEvent, FontFailed, FontFetching, FontMissing,
+    FontsSummary, HistoryLog, HistoryResult, MergeReport, ProjectStatusView, RecoverGroup,
+    RecoverReport, ReviewHead, ReviewPlan, SetAside, SkippedFile, TxSetAside,
+};
+pub use write::WriteOutcome;
 
-/// The only branch sub-project 2 creates.
-pub const MAIN: &str = "main";
+/// The root branch, which every project has.
+pub const MAIN: &str = fin_core::branch::MAIN;
 
 /// A store failure. Converts to the one `CoreError` shape: `PROJECT_EXISTS`,
 /// `PROJECT_NOT_FOUND`, `PROJECT_INVALID`, `PROJECT_DB_MISSING`, `PROJECT_DB_MISMATCH`,
-/// `BRANCH_NOT_FOUND`, `BASE_REV_AHEAD`, `PROJECT_DIR_UNWRITABLE` (the user's project folder),
-/// `IO_ERROR` (server data), `DB_ERROR`, or a `fin-core` code
+/// `BRANCH_NOT_FOUND`, `BASE_REV_AHEAD`, `DB_TOO_NEW`, `NOT_A_PROJECT_DB`, `PROJECT_COPY`,
+/// `PROJECT_READ_ONLY`, `LEASE_TAKEOVER_REFUSED`, `PROJECT_DIR_UNWRITABLE` (the user's project
+/// folder), `IO_ERROR` (server data), `DB_ERROR`, or a `fin-core` code
 /// (`CONFLICT`, validation codes) passed through.
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -52,7 +154,7 @@ impl StoreError {
         }
     }
 
-    fn io(path: &Path) -> impl FnOnce(std::io::Error) -> StoreError + '_ {
+    pub(crate) fn io(path: &Path) -> impl FnOnce(std::io::Error) -> StoreError + '_ {
         move |source| StoreError::Io {
             path: path.to_path_buf(),
             source,
@@ -76,7 +178,7 @@ impl From<StoreError> for CoreError {
 
 /// A failure writing into the user's project folder (as opposed to server data): the caller chose
 /// the folder, so it is a fixable input error, not an internal one.
-fn unwritable(path: &Path) -> impl FnOnce(std::io::Error) -> StoreError + '_ {
+pub(crate) fn unwritable(path: &Path) -> impl FnOnce(std::io::Error) -> StoreError + '_ {
     move |source| {
         let path = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
         CoreError::new(
@@ -89,62 +191,30 @@ fn unwritable(path: &Path) -> impl FnOnce(std::io::Error) -> StoreError + '_ {
     }
 }
 
-/// `finisher.project.json`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ProjectFile {
-    pub id: String,
-    pub name: String,
-    pub schema_version: u32,
-}
-
-/// Reads and checks `<project_dir>/finisher.project.json`.
-pub fn read_project_file(project_dir: &Path) -> Result<ProjectFile, StoreError> {
-    let path = project_file(project_dir);
-    let invalid = |why: String| {
-        CoreError::new(
-            "PROJECT_INVALID",
-            format!("{} is not a valid project file: {why}", path.display()),
-        )
-        .with_details(json!({ "path": path.to_string_lossy() }))
-    };
-    let bytes = match fs::read(&path) {
-        Ok(b) => b,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Err(CoreError::new(
-                "PROJECT_NOT_FOUND",
-                format!("no {PROJECT_FILE} in {}", project_dir.display()),
-            )
-            .with_details(json!({ "path": path.to_string_lossy() }))
-            .with_fix(
-                "create the project first, or pass the folder that holds finisher.project.json",
-            )
-            .into());
-        }
-        Err(e) => return Err(StoreError::io(&path)(e)),
-    };
-    let file: ProjectFile = serde_json::from_slice(&bytes).map_err(|e| invalid(e.to_string()))?;
-    // The id names a directory under the server data dir: accept only a lowercase ULID.
-    if file.id.len() != 26
-        || !file
-            .id
-            .bytes()
-            .all(|b| b.is_ascii_digit() || b.is_ascii_lowercase())
-    {
-        return Err(invalid(format!("id {:?} is not a lowercase ULID", file.id)).into());
-    }
-    if file.schema_version != SCHEMA_VERSION {
-        return Err(CoreError::new("SCHEMA_VERSION", format!("project schema version {} is not supported", file.schema_version))
-            .with_details(json!({ "expected": SCHEMA_VERSION, "actual": file.schema_version, "path": path.to_string_lossy() }))
-            .into());
-    }
-    Ok(file)
+/// What became of a `txId` ([`Store::tx_status`]).
+#[derive(Debug, Clone, PartialEq)]
+pub enum TxStatus {
+    /// On its branch's history.
+    Committed(CommittedTx),
+    /// Set aside in quarantine (`reason`: `SUPERSEDED` for an applied record whose line lost
+    /// to a newer lease epoch, `DIVERGED_TAIL`, `STALE_EPOCH`, `MALFORMED`, `CONFLICT_COPY`;
+    /// `origin`: `local`, `folder`, `foreign`). Its bytes are kept.
+    SetAside {
+        branch: String,
+        reason: String,
+        origin: String,
+    },
+    /// Not known here.
+    Unknown,
 }
 
 /// A branch head, cached in memory.
 #[derive(Debug, Clone)]
-struct Head {
+pub(crate) struct Head {
     rev: u64,
+    /// `txHash` of the row at `rev` (`None` at a branch's start). An import can replace rows
+    /// with as many others (a diverged tail), so the rev alone does not identify a head.
+    tip: Option<String>,
     project: Project,
 }
 
@@ -153,9 +223,54 @@ pub struct Store {
     conn: rusqlite::Connection,
     project_id: String,
     db_path: PathBuf,
+    /// The user's project folder, which receives the export.
+    project_dir: PathBuf,
+    /// This server's id ([`server_id()`]), the `writerId` of exported segments.
+    server_id: String,
+    /// Why this server's id was renewed at open (its server data is a clone).
+    identity_note: Option<String>,
+    export: export::ExportState,
+    import: import::ImportState,
+    storage_warning: Option<String>,
+    /// The lease as this store drives it: acquisition, re-checks, the ordering rule.
+    ctl: tick::LeaseCtl,
+    /// What the last import passes found, for status.
+    follow: status::Follow,
+    /// `finisher.project.json` needs a newer Finisher (`NEWER_FORMAT`).
+    file_newer: bool,
+    /// Its `collect` flag as last read (`collect.rs`).
+    collect: collect::CollectPolicy,
     /// Branch heads, cached. Another `Store` (or process) on the same database may commit, so
     /// every read and commit first checks the newest rev in the database and catches up.
     heads: RefCell<HashMap<String, Head>>,
+    /// The rebuild this store's open (or `Store::rebuild`) ran.
+    rebuilt: Option<rebuild::RebuildReport>,
+    /// The local date of the last daily backup taken or found, or `(date, ms)` of the last
+    /// failed attempt (retried after [`tick::BACKUP_RETRY_MS`]).
+    daily: tick::DailyState,
+    /// Heavy work a tick found due but left to [`Store::run_due_backup`] /
+    /// [`Store::run_due_compaction_step_phased`] ([`TickOptions`]).
+    due: tick::DueWork,
+    /// The shared `db.lock` this store holds while it has the database open (`dblock`).
+    db_lock: Option<std::fs::File>,
+    /// Damaged folder files and since when they look unchanged (verify's 60 s rule).
+    damage: RefCell<verify::DamageSeen>,
+    /// Compaction manifests seen and their grace periods.
+    compact: compact::CompactState,
+    /// The last quarantine summary and the database version it was read at
+    /// (`status::warnings::quarantine_summary`): status asks on every poll.
+    quarantine_seen: RefCell<Option<((i64, u64), QuarantineSummary)>>,
+    /// What writes check caption overflow with ([`OpenOptions::measurer`]).
+    measurer: Option<std::sync::Arc<dyn fin_core::layout::TextMeasurer>>,
+    /// What the last write did ([`Store::take_write_outcome`]).
+    write_outcome: Option<WriteOutcome>,
+    /// What writes check their target branch against ([`Store::with_guard`]).
+    guard: WriteGuard,
+    /// What history writes do with an item whose neighbours are both gone
+    /// ([`Store::with_when_lost`]).
+    when_lost: fin_core::rebase::placement::WhenLost,
+    /// The phased tick's state: one tick at a time, and what its unlocked I/O revalidates.
+    phase: tick::Phase,
     #[cfg(any(test, feature = "test-hooks"))]
     fail_after_apply: bool,
 }
@@ -165,97 +280,27 @@ impl std::fmt::Debug for Store {
         f.debug_struct("Store")
             .field("project_id", &self.project_id)
             .field("db_path", &self.db_path)
+            .field("project_dir", &self.project_dir)
             .finish()
     }
 }
 
 impl Store {
-    /// Creates a project: a new lowercase-ULID id, the database at
-    /// `<server_data>/projects/<id>/project.fdb` with `main` at rev 0, then
-    /// `<project_dir>/finisher.project.json` (written via an fsync'd temp file and rename).
-    /// Fails with `PROJECT_EXISTS` when the project file is already there.
-    pub fn create(
-        server_data: &Path,
-        project_dir: &Path,
-        name: &str,
-        rate: Rational,
-    ) -> Result<Store, StoreError> {
-        let file_path = project_file(project_dir);
-        if fs::symlink_metadata(&file_path).is_ok() {
-            return Err(CoreError::new(
-                "PROJECT_EXISTS",
-                format!("{} already holds a project", project_dir.display()),
-            )
-            .with_details(json!({ "path": file_path.to_string_lossy() }))
-            .with_fix("open the existing project, or choose another folder")
-            .into());
-        }
-        let id = ulid::Ulid::new().to_string().to_ascii_lowercase();
-        let project = new_project(id.clone(), name.to_string(), rate)?;
-        fs::create_dir_all(project_dir).map_err(unwritable(project_dir))?;
-        let db_path = db_path(server_data, &id);
-        let db_dir = db_path.parent().unwrap_or(server_data);
-        fs::create_dir_all(db_dir).map_err(StoreError::io(db_dir))?;
-        if db_path.exists() {
-            return Err(CoreError::new(
-                "DB_ERROR",
-                format!("{} already exists", db_path.display()),
-            )
-            .into());
-        }
-        let mut conn = db::connect(&db_path, true)?;
-        db::init(&mut conn, &project, MAIN)?;
-        let marker = ProjectFile {
-            id: id.clone(),
-            name: name.to_string(),
-            schema_version: SCHEMA_VERSION,
-        };
-        let mut bytes = serde_json::to_vec_pretty(&marker)?;
-        bytes.push(b'\n');
-        paths::write_atomic(&file_path, &bytes).map_err(unwritable(&file_path))?;
-        let heads = HashMap::from([(MAIN.to_string(), Head { rev: 0, project })]);
-        Ok(Store::new(conn, id, db_path, heads))
+    /// What later writes check caption overflow with (plan 4C Task 20): edits, stale commits,
+    /// undo, redo, merge, cherry-pick, revert and recovery re-runs. `None` measures nothing;
+    /// replay (import, rebuild, open) never measures.
+    pub fn set_measurer(&mut self, m: Option<std::sync::Arc<dyn fin_core::layout::TextMeasurer>>) {
+        self.measurer = m;
     }
 
-    /// Opens the project whose `finisher.project.json` is in `project_dir`. A missing database
-    /// is `PROJECT_DB_MISSING` (rebuilding from segments is sub-project 4).
-    pub fn open(server_data: &Path, project_dir: &Path) -> Result<Store, StoreError> {
-        let file = read_project_file(project_dir)?;
-        let db_path = db_path(server_data, &file.id);
-        if !db_path.is_file() {
-            return Err(CoreError::new("PROJECT_DB_MISSING", format!("the database for project {} is missing", file.id))
-                .with_details(json!({ "projectId": file.id, "path": db_path.to_string_lossy() }))
-                .with_fix("restore project.fdb into the server data dir; rebuilding from segments is not available yet")
-                .into());
-        }
-        let conn = db::connect(&db_path, false)?;
-        let stored = db::meta(&conn, "projectId")?;
-        if stored.as_deref() != Some(file.id.as_str()) {
-            return Err(CoreError::new("PROJECT_DB_MISMATCH", format!("{} belongs to another project", db_path.display()))
-                .with_details(json!({ "projectId": file.id, "dbProjectId": stored, "path": db_path.to_string_lossy() }))
-                .into());
-        }
-        let mut heads = HashMap::new();
-        for branch in db::branches(&conn)? {
-            refresh(&conn, &mut heads, &branch)?;
-        }
-        Ok(Store::new(conn, file.id, db_path, heads))
+    /// The storage kind in use: the project's `storageOverride`, else detected at open.
+    pub fn storage_kind(&self) -> storage_kind::StorageKind {
+        self.import.kind
     }
 
-    fn new(
-        conn: rusqlite::Connection,
-        project_id: String,
-        db_path: PathBuf,
-        heads: HashMap<String, Head>,
-    ) -> Store {
-        Store {
-            conn,
-            project_id,
-            db_path,
-            heads: RefCell::new(heads),
-            #[cfg(any(test, feature = "test-hooks"))]
-            fail_after_apply: false,
-        }
+    /// Why a `storageOverride` in the project file was ignored, if it was.
+    pub fn storage_warning(&self) -> Option<&str> {
+        self.storage_warning.as_deref()
     }
 
     pub fn project_id(&self) -> &str {
@@ -267,29 +312,158 @@ impl Store {
         &self.db_path
     }
 
-    /// The head revision of `branch` (0 for a branch that does not exist). Catches up with
-    /// commits made through another `Store`; if the database cannot be read, the cached head is
-    /// returned.
-    pub fn head(&self, branch: &str) -> u64 {
-        let mut heads = self.heads.borrow_mut();
-        let _ = refresh(&self.conn, &mut heads, branch);
-        heads.get(branch).map_or(0, |h| h.rev)
+    /// The project folder.
+    pub fn project_dir(&self) -> &Path {
+        &self.project_dir
     }
 
-    /// The head revision of `branch` and the project at it.
-    pub fn snapshot(&self, branch: &str) -> Result<(u64, Project), StoreError> {
+    /// This server's id, the `writerId` of the segments it exports.
+    pub fn server_id(&self) -> &str {
+        &self.server_id
+    }
+
+    /// The id a branch reference names ([`Store::resolve_branch`]), else `r` itself (for
+    /// reads that answer a default for an unknown branch).
+    fn branch_or_raw(&self, r: &str) -> String {
+        self.resolve_branch(r).unwrap_or_else(|_| r.to_string())
+    }
+
+    /// The head revision of `branch` (a branch reference: an id, an active name or
+    /// `<name>#<id>`; 0 for a branch that does not exist). Catches up with commits made
+    /// through another `Store`; if the database cannot be read, the cached head is returned.
+    pub fn head(&self, branch: &str) -> u64 {
+        self.head_of(&self.branch_or_raw(branch))
+    }
+
+    /// [`Store::head`] of a branch id.
+    pub(crate) fn head_of(&self, id: &str) -> u64 {
         let mut heads = self.heads.borrow_mut();
-        refresh(&self.conn, &mut heads, branch)?;
-        let head = heads.get(branch).ok_or_else(|| branch_not_found(branch))?;
+        let _ = refresh(&self.conn, &mut heads, id);
+        heads.get(id).map_or(0, |h| h.rev)
+    }
+
+    /// The head revision of `branch` (a reference) and the project at it.
+    pub fn snapshot(&self, branch: &str) -> Result<(u64, Project), StoreError> {
+        let id = self.resolve_branch(branch)?;
+        let mut heads = self.heads.borrow_mut();
+        refresh(&self.conn, &mut heads, &id)?;
+        let head = heads.get(&id).ok_or_else(|| branch_not_found(branch))?;
         Ok((head.rev, head.project.clone()))
     }
 
-    /// Committed txs on `branch` with `rev > after`, in rev order.
+    /// Committed txs on `branch` (a reference) with `rev > after`, in rev order. Below the
+    /// branch's fork they are its ancestors' (each `tx.branch` names the branch that holds
+    /// it).
     pub fn ops_since(&self, branch: &str, after: u64) -> Result<Vec<CommittedTx>, StoreError> {
-        if db::latest_rev(&self.conn, branch)?.is_none() {
+        let id = self.resolve_branch(branch)?;
+        if db::latest_rev(&self.conn, &id)?.is_none() {
             return Err(branch_not_found(branch).into());
         }
-        db::txs_since(&self.conn, branch, after)
+        branch::lineage::records_since(&self.conn, &id, after)
+    }
+
+    /// `history.log` (review batch L): the branch head and its last `limit` committed txs below
+    /// rev `before` (default: through the head), oldest first; below the fork they are its
+    /// ancestors' (each `tx.branch` names the branch that holds it).
+    pub fn log(
+        &self,
+        branch: &str,
+        before: Option<u64>,
+        limit: u64,
+    ) -> Result<HistoryLog, StoreError> {
+        let id = self.resolve_branch(branch)?;
+        if db::latest_rev(&self.conn, &id)?.is_none() {
+            return Err(branch_not_found(branch).into());
+        }
+        let head = self.head_of(&id);
+        let through = before.map_or(head, |b| b.saturating_sub(1).min(head));
+        let after = through.saturating_sub(limit);
+        let records = branch::lineage::records_between(&self.conn, &id, after, through)?;
+        Ok(HistoryLog { head, records })
+    }
+
+    /// Committed txs on `branch` with `rev > after`, with the branch's generation, read
+    /// together: a caller that later commits with [`Store::commit_at_generation`] passes it.
+    pub fn ops_since_at(
+        &self,
+        branch: &str,
+        after: u64,
+    ) -> Result<(Generation, Vec<CommittedTx>), StoreError> {
+        let txn = self.conn.unchecked_transaction()?;
+        let id = self.resolve_branch(branch)?;
+        let ops = self.ops_since(&id, after)?;
+        let generation = history::generation(&txn, &id)?;
+        txn.commit()?;
+        Ok((generation, ops))
+    }
+
+    /// The rewind count of `branch` in this database: bumped whenever an import takes
+    /// records out of its history (module `history`). 0 when it cannot be read. Callers that
+    /// commit against it hold [`Store::generation_token`], which names the database too.
+    pub fn generation(&self, branch: &str) -> u64 {
+        history::current(&self.conn, &self.branch_or_raw(branch)).unwrap_or(0)
+    }
+
+    /// The [`Generation`] of `branch` (this database's incarnation and the rewind count), as
+    /// [`Store::commit_at_generation`] takes it.
+    pub fn generation_token(&self, branch: &str) -> Generation {
+        history::generation(&self.conn, &self.branch_or_raw(branch)).unwrap_or(Generation {
+            incarnation: String::new(),
+            n: 0,
+        })
+    }
+
+    /// The `genesisHash` every segment and snapshot of this project names
+    /// ([`project_file::genesis_hash`] of the rev-0 genesis).
+    pub fn genesis_hash(&self) -> String {
+        project_file::db_genesis_hash(&self.conn).unwrap_or_default()
+    }
+
+    /// This database's incarnation (module `history`): new whenever it is rebuilt.
+    pub fn incarnation(&self) -> String {
+        history::incarnation(&self.conn).unwrap_or_default()
+    }
+
+    /// Takes today's daily backup (`<project-data>/backups/daily-YYYY-MM-DD.fdb`, the local
+    /// calendar day of unix ms `now_ms`) unless that day has one, keeping the last 7. `tick`
+    /// calls it; returns the new backup.
+    pub fn daily_backup(&mut self, now_ms: i64) -> Result<Option<PathBuf>, StoreError> {
+        let dir = self
+            .db_path
+            .parent()
+            .unwrap_or(Path::new("."))
+            .to_path_buf();
+        backup::daily(&self.conn, &dir, now_ms, None)
+    }
+
+    /// What became of `tx_id` (`tx.get`): committed, set aside (a superseded record is
+    /// `SetAside { reason: "SUPERSEDED" }`), or unknown.
+    pub fn tx_status(&self, tx_id: &str) -> Result<TxStatus, StoreError> {
+        history::tx_status(&self.conn, tx_id)
+    }
+
+    /// Test hook: `(txHash, reason, origin)` of the records set aside now, by `txHash`.
+    #[cfg(any(test, feature = "test-hooks"))]
+    #[doc(hidden)]
+    pub fn quarantined_for_test(&self) -> Vec<(String, String, String)> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT tx_hash, reason, origin FROM quarantine WHERE current = 1 ORDER BY tx_hash",
+            )
+            .expect("prepare");
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .expect("query")
+            .collect::<Result<_, _>>()
+            .expect("rows")
+    }
+
+    /// What the last write did (plan D, Decision 22), cleared by the call: `Written`,
+    /// `Deduped` (a retry of a committed txId) or `Planned` (a dry run); `None` when no write
+    /// was reached since the last call, or the last one failed. Take it before a call (to
+    /// clear it) and after, with no other call on this store in between.
+    pub fn take_write_outcome(&mut self) -> Option<WriteOutcome> {
+        self.write_outcome.take()
     }
 
     /// Test hook: the next `commit` fails after applying and writing its rows but before the
@@ -302,7 +476,10 @@ impl Store {
 
 /// Brings the cached head of `branch` up to the newest rev in the database: replays the txs
 /// committed since the cached rev, or loads the latest snapshot plus its tail when there is no
-/// usable cache. Drops the cache entry when the branch does not exist.
+/// usable cache. The cache is usable only while the row at its rev still has the hash it was
+/// built from: an import (here or through another `Store` on the same database) may have
+/// replaced rows. A branch at its fork has no row there: its tip is the fork hash
+/// ([`branch::lineage::hash_at`]). Drops the cache entry when the branch does not exist.
 pub(crate) fn refresh(
     conn: &rusqlite::Connection,
     heads: &mut HashMap<String, Head>,
@@ -312,29 +489,30 @@ pub(crate) fn refresh(
         heads.remove(branch);
         return Ok(());
     };
-    if let Some(head) = heads.get_mut(branch) {
-        if head.rev == latest {
-            return Ok(());
+    if let Some(head) = heads.get_mut(branch)
+        && head.rev <= latest
+        && branch::lineage::hash_at(conn, branch, head.rev)? == head.tip
+    {
+        for row in db::record_rows(conn, branch, head.rev)? {
+            head.project = db::replay_row(&head.project, branch, &row)?.project;
+            head.rev = row.0;
+            head.tip = Some(db::hash_bytes(&row.2));
         }
-        if head.rev < latest {
-            for c in db::txs_since(conn, branch, head.rev)? {
-                head.project = replay(&head.project, &c)?;
-                head.rev = c.rev;
-            }
-            return Ok(());
-        }
+        return Ok(());
     }
     let (mut rev, mut project) =
         db::latest_snapshot(conn, branch)?.ok_or_else(|| branch_not_found(branch))?;
-    for c in db::txs_since(conn, branch, rev)? {
-        project = replay(&project, &c)?;
-        rev = c.rev;
+    let mut tip = branch::lineage::hash_at(conn, branch, rev)?;
+    for row in db::record_rows(conn, branch, rev)? {
+        project = db::replay_row(&project, branch, &row)?.project;
+        rev = row.0;
+        tip = Some(db::hash_bytes(&row.2));
     }
-    heads.insert(branch.to_string(), Head { rev, project });
+    heads.insert(branch.to_string(), Head { rev, tip, project });
     Ok(())
 }
 
-fn branch_not_found(branch: &str) -> CoreError {
+pub(crate) fn branch_not_found(branch: &str) -> CoreError {
     CoreError::new(
         "BRANCH_NOT_FOUND",
         format!("branch {branch:?} does not exist"),

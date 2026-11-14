@@ -1,30 +1,281 @@
 import { Effect, Schema } from "effect";
 import { RpcSchema } from "effect/rpc";
 import { expect, test } from "vitest";
-import { FinError, FinRpcs, PROTOCOL_VERSION } from "./index.ts";
+import { FinError, FinRpcs, MERGE_INCLUDE_MAX, PROTOCOL_VERSION, STREAM_RPCS } from "./index.ts";
 
-test("protocol version starts at 1", () => {
-  expect(PROTOCOL_VERSION).toBe(1);
+test("protocol version is 2 (5A: the handshake, tickets, asset.probe {projectId})", () => {
+  expect(PROTOCOL_VERSION).toBe(2);
 });
 
-test("the group exposes exactly the 7 v1 RPC tags", () => {
+test("generation_is_required, probe_requires_project_id (protocol 2)", () => {
+  const decode = (tag: string, payload: unknown) => Schema.decodeUnknownExit(FinRpcs.requests.get(tag)!.payloadSchema as Schema.Codec<unknown>)(payload)._tag;
+  const generation = { incarnation: "i", n: 0 };
+  expect(decode("tx.commit", { projectId: "p", tx: {} })).toBe("Failure");
+  expect(decode("tx.commit", { projectId: "p", tx: {}, generation })).toBe("Success");
+  expect(decode("ops.subscribe", { projectId: "p", branch: "main", fromRev: 0 })).toBe("Failure");
+  expect(decode("ops.subscribe", { projectId: "p", branch: "main", fromRev: 0, generation })).toBe("Success");
+  expect(decode("asset.probe", { path: "/m/a.mov" })).toBe("Failure");
+  expect(decode("asset.probe", { projectId: "p", path: "/m/a.mov" })).toBe("Success");
+});
+
+test("the group exposes exactly the protocol 2 RPC tags", () => {
   expect([...FinRpcs.requests.keys()].sort()).toEqual(
     [
+      "agent.account.confirm",
+      "agent.approval.answer",
+      "agent.approval.list",
+      "agent.approval.wait",
+      "agent.hooks.list",
+      "agent.key.list",
+      "agent.key.remove",
+      "agent.key.set",
+      "agent.local.remove",
+      "agent.local.set",
+      "agent.local.show",
+      "agent.local.test",
+      "agent.project.trust",
+      "agent.providers",
+      "agent.rules.add",
+      "agent.rules.list",
+      "agent.rules.remove",
+      "agent.savedPrompt.list",
+      "agent.savedPrompt.run",
+      "agent.self",
+      "agent.self.try",
+      "agent.session.delete",
+      "agent.session.end",
+      "agent.session.get",
+      "agent.session.interrupt",
+      "agent.session.list",
+      "agent.session.prompt",
+      "agent.session.resume",
+      "agent.session.rollback",
+      "agent.session.start",
+      "agent.session.steer",
+      "agent.session.wait",
+      "agent.watch",
       "asset.probe",
+      "asset.reprobe",
+      "auth.audit.list",
+      "auth.audit.purge",
+      "auth.credential.list",
+      "auth.credential.mint",
+      "auth.credential.revoke",
+      "auth.credential.rotateMaster",
+      "auth.device.list",
+      "auth.device.rename",
+      "auth.device.revoke",
+      "auth.devices.watch",
+      "auth.pair.approve",
+      "auth.pair.offer",
+      "auth.pair.pending",
+      "auth.pair.reject",
+      "auth.prove",
+      "auth.revokeSelf",
+      "auth.ticket",
+      "auth.whoami",
+      "branch.create",
+      "branch.list",
+      "branch.set",
+      "console.challenge",
+      "diagnostics.consent",
+      "diagnostics.export",
+      "diagnostics.project",
+      "diagnostics.purge",
+      "diagnostics.record",
+      "diagnostics.status",
+      "env.adopt",
+      "env.describe",
+      "env.name",
+      "env.reset",
+      "env.rotateIdentity",
+      "eval.audio",
+      "eval.frame",
+      "fonts.catalog",
+      "fonts.fetch",
+      "fonts.plan",
+      "fonts.status",
+      "history.cherryPick",
+      "history.drop",
+      "history.checkpoint",
+      "history.merge",
+      "history.redo",
+      "history.revert",
+      "history.undo",
+      "jobs.cancel",
+      "jobs.get",
+      "jobs.list",
+      "jobs.pause",
+      "jobs.resume",
+      "jobs.submit",
+      "jobs.wait",
+      "jobs.watch",
+      "jobs.workers",
+      "library.add",
+      "library.file",
+      "library.files",
+      "library.list",
+      "library.lookup",
+      "library.remove",
+      "library.scan",
+      "library.search",
+      "library.set",
+      "library.status",
+      "library.watch",
+      "media.cache.gc",
+      "media.cache.status",
+      "media.capabilities",
+      "media.listen",
+      "media.look",
+      "media.pcm",
+      "media.probeDeep",
+      "media.proxy",
+      "media.proxy.status",
+      "media.thumbs",
+      "media.url",
+      "media.waveform",
       "ops.subscribe",
+      "plugin.command.run",
+      "plugin.commands",
+      "plugin.content.get",
+      "plugin.disable",
+      "plugin.discard",
+      "plugin.enable",
+      "plugin.info",
+      "plugin.install",
+      "plugin.list",
+      "plugin.plan",
+      "plugin.remove",
+      "plugin.search",
+      "plugin.suggest",
+      "project.acknowledgeRewind",
+      "project.acknowledgeSalvage",
+      "project.close",
+      "project.compact",
       "project.create",
+      "project.events",
       "project.open",
+      "project.rebuild",
+      "project.recover",
+      "project.status",
+      "project.takeover",
+      "project.verify",
+      "registry.add",
+      "registry.forget",
+      "registry.list",
+      "registry.refresh",
+      "registry.remove",
+      "registry.status",
+      "review.close",
+      "review.comment",
+      "review.decide",
+      "review.get",
+      "review.list",
+      "review.merge",
+      "review.policy",
+      "review.policy.get",
+      "review.refresh",
+      "review.request",
+      "review.watch",
       "server.hello",
+      "server.status",
+      "server.stop",
+      "settings.write",
       "snapshot.get",
+      "training.closedTargets.get",
+      "training.closedTargets.set",
       "tx.commit",
+      "tx.get",
+      "history.log",
     ].sort(),
   );
 });
 
-test("ops.subscribe is a streaming rpc and the others are not", () => {
+test("ops.subscribe, project.events, the watches and auth.pair.pending are streaming rpcs and the others are not", () => {
+  const streams = new Set(["ops.subscribe", "project.events", "jobs.watch", "library.watch", "agent.watch", "auth.pair.pending", "auth.devices.watch", "review.watch"]);
   for (const [tag, rpc] of FinRpcs.requests) {
-    expect(RpcSchema.isStreamSchema(rpc.successSchema)).toBe(tag === "ops.subscribe");
+    expect(RpcSchema.isStreamSchema(rpc.successSchema), tag).toBe(streams.has(tag));
   }
+});
+
+test("rpc_stats_excludes_streams: STREAM_RPCS is exactly the streaming rpcs", () => {
+  const streams = [...FinRpcs.requests].filter(([, rpc]) => RpcSchema.isStreamSchema(rpc.successSchema)).map(([tag]) => tag);
+  expect([...STREAM_RPCS].sort()).toEqual(streams.sort());
+});
+
+/** The RPC schemas here use no services; `Schema.Top` leaves the requirements open. */
+type PlainSchema = Schema.Codec<unknown, unknown, never, never>;
+
+test("tx.get encodes a committed tx, a set-aside record and null", async () => {
+  const success = FinRpcs.requests.get("tx.get")!.successSchema;
+  const encode = (v: unknown) => Effect.runPromise(Schema.encodeUnknownEffect(success as PlainSchema)(v));
+  const setAside = { setAside: { txId: "t", branch: "main", reason: "SUPERSEDED", origin: "local" } };
+  expect(await encode(setAside)).toEqual(setAside);
+  const committed = { rev: 1, tx: { txId: "t" }, bindings: {}, diff: {} };
+  expect(await encode(committed)).toEqual(committed);
+  expect(await encode(null)).toBeNull();
+});
+
+test("project.events items keep every field of each event kind", async () => {
+  const success = FinRpcs.requests.get("project.events")!.successSchema;
+  const item = RpcSchema.isStreamSchema(success) ? success.success : success;
+  const encode = (v: unknown) => Effect.runPromise(Schema.encodeUnknownEffect(item as PlainSchema)(v));
+  const rewound = { type: "rewound", branch: "main", fromRev: 3, quarantined: 2, own: false, generation: 1, incarnation: "i" };
+  expect(await encode(rewound)).toEqual(rewound);
+  const status = {
+    projectId: "p",
+    storage: "sync:dropbox",
+    storageWarning: null,
+    lease: { state: "heldElsewhere", holder: "h", epoch: 2, ageServerMs: null },
+    leaseCheck: null,
+    readOnly: { reason: "LEASE_HELD", fix: "wait" },
+    branches: [{ branch: "main", name: "main", parent: null, forkSeq: 0, state: "active", head: 3, exportedThrough: 3, generation: 0 }],
+    lastExportMs: null,
+    exportError: null,
+    importError: { code: "IO_ERROR", message: "m", details: { path: "x" } },
+    quarantine: { count: 1, origins: ["folder"], reasons: { STALE_EPOCH: 1 } },
+    foreign: [],
+    waiting: [],
+    pending: [],
+    unknownBranches: [],
+    warnings: [{ code: "QUARANTINE", message: "m" }, { code: "FONT_MISSING", message: "m", details: { key: "k" }, fix: "f" }],
+    incarnation: "i",
+    compaction: { pending: [], lastRunMs: null, lastError: null },
+    fonts: { missing: [{ key: "k", sha256: "s", reason: "offline" }], fetching: [], failed: [] },
+  };
+  expect(await encode({ type: "status", status })).toEqual({ type: "status", status });
+  // A status that is not one is refused, not passed on.
+  await expect(encode({ type: "status", status: { lease: { state: "held" } } })).rejects.toThrow();
+  expect(await encode({ type: "rebuilt", incarnation: "i2" })).toEqual({ type: "rebuilt", incarnation: "i2" });
+});
+
+test("history payloads decode what finisherd needs and the results are not streams", async () => {
+  const decode = (tag: string, v: unknown) =>
+    Effect.runPromise(Schema.decodeUnknownEffect(FinRpcs.requests.get(tag)!.payloadSchema as PlainSchema)(v));
+  expect(await decode("branch.create", { projectId: "p", txId: "t", author: "a", from: "main", at: { checkpoint: "v1" } })).toEqual({
+    projectId: "p",
+    txId: "t",
+    author: "a",
+    from: "main",
+    at: { checkpoint: "v1" },
+  });
+  expect(await decode("history.undo", { projectId: "p", txId: "t", author: "a", branch: "main", to: "v1", dryRun: true })).toMatchObject({
+    to: "v1",
+    dryRun: true,
+  });
+  await expect(decode("history.merge", { projectId: "p", txId: "t", author: "a", from: "x" })).rejects.toThrow();
+  // A limited merge (plan 5E Decision 6): `include` bounded, `sourceUpTo` a seq.
+  const merge = { projectId: "p", txId: "t", author: "a", from: "x", into: "main" };
+  expect(await decode("history.merge", { ...merge, include: [], sourceUpTo: 7 })).toMatchObject({ include: [], sourceUpTo: 7 });
+  const many = Array.from({ length: MERGE_INCLUDE_MAX + 1 }, (_, n) => `t${n}`);
+  await expect(decode("history.merge", { ...merge, include: many })).rejects.toThrow();
+  await expect(decode("history.merge", { ...merge, sourceUpTo: -1 })).rejects.toThrow();
+  await expect(decode("history.merge", { ...merge, sourceUpTo: 1.5 })).rejects.toThrow();
+  await expect(decode("history.merge", { ...merge, sourceUpTo: 2 ** 53 })).rejects.toThrow();
+  await expect(decode("history.merge", { ...merge, include: ["x".repeat(257)] })).rejects.toThrow();
+  expect(await decode("history.merge", { ...merge, include: ["x".repeat(256)], sourceUpTo: Number.MAX_SAFE_INTEGER })).toBeTruthy();
+  // `project.recover` lists with just the project.
+  expect(await decode("project.recover", { projectId: "p" })).toEqual({ projectId: "p" });
 });
 
 test("FinError round-trips through encode/decode", async () => {

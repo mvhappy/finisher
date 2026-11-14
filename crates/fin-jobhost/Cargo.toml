@@ -1,0 +1,40 @@
+[package]
+name = "fin-jobhost"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "The job host (5C-1): spawning through a Spawner hook, kill domains, envelope framing, liveness and cancel."
+
+[features]
+# Test-only hooks (a delayed resume on macOS and Windows; on Windows a probe of the suspended
+# process and a stopped completion port). Enabled by fin-workers' process tests and,
+# from Task 6, by fin-node's `test-hooks`; never in a shipped build.
+test-hooks = []
+
+[dependencies]
+fin-jobs = { path = "../fin-jobs" }
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.191"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_JobObjects",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_System_Pipes",
+    "Win32_System_IO",
+    "Win32_Storage_FileSystem",
+] }
+
+# `CommandLineToArgvW` for the command-line round trip.
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = ["Win32_UI_Shell"] }

@@ -1,0 +1,63 @@
+{
+  "about": "The S8 file cases as data (plan 7C Task 2), run by tests/linux_landlock.rs. $T is a fresh fixture per case: w/ and w2/ are write roots, w/prot/ is protected and w/denied/ denied inside w/, r/ is a read root with r/deny/ denied inside it, out/ is unlisted, w/a/to-out links to out/secret. 'deny' passes only on EACCES, EPERM or EXDEV, and every 'deny' case must succeed without the sandbox (the denial is the sandbox's). minAbi: the ABI that handles the right. macos/macosOp: Seatbelt's expectation and op where they differ (tests/macos_seatbelt.rs): Seatbelt states the reference model exactly, so a file created beside a protected path in its write root is allowed, which Landlock's enumeration cannot grant.",
+  "cases": [
+    { "name": "read a file of a read root", "op": ["read", "$T/r/f"], "expect": "allow" },
+    { "name": "read below a read root", "op": ["read", "$T/r/sub/g"], "expect": "allow" },
+    { "name": "list a directory of a read root", "op": ["list", "$T/r/sub"], "expect": "allow" },
+    { "name": "read a denied file inside a read root", "op": ["read", "$T/r/deny/secret"], "expect": "deny" },
+    { "name": "list a denied directory", "op": ["list", "$T/r/deny"], "expect": "deny" },
+    { "name": "list a read root holding a denied path", "op": ["list", "$T/r"], "expect": "deny" },
+    { "name": "read an unlisted file", "op": ["read", "$T/out/secret"], "expect": "deny" },
+    { "name": "list an unlisted directory", "op": ["list", "$T/out"], "expect": "deny" },
+    { "name": "read through a link to an unlisted file", "op": ["read", "$T/w/a/to-out"], "expect": "deny" },
+    { "name": "read a protected file", "op": ["read", "$T/w/prot/secret"], "expect": "deny" },
+    { "name": "read a denied file inside a write root", "op": ["read", "$T/w/denied/secret"], "expect": "deny" },
+
+    { "name": "write a read-only file", "op": ["write", "$T/r/f"], "expect": "deny" },
+    { "name": "truncate a read-only file", "op": ["truncate", "$T/r/f"], "expect": "deny" },
+    { "name": "create in a read root", "op": ["create", "$T/r/sub/new"], "expect": "deny" },
+    { "name": "unlink in a read root", "op": ["unlink", "$T/r/sub/g"], "expect": "deny" },
+    { "name": "mkdir in a read root", "op": ["mkdir", "$T/r/sub/d"], "expect": "deny" },
+    { "name": "rename inside a read root", "op": ["rename", "$T/r/sub/g", "$T/r/sub/h"], "expect": "deny" },
+    { "name": "mkfifo in a read root", "op": ["mkfifo", "$T/r/sub/p"], "expect": "deny" },
+
+    { "name": "write a file of a write root", "op": ["write", "$T/w/a/f"], "expect": "allow" },
+    { "name": "truncate a file of a write root", "op": ["truncate", "$T/w/a/f"], "expect": "allow" },
+    { "name": "create in a write root", "op": ["create", "$T/w/a/new"], "expect": "allow" },
+    { "name": "mkdir in a write root", "op": ["mkdir", "$T/w/a/d"], "expect": "allow" },
+    { "name": "unlink in a write root", "op": ["unlink", "$T/w/a/f"], "expect": "allow" },
+    { "name": "symlink in a write root", "op": ["symlink", "/nonexistent", "$T/w/a/s"], "expect": "allow" },
+    { "name": "create directly in a write root holding a protected path", "op": ["create", "$T/w/new"], "expect": "deny", "macos": "allow" },
+    { "name": "mkfifo in a worker's write root", "op": ["mkfifo", "$T/w/a/p"], "expect": "deny" },
+
+    { "name": "write a protected file", "op": ["write", "$T/w/prot/secret"], "expect": "deny" },
+    { "name": "truncate a protected file", "op": ["truncate", "$T/w/prot/secret"], "expect": "deny" },
+    { "name": "create in a protected directory", "op": ["create", "$T/w/prot/new"], "expect": "deny" },
+    { "name": "unlink a protected file", "op": ["unlink", "$T/w/prot/secret"], "expect": "deny" },
+    { "name": "rename a protected directory away", "op": ["rename", "$T/w/prot", "$T/w/a/prot"], "expect": "deny" },
+    { "name": "rename a protected file out", "op": ["rename", "$T/w/prot/secret", "$T/w/a/x"], "expect": "deny" },
+    { "name": "rename a write root holding a protected path", "op": ["rename", "$T/w", "$T/w2/w"], "expect": "deny" },
+    { "name": "remove a write root", "op": ["rmdir", "$T/w2"], "expect": "deny" },
+    { "name": "rename a write root away", "op": ["rename", "$T/w2", "$T/w/a/w2"], "expect": "deny" },
+    { "name": "write a denied file inside a write root", "op": ["write", "$T/w/denied/secret"], "expect": "deny" },
+
+    { "name": "hard link a read-only file into a write root", "op": ["link", "$T/r/f", "$T/w/a/l"], "expect": "deny" },
+    { "name": "hard link an unlisted file into a write root", "op": ["link", "$T/out/secret", "$T/w/a/l"], "expect": "deny" },
+    { "name": "hard link a protected file into a write root", "op": ["link", "$T/w/prot/secret", "$T/w/a/l"], "expect": "deny" },
+    { "name": "hard link a denied file into a write root", "op": ["link", "$T/w/denied/secret", "$T/w/a/l"], "expect": "deny" },
+    { "name": "hard link a write root's file into a read root", "op": ["link", "$T/w/a/f", "$T/r/sub/l"], "expect": "deny" },
+    { "name": "hard link inside the write roots", "op": ["link", "$T/w/a/f", "$T/w/b/l"], "expect": "allow" },
+
+    { "name": "rename a read-only file into a write root", "op": ["rename", "$T/r/f", "$T/w/a/x"], "expect": "deny" },
+    { "name": "rename an unlisted file into a write root", "op": ["rename", "$T/out/secret", "$T/w/a/x"], "expect": "deny" },
+    { "name": "rename a write root's file into a read root", "op": ["rename", "$T/w/a/f", "$T/r/sub/x"], "expect": "deny" },
+    { "name": "rename a write root's file out", "op": ["rename", "$T/w/a/f", "$T/out/x"], "expect": "deny" },
+    { "name": "rename between write roots", "op": ["rename", "$T/w/a/f", "$T/w2/f"], "expect": "allow" },
+    { "name": "rename across directories of a write root", "op": ["rename", "$T/w/a/f", "$T/w/b/f"], "expect": "allow" },
+
+    { "name": "exec as a worker", "op": ["exec", "/bin/true"], "macosOp": ["exec", "/usr/bin/true"], "expect": "deny" },
+    { "name": "TCP connect as a worker", "op": ["connect-tcp", "$PORT"], "expect": "deny", "minAbi": 4 },
+    { "name": "TCP bind as a worker", "op": ["bind-tcp", "0"], "expect": "deny", "minAbi": 4 },
+    { "name": "signal a process outside the domain", "op": ["signal-parent"], "expect": "deny", "minAbi": 6 }
+  ]
+}

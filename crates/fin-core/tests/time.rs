@@ -13,8 +13,8 @@ fn code(e: Result<Rational, CoreError>) -> String {
 
 #[test]
 fn reduces() {
-    assert_eq!(r("2/4").to_string(), "1/2");
-    assert_eq!(r("4/2").to_string(), "2");
+    assert_eq!(Rational::new(2, 4).unwrap().to_string(), "1/2");
+    assert_eq!(Rational::new(4, 2).unwrap().to_string(), "2");
     assert_eq!(Rational::new(3, -6).unwrap().to_string(), "-1/2");
 }
 
@@ -48,6 +48,51 @@ fn rejects_bad_input_with_details() {
         let e = parse_time(bad, rate(30)).unwrap_err();
         assert_eq!(e.code, "INVALID_TIME", "{bad}");
         assert_eq!(e.details["input"], bad);
+    }
+}
+
+#[test]
+fn noncanonical_rationals_rejected() {
+    // (input, canonical form the fix names)
+    for (bad, canonical) in [
+        ("2/4", "1/2"),
+        ("4/2", "2"),
+        ("1/1", "1"),
+        ("-0", "0"),
+        ("+1", "1"),
+        ("01", "1"),
+        ("-01/2", "-1/2"),
+        ("0/5", "0"),
+        ("1/02", "1/2"),
+        ("00", "0"),
+    ] {
+        for e in [
+            bad.parse::<Rational>().unwrap_err(),
+            parse_time(bad, rate(30)).unwrap_err(),
+        ] {
+            assert_eq!(e.code, "INVALID_TIME", "{bad}");
+            assert_eq!(e.details["input"], bad, "{bad}");
+            assert_eq!(e.details["canonical"], canonical, "{bad}");
+            let fix = e.fix.clone().unwrap_or_default();
+            assert!(fix.contains(&format!("\"{canonical}\"")), "{bad}: {fix}");
+        }
+        // Stored data is read leniently and normalised (a hand-edited file stays readable).
+        let stored: Rational = serde_json::from_str(&format!("\"{bad}\"")).unwrap();
+        assert_eq!(stored.to_string(), canonical, "{bad}");
+    }
+    // Canonical forms still parse.
+    for good in [
+        "0",
+        "1",
+        "-1",
+        "1/2",
+        "-1/2",
+        "1001/30000",
+        "30000/1001",
+        "62/5",
+    ] {
+        assert_eq!(good.parse::<Rational>().unwrap().to_string(), good);
+        assert_eq!(parse_time(good, rate(30)).unwrap().to_string(), good);
     }
 }
 
@@ -133,7 +178,20 @@ fn orders_by_value() {
     assert!(r("-1/2") < r("-1/3"));
 }
 
+/// `PROPTEST_CASES` overrides the per-block default (spec §4.6).
+fn config(default: u32) -> ProptestConfig {
+    let cases = std::env::var("PROPTEST_CASES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default);
+    ProptestConfig {
+        cases,
+        ..ProptestConfig::default()
+    }
+}
+
 proptest! {
+    #![proptest_config(config(256))]
     #[test]
     fn add_then_sub_is_identity(an in -1_000_000i64..1_000_000, ad in 1i64..10_000, bn in -1_000_000i64..1_000_000, bd in 1i64..10_000) {
         let a = Rational::new(an, ad).unwrap();
@@ -148,4 +206,91 @@ fn frame_duration_rejects_non_positive_rates() {
         let e = frame_duration(bad).unwrap_err();
         assert_eq!(e.code, "INVALID_RANGE");
     }
+}
+
+#[test]
+fn strict_check_names_the_noncanonical_input() {
+    use serde_json::json;
+    let input = json!({ "a": [{ "at": "2/4" }], "b": "x", "c": "1/2" });
+    let decoded = json!({ "a": [{ "at": "1/2" }], "b": "x", "c": "1/2" });
+    let e = fin_core::check_canonical_times(&input, &decoded).unwrap_err();
+    assert_eq!(e.code, "INVALID_TIME");
+    assert_eq!(e.details["input"], "2/4");
+    assert_eq!(e.details["canonical"], "1/2");
+    assert_eq!(e.details["path"], "/a/0/at");
+    assert!(e.fix.unwrap().contains("\"1/2\""));
+    assert!(fin_core::check_canonical_times(&decoded, &decoded).is_ok());
+    // Fields the decoder drops or adds are not times.
+    assert!(fin_core::check_canonical_times(&json!({ "x": "y" }), &json!({})).is_ok());
+}
+
+// External review of 2026-11-09, #18 and #19: extreme values are typed errors or exact results in
+// debug and release builds alike (no panic, no wrapping). Run in `--release` too.
+
+const I128_MIN: &str = "-170141183460469231731687303715884105728";
+
+#[test]
+fn i128_min_inputs_are_typed_errors() {
+    assert_eq!(code(I128_MIN.parse::<Rational>()), "TIME_OVERFLOW");
+    assert_eq!(code(parse_time(I128_MIN, rate(30))), "TIME_OVERFLOW");
+    let lenient = serde_json::from_str::<Rational>(&format!("\"{I128_MIN}/1\""));
+    assert!(lenient.unwrap_err().to_string().contains("TIME_OVERFLOW"));
+    let same = format!("\"{I128_MIN}/{}\"", &I128_MIN[1..]);
+    assert!(serde_json::from_str::<Rational>(&same).is_err());
+    let min_over_min = format!("\"{I128_MIN}/{}\"", I128_MIN);
+    // Lenient decoding reads a sign on the denominator only as digits: refused, not a panic.
+    assert!(serde_json::from_str::<Rational>(&min_over_min).is_err());
+}
+
+#[test]
+fn frame_counts_that_overflow_are_typed_errors() {
+    let ntsc = Rational::new(30000, 1001).unwrap();
+    // n × 1001 wraps to 2 × 30000 in i128 without a checked multiply.
+    for f in [
+        "f47931881853998325023312507140738579296",
+        "f170141183460469231731687303715884105727",
+        "f-170141183460469231731687303715884105728",
+    ] {
+        assert_eq!(code(parse_time(f, ntsc)), "TIME_OVERFLOW", "{f}");
+    }
+    let max = Rational::from_int(i64::MAX);
+    assert_eq!(parse_time(&format!("f{}", i64::MAX), rate(1)).unwrap(), max);
+    assert_eq!(
+        code(parse_time(&format!("f{}", i64::MAX), ntsc)),
+        "TIME_OVERFLOW"
+    );
+}
+
+#[test]
+fn long_decimals_overflow() {
+    let s = format!("{}.{}s", "9".repeat(30), "9".repeat(30));
+    assert_eq!(code(parse_time(&s, rate(30))), "TIME_OVERFLOW");
+}
+
+#[test]
+fn subtraction_at_the_extremes() {
+    let min = Rational::from_int(i64::MIN);
+    let max = Rational::from_int(i64::MAX);
+    assert_eq!(min.checked_sub(min).unwrap(), Rational::zero());
+    assert_eq!(max.checked_sub(max).unwrap(), Rational::zero());
+    assert_eq!(
+        min.checked_sub(Rational::from_int(-1)).unwrap(),
+        Rational::from_int(i64::MIN + 1)
+    );
+    assert_eq!(
+        code(min.checked_sub(Rational::from_int(1))),
+        "TIME_OVERFLOW"
+    );
+    assert_eq!(code(min.checked_neg()), "TIME_OVERFLOW");
+    let tiny = Rational::new(i64::MIN, i64::MAX).unwrap();
+    assert_eq!(tiny.checked_sub(tiny).unwrap(), Rational::zero());
+    assert_eq!(code(Rational::new(1, i64::MIN)), "TIME_OVERFLOW");
+    assert_eq!(
+        Rational::new(i64::MIN, i64::MIN).unwrap(),
+        Rational::from_int(1)
+    );
+    assert_eq!(
+        Rational::new(i64::MIN, 2).unwrap(),
+        Rational::from_int(i64::MIN / 2)
+    );
 }

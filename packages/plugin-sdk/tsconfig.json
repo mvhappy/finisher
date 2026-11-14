@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "allowJs": true,
+    "types": ["node"],
+    "paths": { "@finisher/plugin-sdk": ["./src/index.ts"], "@finisher/core-types": ["../core-types/src/index.ts"] }
+  },
+  "include": ["src", "test", "../../examples/plugins/ts-tools/src"]
+}

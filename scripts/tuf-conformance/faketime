@@ -1,0 +1,4 @@
+#!/bin/sh
+# Stands in for libfaketime where it is not installed (macOS): `faketime <time> <command …>`.
+# CI on Linux uses the real one; the suite calls both the same way.
+exec node "$(dirname "$0")/faketime.mjs" "$@"

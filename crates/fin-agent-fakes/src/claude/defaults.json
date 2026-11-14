@@ -1,0 +1,64 @@
+{
+  "_comment": "Line shapes copied from Claude Code 2.1.321 (plan Task 0, unsigned runs, 2026-11-12; the signed-in `initialize.account` and `authSignedIn`: signed-in runs, 2026-11-13, a fresh config dir); descriptions shortened.",
+  "defaultTools": ["Task", "AskUserQuestion", "Bash", "CronCreate", "CronDelete", "CronList", "Edit", "EnterPlanMode", "ExitPlanMode", "ListAgents", "Monitor", "NotebookEdit", "Read", "ReportFindings", "ScheduleWakeup", "SendMessage", "TaskStop", "ToolSearch", "WebFetch", "WebSearch", "Workflow", "Write"],
+  "restrictedDrops": ["Bash", "WebFetch", "Monitor", "Workflow", "CronCreate"],
+  "initialize": {
+    "commands": [],
+    "agents": [
+      {"name": "claude", "description": "Catch-all for any task that doesn't fit a more specific agent."},
+      {"name": "Explore", "description": "Fast read-only search agent for locating code.", "model": "inherit"},
+      {"name": "general-purpose", "description": "General-purpose agent for researching complex questions and multi-step tasks."},
+      {"name": "Plan", "description": "Software architect agent for designing implementation plans.", "model": "inherit"},
+      {"name": "statusline-setup", "description": "Use this agent to configure the user's Claude Code status line setting.", "model": "sonnet"}
+    ],
+    "available_output_styles": ["default", "Proactive", "Concise", "Explanatory", "Learning"],
+    "models": [
+      {"value": "default", "resolvedModel": "claude-opus-5-5", "displayName": "Default (recommended)", "description": "Use the default model (currently Opus 5.5) · $4/$20 per Mtok", "supportsEffort": true, "supportedEffortLevels": ["low", "medium", "high", "xhigh", "max"], "supportsAdaptiveThinking": true, "supportsFastMode": true, "supportsAutoMode": true, "supportsThinkingOff": false},
+      {"value": "opus", "resolvedModel": "claude-opus-5-5", "displayName": "Opus", "description": "Opus 5.5 · Best for everyday, complex tasks · $4/$20 per Mtok", "supportsEffort": true, "supportedEffortLevels": ["low", "medium", "high", "xhigh", "max"], "supportsAdaptiveThinking": true, "supportsFastMode": true, "supportsAutoMode": true, "supportsThinkingOff": false},
+      {"value": "fable", "resolvedModel": "claude-fable-5-2", "displayName": "Fable", "description": "Fable 5.2 · Most capable for your hardest and longest-running tasks · $8/$40 per Mtok", "supportsEffort": true, "supportedEffortLevels": ["low", "medium", "high", "xhigh", "max"], "supportsAdaptiveThinking": true, "supportsFastMode": true, "supportsAutoMode": true, "supportsThinkingOff": false},
+      {"value": "sonnet", "resolvedModel": "claude-sonnet-5-5", "displayName": "Sonnet", "description": "Sonnet 5.5 · Efficient for routine tasks · $2/$10 per Mtok", "supportsEffort": true, "supportedEffortLevels": ["low", "medium", "high", "xhigh", "max"], "supportsAdaptiveThinking": true, "supportsAutoMode": true, "supportsThinkingOff": false},
+      {"value": "haiku", "resolvedModel": "claude-haiku-5-5", "displayName": "Haiku", "description": "Haiku 5.5 · Fastest for quick answers · $0.10/$0.50 per Mtok", "supportsEffort": true, "supportedEffortLevels": ["low", "medium", "high", "xhigh", "max"], "supportsAdaptiveThinking": true, "supportsAutoMode": true, "supportsThinkingOff": false}
+    ],
+    "account": {"subscriptionType": "Claude Max", "apiProvider": "firstParty"},
+    "hook_on_failure_supported": true,
+    "other_hook_ask_outranks_host": true,
+    "feedback_mode": {"kind": "disabled"},
+    "analytics_disabled": true,
+    "remote_control_auto_enable": false,
+    "remote_control_auto_connect_default": false,
+    "remote_control_available": true,
+    "remote_control_auto_on_by_default": false,
+    "ide_rc_auto_enable_gate": false,
+    "fast_mode_state": "off",
+    "fast_mode_disabled_reason": "sdk_opt_in_required",
+    "session_state": "idle",
+    "capabilities": ["ui_surface_v1", "mcp_call_result_not_for_model_v1", "mcp_call_check_permissions_v1"]
+  },
+  "init": {
+    "slash_commands": [],
+    "apiKeySource": "none",
+    "agents": ["claude", "Explore", "general-purpose", "Plan", "statusline-setup"],
+    "skills": [],
+    "plugins": [
+      {"name": "cc-plugin-agents-md", "path": "builtin", "source": "cc-plugin-agents-md@builtin"},
+      {"name": "cc-plugin-privacy", "path": "builtin", "source": "cc-plugin-privacy@builtin"},
+      {"name": "cc-plugin-plugin-authoring", "path": "builtin", "source": "cc-plugin-plugin-authoring@builtin"}
+    ],
+    "capabilities": ["interrupt_receipt_v1", "interrupt_cancel_queued_v1", "interrupt_send_now_v1", "interrupt_requeue_taken_v1", "msg_lifecycle_v1", "request_marker_lists_v1", "ask_user_question_unanswered_v1", "lifecycle_wakeup_source_v1", "sdk_mcp_tools_list_changed", "sdk_mcp_manifests", "mcp_read_resource_v1", "mcp_tool_ui_meta_v1", "ui_surface_v1", "mcp_call_result_not_for_model_v1", "mcp_call_check_permissions_v1"],
+    "analytics_disabled": true,
+    "product_feedback_disabled": true,
+    "additional_directories": [],
+    "fast_mode_state": "off",
+    "fast_mode_disabled_reason": "sdk_opt_in_required",
+    "per_turn_effort_active": true,
+    "ultrathink_available": false,
+    "ultrathink_typed_raises": false,
+    "view_mode": "default"
+  },
+  "result": {"duration_ms": 1, "duration_api_ms": 1, "permission_denials": [], "fast_mode_state": "off", "fast_mode_disabled_reason": "sdk_opt_in_required", "subagent_stats": {"spawned": 0, "requested": {"background": 0, "foreground": 0, "unset": 0}, "started_in_background": 0, "max_depth": 0, "spawned_by_subagents": 0, "completed": 0, "failed": 0, "killed": {"parent": 0, "user": 0, "system": 0}, "refused": {"depth_limit": 0, "concurrency_limit": 0, "budget": 0}, "by_type": {}}, "safety_stops": 0, "credential_expires_at": "2099-01-01T00:00:00.000Z"},
+  "resultText": {"api_error_status": null, "ttft_ms": 1, "ttft_stream_ms": 1, "time_to_request_ms": 1, "first_content_frame_ms": 1},
+  "modelUsage": {"webSearchRequests": 0, "contextWindow": 1000000, "maxOutputTokens": 128000, "thinkingTokens": 0, "cacheCreationEphemeral5mInputTokens": 0, "cacheCreationEphemeral1hInputTokens": 0, "provider": "firstParty", "costBasis": "list"},
+  "usage": {"output_tokens_details": {"thinking_tokens": 0}, "server_tool_use": {"web_search_requests": 0, "web_fetch_requests": 0}, "service_tier": "standard", "cache_creation": {"ephemeral_1h_input_tokens": 0, "ephemeral_5m_input_tokens": 0}, "inference_geo": "", "iterations": [], "speed": "standard", "fallback_credit": null},
+  "authSignedIn": {"loggedIn": true, "authMethod": "claude.ai", "apiProvider": "firstParty", "analyticsDisabled": false, "loginExpiresAt": "2026-12-02T02:34:57.327Z", "email": null, "orgId": null, "orgName": null, "subscriptionType": "max", "storedClaudeAiLogin": true, "planTier": "max_20x"},
+  "authSignedOut": {"loggedIn": false, "authMethod": "none", "apiProvider": "firstParty", "analyticsDisabled": true, "loginExpiresAt": null}
+}

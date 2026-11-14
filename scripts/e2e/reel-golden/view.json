@@ -1,0 +1,24 @@
+{
+  "elided": [],
+  "lineTokens": 207,
+  "lines": [
+    "== tl1 \"Timeline 1\" 1080x1920 30fps 00:30.0  V1=t1 A1=t2 A2=t3 C1=t4 V2=t5",
+    "00:00.0–00:10.0  V1  c1 clip a1 [0.0s+10.0s]  ⟷ lk1",
+    "00:00.0–00:10.0  A1  c2 clip a1 [0.0s+10.0s]  ⟷ lk1",
+    "00:00.0–00:30.0  A2  c7 clip a4 [0.0s+30.0s] gain -6dB fade 2.0s/0.0s",
+    "00:00.0–00:02.6  C1  cap1 \"Morning light on the water\" (preset:bold)",
+    "00:01.0–00:06.0  V2  img1 image a2 kf: opacity",
+    "00:02.8–00:05.4  C1  cap2 \"שלום עולם see you\" (preset:bold)",
+    "00:05.4–00:06.2  C1  cap3 \"soon\" (preset:bold)",
+    "00:08.0–00:11.0  V2  g1 graphic a3 title=\"Reel\"",
+    "00:09.5–00:10.5  V1  tr1 dissolve c1→c3 1.0s",
+    "00:09.5–00:10.5  A1  tr2 crossfade c2→c4 1.0s",
+    "00:10.0–00:16.0  V1  c3 clip a1 [2.0s+9.0s] x1.5  ⟷ lk2",
+    "00:10.0–00:16.0  A1  c4 clip a1 [2.0s+9.0s] x1.5  ⟷ lk2",
+    "00:16.0–00:30.0  V1  c5 clip a1 [1.0s+14.0s]  ⟷ lk3",
+    "00:16.0–00:30.0  A1  c6 clip a1 [1.0s+14.0s]  ⟷ lk3"
+  ],
+  "responseTokens": 239,
+  "rev": 21,
+  "timeline": null
+}

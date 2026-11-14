@@ -1,0 +1,162 @@
+// A warm worker's record and the parts of its life that need no pool (5C-1 plan Task 11; split
+// out of `warm.ts` in Task 12): the constants, the spawn request, emptying its `tmp/` after a
+// job (Task 11 review H2) and the outcome of an attempt that never ran.
+import { lstat, readdir, rm } from "node:fs/promises";
+import { join } from "node:path";
+import type { Hello, JobHostExitInfo, JobSpawnRequest } from "@finisher/core-types";
+import type { FinError } from "@finisher/contracts";
+import { toFinError } from "../errors.ts";
+import { childEnv, passEnv } from "../env.ts";
+import type { ProcEvent } from "./host.ts";
+import type { FamilySpec, ProgramSpec } from "./kinds.ts";
+import type { AttemptOutcome } from "./runner.ts";
+
+export const WARM_SLOTS = 1;
+export const WARM_IDLE_S = 60;
+export const WARM_MAX_JOBS = 500;
+export const WARM_MAX_AGE_S = 30 * 60;
+/** A `ready` reporting more than this share of the worker group's limit recycles the worker. */
+export const RECYCLE_MEMORY_SHARE = 0.8;
+/** How long a worker asked to go may take to exit before its group is killed. */
+export const RETIRE_GRACE_MS = 2000;
+/** Warm workers' directories under the jobs root: `warm-<run>-<n>/`. */
+export const WARM_DIR_PREFIX = "warm-";
+
+export type State = "spawning" | "ready" | "busy" | "retiring";
+
+/** A warm worker, as `workers().warm` lists it. */
+export interface WarmWorkerInfo {
+  readonly family: string;
+  readonly key: string;
+  readonly pid?: number;
+  readonly state: State;
+  readonly served: number;
+  readonly ageS: number;
+  readonly idleS: number;
+  readonly memory?: number;
+}
+
+export interface Worker {
+  readonly id: number;
+  readonly family: FamilySpec;
+  readonly key: string;
+  readonly program: ProgramSpec;
+  readonly group: number;
+  readonly memoryBytes: number | undefined;
+  readonly dir: string;
+  /** Under a sandbox, its project's read roots (`FamilySpec.warmReads`, plan 7C Decision 19), canonical. */
+  readonly reads: ReadonlyArray<string>;
+  /** The plugin its `worker.exit` names (sp8b Decision 3b): its family's, else its first job's `via`. */
+  readonly plugin: string | undefined;
+  readonly spawnedAt: number;
+  state: State;
+  served: number;
+  proc?: number;
+  pid?: number;
+  hello?: Hello;
+  idleSince?: number;
+  memory?: number;
+  /** The running attempt, settled once its job has left the worker's directory. */
+  visit?: Promise<void>;
+  /** The running attempt's listener. */
+  on?: ((e: ProcEvent) => void) | undefined;
+  /** Why it was asked to go (its `worker.exit` reason). */
+  retire?: "idleExpired" | "recycled" | "done";
+  /** Its replacement's `hello` came while it was busy: it goes after this job. */
+  retireAfterJob?: boolean;
+  replacement?: Worker | undefined;
+  /** The worker this one replaces (until its `hello`). */
+  replaces?: Worker | undefined;
+  mismatch?: FinError;
+  /** Its `hello` made it `ready` once (a worker that never did fails its key's head job, B1). */
+  cameUp: boolean;
+  cancelIdle?: (() => void) | undefined;
+  cancelKill?: (() => void) | undefined;
+  gone: boolean;
+}
+
+/** One worker as `workers().warm` lists it. */
+export function workerInfo(w: Worker, now: number): WarmWorkerInfo {
+  return {
+    family: w.family.family,
+    key: w.key,
+    ...(w.pid === undefined ? {} : { pid: w.pid }),
+    state: w.state,
+    served: w.served,
+    ageS: (now - w.spawnedAt) / 1000,
+    idleS: w.state === "ready" && w.idleSince !== undefined ? (now - w.idleSince) / 1000 : 0,
+    ...(w.memory === undefined ? {} : { memory: w.memory }),
+  };
+}
+
+export const noRun = (error: FinError, cause: "exit" | "mismatch", exit?: JobHostExitInfo): AttemptOutcome => ({
+  ok: false,
+  error,
+  cause,
+  ...(exit === undefined ? {} : { exit }),
+  done: [],
+  inFlight: [],
+  helpers: 0,
+  stopSent: false,
+  runMicros: 0,
+});
+
+/** Where the jobs a warm worker serves visit it (plan 7C Decision 19): `<w.dir>/jobs/`. */
+export const VISIT_DIR = "jobs";
+
+/** The spawn request of worker `w`. */
+export function spawnRequest(w: Worker): JobSpawnRequest {
+  const tmp = join(w.dir, "tmp");
+  // A plugin family's process (sp8b Task 4): its own environment, `cwd`, grants and limits.
+  // It is granted neither its warm directory nor the `jobs/` its jobs visit: a warm plugin
+  // exchanges data through calls only (sp8b Decision 5).
+  const own = "path" in w.program ? w.program.process : undefined;
+  if (own !== undefined) {
+    return {
+      role: "worker",
+      profile: w.family.profile,
+      family: w.family.family,
+      program: { path: (w.program as { path: string }).path },
+      args: [...w.program.args],
+      env: { ...own.env },
+      cwd: own.cwd,
+      grants: [...own.grants, ...w.reads.map((path) => ({ path, mode: "read" as const }))],
+      ...(own.limits === undefined ? {} : { limits: own.limits }),
+      qos: "normal",
+      label: `warm ${w.family.family}${w.key === "" ? "" : `:${w.key}`}`,
+    };
+  }
+  return {
+    role: "worker",
+    profile: w.family.profile,
+    family: w.family.family,
+    program: "path" in w.program ? { path: w.program.path } : { bundled: w.program.binary },
+    args: [...w.program.args],
+    env: { ...childEnv(), ...passEnv(w.family.env), TMPDIR: tmp, TEMP: tmp, TMP: tmp },
+    cwd: w.dir,
+    // Its own directory, never the jobs root (plan 7C Decision 19): each job it serves is moved
+    // into `jobs/` for its attempt and out again after it. Under a sandbox, its one project's
+    // read roots, which the sandbox fixes at start.
+    grants: [{ path: tmp, mode: "readWrite" }, { path: join(w.dir, VISIT_DIR), mode: "readWrite" }, ...w.reads.map((path) => ({ path, mode: "read" as const }))],
+    qos: "normal",
+    label: `warm ${w.family.family}${w.key === "" ? "" : `:${w.key}`}`,
+  };
+}
+
+/**
+ * Empties the worker's `tmp/` and `jobs/` (false: they could not be emptied, or one is not a
+ * directory: never followed, Task 12 review B1). `rm` of an entry removes a link, not its target.
+ */
+export async function emptyTmp(w: Worker, log: (level: "warning", message: string) => void): Promise<boolean> {
+  try {
+    for (const sub of ["tmp", VISIT_DIR]) {
+      const dir = join(w.dir, sub);
+      if (!(await lstat(dir)).isDirectory()) throw new Error(`${sub}/ is not a directory`);
+      for (const name of await readdir(dir)) await rm(join(dir, name), { recursive: true, force: true });
+    }
+    return true;
+  } catch (err) {
+    log("warning", `warm ${w.family.family} worker: its temp directory could not be emptied: ${toFinError(err).message}`);
+    return false;
+  }
+}

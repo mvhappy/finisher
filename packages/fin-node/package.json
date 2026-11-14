@@ -12,14 +12,25 @@
       "default": "./index.js"
     }
   },
+  "files": [
+    "*.js",
+    "*.d.ts",
+    "*.node",
+    "fin-workers",
+    "fin-workers.exe",
+    "fin-sandbox-exec",
+    "fin-sandbox-exec.exe"
+  ],
   "napi": {
     "binaryName": "fin-node"
   },
   "scripts": {
-    "build": "napi build --platform --release --manifest-path ../../crates/fin-node/Cargo.toml --output-dir . --no-js",
-    "build:test": "napi build --platform --release --manifest-path ../../crates/fin-node/Cargo.toml --output-dir test/native --no-js --features test-hooks"
+    "build": "napi build --platform --release --manifest-path ../../crates/fin-node/Cargo.toml --output-dir . --no-js && node scripts/copy-workers.mjs",
+    "build:test": "napi build --platform --release --manifest-path ../../crates/fin-node/Cargo.toml --output-dir test/native --no-js --features test-hooks && node scripts/copy-workers.mjs --test"
   },
   "devDependencies": {
-    "@napi-rs/cli": "3.10.9"
+    "@finisher/core-types": "workspace:*",
+    "@napi-rs/cli": "3.10.9",
+    "@types/node": "24.19.2"
   }
 }

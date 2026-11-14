@@ -1,0 +1,33 @@
+{
+  "lines": [
+    {
+      "x": 120,
+      "top": 0,
+      "width": 14640,
+      "height": 2640,
+      "baseline": 2040,
+      "rtl": false,
+      "firstWord": 0,
+      "endWord": 2
+    }
+  ],
+  "words": [
+    {
+      "line": 0,
+      "x": 120,
+      "width": 8640
+    },
+    {
+      "line": 0,
+      "x": 9840,
+      "width": 4920
+    }
+  ],
+  "width": 14640,
+  "height": 2640,
+  "overflow": false,
+  "missing": [],
+  "faces": [
+    "d8ae94c9ece87aa4c4e33962270ae9aa08d0385f67c26157a9029ab203666363"
+  ]
+}

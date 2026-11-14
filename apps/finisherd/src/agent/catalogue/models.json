@@ -1,0 +1,29 @@
+{
+  "asOf": "2026-11-07",
+  "presets": {
+    "openrouter": { "baseUrl": "https://openrouter.ai/api/v1" },
+    "local": { "ollama": "http://127.0.0.1:11434/v1", "lmstudio": "http://127.0.0.1:1234/v1" }
+  },
+  "defaults": { "window": 8192, "maxOutput": 4096 },
+  "families": [
+    { "provider": "openrouter", "prefix": "anthropic/", "maker": "anthropic", "weights": "closed", "caching": "explicit" },
+    { "provider": "openrouter", "prefix": "openai/gpt-oss", "maker": "openai", "weights": "open", "caching": "automatic" },
+    { "provider": "openrouter", "prefix": "openai/", "maker": "openai", "weights": "closed", "caching": "automatic" },
+    { "provider": "openrouter", "prefix": "google/gemma", "maker": "google", "weights": "open", "caching": "automatic" },
+    { "provider": "openrouter", "prefix": "google/", "maker": "google", "weights": "closed", "caching": "automatic" },
+    { "provider": "openrouter", "prefix": "x-ai/", "maker": "x-ai", "weights": "closed", "caching": "automatic" },
+    { "provider": "openrouter", "prefix": "meta-llama/", "maker": "meta", "weights": "open", "caching": "none" },
+    { "provider": "openrouter", "prefix": "deepseek/", "maker": "deepseek", "weights": "open", "caching": "automatic" },
+    { "provider": "openrouter", "prefix": "moonshotai/", "maker": "moonshotai", "weights": "open", "caching": "automatic" },
+    { "provider": "openrouter", "prefix": "z-ai/", "maker": "z-ai", "weights": "open", "caching": "automatic" },
+    { "provider": "openrouter", "prefix": "qwen/", "maker": "qwen", "weights": "open", "caching": "automatic" },
+    { "provider": "local", "prefix": "llama", "maker": "meta", "weights": "open", "window": 131072 },
+    { "provider": "local", "prefix": "qwen", "maker": "qwen", "weights": "open", "window": 32768 },
+    { "provider": "local", "prefix": "gemma", "maker": "google", "weights": "open", "window": 131072 },
+    { "provider": "local", "prefix": "mistral", "maker": "mistralai", "weights": "open", "window": 32768 },
+    { "provider": "local", "prefix": "deepseek", "maker": "deepseek", "weights": "open", "window": 131072 },
+    { "provider": "local", "prefix": "gpt-oss", "maker": "openai", "weights": "open", "window": 131072 },
+    { "provider": "local", "prefix": "phi", "maker": "microsoft", "weights": "open", "window": 16384 }
+  ],
+  "models": []
+}

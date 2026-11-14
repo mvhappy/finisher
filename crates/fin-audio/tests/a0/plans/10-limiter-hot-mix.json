@@ -1,0 +1,298 @@
+{
+  "master": {
+    "limiterDbtp": -1.0,
+    "peaks": true
+  },
+  "plan": {
+    "from": "0",
+    "items": [
+      {
+        "asset": "a5",
+        "from": "0",
+        "gain": [
+          {
+            "db": [
+              6.0,
+              6.0
+            ],
+            "from": "0",
+            "interp": {
+              "type": "hold"
+            },
+            "to": "4",
+            "u": [
+              0.0,
+              1.0
+            ]
+          }
+        ],
+        "item": "c1",
+        "pan": [
+          {
+            "from": "0",
+            "interp": {
+              "type": "hold"
+            },
+            "pan": [
+              0.0,
+              0.0
+            ],
+            "to": "4",
+            "u": [
+              0.0,
+              1.0
+            ]
+          }
+        ],
+        "sourceFrom": "0",
+        "speed": "1",
+        "to": "4",
+        "track": "t1"
+      },
+      {
+        "asset": "a1",
+        "from": "0",
+        "gain": [
+          {
+            "db": [
+              6.0,
+              6.0
+            ],
+            "from": "0",
+            "interp": {
+              "type": "hold"
+            },
+            "to": "4",
+            "u": [
+              0.0,
+              1.0
+            ]
+          }
+        ],
+        "item": "c2",
+        "pan": [
+          {
+            "from": "0",
+            "interp": {
+              "type": "hold"
+            },
+            "pan": [
+              0.0,
+              0.0
+            ],
+            "to": "4",
+            "u": [
+              0.0,
+              1.0
+            ]
+          }
+        ],
+        "sourceFrom": "1",
+        "speed": "1",
+        "to": "4",
+        "track": "t2"
+      },
+      {
+        "asset": "a5",
+        "from": "1/2",
+        "gain": [
+          {
+            "db": [
+              3.0,
+              3.0
+            ],
+            "from": "1/2",
+            "interp": {
+              "type": "hold"
+            },
+            "to": "7/2",
+            "u": [
+              0.0,
+              1.0
+            ]
+          }
+        ],
+        "item": "c3",
+        "pan": [
+          {
+            "from": "1/2",
+            "interp": {
+              "type": "hold"
+            },
+            "pan": [
+              0.5,
+              0.5
+            ],
+            "to": "7/2",
+            "u": [
+              0.0,
+              1.0
+            ]
+          }
+        ],
+        "sourceFrom": "2",
+        "speed": "1",
+        "to": "7/2",
+        "track": "t3"
+      }
+    ],
+    "timeline": "tl1",
+    "to": "4"
+  },
+  "project": {
+    "assets": {
+      "a1": {
+        "audio": {
+          "channels": 2,
+          "sampleRate": 48000
+        },
+        "duration": "600",
+        "fingerprint": "fp-a1",
+        "id": "a1",
+        "kind": "media",
+        "path": "a1.bin"
+      },
+      "a5": {
+        "audio": {
+          "channels": 2,
+          "sampleRate": 48000
+        },
+        "duration": "600",
+        "fingerprint": "fp-a5",
+        "id": "a5",
+        "kind": "media",
+        "path": "a5.bin"
+      }
+    },
+    "id": "p1",
+    "name": "A0",
+    "rate": "30",
+    "schemaVersion": 6,
+    "timelines": [
+      {
+        "id": "tl1",
+        "name": "tl1",
+        "rate": "30",
+        "resolution": {
+          "height": 1080,
+          "width": 1920
+        },
+        "tracks": [
+          {
+            "gain": 6.0,
+            "id": "t1",
+            "items": [
+              {
+                "asset": "a5",
+                "duration": "4",
+                "id": "c1",
+                "kind": "clip",
+                "sourceIn": "0",
+                "start": "0"
+              }
+            ],
+            "kind": "audio",
+            "name": "T1"
+          },
+          {
+            "gain": 6.0,
+            "id": "t2",
+            "items": [
+              {
+                "asset": "a1",
+                "duration": "4",
+                "id": "c2",
+                "kind": "clip",
+                "sourceIn": "1",
+                "start": "0"
+              }
+            ],
+            "kind": "audio",
+            "name": "T2"
+          },
+          {
+            "gain": 3.0,
+            "id": "t3",
+            "items": [
+              {
+                "asset": "a5",
+                "audio": {
+                  "pan": 0.5
+                },
+                "duration": "3",
+                "id": "c3",
+                "kind": "clip",
+                "sourceIn": "2",
+                "start": "1/2"
+              }
+            ],
+            "kind": "audio",
+            "name": "T3"
+          }
+        ]
+      }
+    ]
+  },
+  "range": [
+    "0",
+    "4"
+  ],
+  "sources": {
+    "a1": {
+      "l": [
+        {
+          "db": -3.0,
+          "kind": "pink",
+          "seed": 1
+        },
+        {
+          "db": -12.0,
+          "hz": 220.0,
+          "kind": "sine"
+        }
+      ],
+      "r": [
+        {
+          "db": -3.0,
+          "kind": "pink",
+          "seed": 2
+        },
+        {
+          "db": -12.0,
+          "hz": 330.0,
+          "kind": "sine"
+        }
+      ],
+      "secs": 8
+    },
+    "a5": {
+      "l": [
+        {
+          "db": -1.0,
+          "hz": 997.0,
+          "kind": "sine"
+        },
+        {
+          "db": 0.0,
+          "kind": "pink",
+          "seed": 6
+        }
+      ],
+      "r": [
+        {
+          "db": -1.0,
+          "hz": 1499.0,
+          "kind": "sine"
+        },
+        {
+          "db": 0.0,
+          "kind": "pink",
+          "seed": 7
+        }
+      ],
+      "secs": 8
+    }
+  },
+  "timeline": "tl1",
+  "what": "three hot stereo layers with +6 dB track gain into the -1 dBTP master limiter; peaks of the output hashed"
+}

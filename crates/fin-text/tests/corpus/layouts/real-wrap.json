@@ -1,0 +1,78 @@
+{
+  "lines": [
+    {
+      "x": 250,
+      "top": 0,
+      "width": 27148,
+      "height": 5120,
+      "baseline": 4149,
+      "rtl": false,
+      "firstWord": 0,
+      "endWord": 2
+    },
+    {
+      "x": 348,
+      "top": 5120,
+      "width": 29971,
+      "height": 5120,
+      "baseline": 9269,
+      "rtl": false,
+      "firstWord": 2,
+      "endWord": 4
+    },
+    {
+      "x": 348,
+      "top": 10240,
+      "width": 33878,
+      "height": 5120,
+      "baseline": 14389,
+      "rtl": false,
+      "firstWord": 4,
+      "endWord": 7
+    }
+  ],
+  "words": [
+    {
+      "line": 0,
+      "x": 250,
+      "width": 16478
+    },
+    {
+      "line": 0,
+      "x": 18022,
+      "width": 9376
+    },
+    {
+      "line": 1,
+      "x": 348,
+      "width": 15999
+    },
+    {
+      "line": 1,
+      "x": 17789,
+      "width": 12530
+    },
+    {
+      "line": 2,
+      "x": 348,
+      "width": 10433
+    },
+    {
+      "line": 2,
+      "x": 12227,
+      "width": 10907
+    },
+    {
+      "line": 2,
+      "x": 24474,
+      "width": 9752
+    }
+  ],
+  "width": 33878,
+  "height": 15360,
+  "overflow": false,
+  "missing": [],
+  "faces": [
+    "f3961a9cde016d41a4879aecda1474d3a36d6bf54fa0e4643de029cc2248b0e8"
+  ]
+}

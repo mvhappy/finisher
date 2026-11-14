@@ -1,0 +1,65 @@
+{
+  "project": {
+    "assets": {
+      "a1": {
+        "duration": "600",
+        "fingerprint": "fixture-fingerprint",
+        "id": "a1",
+        "kind": "media",
+        "path": "media/clip.mov",
+        "video": {
+          "height": 1080,
+          "rate": "30",
+          "width": 1920
+        }
+      }
+    },
+    "id": "01m6pef13850475g39b46wx4p4",
+    "name": "4A fixture",
+    "rate": "30",
+    "schemaVersion": 2,
+    "timelines": [
+      {
+        "id": "tl1",
+        "name": "Timeline 1",
+        "rate": "30",
+        "resolution": {
+          "height": 1920,
+          "width": 1080
+        },
+        "tracks": [
+          {
+            "id": "t1",
+            "items": [
+              {
+                "asset": "a1",
+                "duration": "10",
+                "id": "c1",
+                "kind": "clip",
+                "sourceIn": "0",
+                "start": "0"
+              },
+              {
+                "asset": "a1",
+                "duration": "10",
+                "id": "c2",
+                "kind": "clip",
+                "sourceIn": "0",
+                "start": "10"
+              }
+            ],
+            "kind": "video",
+            "name": "V1"
+          },
+          {
+            "id": "t2",
+            "items": [],
+            "kind": "audio",
+            "name": "A1"
+          }
+        ]
+      }
+    ]
+  },
+  "rev": 6
+}

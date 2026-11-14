@@ -1,0 +1,590 @@
+// One Claude Code instance (plan 7D Task 7, Decisions 12, 13, 16): a `claude -p` process the
+// adapter started through the session sandbox, its lines as `ProviderEvent`s bound to the
+// instance, its turns, steers and interrupt, and its exit.
+//
+// - **The first-turn gate** (Decision 8, Review Focus 1): every line passes `firstTurnGate`, so
+//   nothing reaches the runtime before the instance's `system/init` passed `checkInit`, the
+//   adapter's own events (`turnStarted`, notices) included. A refused init fails the turn
+//   (`PROVIDER_VERSION`) and kills the process group at once; a line that does not decode does
+//   the same with `PROVIDER_PROTOCOL` (drift fails closed, Review Focus 6).
+// - **Control lines**: the `finisher` SDK MCP server's handshake is answered at once (Task 0: it
+//   starts before the `initialize` answer); every other CLI request (`can_use_tool`, an MCP
+//   `tools/call`, `hook_callback`, a newer CLI's) goes to one place, `RequestPort` (Task 8's
+//   `claude/permissions.ts`: a `request` the runtime decides), behind the server's host
+//   (`mcp-host.ts`, Task 13: the handshake and the brokered shell); answers to the host's own
+//   requests (`initialize`, `interrupt`) are matched by id.
+// - **Turns** (Decision 13): `startTurn` writes the user line (the run's facts first) and the
+//   turn ends at its `result` (`map.ts`). Verified on 2.1.321 (7D Task 0, s1b/s1d): a steer never
+//   joins the running turn, whose `result` says `queued_turn_count: 0`, and the CLI runs the
+//   lines queued during a turn as one next turn. So **steers are held here**, never written while
+//   a CLI turn runs: at that turn's successful `result` every held text goes as one user line (a
+//   next CLI turn inside the same run, asked of the budget gate like any turn) and the run stays
+//   open; it ends at a successful `result` with nothing held. An interrupt (also one that crosses
+//   a successful `result`), a failed `result`, a refused init, the exit or the close hands what is
+//   held back (with a batch written whose turn has no `result` yet), never written: `notice
+//   {steerReturned: {steers: [{text, nodeId?, at?}]}}` in order (owner decision 2026-11-13). A
+//   steer reaching an instance whose run already ended is refused `SESSION_BUSY {reason:
+//   "runEnded"}` (the caller sends it again: a new run).
+// - **Interrupt** (Decision 16): the `interrupt` request, then up to `interruptWaitMs` (5 s) for
+//   the turn's `result`; then SIGINT and up to `sigintGraceMs`; then the sandbox's group kill.
+//   Never SIGTERM (it records no result).
+// - **Exit**: the process's end (after its last line) is `exited {code, signal}`, then the
+//   stream ends. Closing the instance's scope drops its later lines and kills it.
+// - **One process of a session** (Task 10): `ClaudeSession` (`instances.ts`) runs a session's
+//   successive processes behind one `ProviderSession`, each instance writing to its `sink`.
+import type { FinError, ProviderEvent } from "@finisher/contracts";
+import { Cause, Effect, Queue, Stream } from "effect";
+import { finError } from "../../errors.ts";
+import type { BoundEvent, CallGate, ProjectedUsage, ProviderRef, ProviderSession, RuntimeAnswer, TurnInput, UserInput } from "../adapter.ts";
+import type { SandboxedChild } from "../sandbox.ts";
+import type { LaunchPlan } from "./launch.ts";
+import { type Denial, LineMapper, type UsageSource } from "./map.ts";
+import { isMcpToolCall, type McpHostPort, mcpHost } from "./mcp-host.ts";
+import { claudePermissions } from "./permissions.ts";
+import { type CheckOptions, firstTurnGate } from "./probe-check.ts";
+import type { ShellTool } from "./shell-tool.ts";
+import { type CliLine, type CliRequest, decodeLine, encodeAnswer, encodeControl, encodeUser, lineFramer, type SystemInit } from "./protocol.ts";
+
+/** Decision 16: how long the turn's `result` may take after the `interrupt` request. */
+export const INTERRUPT_WAIT_MS = 5_000;
+/** How long the turn's `result` (or the exit) may take after SIGINT, before the group kill. */
+export const SIGINT_GRACE_MS = 2_000;
+/** How long a closed instance may take to exit after its stdin's end (writing its transcript, which `--resume` reads) before it is killed. */
+export const CLOSE_GRACE_MS = 2_000;
+/**
+ * How long a killed instance may take to be gone (the sandbox's group kill: SIGHUP under the
+ * launchers, `REAP_GRACE_MS`, then SIGKILL) before `close` reports it still running.
+ */
+export const CLOSE_EXIT_WAIT_MS = 5_000;
+
+/**
+ * Where the CLI's requests other than the MCP handshake go (`can_use_tool`, an MCP `tools/call`,
+ * `hook_callback`, a newer CLI's): `claudePermissions()` (Task 8) unless a test passes its own.
+ */
+export interface RequestPort {
+  /**
+   * A CLI request: the events it becomes (a `request` for the runtime), an answer line to write
+   * now, or one to write when `later` settles (none when it settles undefined: a brokered shell).
+   */
+  request(requestId: string, r: CliRequest): { readonly events?: readonly ProviderEvent[]; readonly answer?: string; readonly later?: Promise<string | undefined> };
+  /** The runtime's answer to a `request` event: the line to write, or why there is none. */
+  respond(id: string, a: RuntimeAnswer): string | FinError;
+  /** The CLI withdrew `requestId` (`control_cancel_request`). */
+  cancel(requestId: string): readonly ProviderEvent[];
+  /** Whether a prompt of this turn named the denied call (else its denial is the CLI's own). */
+  asked?(d: Denial): boolean;
+  /** A `result` ended the turn: forget its prompts (the events of those it withdrew, `requestCancelled`). */
+  turnEnded?(): readonly ProviderEvent[] | void;
+}
+
+/** Where an instance's events go instead of its own stream (`ClaudeSession`, Task 10). */
+export interface EventSink {
+  offer(event: ProviderEvent): void;
+  /** The process is gone (after its `exited`), or the instance closed. */
+  end(): void;
+}
+
+export interface InstanceOptions {
+  /** This instance's id (a ULID): every event carries it. */
+  readonly instance: string;
+  /** Default: the instance's own stream (`session().events`). */
+  readonly sink?: EventSink;
+  readonly child: SandboxedChild;
+  readonly plan: Pick<LaunchPlan, "argv" | "tools" | "mcpTools">;
+  /** The session's UUID (`--session-id`/`--resume=`): every user line names it. */
+  readonly uuid: string;
+  /** The init predicate's options (`signInIgnored` from the `initialize` answer). */
+  readonly check?: CheckOptions;
+  /** The adapter's own events (a dropped tool's notice), released with the first ones the gate lets through. */
+  readonly notices?: readonly ProviderEvent[];
+  /** The `initialize` answer's body (`control_response.response.response`). */
+  readonly onInitialize?: (body: unknown) => void;
+  /** The first init that passed the gate: the events it adds (an `untestedVersion` notice). */
+  readonly onInit?: (init: SystemInit) => readonly ProviderEvent[];
+  readonly requests?: RequestPort;
+  /** The brokered shell (Decision 21), when `plan.mcpTools` serves `mcp__finisher__shell`. */
+  readonly shell?: ShellTool;
+  readonly usage?: UsageSource;
+  /** The runtime's budget check, once per turn (Task 9, Decision 15), with the turn's projection. */
+  readonly gate?: CallGate;
+  readonly projection?: () => ProjectedUsage;
+  readonly interruptWaitMs?: number;
+  readonly sigintGraceMs?: number;
+  readonly closeGraceMs?: number;
+  readonly exitWaitMs?: number;
+  readonly ref: ProviderRef;
+}
+
+const INITIALIZE_ID = "finisher-initialize";
+
+/** One running instance; `session()` is its `ProviderSession`. */
+export class ClaudeInstance {
+  readonly #o: InstanceOptions;
+  readonly #queue: Queue.Queue<BoundEvent, Cause.Done>;
+  readonly #gate: ReturnType<typeof firstTurnGate>;
+  readonly #map: LineMapper;
+  readonly #requests: McpHostPort;
+  /** The adapter's events waiting for the gate. */
+  #pending: ProviderEvent[];
+  #inited = false;
+  #turnOpen = false;
+  /** The last `startTurn`'s user line: true once the write's callback reported success. */
+  #turnWritten: Promise<boolean> = Promise.resolve(false);
+  /** A user line is written and its CLI turn has not ended (its `result`). */
+  #cliTurn = false;
+  /** Steers held for the next CLI turn of the open run, in order (with their `userMessage` nodes). */
+  #held: UserInput[] = [];
+  /** The held steers last written as a CLI turn's line, until that turn's `result` (the CLI may exit before it reads them). */
+  #inFlight: UserInput[] = [];
+  /** The model the instance's first init named (a later change is a notice). */
+  #model: string | undefined;
+  #interrupting = false;
+  /** The gate reserved for the open turn and no `usage` has settled it yet. */
+  #reserved = false;
+  #closed = false;
+  /** The gate refused the init, or a line did not decode: later lines are dropped. */
+  #refused = false;
+  #exit: { code: number | null; signal: string | null } | null = null;
+  /** A failed `result` before any turn and before the `initialize` answer (an unknown `--resume`). */
+  #early: { readonly subtype: string; readonly text: string } | null = null;
+  #wake: (() => void)[] = [];
+  #control = 0;
+  /** The open interrupt request's id and, once answered, its answer. */
+  #interruptAsk: { readonly id: string; answer?: "success" | "error" } | null = null;
+  /** The `initialize` answer's body; null when it was refused or the process ended first. */
+  readonly #initialized: Promise<unknown>;
+  #answerInitialize: (body: unknown) => void = () => {};
+
+  private constructor(o: InstanceOptions, queue: Queue.Queue<BoundEvent, Cause.Done>) {
+    this.#o = o;
+    this.#queue = queue;
+    this.#gate = firstTurnGate(o.plan, o.check ?? {});
+    this.#requests = mcpHost(o.requests ?? claudePermissions(), { mcpTools: o.plan.mcpTools, ...(o.shell === undefined ? {} : { shell: o.shell }) });
+    this.#map = new LineMapper(o.usage, { asked: (d) => this.#requests.asked?.(d) === true, turnEnded: () => this.#requests.turnEnded() });
+    this.#pending = [...(o.notices ?? [])];
+    this.#initialized = new Promise((resolve) => (this.#answerInitialize = resolve));
+  }
+
+  /** The `initialize` answer's body, or null when it was refused or the process ended first. */
+  initialized(): Promise<unknown> {
+    return this.#initialized;
+  }
+
+  /** Starts reading `o.child` and sends `initialize` (Decision 11: every instance's models). */
+  static start(o: InstanceOptions): Effect.Effect<ClaudeInstance> {
+    return Effect.map(Queue.unbounded<BoundEvent, Cause.Done>(), (q) => {
+      const i = new ClaudeInstance(o, q);
+      i.#listen();
+      i.#write(encodeControl(INITIALIZE_ID, { subtype: "initialize" }));
+      return i;
+    });
+  }
+
+  #listen(): void {
+    const { child } = this.#o;
+    const framer = lineFramer();
+    const take = (raws: (string | FinError)[]) => {
+      for (const raw of raws) this.#line(typeof raw === "string" ? decodeLine(raw) : raw);
+    };
+    const ended = new Promise<void>((resolve) => {
+      child.stdout.on("data", (b: Buffer) => take(framer.push(b)));
+      child.stdout.on("end", () => {
+        take(framer.end());
+        resolve();
+      });
+      child.stdout.on("error", () => resolve());
+    });
+    child.stderr.on("data", () => 0);
+    child.stdin.on("error", () => 0);
+    void child.exited.then(async (e) => {
+      // Its last lines first; a descendant holding stdout open cannot hold the exit back long.
+      await Promise.race([ended, new Promise((r) => setTimeout(r, 500).unref())]);
+      this.#exit = { code: e.code, signal: e.signal ?? null };
+      this.#answerInitialize(null);
+      this.#requests.closed();
+      this.#returnHeld();
+      this.#turnOpen = false;
+      this.#cliTurn = false;
+      this.#notify();
+      if (!this.#closed) this.#out({ type: "exited", code: e.code, signal: e.signal ?? null });
+      this.#end();
+    });
+  }
+
+  #out(event: ProviderEvent): void {
+    if (this.#o.sink !== undefined) this.#o.sink.offer(event);
+    else Queue.offerUnsafe(this.#queue, { instance: this.#o.instance, event });
+  }
+
+  #end(): void {
+    if (this.#o.sink !== undefined) this.#o.sink.end();
+    else Queue.endUnsafe(this.#queue);
+  }
+
+  /**
+   * Whether the last `startTurn`'s user line reached the CLI's stdin: true only once the write's
+   * callback reports success (an asynchronous EPIPE is false; a refused turn wrote none).
+   */
+  turnWritten(): Promise<boolean> {
+    return this.#turnWritten;
+  }
+
+  /**
+   * `line` to the CLI's stdin: `sent` when the write was made (synchronously), `acked` settled by
+   * the write's callback (false on any error).
+   */
+  #writeAcked(line: string): { readonly sent: boolean; readonly acked: Promise<boolean> } {
+    if (this.#exit !== null || this.#closed) return { sent: false, acked: Promise.resolve(false) };
+    let sent = false;
+    const acked = new Promise<boolean>((resolve) => {
+      try {
+        this.#o.child.stdin.write(line, (e) => resolve(e === null || e === undefined));
+        sent = true;
+      } catch {
+        resolve(false);
+      }
+    });
+    return { sent, acked };
+  }
+
+  /** One of the adapter's own events for the open turn, behind the init gate like `turnStarted`. */
+  notice(event: ProviderEvent): void {
+    if (!this.#closed && !this.#refused) this.#emit(event);
+  }
+
+  /** A turn is open (its `result` not yet seen). */
+  busy(): boolean {
+    return this.#turnOpen && this.#exit === null && !this.#closed && !this.#refused;
+  }
+
+  /** The process has exited. */
+  exited(): boolean {
+    return this.#exit !== null;
+  }
+
+  /** The failed `result` the process wrote before any turn and before answering `initialize`, if any. */
+  early(): { readonly subtype: string; readonly text: string } | null {
+    return this.#early;
+  }
+
+  #notify(): void {
+    for (const w of this.#wake.splice(0)) w();
+  }
+
+  #write(line: string): boolean {
+    if (this.#exit !== null || this.#closed) return false;
+    try {
+      this.#o.child.stdin.write(line);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Events to the runtime now. */
+  #deliver(events: readonly ProviderEvent[]): void {
+    if (this.#closed) return;
+    for (const event of events) this.#out(event);
+  }
+
+  /** The adapter's own events: held until the gate lets the instance's lines through. */
+  #emit(event: ProviderEvent): void {
+    if (this.#gate.state === "open") this.#deliver([event]);
+    else if (this.#gate.state === "waiting") this.#pending.push(event);
+  }
+
+  #flush(): void {
+    if (this.#pending.length === 0) return;
+    const p = this.#pending;
+    this.#pending = [];
+    this.#deliver(p);
+  }
+
+  /**
+   * Held steers this run's CLI will never take (owner decision 2026-11-13, Decision 13): handed
+   * back whole in `notice {steerReturned: {steers: [{text, nodeId?, at?}]}}`, in order, never
+   * written to the CLI; a person (or the parent) sends them again (`agent.session.resume
+   * {prompt}`, or `prompt` on an idle session). A batch written whose turn has no `result` yet
+   * (`#inFlight`) goes first: the CLI may have exited before reading it.
+   */
+  #returnHeld(): void {
+    this.#held = [...this.#inFlight, ...this.#held];
+    this.#inFlight = [];
+    if (this.#held.length === 0) return;
+    const steers = this.#held.map((h) => ({ text: h.text, ...(h.nodeId === undefined ? {} : { nodeId: h.nodeId }), ...(h.at === undefined ? {} : { at: h.at }) }));
+    this.#held = [];
+    this.#deliver([{ type: "notice", name: "steerReturned", details: { harness: "claudeCode", steers } }]);
+  }
+
+  /**
+   * The next CLI turn of the open run, with `steers` as its one user line (Decision 15: the gate is
+   * asked once per turn). A refusal ends the run as `startTurn`'s does, the steers handed back.
+   */
+  #steerTurn(steers: readonly UserInput[]): void {
+    const o = this.#o;
+    const g = o.gate?.beforeCall(o.projection?.() ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 });
+    if (g !== undefined && !g.ok) {
+      const e = g.error;
+      this.#held = [...steers];
+      this.#returnHeld();
+      const capped = (e.details as { kind?: unknown } | null)?.kind === "modelCalls";
+      this.#deliver([capped ? { type: "turnCompleted", stopReason: "modelCallCap" } : { type: "turnFailed", error: { code: e.code, message: e.message, details: e.details ?? {}, ...(e.fix === undefined ? {} : { fix: e.fix }) } }]);
+      this.#turnOpen = false;
+      this.#notify();
+      return;
+    }
+    this.#reserved = g !== undefined;
+    this.#inFlight = [...steers];
+    if (this.#write(encodeUser(steers.map((h) => h.text), o.uuid))) this.#cliTurn = true;
+  }
+
+  /** The instance cannot go on: its turn fails with `error`, its group is killed at once. */
+  #refuse(error: FinError): void {
+    this.#pending = [];
+    this.#returnHeld();
+    this.#deliver([{ type: "turnFailed", error: { code: error.code, message: error.message, details: error.details, ...(error.fix === undefined ? {} : { fix: error.fix }) } }]);
+    this.#turnOpen = false;
+    this.#refused = true;
+    this.#notify();
+    this.#o.child.kill("SIGKILL");
+  }
+
+  #line(l: CliLine | FinError): void {
+    if (this.#closed || this.#refused) return;
+    if (!("kind" in l)) return this.#refuse(l);
+    // The SDK MCP handshake, at once, before and after the gate (Task 0); a `tools/call` is a
+    // request like any other (Decision 10's `approve`).
+    if (l.kind === "controlRequest" && l.request.subtype === "mcp_message" && !isMcpToolCall(l.request.message)) {
+      this.#write(encodeAnswer(l.request_id, this.#requests.handshake(l.request.server_name, l.request.message)));
+      return;
+    }
+    if (l.kind === "controlResponse") {
+      const id = l.response.request_id;
+      if (id === INITIALIZE_ID) {
+        if (l.response.subtype === "success") this.#o.onInitialize?.(l.response.response);
+        this.#answerInitialize(l.response.subtype === "success" ? (l.response.response ?? null) : null);
+      } else if (this.#interruptAsk?.id === id) {
+        this.#interruptAsk.answer = l.response.subtype;
+        // Verified on 2.1.321 (7D Task 0, s1b): `{still_queued: []}`; nothing is queued in the
+        // CLI now that steers are held here, so a non-empty list is shown, never replayed.
+        const queued = l.response.subtype === "success" ? (l.response.response as { still_queued?: unknown } | undefined)?.still_queued : undefined;
+        if (Array.isArray(queued) && queued.length > 0) this.#deliver([{ type: "notice", name: "stillQueued", details: { harness: "claudeCode", count: queued.length } }]);
+        this.#notify();
+      }
+      return;
+    }
+    // Task 0 (unsigned, 2.1.321): `--resume=<uuid>` of an id the config dir lacks answers with
+    // `result {subtype: "error_during_execution", is_error: true, num_turns: 0}` before the
+    // `initialize` answer, then exits 1 (the adapter maps it as a lost transcript).
+    if (l.kind === "result" && l.is_error && !this.#turnOpen && !this.#inited && this.#early === null) {
+      this.#early = { subtype: l.subtype, text: (l.errors?.[0] ?? l.result ?? "").slice(0, 200) };
+    }
+    if (l.kind === "controlCancel") {
+      // Through the gate: a cancel of a held request drops it there (no card, no answer).
+      if (this.#gate.push(l).kind === "forward") this.#deliver(this.#requests.cancel(l.request_id));
+      return;
+    }
+    const step = this.#gate.push(l);
+    switch (step.kind) {
+      case "hold":
+      case "drop":
+        return;
+      case "refuse":
+        return this.#refuse(step.error);
+      case "forward":
+        for (const f of step.lines) this.#forwarded(f);
+    }
+  }
+
+  #forwarded(l: CliLine): void {
+    if (l.kind === "controlRequest") {
+      // The one place a CLI request is dispatched (Task 8: `can_use_tool` routing).
+      const r = this.#requests.request(l.request_id, l.request);
+      if (r.answer !== undefined) this.#write(r.answer);
+      if (r.events !== undefined) this.#deliver(r.events);
+      void r.later?.then((line) => line !== undefined && this.#write(line));
+      return;
+    }
+    this.#flush();
+    if (l.kind === "init") {
+      if (!this.#inited) {
+        this.#inited = true;
+        this.#model = l.model;
+        this.#deliver(this.#o.onInit?.(l) ?? []);
+      } else if (l.model !== this.#model) {
+        // A plan's automatic fallback may change the model mid-instance: shown, not refused.
+        this.#deliver([{ type: "notice", name: "modelChanged", details: { harness: "claudeCode", from: this.#model ?? null, to: l.model } }]);
+        this.#model = l.model;
+      }
+    }
+    if (l.kind === "result") {
+      this.#cliTurn = false;
+      this.#inFlight = [];
+    }
+    // Held steers after a successful `result`: the run goes on with them as the next CLI turn.
+    const more = l.kind === "result" && !l.is_error && this.#turnOpen && !this.#interrupting && this.#held.length > 0;
+    const mapped = this.#map.map(l, this.#interrupting);
+    const events = more ? mapped.filter((e) => e.type !== "turnCompleted") : mapped;
+    if (events.some((e) => e.type === "usage")) this.#reserved = false;
+    if (l.kind === "result" && !more) this.#returnHeld();
+    this.#deliver(events);
+    if (more) {
+      if (this.#reserved) this.#o.gate?.release();
+      this.#reserved = false;
+      this.#steerTurn(this.#held.splice(0));
+      return;
+    }
+    if (l.kind === "result") {
+      // A turn that reported no usage returns the gate's reservation (as the built-in loop does).
+      if (this.#reserved) this.#o.gate?.release();
+      this.#reserved = false;
+      this.#turnOpen = false;
+      this.#notify();
+    }
+  }
+
+  /** Waits until the open turn ended, the process exited or the instance closed (true), or `ms` passed (false). */
+  #ended(ms: number): Promise<boolean> {
+    return this.#until(() => !this.#turnOpen || this.#exit !== null || this.#closed, ms);
+  }
+
+  /** Waits until `done()` (true) or `ms` passed (false). */
+  async #until(done: () => boolean, ms: number): Promise<boolean> {
+    const deadline = Date.now() + ms;
+    for (;;) {
+      if (done()) return true;
+      const left = deadline - Date.now();
+      if (left <= 0) return false;
+      await new Promise<void>((resolve) => {
+        const t = setTimeout(resolve, left);
+        this.#wake.push(() => {
+          clearTimeout(t);
+          resolve();
+        });
+      });
+    }
+  }
+
+  #gone(): FinError | null {
+    if (this.#exit !== null) return finError("PROVIDER_EXITED", "the Claude Code process has exited", { code: this.#exit.code, signal: this.#exit.signal }, "resume the session");
+    if (this.#closed || this.#refused) return finError("SESSION_INTERRUPTED", "this Claude Code instance is closed", { instance: this.#o.instance });
+    return null;
+  }
+
+  /**
+   * Decision 16, in order: the request; once it is answered, the `result` (≤ 5 s from the
+   * answer); then SIGINT (at once when the request is refused or not answered in 5 s); then the
+   * group kill.
+   */
+  async #interrupt(): Promise<void> {
+    if (!this.#turnOpen || this.#gone() !== null) return;
+    const { child } = this.#o;
+    this.#interrupting = true;
+    // Verified 2.1.321, Task 0 (s1b): the request is answered `{still_queued: []}` at once, a
+    // tool in flight is stopped (its error `tool_result`, then `[Request interrupted by user for
+    // tool use]`) and the turn ends `result {error_during_execution, terminal_reason:
+    // "aborted_tools"}` with no `result` key; fake-claude plays that shape (`onInterrupt: "result"`).
+    const ask: { readonly id: string; answer?: "success" | "error" } = { id: `finisher-interrupt-${++this.#control}` };
+    this.#interruptAsk = ask;
+    this.#write(encodeControl(ask.id, { subtype: "interrupt" }));
+    const wait = this.#o.interruptWaitMs ?? INTERRUPT_WAIT_MS;
+    await this.#until(() => ask.answer !== undefined || !this.#turnOpen || this.#exit !== null || this.#closed, wait);
+    if (ask.answer === "success" && (await this.#ended(wait))) return;
+    if (ask.answer !== "success" && (!this.#turnOpen || this.#exit !== null || this.#closed)) return;
+    // TODO(7D Task 0 Step 1): that SIGINT ends a turn the request did not; modelled by
+    // fake-claude as the same `result` (`onSigint: "result"`), or an exit 130 (`"exit"`).
+    child.kill("SIGINT");
+    if (await this.#ended(this.#o.sigintGraceMs ?? SIGINT_GRACE_MS)) return;
+    // The sandbox's group kill (SIGHUP under the Linux and macOS launchers, then SIGKILL).
+    child.kill("SIGKILL");
+  }
+
+  /**
+   * Ends the instance (its scope closes): later lines are dropped; stdin's end lets the process
+   * finish its transcript (`--resume` reads it) for up to `closeGraceMs`, then it is killed.
+   * True once the process is gone; false when it is still running `exitWaitMs` after the kill.
+   */
+  async close(): Promise<boolean> {
+    if (!this.#closed) {
+      // Before the close drops every later event: an interrupt that ended in the group kill
+      // closes the instance before its exit is seen (review of the hand-back, S1).
+      this.#returnHeld();
+      this.#requests.closed();
+      this.#closed = true;
+      this.#pending = [];
+      this.#notify();
+    }
+    this.#end();
+    try {
+      this.#o.child.stdin.end();
+    } catch {
+      // Already closed.
+    }
+    const gone = (ms: number) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      return Promise.race([this.#o.child.exited.then(() => true), new Promise<boolean>((r) => (timer = setTimeout(() => r(false), ms)))]).finally(() => clearTimeout(timer));
+    };
+    if (await gone(this.#o.closeGraceMs ?? CLOSE_GRACE_MS)) return true;
+    this.#o.child.kill("SIGKILL");
+    return gone(this.#o.exitWaitMs ?? CLOSE_EXIT_WAIT_MS);
+  }
+
+  session(): ProviderSession {
+    const o = this.#o;
+    const fail = (e: FinError) => Effect.fail(e);
+    return {
+      instance: o.instance,
+      events: Stream.fromQueue(this.#queue),
+      startTurn: (i: TurnInput) =>
+        Effect.suspend(() => {
+          const gone = this.#gone();
+          if (gone !== null) return fail(gone);
+          if (this.#turnOpen) return fail(finError("SESSION_BUSY", "a Claude Code turn is running", { instance: o.instance }));
+          // Decision 15: the CLI's calls are invisible, so the gate is asked once per turn; the
+          // turn's `usage` settles the reservation. A refusal ends the turn before any line.
+          this.#turnWritten = Promise.resolve(false);
+          const g = o.gate?.beforeCall(o.projection?.() ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 });
+          if (g !== undefined && !g.ok) {
+            const e = g.error;
+            const capped = (e.details as { kind?: unknown } | null)?.kind === "modelCalls";
+            this.#deliver([{ type: "turnStarted" }, capped ? { type: "turnCompleted", stopReason: "modelCallCap" } : { type: "turnFailed", error: { code: e.code, message: e.message, details: e.details ?? {}, ...(e.fix === undefined ? {} : { fix: e.fix }) } }]);
+            return Effect.void;
+          }
+          this.#reserved = g !== undefined;
+          this.#turnOpen = true;
+          this.#interrupting = false;
+          this.#held = [];
+          this.#inFlight = [];
+          this.#emit({ type: "turnStarted" });
+          const written = this.#writeAcked(encodeUser([...(i.facts === undefined || i.facts === "" ? [] : [i.facts]), i.text], o.uuid));
+          this.#turnWritten = written.acked;
+          this.#cliTurn = written.sent;
+          return Effect.void;
+        }),
+      steer: (i: UserInput) =>
+        Effect.suspend(() => {
+          const gone = this.#gone();
+          if (gone !== null) return fail(gone);
+          // Decision 13 (as 7D Task 0 amended it): held while a CLI turn runs, written with the
+          // others at its successful `result` (`#forwarded`); at once when none runs.
+          if (!this.#turnOpen) return fail(finError("SESSION_BUSY", "the Claude Code run ended before this steer reached it: send it again", { instance: o.instance, reason: "runEnded" }));
+          if (this.#cliTurn || this.#interrupting) this.#held.push(i);
+          else this.#steerTurn([i]);
+          return Effect.void;
+        }),
+      interrupt: () => Effect.promise(() => this.#interrupt()),
+      respond: (id: string, a: RuntimeAnswer) =>
+        Effect.suspend(() => {
+          const gone = this.#gone();
+          if (gone !== null) return fail(gone);
+          const line = this.#requests.respond(id, a);
+          if (typeof line !== "string") return fail(line);
+          this.#write(line);
+          return Effect.void;
+        }),
+      // Spec §4.2: Finisher undoes the transactions; the CLI's history is left as it is (7B).
+      rollback: () => fail(finError("PROVIDER_UNAVAILABLE", "Claude Code keeps its own history: nothing to roll back there", { harness: "claudeCode", reason: "noRollback" })),
+      ref: () => o.ref,
+    };
+  }
+}

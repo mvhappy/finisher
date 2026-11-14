@@ -1,0 +1,162 @@
+[
+  {
+    "path": "crates/fin-library/src/overlay.rs",
+    "reason": "The test overlay reads its own .fin-fake.json and appends to its open log by path (test-hooks builds only; never a library file)."
+  },
+  {
+    "path": "crates/fin-library/src/volume/linux.rs",
+    "reason": "Reads /proc/self/mountinfo, which is never under a library root."
+  },
+  {
+    "path": "crates/fin-library/tests",
+    "reason": "Tests build and inspect temporary trees by path; none is a library reader."
+  },
+  {
+    "path": "crates/fin-node/src/fonts/mod.rs",
+    "reason": "Canonicalises the server data directory for its manager key."
+  },
+  {
+    "path": "crates/fin-node/src/fonts/provider.rs",
+    "reason": "Reads project font assets (files of open projects), never a library path."
+  },
+  {
+    "path": "crates/fin-node/src/journal/mod.rs",
+    "reason": "Canonicalises the server data directory for its journal key."
+  },
+  {
+    "path": "crates/fin-node/src/library/mod.rs",
+    "reason": "real_directory resolves a root once at library.add (and the server data directory); never a file under a root."
+  },
+  {
+    "path": "crates/fin-node/src/test_registry.rs",
+    "reason": "The test-hooks registry checks for its own publisher key file, never a library path."
+  },
+  {
+    "path": "crates/fin-node/src/private_dir.rs",
+    "reason": "Inspects the server's private directories."
+  },
+  {
+    "path": "crates/fin-node/src/server_lock.rs",
+    "reason": "Opens the server lock file in the server data directory."
+  },
+  {
+    "path": "crates/fin-node/src/registry/mod.rs",
+    "reason": "Reads a plugin source directory's manifest in validateManifest; plugin sources are never library paths."
+  },
+  {
+    "path": "crates/fin-workers/src/library/jobfiles.rs",
+    "reason": "Opens the job's own in/*.ndjson grants, paths the host handed the process; never a library path."
+  },
+  {
+    "path": "crates/fin-node/src/test_hooks.rs",
+    "reason": "Reads a test plugin's manifest to pack it (test-hooks builds only)."
+  },
+  {
+    "path": "crates/fin-node/src/test_registry.rs",
+    "reason": "Test registries keep their publishers' keys in a keys folder outside the registry (test-hooks builds only); never a library path."
+  },
+  {
+    "path": "crates/fin-workers/src/media/fonts.rs",
+    "reason": "Stats a file of the server's own font cache without following links, to give fin_library::open_for_read its expectation; its tests write a cache by path."
+  },
+  {
+    "path": "crates/fin-workers/src/media/escape.rs",
+    "reason": "The media escape suite's probe makes file-system attempts by path inside a sandboxed media worker (test-hooks builds only)."
+  },
+  {
+    "path": "crates/fin-workers/src/test_family/mod.rs",
+    "reason": "The test families read and write the job's own files and process reports by path (test-hooks builds only)."
+  },
+  {
+    "path": "crates/fin-workers/examples/reference_render.rs",
+    "reason": "A developer tool: reads a kept job directory and its originals by path (the e2e look scenario's CPU oracle); never a library reader."
+  },
+  {
+    "path": "crates/fin-workers/tests",
+    "reason": "Tests drive the worker binary and inspect job directories by path; none is a library reader."
+  },
+  {
+    "path": "crates/fin-node/build.rs",
+    "reason": "Hashes the repository's own resources/plugins/bundled at build time; never a library path."
+  },
+  {
+    "path": "crates/fin-node/src/bundled.rs",
+    "reason": "Stats and reads the app's own resources/plugins/bundled folder; never a library path."
+  },
+  {
+    "path": "crates/fin-node/src/registry/registries.rs",
+    "reason": "Reads the root file the owner named in registry.add; plugin registries are never library paths."
+  },
+  {
+    "path": "crates/fin-node/src/registry/host.rs",
+    "reason": "Reads an installed plugin's manifest from the plugin store; never a library path."
+  },
+  {
+    "path": "crates/fin-node/tests/bundled.rs",
+    "reason": "Reads the app's own bundled resources and temporary trees by path; not a library reader."
+  },
+  {
+    "path": "crates/fin-workers/src/media/open_cache.rs",
+    "reason": "Unit tests write fixture clips and stat them by path; the module itself opens originals only through fin-library's no-follow opener."
+  },
+  {
+    "path": "crates/fin-node/tests/media_inputs.rs",
+    "reason": "Tests build and inspect temporary trees by path; none is a library reader."
+  },
+  {
+    "path": "crates/fin-node/src/vault/file.rs",
+    "reason": "The vault's file store reads and writes the server data's own secrets/ folder and the key file the owner names; never a library file."
+  },
+  {
+    "path": "crates/fin-node/tests/vault.rs",
+    "reason": "Tests build and inspect a temporary server data's secrets/ folder by path; none is a library reader."
+  },
+  {
+    "path": "crates/fin-node/src/acl_broker/mod.rs",
+    "reason": "The ACL broker writes its log under <server-data>/run/ and stats and canonicalises the paths it grants, to refuse protected roots (plan 7C Task 10); it never reads a library file."
+  },
+  {
+    "path": "crates/fin-node/src/sandbox_acl.rs",
+    "reason": "Canonicalises the server data directory to key the one ACL broker per server (plan 7C Task 10)."
+  },
+  {
+    "path": "crates/fin-node/tests/acl_broker.rs",
+    "reason": "Tests build and inspect temporary trees and the broker's log by path; none is a library reader."
+  },
+  {
+    "path": "crates/fin-node/src/media/cache",
+    "reason": "The media cache lists, moves and removes its own entry directories under server data (cache/media/); never a library path. Entry files are opened through fin-shm's checked open."
+  },
+  {
+    "path": "crates/fin-node/tests/media_cache.rs",
+    "reason": "Tests build and inspect temporary cache trees by path; none is a library reader."
+  },
+  {
+    "path": "crates/fin-audio/tests/a0.rs",
+    "reason": "The A0 corpus reads its committed plan and expected files (and optional debug dumps) under the package directory; none is a library reader."
+  },
+  {
+    "path": "crates/fin-node/tests/media_cache_proxies.rs",
+    "reason": "Tests build and inspect temporary cache trees by path; none is a library reader."
+  },
+  {
+    "path": "crates/fin-workers/src/media/audio_src_tests.rs",
+    "reason": "Unit tests write fixture WAV files and PCM entries into temporary directories and open them by path; never a library path."
+  },
+  {
+    "path": "crates/fin-workers/tests/media_wave.rs",
+    "reason": "Tests write fixture WAV files and a pcm48 entry into temporary directories and read the worker's outputs by path; never a library path."
+  },
+  {
+    "path": "crates/fin-workers/src/media/proxy_audio_tests.rs",
+    "reason": "Unit tests check the proxy audio's scratch file in a temporary job directory by path; never a library path."
+  },
+  {
+    "path": "crates/fin-node/tests/media_cache_pcm.rs",
+    "reason": "Tests build and inspect temporary cache trees by path; none is a library reader."
+  },
+  {
+    "path": "crates/fin-workers/src/media/listen_tests.rs",
+    "reason": "Unit tests write a fixture WAV into a temporary directory and stat it by path; never a library path."
+  }
+]

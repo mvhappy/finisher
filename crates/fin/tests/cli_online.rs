@@ -47,7 +47,7 @@ fn full_editing_flow() {
     assert_eq!(added["bindings"], json!({ "$asset": "a1" }));
     assert_eq!(
         added["resolved"],
-        json!({ "path": s(&dir.join("clip.mp4")), "duration": "10" })
+        json!({ "path": s(&dir.join("clip.mp4")), "kind": "media", "duration": "10" })
     );
 
     let first = run(&[
@@ -69,27 +69,35 @@ fn full_editing_flow() {
     assert_eq!(trimmed["rev"], 4);
     assert_eq!(
         trimmed["diff"]["shifts"],
-        json!([{ "track": "t1", "from": "4", "by": "-1" }])
+        json!([{ "track": "t1", "from": "4", "by": "-1", "op": 0 }])
     );
 
     let deleted = run(&["clip", "delete", "c1"]);
     assert_eq!(deleted["rev"], 5);
     assert_eq!(
         deleted["diff"]["changes"],
-        json!([{ "kind": "clip", "id": "c1", "change": "removed" }])
+        json!([{ "kind": "item", "id": "c1", "change": "removed", "op": 0, "track": "t1" }])
     );
 
-    let view = run(&["view"]);
+    let mut view = run(&["view"]);
+    // The whole printed response, `ceil(chars / 4)` (its own digits included).
+    let response = view
+        .as_object_mut()
+        .unwrap()
+        .remove("responseTokens")
+        .unwrap();
+    assert!(response.as_u64().unwrap() > 26, "{view}");
     assert_eq!(
         view,
         json!({
             "rev": 5,
-            "rate": "30",
-            "tracks": [
-                { "id": "t1", "kind": "video", "clips": [{ "id": "c2", "start": "0", "end": "3", "asset": "a1", "sourceIn": "4" }] },
-                { "id": "t2", "kind": "audio", "clips": [] },
+            "timeline": null,
+            "lines": [
+                "== tl1 \"Timeline 1\" 1080x1920 30fps 00:03.0  V1=t1 A1=t2",
+                "00:00.0–00:03.0  V1  c2 clip a1 [4.0s+3.0s]",
             ],
-            "resolved": {},
+            "elided": [],
+            "lineTokens": 26,
         })
     );
     // From outside the project folder, --project finds it; status agrees with view.
@@ -156,6 +164,57 @@ fn asset_paths_resolve_to_absolute_and_are_echoed() {
 }
 
 #[test]
+fn every_asset_kind_is_probed_and_added() {
+    let Some((server, dir)) = project("every_asset_kind_is_probed_and_added") else {
+        return;
+    };
+    use fin_probe::fixtures as fx;
+    let opts = fx::FixtureOpts {
+        seconds: 2,
+        ..Default::default()
+    };
+    let font = |p: &Path| std::fs::write(p, fin_testfonts::test_sans()).unwrap();
+    type Writer<'a> = &'a dyn Fn(&Path);
+    let files: [(&str, Writer, &str, Option<&str>); 8] = [
+        ("still.png", &|p| fx::write_png(p, 64, 48), "image", None),
+        ("still.jpg", &|p| fx::write_jpeg(p, 64, 48), "image", None),
+        ("logo.svg", &|p| fx::write_svg(p, 640, 360), "svg", None),
+        (
+            "lower third.lottie",
+            &|p| fx::write_dotlottie(p, &fx::sample_lottie(), true),
+            "lottieTemplate",
+            Some("3"),
+        ),
+        ("Sans.ttf", &font, "font", None),
+        ("grade.cube", &|p| fx::write_cube(p, 4), "lut", None),
+        (
+            "vo.wav",
+            &|p| fx::write_wav(p, 48_000, 1, 24_000),
+            "media",
+            Some("1/2"),
+        ),
+        ("music.m4a", &|p| fx::write_m4a(p, opts), "media", Some("2")),
+    ];
+    for (n, (name, write, kind, duration)) in files.iter().enumerate() {
+        let path = dir.join(name);
+        write(&path);
+        let added = ok(fin(&server.sd, &dir, &["asset", "add", name]));
+        assert_eq!(added["rev"], n + 1, "{name}");
+        assert_eq!(added["bindings"]["$asset"], format!("a{}", n + 1), "{name}");
+        let mut resolved = json!({ "path": s(&path), "kind": kind });
+        if let Some(d) = duration {
+            resolved["duration"] = json!(d);
+        }
+        assert_eq!(added["resolved"], resolved, "{name}");
+    }
+    // A file of no supported kind is refused before anything commits.
+    std::fs::write(dir.join("notes.txt"), "not an asset").unwrap();
+    let run = fin(&server.sd, &dir, &["asset", "add", "notes.txt"]);
+    assert_error(&run, 3, "UNSUPPORTED_CONTAINER");
+    assert_eq!(ok(fin(&server.sd, &dir, &["status"]))["rev"], files.len());
+}
+
+#[test]
 fn missing_media_is_asset_not_found_with_the_resolved_path() {
     let Some((server, dir)) = project("missing_media_is_asset_not_found_with_the_resolved_path")
     else {
@@ -189,6 +248,47 @@ fn project_create_under_a_file_is_project_dir_unwritable() {
 }
 
 #[test]
+fn project_create_retry_with_idem_key_returns_the_project() {
+    let Some(server) = Server::start("project_create_retry_with_idem_key_returns_the_project")
+    else {
+        return;
+    };
+    let args = [
+        "project",
+        "create",
+        "film",
+        "--name",
+        "Film",
+        "--idem-key",
+        "create-1",
+    ];
+    let first = ok(fin(&server.sd, &server.root, &args));
+    let again = ok(fin(&server.sd, &server.root, &args));
+    assert_eq!(
+        again["project"]["projectId"], first["project"]["projectId"],
+        "{again}"
+    );
+    // Without the key, or with the key and another name: not a retry.
+    assert_error(
+        &fin(&server.sd, &server.root, &args[..5]),
+        3,
+        "PROJECT_EXISTS",
+    );
+    let other = [
+        "project",
+        "create",
+        "film",
+        "--name",
+        "Other",
+        "--idem-key",
+        "create-1",
+    ];
+    assert_error(&fin(&server.sd, &server.root, &other), 3, "IDEM_KEY_REUSED");
+    let empty = ["project", "create", "x", "--name", " ", "--idem-key", "k"];
+    assert_error(&fin(&server.sd, &server.root, &empty), 3, "INVALID_NAME");
+}
+
+#[test]
 fn server_down_is_exit_5() {
     let Some((mut server, dir)) = project("server_down_is_exit_5") else {
         return;
@@ -215,7 +315,7 @@ fn no_server_and_no_project_are_typed_errors() {
     assert_eq!(run.json["error"]["fix"], "start finisherd");
     // finisherd.json names a socket nobody listens on.
     std::fs::create_dir_all(&sd).unwrap();
-    let info = json!({ "pid": 1, "wsPort": 1, "socket": s(&sd.join("fin.sock")), "token": "t", "protocolVersion": 1 });
+    let info = json!({ "pid": 1, "wsPort": 1, "socket": s(&sd.join("run").join("fin.sock")), "protocolVersion": 2 });
     std::fs::write(sd.join("finisherd.json"), info.to_string()).unwrap();
     assert_error(
         &fin(&sd, &root, &["view", "--project", "."]),
@@ -270,7 +370,7 @@ fn same_idem_key_twice_gives_identical_output_and_one_rev() {
     assert_eq!(first.json["txId"], "insert-1");
     let view = ok(fin(&server.sd, &dir, &["view"]));
     assert_eq!(view["rev"], 2);
-    assert_eq!(view["tracks"][0]["clips"].as_array().unwrap().len(), 1);
+    assert_eq!(support::view_items(&view).len(), 1, "{view}");
 }
 
 #[test]
@@ -334,8 +434,8 @@ fn idem_key_reused_for_a_different_command_is_rejected() {
     let error = &reused.json["error"];
     assert_eq!(error["details"]["txId"], "k1");
     assert_eq!(error["details"]["rev"], 4);
-    assert_eq!(error["details"]["committedOps"][0]["op"], "clip.delete");
-    assert_eq!(error["details"]["committedOps"][0]["clip"], "c2");
+    assert_eq!(error["details"]["committedOps"][0]["op"], "item.delete");
+    assert_eq!(error["details"]["committedOps"][0]["item"], "c2");
     assert_eq!(error["fix"], "use a new --idem-key for a different command");
     // The same kind of op on another clip is a different command too.
     ok(run(&[
@@ -351,6 +451,47 @@ fn idem_key_reused_for_a_different_command_is_rejected() {
     assert_eq!(again.code, 0, "{}", again.stdout);
     assert_eq!(first.stdout, again.stdout);
     assert_eq!(ok(run(&["status"]))["rev"], 5);
+}
+
+/// Same op kind, other args: the ops alone cannot tell (a retry's positions move), the stored
+/// command-input hash can. A retry of `--at end` after another commit is still the same command.
+#[test]
+fn idem_key_same_key_different_args_rejected() {
+    let Some((server, dir)) = project("idem_key_same_key_different_args_rejected") else {
+        return;
+    };
+    let run = |args: &[&str]| fin(&server.sd, &dir, args);
+    ok(run(&["asset", "add", "clip.mp4"]));
+    let at_end = [
+        "clip",
+        "insert",
+        "--track",
+        "t1",
+        "--at",
+        "end",
+        "--asset",
+        "a1",
+        "--dur",
+        "2s",
+        "--idem-key",
+        "k1",
+    ];
+    let first = run(&at_end);
+    assert_eq!(first.code, 0, "{}", first.stdout);
+    ok(run(&[
+        "clip", "insert", "--track", "t1", "--at", "end", "--asset", "a1", "--dur", "1s",
+    ]));
+    // The retry plans `end` at 3s now, yet it is the command that committed.
+    let again = run(&at_end);
+    assert_eq!(again.code, 0, "{}", again.stdout);
+    assert_eq!(again.json["rev"], first.json["rev"]);
+    let mut at_zero = at_end;
+    at_zero[5] = "0";
+    assert_error(&run(&at_zero), 3, "IDEM_KEY_REUSED");
+    let mut longer = at_end;
+    longer[9] = "3s";
+    assert_error(&run(&longer), 3, "IDEM_KEY_REUSED");
+    assert_eq!(ok(run(&["status"]))["rev"], 3);
 }
 
 #[test]
@@ -453,20 +594,254 @@ fn concurrent_inserts_on_one_snapshot_both_commit_rebased() {
     );
     assert_eq!(docs[0]["resolved"]["at"], "0");
     let view = ok(fin(&server.sd, &dir, &["view", "--track", "t1"]));
-    let clips = view["tracks"][0]["clips"].as_array().unwrap().clone();
+    let clips = support::view_items(&view);
     assert_eq!(clips.len(), 2, "{view}");
     assert_eq!(
-        (clips[0]["start"].clone(), clips[0]["end"].clone()),
-        (json!("0"), json!("1"))
+        (clips[0].1.as_str(), clips[0].2.as_str()),
+        ("00:00.0", "00:01.0")
     );
     assert_eq!(
-        (clips[1]["start"].clone(), clips[1]["end"].clone()),
-        (json!("1"), json!("2"))
+        (clips[1].1.as_str(), clips[1].2.as_str()),
+        ("00:01.0", "00:02.0")
     );
     // The later writer echoes where its clip actually landed after the rebase.
     let later = docs[1]["bindings"]["$clip"].as_str().unwrap();
-    let landed = clips.iter().find(|c| c["id"] == later).unwrap();
-    assert_eq!(docs[1]["resolved"]["at"], landed["start"]);
+    let landed = clips.iter().find(|c| c.0 == later).unwrap();
+    let at: u32 = docs[1]["resolved"]["at"].as_str().unwrap().parse().unwrap();
+    assert_eq!(format!("00:{at:02}.0"), landed.1);
+}
+
+#[test]
+fn project_status_prints_json() {
+    let Some((server, dir)) = project("project_status_prints_json") else {
+        return;
+    };
+    let run = |args: &[&str]| fin(&server.sd, &dir, args);
+    ok(run(&["asset", "add", "clip.mp4"]));
+    let status = ok(run(&["project", "status"]));
+    let st = &status["status"];
+    assert_eq!(st["lease"]["state"], "held", "{status}");
+    assert_eq!(st["readOnly"], Value::Null);
+    assert_eq!(st["busy"], Value::Null);
+    assert_eq!(st["storage"], "local");
+    assert_eq!(st["branches"][0]["head"], 1);
+    assert!(st["incarnation"].as_str().is_some_and(|i| !i.is_empty()));
+    // From outside the folder too.
+    let outside = ok(fin(
+        &server.sd,
+        &server.root,
+        &["project", "status", "--project", "film"],
+    ));
+    assert_eq!(outside["status"]["projectId"], st["projectId"]);
+
+    let held = ok(run(&["project", "takeover"]));
+    assert_eq!(held["status"]["lease"]["state"], "held");
+    let verify = ok(run(&["project", "verify"]));
+    assert_eq!(verify["report"]["ok"], true, "{verify}");
+    assert!(ok(run(&["project", "compact"]))["report"].is_object());
+    // 4B: the report of `project.recover`.
+    let recovered = ok(run(&["project", "recover"]));
+    assert_eq!(recovered["groups"], json!([]), "{recovered}");
+    assert_eq!(recovered["manual"], Value::Null);
+    let ack = ok(run(&["project", "acknowledge", "--rewind", "1"]));
+    assert_eq!(ack, json!({ "acknowledged": false }));
+    let ack = ok(run(&["project", "acknowledge", "--salvage", "nope"]));
+    assert_eq!(ack, json!({ "acknowledged": false }));
+    assert_error(&run(&["project", "acknowledge"]), 2, "USAGE");
+    // Online, the rebuild goes through the server (it holds the database).
+    let rebuilt = ok(run(&["project", "rebuild"]));
+    assert_eq!(rebuilt["offline"], false, "{rebuilt}");
+    assert_eq!(ok(run(&["status"]))["rev"], 1);
+}
+
+#[test]
+fn read_only_commit_exits_4() {
+    let Some((server, dir)) = project("read_only_commit_exits_4") else {
+        return;
+    };
+    ok(fin(&server.sd, &dir, &["asset", "add", "clip.mp4"]));
+    // A second server (its own server data) on the same folder follows, read-only.
+    let Some(follower) = Server::start("read_only_commit_exits_4 (follower)") else {
+        return;
+    };
+    let run = |args: &[&str]| fin(&follower.sd, &dir, args);
+    let status = ok(run(&["project", "status"]));
+    assert_eq!(
+        status["status"]["lease"]["state"], "heldElsewhere",
+        "{status}"
+    );
+    assert_eq!(status["status"]["readOnly"]["reason"], "LEASE_HELD");
+    // It imports the writer's edit once exported (2 s), then refuses edits of its own.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while ok(run(&["status"]))["assets"] != json!(["a1"]) {
+        assert!(Instant::now() < deadline, "the follower never imported a1");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let refused = run(&[
+        "clip", "insert", "--track", "t1", "--at", "0", "--asset", "a1", "--dur", "1s",
+    ]);
+    assert_error(&refused, 4, "PROJECT_READ_ONLY");
+    assert_eq!(refused.json["error"]["details"]["reason"], "LEASE_HELD");
+    // A confirmed takeover is a person's decision (5A Task 5): fin is refused...
+    let human = run(&["project", "takeover", "--confirm"]);
+    assert_error(&human, 7, "HUMAN_ONLY");
+    assert_eq!(human.json["error"]["details"]["scope"], "project.confirm");
+    // ...and the console, a person, is refused too while the holder is alive (with the typed
+    // code; without it the server asks for one first).
+    let id = status["status"]["projectId"]
+        .as_str()
+        .or_else(|| status["projectId"].as_str())
+        .expect("the status names the project")
+        .to_string();
+    let mut console = support::console::Console::open(&follower);
+    let unconfirmed = console.call(
+        "project.takeover",
+        json!({ "projectId": id, "confirm": true }),
+    );
+    assert_eq!(
+        support::console::error_code(&unconfirmed).as_deref(),
+        Some("CONFIRMATION_REQUIRED"),
+        "{unconfirmed}"
+    );
+    let exit = console.confirmed(
+        "project.takeover",
+        json!({ "projectId": id, "confirm": true }),
+    );
+    assert_eq!(
+        support::console::error_code(&exit).as_deref(),
+        Some("LEASE_TAKEOVER_REFUSED"),
+        "{exit}"
+    );
+    // Reads work on the follower.
+    assert_eq!(ok(run(&["status"]))["assets"], json!(["a1"]));
+}
+
+#[test]
+fn a_commit_against_a_rebuilt_database_exits_4() {
+    let Some((server, dir)) = project("a_commit_against_a_rebuilt_database_exits_4") else {
+        return;
+    };
+    ok(fin(&server.sd, &dir, &["asset", "add", "clip.mp4"]));
+    // The writer reads the snapshot (and its generation), then waits at the gate...
+    let gate = server.root.join("gate");
+    let args = [
+        "clip", "insert", "--track", "t1", "--at", "0", "--asset", "a1", "--dur", "1s",
+    ];
+    let writer = fin_cmd(&server.sd, &dir, &args)
+        .env("FIN_TEST_COMMIT_GATE", &gate)
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !std::fs::read_dir(&server.root)
+        .unwrap()
+        .flatten()
+        .any(|e| e.file_name().to_string_lossy().starts_with("gate.ready."))
+    {
+        assert!(
+            Instant::now() < deadline,
+            "writer never reached the commit gate"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // ...while the database is rebuilt: what it read may not be what is there now.
+    ok(fin(&server.sd, &dir, &["project", "rebuild"]));
+    std::fs::write(&gate, b"").unwrap();
+    let run = finish(&args, writer.wait_with_output().unwrap());
+    assert_error(&run, 4, "HISTORY_REWOUND");
+    assert_eq!(ok(fin(&server.sd, &dir, &["status"]))["rev"], 1);
+    // Read again, it commits.
+    ok(fin(&server.sd, &dir, &args));
+}
+
+#[test]
+fn offline_rebuild_exports_unexported_commits_first() {
+    let Some((mut server, dir)) = project("offline_rebuild_exports_unexported_commits_first")
+    else {
+        return;
+    };
+    // The folder takes no segments while the server runs, so the commit stays in the
+    // database only (the server is killed: no flush either).
+    let segments = dir.join(".finisher").join("segments");
+    std::fs::create_dir_all(&segments).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&segments, std::fs::Permissions::from_mode(0o555)).unwrap();
+    }
+    let args = ["asset", "add", "clip.mp4", "--idem-key", "add-1"];
+    let first = fin(&server.sd, &dir, &args);
+    assert_eq!(first.json["rev"], 1, "{}", first.stdout);
+    server.stop();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&segments, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    // No server: fin opens the project in-process, exports what the database holds, then
+    // rebuilds. Nothing is set aside: the commit is in the folder and the new database.
+    let rebuilt = ok(fin(&server.sd, &dir, &["project", "rebuild"]));
+    assert_eq!(rebuilt["offline"], true, "{rebuilt}");
+    assert_eq!(rebuilt["report"]["salvaged"], 0, "{rebuilt}");
+    assert_eq!(rebuilt["report"]["records"], 1, "{rebuilt}");
+
+    server.restart();
+    assert_eq!(ok(fin(&server.sd, &dir, &["status"]))["rev"], 1);
+    // The retry finds its commit: the same answer, nothing committed again.
+    let retry = fin(&server.sd, &dir, &args);
+    assert_eq!(retry.stdout, first.stdout);
+    assert_eq!(ok(fin(&server.sd, &dir, &["status"]))["rev"], 1);
+    // While a server has the project open, an in-process rebuild is never attempted: it goes
+    // through the server.
+    assert_eq!(
+        ok(fin(&server.sd, &dir, &["project", "rebuild"]))["offline"],
+        false
+    );
+}
+
+#[test]
+fn a_failed_verify_exits_3() {
+    let Some((server, dir)) = project("a_failed_verify_exits_3") else {
+        return;
+    };
+    ok(fin(&server.sd, &dir, &["asset", "add", "clip.mp4"]));
+    let main = dir.join(".finisher").join("segments").join("main");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let segment = loop {
+        let found = std::fs::read_dir(&main).ok().and_then(|d| {
+            d.flatten()
+                .map(|e| e.path())
+                .find(|p| p.extension().is_some_and(|x| x == "fseg"))
+        });
+        if let Some(p) = found {
+            break p;
+        }
+        assert!(Instant::now() < deadline, "no segment was exported");
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    // One byte of a record changes: its checksum no longer matches.
+    let mut bytes = std::fs::read(&segment).unwrap();
+    let i = bytes.iter().position(|b| *b == b'"').unwrap() + 1;
+    bytes[i] = if bytes[i] == b'x' { b'y' } else { b'x' };
+    std::fs::write(&segment, bytes).unwrap();
+    let run = fin(&server.sd, &dir, &["project", "verify"]);
+    assert_error(&run, 3, "VERIFY_FAILED");
+    let details = &run.json["error"]["details"];
+    assert_eq!(details["report"]["ok"], false, "{}", run.stdout);
+    assert!(
+        details["failed"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("segment_checksums")),
+        "{}",
+        run.stdout
+    );
+    assert!(
+        run.json["error"]["fix"]
+            .as_str()
+            .unwrap()
+            .contains("fin project rebuild")
+    );
 }
 
 #[test]

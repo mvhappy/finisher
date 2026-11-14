@@ -13,18 +13,124 @@ test = false
 doctest = false
 
 [features]
-# Test-only exports (`Engine.panicForTest`, `writeFixtureMp4ForTest`). The vitest build enables
-# it; the plain `build` script does not.
-test-hooks = ["fin-probe/fixtures"]
+# Test-only exports (`Engine.panicForTest`, the `writeFixture*ForTest` writers, generated test
+# fonts, the job host's `*ForTest` methods and the test kinds' params), loopback `http` and
+# `FIN_FONT_CATALOG` in fin-fonts. The vitest build enables it; the plain `build` script does not.
+test-hooks = [
+    "fin-probe/fixtures",
+    "fin-jobhost/test-hooks",
+    "fin-jobs/test-hooks",
+    "fin-fonts/test-hooks",
+    "fin-journal/test-hooks",
+    "fin-library/test-hooks",
+    "fin-sandbox/test-hooks",
+    "fin-store/test-hooks",
+    "dep:fin-testfonts",
+]
+
+# `cargo test -p fin-node` builds the examples; this one calls the journal's writer hooks.
+[[example]]
+name = "commit_overhead"
+required-features = ["test-hooks"]
 
 [dependencies]
+blake3 = "1"
 fin-core = { path = "../fin-core" }
+fin-fonts = { path = "../fin-fonts" }
+fin-jobhost = { path = "../fin-jobhost" }
+fin-jobs = { path = "../fin-jobs" }
+fin-journal = { path = "../fin-journal" }
+fin-library = { path = "../fin-library" }
+# The sandbox status (`sandboxStatus`, plan 7C Task 3).
+fin-sandbox = { path = "../fin-sandbox" }
+# `media.look` params (`validateJobParams`) and, from 6A Task 12, the media job inputs.
+fin-media = { path = "../fin-media" }
+fin-plugin-api = { path = "../fin-plugin-api" }
 fin-probe = { path = "../fin-probe" }
+fin-registry = { path = "../fin-registry" }
+# The move of a finished job output out of its directory (`commitJobOutput`), and the media
+# cache's moves into place (6B-1 Task 13).
+fin-shm = { path = "../fin-shm" }
 fin-store = { path = "../fin-store" }
+fin-testfonts = { path = "../fin-testfonts", optional = true }
+fin-text = { path = "../fin-text" }
+# The media cache's index `cache/media/index.db` (6B-1 plan Decision 10): the version and
+# features fin-store takes (MIT; bundled SQLite, public domain; already in the tree).
+rusqlite = { version = "0.41", features = ["bundled", "fallible_uint"] }
 napi = { version = "3", default-features = false, features = ["napi8"] }
 napi-derive = { version = "3", default-features = false, features = ["strict"] }
-serde = "1"
+semver = { version = "1", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# 5B Task 2: the vault's OS keychain (macOS Keychain, Windows Credential Manager, the Secret
+# Service on Linux through the pure-Rust `zbus`; MIT OR Apache-2.0). Pinned exactly; the
+# `dbus` backends (libdbus is AFL-2.1 OR GPL-2.0+) are never enabled.
+keyring = { version = "=3.6.3", default-features = false, features = [
+    "apple-native",
+    "windows-native",
+    "async-secret-service",
+    "async-io",
+    "crypto-rust",
+] }
+# The identity key (P-256, PKCS#8), the wrapped file store's AES-256-GCM, random bytes
+# (Apache-2.0 AND ISC; already in the tree through rustls).
+ring = "0.17.14"
+# PEM bodies and SPKI pins (MIT OR Apache-2.0; already in the tree).
+base64 = "0.22.1"
+# 5B Task 3: self-signed certificates from the identity key (MIT OR Apache-2.0; `ring` provider)
+# and pairing QR codes (MIT OR Apache-2.0; SVG only).
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+
+# The Secret Service lock check before `keyring` touches it: a locked collection is never
+# unlocked (that prompts), the vault falls back to the file store (5B Decision 4). The same
+# crate `keyring` uses, with the same pure-Rust features.
+[target.'cfg(target_os = "linux")'.dependencies]
+secret-service = { version = "=4.0.0", default-features = false, features = ["rt-async-io-crypto-rust"] }
+
+# `createPrivateFile` checks the new file's owner against the effective uid (MIT OR Apache-2.0).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.191"
+
+# Private server-data directories (owner-only DACLs) and the native pipe listener (5A Task 11:
+# overlapped pipes, an I/O completion port, the client's token, `FilePipeLocalInformation`)
+# on Windows (MIT OR Apache-2.0).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Wdk_Storage_FileSystem",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+] }
 
 [build-dependencies]
+# `build.rs` hashes the bundled plugin trees with the function the server re-hashes them with
+# (8A Task 10).
+fin-registry = { path = "../fin-registry" }
 napi-build = "2"
+serde_json = "1"
+
+[dev-dependencies]
+# `tests/bundled.rs` copies a bundled tree to tamper with it (already in the tree).
+tempfile = "3"
+# `tests/cert.rs` decodes the pairing QR code back to its link (MIT OR Apache-2.0; tests only).
+rqrr = { version = "0.11", default-features = false }
+
+# `tests/pipe_server.rs` (5A Task 11): restricted tokens, an AppContainer child, the pipe's
+# descriptor read back.
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = [
+    "Wdk_Storage_FileSystem",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Security_Isolation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+] }

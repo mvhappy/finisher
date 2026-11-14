@@ -1,0 +1,378 @@
+//! `Store::create`: atomic (no orphan database, no half-made folder), write-once project file,
+//! idempotent retries by key, name validation.
+
+use std::path::{Path, PathBuf};
+
+use fin_core::{CoreError, Rational};
+use fin_store::{MAIN, Store, StoreError, db_path, read_project_file};
+use tempfile::TempDir;
+
+fn secs(n: i64) -> Rational {
+    Rational::from_int(n)
+}
+
+struct Env {
+    _tmp: TempDir,
+    data: PathBuf,
+    dir: PathBuf,
+}
+
+fn env() -> Env {
+    let tmp = tempfile::tempdir().unwrap();
+    Env {
+        data: tmp.path().join("server-data"),
+        dir: tmp.path().join("Film"),
+        _tmp: tmp,
+    }
+}
+
+fn code(e: StoreError) -> CoreError {
+    CoreError::from(e)
+}
+
+/// Every file under `dir`, recursively, relative to it.
+fn files(dir: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else {
+                // `/` on every platform, so the expectations read the same on Windows.
+                out.push(
+                    p.strip_prefix(dir)
+                        .unwrap()
+                        .to_string_lossy()
+                        .replace('\\', "/"),
+                );
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// Project databases (and their builds, without `-wal`/`-shm`) under the server data.
+fn databases(data: &Path) -> Vec<String> {
+    files(data)
+        .into_iter()
+        .filter(|f| f.contains("project.fdb") && !f.ends_with("-wal") && !f.ends_with("-shm"))
+        .collect()
+}
+
+#[test]
+fn create_is_atomic_under_marker_failure() {
+    let e = env();
+    fin_store::fail_next_create_marker_for_test();
+    let err = code(Store::create(&e.data, &e.dir, "Demo", secs(30), None).unwrap_err());
+    assert_eq!(err.code, "PROJECT_DIR_UNWRITABLE", "{err:?}");
+    assert!(databases(&e.data).is_empty(), "{:?}", files(&e.data));
+    // Nothing of the project in the folder either (no `.finisher/`, which would make an
+    // open wait for a project file that never comes; the folder we made is gone).
+    assert!(!e.dir.exists(), "{:?}", files(&e.dir));
+    // A retry then succeeds and is the only project.
+    let s = Store::create(&e.data, &e.dir, "Demo", secs(30), None).unwrap();
+    assert_eq!(read_project_file(&e.dir).unwrap().id, s.project_id());
+    assert_eq!(
+        databases(&e.data),
+        [format!("projects/{}/project.fdb", s.project_id())]
+    );
+}
+
+#[test]
+fn marker_failure_in_an_existing_folder_keeps_the_folder() {
+    let e = env();
+    std::fs::create_dir_all(&e.dir).unwrap();
+    std::fs::write(e.dir.join("notes.txt"), b"mine").unwrap();
+    fin_store::fail_next_create_marker_for_test();
+    Store::create(&e.data, &e.dir, "Demo", secs(30), None).unwrap_err();
+    assert_eq!(files(&e.dir), ["notes.txt"]);
+    assert!(databases(&e.data).is_empty());
+}
+
+#[test]
+fn create_retry_same_key_returns_project() {
+    let e = env();
+    let first = Store::create(&e.data, &e.dir, "Demo", secs(30), Some("k1")).unwrap();
+    let id = first.project_id().to_string();
+    // The answer was lost while the first store is still open (a server that keeps it).
+    let again = Store::create(&e.data, &e.dir, "Demo", secs(30), Some("k1")).unwrap();
+    assert_eq!(again.project_id(), id);
+    drop(again);
+    drop(first);
+    // And after it closed (a restarted server).
+    let retried = Store::create(&e.data, &e.dir, "Demo", secs(30), Some("k1")).unwrap();
+    assert_eq!(retried.project_id(), id);
+    assert_eq!(retried.head(MAIN), 0);
+    assert!(retried.read_only().is_none(), "{:?}", retried.read_only());
+    retried.close().unwrap();
+    assert_eq!(databases(&e.data).len(), 1, "{:?}", databases(&e.data));
+
+    // Another key, or none, is another create: the folder holds a project.
+    for key in [Some("k2"), None] {
+        let err = code(Store::create(&e.data, &e.dir, "Demo", secs(30), key).unwrap_err());
+        assert_eq!(err.code, "PROJECT_EXISTS", "{key:?}");
+    }
+    // The same key with another name or rate is not a retry of that create.
+    for (name, rate) in [("Other", secs(30)), ("Demo", secs(25))] {
+        let err = code(Store::create(&e.data, &e.dir, name, rate, Some("k1")).unwrap_err());
+        assert_eq!(err.code, "IDEM_KEY_REUSED", "{name} {rate}");
+        assert_eq!(err.details["projectId"], id.as_str());
+    }
+    assert_eq!(databases(&e.data).len(), 1);
+}
+
+#[test]
+fn empty_name_rejected() {
+    let e = env();
+    for name in ["", "   ", "\t\n"] {
+        let err = code(Store::create(&e.data, &e.dir, name, secs(30), None).unwrap_err());
+        assert_eq!(err.code, "INVALID_NAME", "{name:?}");
+        assert_eq!(err.details["field"], "name");
+        assert!(err.fix.is_some());
+    }
+    assert!(!e.dir.exists() && !e.data.exists());
+}
+
+#[test]
+fn concurrent_creates_in_one_folder_make_one_project() {
+    let e = env();
+    let results: Vec<Result<String, CoreError>> = std::thread::scope(|s| {
+        let handles: Vec<_> = (0..6)
+            .map(|i| {
+                let (data, dir) = (e.data.clone(), e.dir.clone());
+                s.spawn(move || {
+                    Store::create(&data, &dir, &format!("P{i}"), secs(30), None)
+                        .map(|s| s.project_id().to_string())
+                        .map_err(code)
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    let won: Vec<&String> = results.iter().filter_map(|r| r.as_ref().ok()).collect();
+    assert_eq!(won.len(), 1, "{results:?}");
+    for r in &results {
+        if let Err(err) = r {
+            assert_eq!(err.code, "PROJECT_EXISTS", "{err:?}");
+        }
+    }
+    assert_eq!(read_project_file(&e.dir).unwrap().id, *won[0]);
+    // The losers left no database behind.
+    assert_eq!(
+        databases(&e.data),
+        [format!("projects/{}/project.fdb", won[0])]
+    );
+}
+
+#[test]
+fn concurrent_retries_with_one_key_return_one_project() {
+    let e = env();
+    let results: Vec<Result<String, CoreError>> = std::thread::scope(|s| {
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                let (data, dir) = (e.data.clone(), e.dir.clone());
+                s.spawn(move || {
+                    Store::create(&data, &dir, "Demo", secs(30), Some("same"))
+                        .map(|s| s.project_id().to_string())
+                        .map_err(code)
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    let id = read_project_file(&e.dir).unwrap().id;
+    for r in &results {
+        assert_eq!(
+            r.as_ref().map(String::as_str),
+            Ok(id.as_str()),
+            "{results:?}"
+        );
+    }
+    assert_eq!(databases(&e.data), [format!("projects/{id}/project.fdb")]);
+}
+
+/// A retry that lands between the creator's project file and its lease must not take the
+/// lease: the creator keeps it.
+#[test]
+fn a_concurrent_retry_does_not_take_the_creators_lease() {
+    let e = env();
+    let (creator, retry) = std::thread::scope(|s| {
+        let creator = s.spawn(|| {
+            fin_store::delay_next_create_start_for_test(std::time::Duration::from_millis(400));
+            Store::create(&e.data, &e.dir, "Demo", secs(30), Some("k")).unwrap()
+        });
+        let retry = s.spawn(|| {
+            while !e.dir.join("finisher.project.json").exists() {
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            Store::create(&e.data, &e.dir, "Demo", secs(30), Some("k")).unwrap()
+        });
+        (creator.join().unwrap(), retry.join().unwrap())
+    });
+    assert_eq!(retry.project_id(), creator.project_id());
+    assert_eq!(creator.read_only(), None);
+    assert_eq!(
+        retry.read_only(),
+        Some(fin_store::ReadOnlyReason::LeaseHeld)
+    );
+}
+
+#[test]
+fn create_key_survives_a_rebuild() {
+    let e = env();
+    let mut s = Store::create(&e.data, &e.dir, "Demo", secs(30), Some("k1")).unwrap();
+    let id = s.project_id().to_string();
+    s.rebuild().unwrap();
+    s.close().unwrap();
+    let again = Store::create(&e.data, &e.dir, "Demo", secs(30), Some("k1")).unwrap();
+    assert_eq!(again.project_id(), id);
+}
+
+#[test]
+fn create_key_survives_a_rebuild_from_the_folder_alone() {
+    // The database is gone (a new machine, a lost server data): the open rebuilds from the
+    // folder, and a retry of the create with the same key still returns the project.
+    let e = env();
+    let s = Store::create(&e.data, &e.dir, "Demo", secs(30), Some("k1")).unwrap();
+    let id = s.project_id().to_string();
+    s.close().unwrap();
+    std::fs::remove_dir_all(e.data.join("projects").join(&id)).unwrap();
+    Store::open(&e.data, &e.dir).unwrap().close().unwrap();
+    let again = Store::create(&e.data, &e.dir, "Demo", secs(30), Some("k1")).unwrap();
+    assert_eq!(again.project_id(), id);
+    drop(again);
+    // Another key is still another create; the same key with another name is still reuse.
+    let err = code(Store::create(&e.data, &e.dir, "Demo", secs(30), Some("k2")).unwrap_err());
+    assert_eq!(err.code, "PROJECT_EXISTS");
+    let err = code(Store::create(&e.data, &e.dir, "Other", secs(30), Some("k1")).unwrap_err());
+    assert_eq!(err.code, "IDEM_KEY_REUSED");
+    // A retry on another server data (it has no database of the project) is answered too.
+    let other = e.data.with_file_name("server-data-b");
+    let b = Store::create(&other, &e.dir, "Demo", secs(30), Some("k1")).unwrap();
+    assert_eq!(b.project_id(), id);
+}
+
+#[test]
+fn the_create_key_is_never_in_the_folder_in_plain_text() {
+    let e = env();
+    let key = "client-request-6f1d0c";
+    Store::create(&e.data, &e.dir, "Demo", secs(30), Some(key))
+        .unwrap()
+        .close()
+        .unwrap();
+    for f in files(&e.dir) {
+        let bytes = std::fs::read(e.dir.join(&f)).unwrap();
+        assert!(
+            !String::from_utf8_lossy(&bytes).contains(key),
+            "{f} holds the key"
+        );
+    }
+    let file: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(e.dir.join("finisher.project.json")).unwrap())
+            .unwrap();
+    let hashed = file["createKey"].as_str().unwrap();
+    assert!(
+        hashed.starts_with("blake3:") && hashed.len() == 7 + 64,
+        "{hashed}"
+    );
+}
+
+/// Stored rationals are read leniently: a hand-edited `"rate": "30/1"` is 30, not an
+/// unreadable project.
+#[test]
+fn a_hand_edited_noncanonical_rate_still_opens() {
+    let e = env();
+    let s = Store::create(&e.data, &e.dir, "Demo", secs(30), None).unwrap();
+    let id = s.project_id().to_string();
+    s.close().unwrap();
+    let path = e.dir.join("finisher.project.json");
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("\"rate\": \"30\""), "{text}");
+    std::fs::write(
+        &path,
+        text.replace("\"rate\": \"30\"", "\"rate\": \"30/1\""),
+    )
+    .unwrap();
+    let file = read_project_file(&e.dir).unwrap();
+    assert_eq!(file.genesis.unwrap().rate, secs(30));
+    // A database rebuilt from that file is the same project (same genesis hash).
+    std::fs::remove_file(db_path(&e.data, &id)).unwrap();
+    let s = Store::open(&e.data, &e.dir).unwrap();
+    assert_eq!(s.snapshot(MAIN).unwrap().1.rate, secs(30));
+    assert!(s.read_only().is_none(), "{:?}", s.read_only());
+}
+
+/// `OpenOptions::expect_id` (review of 5A Task 6, finding 6): a folder that no longer holds
+/// the project the caller checked is refused before anything is rebuilt, locked or leased.
+#[test]
+fn open_with_another_expected_id_touches_nothing() {
+    let e = env();
+    let store = Store::create(&e.data, &e.dir, "Film", secs(30), None).unwrap();
+    let id = store.project_id().to_string();
+    drop(store);
+    // A server that never saw the project: opening it would build its database here.
+    let other = e._tmp.path().join("other-server");
+    let opts = fin_store::OpenOptions {
+        expect_id: Some("01otherprojectotherprojec".to_string()),
+        ..fin_store::OpenOptions::default()
+    };
+    let err = code(Store::open_with(&other, &e.dir, opts).unwrap_err());
+    assert_eq!(err.code, "PROJECT_NOT_FOUND");
+    assert_eq!(err.details["reason"], "changed");
+    assert!(files(&other).is_empty(), "{:?}", files(&other));
+    // The id it holds opens.
+    let opts = fin_store::OpenOptions {
+        expect_id: Some(id.clone()),
+        ..fin_store::OpenOptions::default()
+    };
+    assert_eq!(
+        Store::open_with(&other, &e.dir, opts).unwrap().project_id(),
+        id
+    );
+}
+
+/// Review #4: project data on a filesystem that is not a known local one (here procfs, reached
+/// through a symlink and a path that does not exist yet) is refused before anything is
+/// written, unless the override is set; opening an existing project there is refused too.
+#[cfg(target_os = "linux")]
+#[test]
+fn project_data_off_a_local_disk_is_refused() {
+    use fin_store::OpenOptions;
+    let e = env();
+    let link = e._tmp.path().join("elsewhere");
+    std::os::unix::fs::symlink("/proc/self", &link).unwrap();
+    let remote = link.join("finisher-data");
+    let err = code(Store::create(&remote, &e.dir, "Film", secs(30), None).unwrap_err());
+    assert_eq!(err.code, "SERVER_DATA_NOT_LOCAL", "{err:?}");
+    let details = &err.details;
+    assert_eq!(details["filesystem"], "proc");
+    assert!(details["resolved"].as_str().unwrap().starts_with("/proc/"));
+    assert_eq!(details["override"], fin_store::locality::ALLOW_NONLOCAL_ENV);
+    assert!(
+        err.fix
+            .as_deref()
+            .unwrap()
+            .contains("FIN_ALLOW_NONLOCAL_SERVER_DATA=1")
+    );
+    assert!(!e.dir.exists(), "nothing written into the project folder");
+
+    // The override lets it through to the filesystem (procfs then refuses the writes).
+    let opts = OpenOptions {
+        allow_nonlocal: Some(true),
+        ..OpenOptions::default()
+    };
+    let other = Store::create_with(&remote, &e.dir, "Film", secs(30), None, opts).unwrap_err();
+    assert_ne!(code(other).code, "SERVER_DATA_NOT_LOCAL");
+    let _ = std::fs::remove_dir_all(&e.dir);
+
+    // A project made on a local disk, then opened with server data on procfs.
+    drop(Store::create(&e.data, &e.dir, "Film", secs(30), None).unwrap());
+    let err = code(Store::open(&remote, &e.dir).unwrap_err());
+    assert_eq!(err.code, "SERVER_DATA_NOT_LOCAL", "{err:?}");
+    // And the offline rebuild (`fin project rebuild` with no server).
+    let err = code(fin_store::rebuild_project(&remote, &e.dir).unwrap_err());
+    assert_eq!(err.code, "SERVER_DATA_NOT_LOCAL", "{err:?}");
+}

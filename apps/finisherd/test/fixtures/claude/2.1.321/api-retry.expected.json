@@ -1,0 +1,33 @@
+[
+  {
+    "type": "notice",
+    "name": "retry",
+    "details": {
+      "attempt": 1,
+      "code": "PROVIDER_OVERLOADED",
+      "delayMs": 612
+    }
+  },
+  {
+    "type": "notice",
+    "name": "retry",
+    "details": {
+      "attempt": 2,
+      "code": "PROVIDER_OVERLOADED",
+      "delayMs": 1074
+    }
+  },
+  {
+    "type": "turnFailed",
+    "error": {
+      "code": "PROVIDER_OVERLOADED",
+      "message": "Claude Code's model is overloaded",
+      "details": {
+        "harness": "claudeCode",
+        "subtype": "success",
+        "status": 529,
+        "terminalReason": "api_error"
+      }
+    }
+  }
+]

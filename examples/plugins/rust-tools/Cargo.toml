@@ -1,0 +1,24 @@
+[package]
+name = "example-rust-tools"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "An example native Finisher plugin (`@example/rust-tools`), used by the SDK's tests, the conformance profile and the e2e scenario."
+
+[[bin]]
+name = "rust-tools"
+path = "src/main.rs"
+
+[dependencies]
+fin-plugin-sdk = { path = "../../../crates/fin-plugin-sdk" }
+
+# The tests run the built binary against the SDK's fake host (`tests/plugin.rs`, which
+# includes `crates/fin-plugin-sdk/tests/support` by path) and validate the manifest.
+[dev-dependencies]
+base64 = "0.23"
+fin-core = { path = "../../../crates/fin-core" }
+fin-jobs = { path = "../../../crates/fin-jobs" }
+fin-plugin-api = { path = "../../../crates/fin-plugin-api" }
+serde_json = "1"

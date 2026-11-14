@@ -1,0 +1,17 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+#
+# All three were test-model gaps (a caption checked for a sourceIn; a policy refusal blamed on
+# no single record; a roll moving an anchor without a shift), kept as regressions.
+cc d45e1f6c19aa1882239a5f21312eaa38cf241f3424d4326944d68341be31a9a3 # shrinks to lens = [[], [], [10], []], linked = false, trs = false, extras = (1, false, false), committed = [], mine = [Slip { track: 2, clip: 0, frames: 1 }]
+cc 9bc3b5e879e2f912834f2e82a5671f12959cf19afead436fc5de1e3b0950e131 # shrinks to lens = [[], [], [], [10, 10]], linked = false, trs = false, extras = (0, false, false), committed = [([Trim { track: 3, clip: 5, start: true, frames: -1, mode: 1 }], false), ([Slide { track: 3, clip: 0, frames: 2 }], false)], mine = [Insert { track: 3, before: Some(1), len: 1 }]
+cc 1c619cb1d178a69b5c5efe9f86c349293daf7f59d8f2d7ed3dea7a2e17b8dc51 # shrinks to lens = [[], [10, 10], [10], []], linked = false, trs = false, extras = (0, false, false), committed = [([Trim { track: 1, clip: 1, start: true, frames: 1, mode: 1 }], false)], mine = [Move { track: 1, clip: 0, to: 1, before: Some(1), overwrite: true }]
+cc 5b6b84a51b33b1f9d4fc3eae5ad351afbc3ff76f0d475a2ff92d6c51185cf183 # shrinks to lens = [[25, 10], [10, 10], [10, 10], [10, 10]], extras = (0, false, false), committed = [([Slip { track: 0, clip: 0, frames: 1 }], false)], mine = [Split { track: 0, clip: 0, eighths: 1 }, Split { track: 0, clip: 1, eighths: 1 }]
+cc 9baa3ff668f3301d4b2801174fb92a4be40597cb9abfc5655077934e2246046e # shrinks to lens = [[10], [10], [], []], linked = true, trs = false, extras = (0, false, false), committed = [([Unlink { track: 0, clip: 0 }], false)], mine = [Trim { track: 1, clip: 0, start: false, frames: -1, mode: 2 }, Move { track: 0, clip: 0, to: 0, before: None, overwrite: true }]
+cc 9dff2bbac4ac7ee1eae5b57cef7edb1bf22c98f1929bd6b78daec87a21dfa864 # shrinks to lens = [[10], [], [], []], linked = false, trs = false, extras = (0, false, false), committed = [([Insert { track: 0, before: None, len: 4 }], false), ([Trim { track: 0, clip: 5, start: false, frames: -1, mode: 2 }], false)], mine = [Insert { track: 0, before: None, len: 1 }]
+cc 912a0a3c89b2210f8630b6c2fa8ddc6b5849870e63f1722611a6f8efa13fdd2a # shrinks to lens = [[10], [10], [], []], linked = false, trs = false, extras = (0, false, false), committed = [([Move { track: 1, clip: 0, to: 0, before: None, overwrite: false }], false)], mine = [Split { track: 1, clip: 0, eighths: 1 }, Move { track: 0, clip: 0, to: 0, before: None, overwrite: false }]
+cc 5b02bc6b36c4885492897a61340697b9482235afa643d367dcfb61521ebebeb0 # shrinks to lens = [[], [10], [10], [10]], linked = false, trs = false, extras = (0, false, false), committed = [([Move { track: 3, clip: 0, to: 2, before: None, overwrite: false }], false)], mine = [Trim { track: 2, clip: 0, start: false, frames: 1, mode: 2 }, Move { track: 1, clip: 0, to: 2, before: None, overwrite: false }]

@@ -1,0 +1,306 @@
+{
+  "what": "caption tracks measured with a fake measurer over pinned faces (a Hebrew fallback); a muted caption track is hidden",
+  "timeline": "tl1",
+  "measurer": true,
+  "requiresMeasuredCaption": true,
+  "frames": [
+    "0",
+    "1/4",
+    "3/4",
+    "2",
+    "3",
+    "7/2",
+    "5",
+    "69/10"
+  ],
+  "audio": [],
+  "project": {
+    "id": "p1",
+    "name": "Corpus",
+    "schemaVersion": 6,
+    "rate": "30",
+    "timelines": [
+      {
+        "id": "tl1",
+        "name": "tl1",
+        "rate": "30",
+        "resolution": {
+          "width": 1080,
+          "height": 1920
+        },
+        "tracks": [
+          {
+            "id": "t1",
+            "kind": "video",
+            "name": "T1",
+            "items": [
+              {
+                "id": "c1",
+                "start": "0",
+                "duration": "8",
+                "kind": "clip",
+                "asset": "a1",
+                "sourceIn": "0"
+              }
+            ]
+          },
+          {
+            "id": "t3",
+            "kind": "caption",
+            "name": "T3",
+            "items": [
+              {
+                "id": "cap1",
+                "start": "0",
+                "duration": "3",
+                "kind": "caption",
+                "words": [
+                  {
+                    "text": "Hello",
+                    "start": "0",
+                    "end": "1/2"
+                  },
+                  {
+                    "text": "there,",
+                    "start": "1/2",
+                    "end": "6/5"
+                  },
+                  {
+                    "text": "world",
+                    "start": "6/5",
+                    "end": "3"
+                  }
+                ],
+                "style": "preset:bold"
+              },
+              {
+                "id": "cap2",
+                "start": "3",
+                "duration": "4",
+                "kind": "caption",
+                "words": [
+                  {
+                    "text": "Привет",
+                    "start": "0",
+                    "end": "1"
+                  },
+                  {
+                    "text": "мир",
+                    "start": "1",
+                    "end": "5/2"
+                  },
+                  {
+                    "text": "שלום",
+                    "start": "5/2",
+                    "end": "4"
+                  }
+                ],
+                "style": "preset:bold",
+                "keyframes": {
+                  "opacity": [
+                    {
+                      "id": "kf1",
+                      "at": "0",
+                      "value": 0.0,
+                      "interp": {
+                        "type": "bezier",
+                        "x1": 0.25,
+                        "y1": 0.1,
+                        "x2": 0.25,
+                        "y2": 1.0
+                      }
+                    },
+                    {
+                      "id": "kf2",
+                      "at": "1",
+                      "value": 1.0,
+                      "interp": {
+                        "type": "bezier",
+                        "x1": 0.25,
+                        "y1": 0.1,
+                        "x2": 0.25,
+                        "y2": 1.0
+                      }
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "id": "t4",
+            "kind": "caption",
+            "name": "T4",
+            "mute": true,
+            "items": [
+              {
+                "id": "cap3",
+                "start": "0",
+                "duration": "8",
+                "kind": "caption",
+                "words": [
+                  {
+                    "text": "hidden",
+                    "start": "0",
+                    "end": "8"
+                  }
+                ],
+                "style": "preset:bold"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "assets": {
+      "a1": {
+        "id": "a1",
+        "kind": "media",
+        "path": "a1.bin",
+        "fingerprint": "fp-a1",
+        "duration": "600",
+        "video": {
+          "width": 1920,
+          "height": 1080,
+          "rate": "30"
+        },
+        "audio": {
+          "sampleRate": 48000,
+          "channels": 2
+        }
+      },
+      "a2": {
+        "id": "a2",
+        "kind": "image",
+        "path": "a2.bin",
+        "fingerprint": "fp-a2",
+        "image": {
+          "width": 800,
+          "height": 600
+        }
+      },
+      "a3": {
+        "id": "a3",
+        "kind": "lottieTemplate",
+        "path": "a3.bin",
+        "fingerprint": "fp-a3",
+        "duration": "3",
+        "lottie": {
+          "width": 1080,
+          "height": 1920,
+          "rate": "30",
+          "duration": "3",
+          "slots": [
+            {
+              "id": "title",
+              "kind": "text"
+            },
+            {
+              "id": "tint",
+              "kind": "color"
+            },
+            {
+              "id": "size",
+              "kind": "number"
+            },
+            {
+              "id": "logo",
+              "kind": "image"
+            }
+          ]
+        }
+      },
+      "a4": {
+        "id": "a4",
+        "kind": "media",
+        "path": "a4.bin",
+        "fingerprint": "fp-a4",
+        "duration": "300",
+        "audio": {
+          "sampleRate": 44100,
+          "channels": 1
+        }
+      },
+      "a5": {
+        "id": "a5",
+        "kind": "lut",
+        "path": "a5.bin",
+        "fingerprint": "fp-a5",
+        "lut": {
+          "size": 33
+        }
+      },
+      "a6": {
+        "id": "a6",
+        "kind": "svg",
+        "path": "a6.bin",
+        "fingerprint": "fp-a6",
+        "image": {
+          "width": 512,
+          "height": 512
+        }
+      },
+      "a7": {
+        "id": "a7",
+        "kind": "media",
+        "path": "a7.bin",
+        "fingerprint": "fp-a7",
+        "duration": "1200",
+        "video": {
+          "width": 1920,
+          "height": 1080,
+          "rate": "30000/1001"
+        },
+        "audio": {
+          "sampleRate": 48000,
+          "channels": 2
+        }
+      }
+    },
+    "fonts": {
+      "pins": {
+        "Inter|700|normal": {
+          "family": "Inter",
+          "weight": 700,
+          "italic": false,
+          "face": 0,
+          "sha256": "4989b125924991b90d05b2d16e0e388c48f7d5bb8b30539bbf9c755278d0ccaf",
+          "size": 879708,
+          "format": "ttf",
+          "scripts": [
+            "Cyrl",
+            "Grek",
+            "Latn"
+          ],
+          "source": {
+            "type": "catalog",
+            "entry": "inter",
+            "style": "bold",
+            "catalog": "2026.11.1"
+          }
+        },
+        "Noto Sans Hebrew|400|normal": {
+          "family": "Noto Sans Hebrew",
+          "weight": 400,
+          "italic": false,
+          "face": 0,
+          "sha256": "04272f5600d0ec816d31d0df73b23aa8d3501ea359ebe820da31c11ffcf00853",
+          "size": 16836,
+          "format": "ttf",
+          "scripts": [
+            "Hebr"
+          ],
+          "source": {
+            "type": "catalog",
+            "entry": "noto-sans-hebrew",
+            "style": "regular",
+            "catalog": "2026.11.1"
+          }
+        }
+      },
+      "fallback": [
+        "Noto Sans Hebrew|400|normal"
+      ]
+    }
+  }
+}

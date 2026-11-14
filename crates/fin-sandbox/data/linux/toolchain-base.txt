@@ -1,0 +1,30 @@
+# The base toolchain read list for Linux (spec §8.1 item 1; plan 7C Decision 6).
+# Source: PLACEHOLDER from the spec's categories (the shell, coreutils, git, fin, the dynamic
+# loader and system libraries, certificates, fonts, locale data). Spike S9 step B5 (plan 7C
+# Task 0) replaces it with the list measured on the Linux VM; Task 5 re-validates it.
+/usr/bin
+/bin
+/usr/lib
+/usr/lib64
+/lib
+/lib64
+/usr/libexec
+/usr/share/git-core
+/usr/share/fonts
+/usr/share/locale
+/usr/share/zoneinfo
+/usr/lib/locale
+/etc/ld.so.cache
+/etc/ld.so.conf
+/etc/ld.so.conf.d
+/etc/ssl
+/etc/ca-certificates
+/etc/pki/tls
+/etc/fonts
+/etc/localtime
+/etc/nsswitch.conf
+/etc/passwd
+/etc/group
+/etc/hosts
+/etc/resolv.conf
+/etc/gitconfig

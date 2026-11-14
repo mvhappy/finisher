@@ -22,7 +22,7 @@ afterEach(async () => {
 });
 
 function tx(txId: string, baseRev: number, ops: unknown[]): string {
-  return JSON.stringify({ txId, author: "test", branch: "main", baseRev, schemaVersion: 1, ops });
+  return JSON.stringify({ txId, author: "test", branch: "main", baseRev, schemaVersion: 2, ops });
 }
 
 const addAsset = {
@@ -63,7 +63,7 @@ describe("Engine", () => {
     const snap = JSON.parse(await engine.snapshot("main"));
     expect(snap.rev).toBe(2);
     expect(snap.project.rate).toBe("30000/1001");
-    expect(snap.project.timeline.tracks[0].items).toMatchObject([{ id: "c1", start: "0", duration: "5" }]);
+    expect(snap.project.timelines[0].tracks[0].items).toMatchObject([{ id: "c1", start: "0", duration: "5" }]);
 
     const since = JSON.parse(await engine.opsSince("main", 1));
     expect(since.map((c: { rev: number }) => c.rev)).toEqual([2]);
@@ -107,10 +107,18 @@ describe("Engine", () => {
     expect(typeof exists.fix).toBe("string");
 
     expect((await rejection(engine.commit("{not json"))).code).toBe("INVALID_OP");
+    // A time not in canonical form is named, with the form to send instead.
+    const noncanonical = await rejection(engine.commit(tx("tx-nc", 0, [{ ...addAsset, duration: "1200/2" }])));
+    expect(noncanonical.code).toBe("INVALID_TIME");
+    expect(noncanonical.details.input).toBe("1200/2");
+    expect(noncanonical.details.canonical).toBe("600");
+    expect(noncanonical.details.path).toBe("/ops/0/duration");
+    expect(noncanonical.fix).toContain('"600"');
     for (const rev of [-1, 1.5, Number.NaN]) {
       const err = await rejection(engine.opsSince("main", rev));
       expect(err.code, String(rev)).toBe("INVALID_RANGE");
-      expect(err.details.rev).toBe(String(rev));
+      // Numeric, as every `details.rev` is; JSON has no NaN.
+      expect(err.details.rev).toBe(Number.isNaN(rev) ? null : rev);
     }
     expect((await rejection(engine.snapshot("nope"))).code).toBe("BRANCH_NOT_FOUND");
     expect((await rejection(Engine.open(serverData, join(tmp, "empty")))).code).toBe("PROJECT_NOT_FOUND");
@@ -136,7 +144,18 @@ describe("Engine", () => {
     }
     expect(await engine.head("main")).toBe(501);
     expect(gaps.length).toBeGreaterThan(10);
-    expect(Math.max(...gaps)).toBeLessThan(20);
+    // A commit that blocked the JS thread shows up as a long gap. Machine load adds
+    // scheduler noise to single gaps (a preempted process loses 100+ ms at load average 20),
+    // so assert on the distribution (median, p90, share of slow gaps: commits that block turn
+    // most gaps long) and give the worst gap a bound that only a stall of half a second or more
+    // breaks. FIN_STRICT_TIMING=1 restores the strict 20 ms on every gap.
+    const sorted = [...gaps].sort((a, b) => a - b);
+    const pct = (p: number) => sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))] ?? 0;
+    const slow = gaps.filter((g) => g > 20).length;
+    expect(pct(0.5)).toBeLessThan(10);
+    expect(pct(0.9)).toBeLessThan(20);
+    expect(slow / gaps.length).toBeLessThan(0.05);
+    expect(sorted[sorted.length - 1]).toBeLessThan(process.env.FIN_STRICT_TIMING === "1" ? 20 : 500);
   }, 120_000);
 });
 
@@ -167,11 +186,80 @@ describe("probe", () => {
     const file = join(tmp, "clip.mp4");
     testHooks!.writeFixtureMp4(file, { seconds: 2, fps: 25, audio: true, sampleRate: 44100 });
     const p = JSON.parse(await probe(file));
+    expect(p.kind).toBe("media");
     expect(p.duration).toBe("2");
-    expect(p.video).toEqual({ width: 320, height: 180, rate: "25" });
+    // Schema 4 (6B-1 Task 11): the display geometry too.
+    expect(p.video).toEqual({ width: 320, height: 180, rate: "25", display: { width: 320, height: 180 }, rotation: 0, pixelAspect: "1" });
     expect(p.audio).toEqual({ sampleRate: 44100, channels: 2 });
     expect(p.fingerprint).toMatch(/\S/);
     expect(p.size).toBeGreaterThan(0);
+    // What the file is (6A Task 8): in the probe answer only.
+    expect(p.media).toMatchObject({ container: "mp4", duration: "2" });
+    expect(p.media.video).toMatchObject({ codec: "h264", coded: { width: 320, height: 180 }, rotation: 0, vfr: false, frames: 50 });
+    expect(p.media.audio).toMatchObject({ codec: "aac", sampleRate: 44100, channels: 2 });
+  });
+
+  test("an asset.add with media is refused; one built from a probe commits without it", async () => {
+    const file = join(tmp, "clip.mp4");
+    testHooks!.writeFixtureMp4(file, { seconds: 2, fps: 25, audio: true, sampleRate: 48000 });
+    const p = JSON.parse(await probe(file));
+    engine = await Engine.create(serverData, projectDir, "Demo", "25");
+    const withMedia = { op: "asset.add", id: "$a", path: file, fingerprint: p.fingerprint, kind: p.kind, duration: p.duration, video: p.video, audio: p.audio, media: p.media };
+    const refused = await rejection(engine.commit(tx("tx-media", 0, [withMedia])));
+    expect(refused.code).toBe("INVALID_OP");
+    expect(refused.details.path).toBe("/ops/0/media");
+    const { media: _media, ...modelOnly } = withMedia;
+    expect(JSON.parse(await engine.commit(tx("tx-add", 0, [modelOnly]))).rev).toBe(1);
+    const [record] = JSON.parse(await engine.opsSince("main", 0));
+    expect(record.tx.ops[0].op).toBe("asset.add");
+    expect(record.tx.ops[0]).not.toHaveProperty("media");
+    // Schema 4: the model keeps the display geometry; the rest of `MediaInfo` stays out.
+    expect(record.tx.ops[0].video).toMatchObject({ width: 320, height: 180, rotation: 0, display: { width: 320, height: 180 }, pixelAspect: "1" });
+    expect(JSON.stringify(record)).not.toContain("codec");
+    expect(JSON.stringify(record)).not.toContain("vfr");
+  });
+
+  test("each asset kind resolves to its kind and info", async () => {
+    const probed = async (kind: Parameters<NonNullable<typeof testHooks>["writeFixture"]>[0]) => {
+      const file = join(tmp, `fixture.${kind}`);
+      testHooks!.writeFixture(kind, file);
+      const p = JSON.parse(await probe(file));
+      expect(p.fingerprint).toMatch(/^fp1:/);
+      expect(p.size).toBeGreaterThan(0);
+      return p;
+    };
+    for (const kind of ["png", "jpeg", "webp"] as const) {
+      const p = await probed(kind);
+      expect(p.kind).toBe("image");
+      expect(p.image).toEqual({ width: 64, height: 48 });
+      expect(p).not.toHaveProperty("duration");
+    }
+    const svg = await probed("svg");
+    expect([svg.kind, svg.image]).toEqual(["svg", { width: 640, height: 360 }]);
+
+    const lottie = await probed("dotlottie");
+    expect(lottie.kind).toBe("lottieTemplate");
+    expect(lottie.duration).toBe("3");
+    expect(lottie.lottie).toMatchObject({ width: 1920, height: 1080, rate: "30", duration: "3" });
+    expect(lottie.lottie.fonts).toEqual(["Inter", "Roboto Mono"]);
+    expect(lottie.lottie.slots.map((s: { kind: string }) => s.kind).sort()).toEqual([
+      "color",
+      "image",
+      "number",
+      "text",
+    ]);
+
+    const cube = await probed("cube");
+    expect([cube.kind, cube.lut]).toEqual(["lut", { size: 4 }]);
+
+    const wav = await probed("wav");
+    expect([wav.kind, wav.duration, wav.audio]).toEqual(["media", "1", { sampleRate: 48000, channels: 2 }]);
+    expect(wav).not.toHaveProperty("video");
+
+    const m4a = await probed("m4a");
+    expect([m4a.kind, m4a.duration]).toEqual(["media", "2"]);
+    expect(m4a.audio).toEqual({ sampleRate: 48000, channels: 2 });
+    expect(m4a).not.toHaveProperty("video");
   });
 
   test("a missing path rejects with ASSET_NOT_FOUND", async () => {

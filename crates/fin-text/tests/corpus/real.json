@@ -1,0 +1,426 @@
+{
+  "note": "sha256 and face are the font catalog's (crates/fin-fonts/catalog/catalog.json, 2026.11.1). A variable file (`variable: true`) serves several weights: the request's weight drives its wght axis, and font_info reports its default instance.",
+  "fonts": {
+    "inter:regular": {
+      "sha256": "4989b125924991b90d05b2d16e0e388c48f7d5bb8b30539bbf9c755278d0ccaf",
+      "face": 0,
+      "family": "Inter Variable",
+      "weight": 400,
+      "italic": false,
+      "variable": true
+    },
+    "inter:bold": {
+      "sha256": "4989b125924991b90d05b2d16e0e388c48f7d5bb8b30539bbf9c755278d0ccaf",
+      "face": 0,
+      "family": "Inter Variable",
+      "weight": 700,
+      "italic": false,
+      "variable": true
+    },
+    "noto-sans:regular": {
+      "sha256": "f3961a9cde016d41a4879aecda1474d3a36d6bf54fa0e4643de029cc2248b0e8",
+      "face": 0,
+      "family": "Noto Sans",
+      "weight": 400,
+      "italic": false
+    },
+    "noto-sans:bold": {
+      "sha256": "87cb2d84472a7d66da659ee47b6cdb9552326e8c128245231f191b6ac72529d9",
+      "face": 0,
+      "family": "Noto Sans",
+      "weight": 700,
+      "italic": false
+    },
+    "noto-sans-arabic:regular": {
+      "sha256": "bd86ca02f087d7f3c3788ba458fb6b73744c7639ed276b8d870dba6def6c40d0",
+      "face": 0,
+      "family": "Noto Sans Arabic",
+      "weight": 400,
+      "italic": false
+    },
+    "noto-sans-hebrew:regular": {
+      "sha256": "04272f5600d0ec816d31d0df73b23aa8d3501ea359ebe820da31c11ffcf00853",
+      "face": 0,
+      "family": "Noto Sans Hebrew",
+      "weight": 400,
+      "italic": false
+    },
+    "noto-sans-cjk:regular": {
+      "sha256": "b76b0433203017ca80401b2ee0dd69350349871c4b19d504c34dbdd80541690a",
+      "face": 2,
+      "family": "Noto Sans CJK SC",
+      "weight": 400,
+      "italic": false
+    },
+    "noto-color-emoji:regular": {
+      "sha256": "15671215ab769fdc7162a045d56fd7d7e477c51b04e6b3c761d914d8fdd6cc44",
+      "face": 0,
+      "family": "Noto Color Emoji",
+      "weight": 400,
+      "italic": false
+    }
+  },
+  "cases": [
+    {
+      "id": "latin-kerning",
+      "what": "Latin kerning pairs",
+      "fonts": [
+        "inter:regular"
+      ],
+      "words": [
+        "AVATAR",
+        "Wave",
+        "To",
+        "Ty."
+      ],
+      "style": {
+        "family": "Inter",
+        "weight": 400,
+        "italic": false,
+        "size": 64,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.0,
+        "align": "left"
+      }
+    },
+    {
+      "id": "inter-bold",
+      "what": "Inter Bold: the variable file at wght 700",
+      "fonts": [
+        "inter:bold"
+      ],
+      "words": [
+        "AVATAR",
+        "Wave",
+        "To",
+        "Ty."
+      ],
+      "style": {
+        "family": "Inter",
+        "weight": 700,
+        "italic": false,
+        "size": 64,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.0,
+        "align": "left"
+      }
+    },
+    {
+      "id": "cyrillic",
+      "what": "Cyrillic",
+      "fonts": [
+        "noto-sans:regular"
+      ],
+      "words": [
+        "Съешь",
+        "же",
+        "ещё",
+        "этих"
+      ],
+      "style": {
+        "family": "Noto Sans",
+        "weight": 400,
+        "italic": false,
+        "size": 64,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.0,
+        "align": "left"
+      }
+    },
+    {
+      "id": "greek",
+      "what": "Greek",
+      "fonts": [
+        "noto-sans:regular"
+      ],
+      "words": [
+        "Καλημέρα",
+        "κόσμε"
+      ],
+      "style": {
+        "family": "Noto Sans",
+        "weight": 400,
+        "italic": false,
+        "size": 64,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.0,
+        "align": "left"
+      }
+    },
+    {
+      "id": "arabic-joining",
+      "what": "Arabic joining forms",
+      "fonts": [
+        "noto-sans:regular",
+        "noto-sans-arabic:regular",
+        "noto-sans-hebrew:regular",
+        "noto-sans-cjk:regular",
+        "noto-color-emoji:regular"
+      ],
+      "words": [
+        "مرحبا",
+        "بالعالم"
+      ],
+      "style": {
+        "family": "Noto Sans",
+        "weight": 400,
+        "italic": false,
+        "size": 64,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.0,
+        "align": "left"
+      }
+    },
+    {
+      "id": "hebrew",
+      "what": "Hebrew",
+      "fonts": [
+        "noto-sans:regular",
+        "noto-sans-arabic:regular",
+        "noto-sans-hebrew:regular",
+        "noto-sans-cjk:regular",
+        "noto-color-emoji:regular"
+      ],
+      "words": [
+        "שלום",
+        "עולם"
+      ],
+      "style": {
+        "family": "Noto Sans",
+        "weight": 400,
+        "italic": false,
+        "size": 64,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.0,
+        "align": "left"
+      }
+    },
+    {
+      "id": "mixed-bidi",
+      "what": "Latin, Arabic and digits in one paragraph",
+      "fonts": [
+        "noto-sans:regular",
+        "noto-sans-arabic:regular",
+        "noto-sans-hebrew:regular",
+        "noto-sans-cjk:regular",
+        "noto-color-emoji:regular"
+      ],
+      "words": [
+        "Call",
+        "مرحبا",
+        "123",
+        "now"
+      ],
+      "style": {
+        "family": "Noto Sans",
+        "weight": 400,
+        "italic": false,
+        "size": 64,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.0,
+        "align": "left"
+      }
+    },
+    {
+      "id": "chinese",
+      "what": "Simplified Chinese",
+      "fonts": [
+        "noto-sans:regular",
+        "noto-sans-arabic:regular",
+        "noto-sans-hebrew:regular",
+        "noto-sans-cjk:regular",
+        "noto-color-emoji:regular"
+      ],
+      "words": [
+        "你好，世界"
+      ],
+      "style": {
+        "family": "Noto Sans",
+        "weight": 400,
+        "italic": false,
+        "size": 64,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.0,
+        "align": "left"
+      }
+    },
+    {
+      "id": "japanese-kana",
+      "what": "Japanese kana and kanji",
+      "fonts": [
+        "noto-sans:regular",
+        "noto-sans-arabic:regular",
+        "noto-sans-hebrew:regular",
+        "noto-sans-cjk:regular",
+        "noto-color-emoji:regular"
+      ],
+      "words": [
+        "こんにちは",
+        "カタカナ",
+        "日本"
+      ],
+      "style": {
+        "family": "Noto Sans",
+        "weight": 400,
+        "italic": false,
+        "size": 64,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.0,
+        "align": "left"
+      }
+    },
+    {
+      "id": "korean",
+      "what": "Korean",
+      "fonts": [
+        "noto-sans:regular",
+        "noto-sans-arabic:regular",
+        "noto-sans-hebrew:regular",
+        "noto-sans-cjk:regular",
+        "noto-color-emoji:regular"
+      ],
+      "words": [
+        "안녕하세요",
+        "세계"
+      ],
+      "style": {
+        "family": "Noto Sans",
+        "weight": 400,
+        "italic": false,
+        "size": 64,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.0,
+        "align": "left"
+      }
+    },
+    {
+      "id": "emoji",
+      "what": "emoji fallback box (CBDT advance)",
+      "fonts": [
+        "noto-sans:regular",
+        "noto-sans-arabic:regular",
+        "noto-sans-hebrew:regular",
+        "noto-sans-cjk:regular",
+        "noto-color-emoji:regular"
+      ],
+      "words": [
+        "Hi",
+        "😀👍",
+        "🔥"
+      ],
+      "style": {
+        "family": "Noto Sans",
+        "weight": 400,
+        "italic": false,
+        "size": 64,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.0,
+        "align": "left"
+      }
+    },
+    {
+      "id": "unassigned",
+      "what": "an unassigned code point (U+0378) is missing",
+      "fonts": [
+        "noto-sans:regular",
+        "noto-sans-arabic:regular",
+        "noto-sans-hebrew:regular",
+        "noto-sans-cjk:regular",
+        "noto-color-emoji:regular"
+      ],
+      "words": [
+        "x͸y"
+      ],
+      "style": {
+        "family": "Noto Sans",
+        "weight": 400,
+        "italic": false,
+        "size": 64,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.0,
+        "align": "left"
+      }
+    },
+    {
+      "id": "bold",
+      "what": "Noto Sans Bold",
+      "fonts": [
+        "noto-sans:bold"
+      ],
+      "words": [
+        "Bold",
+        "words"
+      ],
+      "style": {
+        "family": "Noto Sans",
+        "weight": 700,
+        "italic": false,
+        "size": 64,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.0,
+        "align": "left"
+      }
+    },
+    {
+      "id": "wrap",
+      "what": "wrapping in a 600 px box",
+      "fonts": [
+        "noto-sans:regular",
+        "noto-sans-arabic:regular",
+        "noto-sans-hebrew:regular",
+        "noto-sans-cjk:regular",
+        "noto-color-emoji:regular"
+      ],
+      "words": [
+        "Captions",
+        "wrap",
+        "between",
+        "words,",
+        "never",
+        "inside",
+        "them"
+      ],
+      "style": {
+        "family": "Noto Sans",
+        "weight": 400,
+        "italic": false,
+        "size": 64,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.0,
+        "align": "left"
+      },
+      "maxWidth": 600.0
+    },
+    {
+      "id": "max-lines",
+      "what": "max two lines: overflow",
+      "fonts": [
+        "noto-sans:regular",
+        "noto-sans-arabic:regular",
+        "noto-sans-hebrew:regular",
+        "noto-sans-cjk:regular",
+        "noto-color-emoji:regular"
+      ],
+      "words": [
+        "Captions",
+        "wrap",
+        "between",
+        "words,",
+        "never",
+        "inside",
+        "them"
+      ],
+      "style": {
+        "family": "Noto Sans",
+        "weight": 400,
+        "italic": false,
+        "size": 64,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.0,
+        "align": "left"
+      },
+      "maxWidth": 600.0,
+      "maxLines": 2
+    }
+  ]
+}

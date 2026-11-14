@@ -1,0 +1,192 @@
+//! Software AV1 round trips (spec §13.5): SVT-AV1 encodes frame-id patterns, dav1d decodes
+//! them back with the right ids and quality; broken input is a typed error; encoding is
+//! deterministic with one thread.
+
+use std::io::Cursor;
+
+use fin_codecs::fixture::{ClipSpec, encode_all, fixture_config, pattern_clip};
+use fin_codecs::{
+    DecodeThreads, EncoderConfig, FrameReader, ProbeResult, RawFrame, capabilities, open_encoder,
+};
+use fin_container::{Demuxer, Limits};
+use fin_core::Rational;
+use fin_media::backend::EncodePurpose;
+use fin_media::testing::{pattern, read_id_y};
+use fin_media::{PixelFormat, Size, VideoCodec};
+
+fn psnr(a: &[u8], b: &[u8]) -> f64 {
+    let mse = a
+        .iter()
+        .zip(b)
+        .map(|(&x, &y)| (x as f64 - y as f64).powi(2))
+        .sum::<f64>()
+        / a.len() as f64;
+    if mse == 0.0 {
+        f64::INFINITY
+    } else {
+        10.0 * (255.0 * 255.0 / mse).log10()
+    }
+}
+
+#[test]
+fn encode_120_pattern_frames_and_decode_them_back() {
+    let spec = ClipSpec {
+        frames: 120,
+        size: Size::new(960, 540),
+        keyint: 60,
+        crf: 30,
+        preset: 10,
+        ..Default::default()
+    };
+    let file = pattern_clip(&spec).unwrap();
+    let mut r = FrameReader::open(
+        Cursor::new(file),
+        &Limits::default(),
+        &fin_codecs::ProbeResult::software_only(),
+    )
+    .unwrap();
+    let v = r.info().video.clone().unwrap();
+    assert_eq!(
+        (v.codec, v.coded, v.frames),
+        (VideoCodec::Av1, Size::new(960, 540), 120)
+    );
+    assert_eq!(v.nominal_rate, Rational::from_int(30));
+    assert_eq!(r.table().frames().iter().filter(|f| f.keyframe).count(), 2);
+    let mut worst = f64::INFINITY;
+    for i in 0..120 {
+        let f = r.frame(i).unwrap();
+        assert_eq!((f.format, f.size), (PixelFormat::I420, Size::new(960, 540)));
+        assert_eq!(
+            read_id_y(&f.planes[0].data, 960, 540),
+            Some(i as u32),
+            "frame {i}"
+        );
+        let src = pattern(i as u32, 960, 540, spec.seed);
+        worst = worst.min(psnr(&f.planes[0].data, &src.y));
+    }
+    assert!(worst >= 35.0, "worst Y PSNR {worst:.2} dB");
+    eprintln!("120 frames 960×540 CRF 30: worst Y PSNR {worst:.2} dB");
+}
+
+#[test]
+fn a_truncated_sample_is_decode_failed_without_a_panic() {
+    let file = pattern_clip(&ClipSpec {
+        frames: 10,
+        ..Default::default()
+    })
+    .unwrap();
+    let mut d = Demuxer::open(Cursor::new(file), &Limits::default()).unwrap();
+    let track = d.video().unwrap().clone();
+    let mut dec = fin_codecs::open_decoder(
+        &fin_codecs::DecoderConfig::new(&track),
+        &fin_codecs::ProbeResult::software_only(),
+    )
+    .unwrap();
+    let mut buf = Vec::new();
+    d.read_sample(track.track, 0, &mut buf).unwrap();
+    let mut failed = None;
+    for cut in [buf.len() / 2, buf.len() / 4, 3] {
+        dec.flush().unwrap();
+        match dec.send(&buf[..cut], 0).and_then(|_| dec.receive()) {
+            Err(e) => failed = Some(e),
+            Ok(Some(_)) => {}
+            Ok(None) => {}
+        }
+        if failed.is_some() {
+            break;
+        }
+    }
+    let e = failed.expect("a cut keyframe fails to decode");
+    assert_eq!(e.code, "DECODE_FAILED");
+    assert_eq!(e.details["backend"], "dav1d");
+}
+
+#[test]
+fn a_picture_out_before_a_bad_packet_is_kept() {
+    let file = pattern_clip(&ClipSpec {
+        frames: 3,
+        ..Default::default()
+    })
+    .unwrap();
+    let mut d = Demuxer::open(Cursor::new(file), &Limits::default()).unwrap();
+    let track = d.video().unwrap().clone();
+    let mut dec = fin_codecs::open_decoder(
+        &fin_codecs::DecoderConfig {
+            threads: DecodeThreads::SINGLE,
+            ..fin_codecs::DecoderConfig::new(&track)
+        },
+        &fin_codecs::ProbeResult::software_only(),
+    )
+    .unwrap();
+    let mut buf = Vec::new();
+    for i in 0..2 {
+        d.read_sample(track.track, i, &mut buf).unwrap();
+        dec.send(&buf, i as i64).unwrap();
+    }
+    // A frame OBU claiming 127 bytes it does not have. dav1d holds the second packet unparsed
+    // while the first picture waits, so this one waits too, and goes in (and fails) only once
+    // the second picture has come out of dav1d.
+    dec.send(&[0x32, 0x7f], 2).unwrap();
+    let mut pts = Vec::new();
+    let e = loop {
+        match dec.receive() {
+            Ok(Some(f)) => pts.push(f.pts),
+            Ok(None) => panic!("the bad packet is not reported (pictures {pts:?})"),
+            Err(e) => break e,
+        }
+    };
+    assert_eq!(
+        pts,
+        [0, 1],
+        "every picture before the bad packet comes out first"
+    );
+    assert_eq!(e.code, "DECODE_FAILED");
+    // Reported once.
+    assert!(dec.receive().unwrap().is_none());
+}
+
+#[test]
+fn encoding_with_one_thread_is_deterministic() {
+    let run = || {
+        let spec = ClipSpec {
+            size: Size::new(320, 180),
+            preset: 10,
+            crf: 35,
+            keyint: 15,
+            ..ClipSpec::default()
+        };
+        let mut enc = open_encoder(
+            &EncoderConfig {
+                purpose: EncodePurpose::TestFixture,
+                ..fixture_config(&spec, VideoCodec::Av1)
+            },
+            &ProbeResult::software_only(),
+        )
+        .unwrap();
+        let out = encode_all(&mut enc, 20, |i| {
+            let p = pattern(i, 320, 180, 9);
+            RawFrame::i420(Size::new(320, 180), p.y, p.u, p.v)
+        })
+        .unwrap();
+        (out, enc.config().unwrap())
+    };
+    let (a, ca) = run();
+    let (b, cb) = run();
+    assert_eq!(a.len(), 20, "one temporal unit per frame");
+    assert_eq!(a, b);
+    assert_eq!(ca, cb);
+    assert!(a[0].keyframe && a[15].keyframe && !a[1].keyframe);
+    assert_eq!(
+        a.iter().map(|p| p.pts).collect::<Vec<_>>(),
+        (0..20).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn other_codecs_are_unavailable() {
+    let caps = capabilities();
+    assert!(
+        caps.get(VideoCodec::H264)
+            .is_some_and(|c| c.decode == fin_codecs::Support::None)
+    );
+}

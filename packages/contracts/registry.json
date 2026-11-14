@@ -1,0 +1,2555 @@
+{
+  "commands": [
+    {
+      "argKinds": {
+        "dir": "path"
+      },
+      "group": "project",
+      "identity": [
+        "dir",
+        "name"
+      ],
+      "name": "project.create",
+      "rpcs": [
+        {
+          "method": "project.create"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {
+        "dir": "path"
+      },
+      "group": "project",
+      "identity": [
+        "dir"
+      ],
+      "name": "project.open",
+      "rpcs": [
+        {
+          "method": "project.open"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "project",
+      "identity": [
+        "projectId"
+      ],
+      "name": "project.status",
+      "rpcs": [
+        {
+          "method": "project.status"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "project",
+      "identity": [
+        "projectId"
+      ],
+      "name": "project.takeover",
+      "rpcs": [
+        {
+          "method": "project.takeover"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "project",
+      "identity": [
+        "projectId"
+      ],
+      "name": "project.verify",
+      "rpcs": [
+        {
+          "method": "project.verify"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "project",
+      "identity": [
+        "projectId"
+      ],
+      "name": "project.rebuild",
+      "rpcs": [
+        {
+          "method": "project.rebuild"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "project",
+      "identity": [
+        "projectId"
+      ],
+      "name": "project.compact",
+      "rpcs": [
+        {
+          "method": "project.compact"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {
+        "import": "path"
+      },
+      "group": "project",
+      "identity": [
+        "projectId",
+        "create",
+        "importDir",
+        "dismiss"
+      ],
+      "name": "project.recover",
+      "rpcs": [
+        {
+          "method": "project.recover"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "project",
+      "identity": [
+        "projectId"
+      ],
+      "name": "project.acknowledge",
+      "rpcs": [
+        {
+          "method": "project.acknowledgeRewind"
+        },
+        {
+          "method": "project.acknowledgeSalvage"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "read",
+      "identity": [
+        "projectId"
+      ],
+      "name": "status",
+      "rpcs": [
+        {
+          "method": "project.status"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {
+        "out": "path"
+      },
+      "group": "read",
+      "identity": [
+        "projectId",
+        "branch",
+        "timeline",
+        "at"
+      ],
+      "name": "look",
+      "rpcs": [
+        {
+          "method": "media.look"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "read",
+      "identity": [
+        "projectId",
+        "branch",
+        "timeline",
+        "from",
+        "to"
+      ],
+      "name": "listen",
+      "rpcs": [
+        {
+          "method": "media.listen"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "read",
+      "identity": [
+        "projectId",
+        "branch"
+      ],
+      "name": "view",
+      "rpcs": [],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "branch",
+      "identity": [
+        "projectId",
+        "from",
+        "name"
+      ],
+      "name": "branch.new",
+      "rpcs": [
+        {
+          "method": "branch.create"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "branch",
+      "identity": [
+        "projectId",
+        "all"
+      ],
+      "name": "branch.ls",
+      "rpcs": [
+        {
+          "method": "branch.list"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "branch",
+      "identity": [
+        "projectId",
+        "branch",
+        "name"
+      ],
+      "name": "branch.rename",
+      "rpcs": [
+        {
+          "match": {
+            "name": {
+              "present": true
+            }
+          },
+          "method": "branch.set"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "branch",
+      "identity": [
+        "projectId",
+        "branch",
+        "archived"
+      ],
+      "name": "branch.archive",
+      "rpcs": [
+        {
+          "match": {
+            "archived": {
+              "present": true
+            }
+          },
+          "method": "branch.set"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "branch",
+      "identity": [],
+      "name": "branch.default",
+      "rpcs": [],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "history",
+      "identity": [
+        "projectId",
+        "branch",
+        "name"
+      ],
+      "name": "checkpoint",
+      "rpcs": [
+        {
+          "method": "history.checkpoint"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "history",
+      "identity": [
+        "projectId",
+        "branch",
+        "to"
+      ],
+      "name": "undo",
+      "rpcs": [
+        {
+          "method": "history.undo"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "history",
+      "identity": [
+        "projectId",
+        "branch"
+      ],
+      "name": "redo",
+      "rpcs": [
+        {
+          "method": "history.redo"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "history",
+      "identity": [
+        "projectId",
+        "from",
+        "into"
+      ],
+      "name": "merge",
+      "rpcs": [
+        {
+          "method": "history.merge"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "history",
+      "identity": [
+        "projectId",
+        "origin",
+        "into"
+      ],
+      "name": "cherry-pick",
+      "rpcs": [
+        {
+          "method": "history.cherryPick"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "history",
+      "identity": [
+        "projectId",
+        "from",
+        "into",
+        "drops",
+        "undrops"
+      ],
+      "name": "drop",
+      "rpcs": [
+        {
+          "method": "history.drop"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "review",
+      "identity": [
+        "projectId",
+        "source",
+        "into"
+      ],
+      "name": "review.request",
+      "rpcs": [
+        {
+          "method": "review.request"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "review",
+      "identity": [
+        "projectId",
+        "state",
+        "kind"
+      ],
+      "name": "review.ls",
+      "rpcs": [
+        {
+          "method": "review.list"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "review",
+      "identity": [
+        "itemId"
+      ],
+      "name": "review.show",
+      "rpcs": [
+        {
+          "method": "review.get"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "review",
+      "identity": [
+        "itemId"
+      ],
+      "name": "review.refresh",
+      "rpcs": [
+        {
+          "method": "review.refresh"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "review",
+      "identity": [
+        "itemId",
+        "txId"
+      ],
+      "name": "review.comment",
+      "rpcs": [
+        {
+          "method": "review.comment"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "review",
+      "identity": [
+        "itemId",
+        "decisions.*.txId",
+        "decisions.*.decision"
+      ],
+      "name": "review.decide",
+      "rpcs": [
+        {
+          "method": "review.decide"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "review",
+      "identity": [
+        "itemId",
+        "acceptPending"
+      ],
+      "name": "review.merge",
+      "rpcs": [
+        {
+          "method": "review.merge"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "review",
+      "identity": [
+        "itemId",
+        "state"
+      ],
+      "name": "review.close",
+      "rpcs": [
+        {
+          "method": "review.close"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "history",
+      "identity": [
+        "projectId",
+        "mergeId",
+        "branch"
+      ],
+      "name": "revert",
+      "rpcs": [
+        {
+          "method": "history.revert"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "try",
+      "identity": [
+        "projectId",
+        "from",
+        "name"
+      ],
+      "name": "try",
+      "rpcs": [
+        {
+          "method": "branch.create"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "try",
+      "identity": [
+        "projectId",
+        "from",
+        "into"
+      ],
+      "name": "try.keep",
+      "rpcs": [
+        {
+          "method": "history.merge"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "try",
+      "identity": [
+        "projectId",
+        "branch",
+        "archived"
+      ],
+      "name": "try.drop",
+      "rpcs": [
+        {
+          "match": {
+            "archived": true
+          },
+          "method": "branch.set"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {
+        "path": "path"
+      },
+      "group": "asset",
+      "identity": [
+        "projectId",
+        "tx.branch",
+        "tx.ops"
+      ],
+      "name": "asset.add",
+      "rpcs": [
+        {
+          "match": {
+            "tx.ops.*.op": "asset.add"
+          },
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "clip",
+      "identity": [
+        "projectId",
+        "tx.branch",
+        "tx.ops"
+      ],
+      "name": "clip.insert",
+      "rpcs": [
+        {
+          "match": {
+            "tx.ops.*.kind": "clip",
+            "tx.ops.*.op": "item.insert"
+          },
+          "method": "tx.commit"
+        },
+        {
+          "match": {
+            "tx.ops.*.op": "clip.insert"
+          },
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "clip",
+      "identity": [
+        "projectId",
+        "tx.branch",
+        "tx.ops"
+      ],
+      "name": "clip.trim",
+      "rpcs": [
+        {
+          "match": {
+            "tx.ops.*.op": "item.trim"
+          },
+          "method": "tx.commit"
+        },
+        {
+          "match": {
+            "tx.ops.*.op": "clip.trim"
+          },
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "clip",
+      "identity": [
+        "projectId",
+        "tx.branch",
+        "tx.ops"
+      ],
+      "name": "clip.delete",
+      "rpcs": [
+        {
+          "match": {
+            "tx.ops.*.op": "item.delete"
+          },
+          "method": "tx.commit"
+        },
+        {
+          "match": {
+            "tx.ops.*.op": "clip.delete"
+          },
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "image",
+      "identity": [
+        "projectId",
+        "tx.branch",
+        "tx.ops"
+      ],
+      "name": "image.insert",
+      "rpcs": [
+        {
+          "match": {
+            "tx.ops.*.kind": "image",
+            "tx.ops.*.op": "item.insert"
+          },
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "graphic",
+      "identity": [
+        "projectId",
+        "tx.branch",
+        "tx.ops"
+      ],
+      "name": "graphic.insert",
+      "rpcs": [
+        {
+          "match": {
+            "tx.ops.*.kind": "graphic",
+            "tx.ops.*.op": "item.insert"
+          },
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "item",
+      "identity": [
+        "projectId",
+        "tx.branch",
+        "tx.ops"
+      ],
+      "name": "item.move",
+      "rpcs": [
+        {
+          "match": {
+            "tx.ops.*.op": "item.move"
+          },
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "item",
+      "identity": [
+        "projectId",
+        "tx.branch",
+        "tx.ops"
+      ],
+      "name": "item.split",
+      "rpcs": [
+        {
+          "match": {
+            "tx.ops.*.op": "item.split"
+          },
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "item",
+      "identity": [
+        "projectId",
+        "tx.branch",
+        "tx.ops"
+      ],
+      "name": "item.delete",
+      "rpcs": [
+        {
+          "match": {
+            "tx.ops.*.op": "item.delete"
+          },
+          "method": "tx.commit"
+        },
+        {
+          "match": {
+            "tx.ops.*.op": "clip.delete"
+          },
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "item",
+      "identity": [
+        "projectId",
+        "tx.branch",
+        "tx.ops"
+      ],
+      "name": "item.trim",
+      "rpcs": [
+        {
+          "match": {
+            "tx.ops.*.op": "item.trim"
+          },
+          "method": "tx.commit"
+        },
+        {
+          "match": {
+            "tx.ops.*.op": "clip.trim"
+          },
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "item",
+      "identity": [
+        "projectId",
+        "tx.branch",
+        "tx.ops"
+      ],
+      "name": "item.slip",
+      "rpcs": [
+        {
+          "match": {
+            "tx.ops.*.op": "item.slip"
+          },
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "item",
+      "identity": [
+        "projectId",
+        "tx.branch",
+        "tx.ops"
+      ],
+      "name": "item.slide",
+      "rpcs": [
+        {
+          "match": {
+            "tx.ops.*.op": "item.slide"
+          },
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "item",
+      "identity": [
+        "projectId",
+        "tx.branch",
+        "tx.ops"
+      ],
+      "name": "item.link",
+      "rpcs": [
+        {
+          "match": {
+            "tx.ops.*.op": "item.link"
+          },
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "item",
+      "identity": [
+        "projectId",
+        "tx.branch",
+        "tx.ops"
+      ],
+      "name": "item.unlink",
+      "rpcs": [
+        {
+          "match": {
+            "tx.ops.*.op": "item.unlink"
+          },
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "transition",
+      "identity": [
+        "projectId",
+        "tx.branch",
+        "tx.ops"
+      ],
+      "name": "transition.set",
+      "rpcs": [
+        {
+          "match": {
+            "tx.ops.*.op": "transition.set"
+          },
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "transition",
+      "identity": [
+        "projectId",
+        "tx.branch",
+        "tx.ops"
+      ],
+      "name": "transition.remove",
+      "rpcs": [
+        {
+          "match": {
+            "tx.ops.*.op": "transition.remove"
+          },
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "track",
+      "identity": [
+        "projectId",
+        "tx.branch",
+        "tx.ops"
+      ],
+      "name": "track.add",
+      "rpcs": [
+        {
+          "match": {
+            "tx.ops.*.op": "track.add"
+          },
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "track",
+      "identity": [
+        "projectId",
+        "tx.branch",
+        "tx.ops"
+      ],
+      "name": "track.remove",
+      "rpcs": [
+        {
+          "match": {
+            "tx.ops.*.op": "track.remove"
+          },
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "track",
+      "identity": [
+        "projectId",
+        "tx.branch",
+        "tx.ops"
+      ],
+      "name": "track.move",
+      "rpcs": [
+        {
+          "match": {
+            "tx.ops.*.op": "track.move"
+          },
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "track",
+      "identity": [
+        "projectId",
+        "tx.branch",
+        "tx.ops"
+      ],
+      "name": "track.set",
+      "rpcs": [
+        {
+          "match": {
+            "tx.ops.*.op": "track.set"
+          },
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "timeline",
+      "identity": [
+        "projectId",
+        "tx.branch",
+        "tx.ops"
+      ],
+      "name": "timeline.add",
+      "rpcs": [
+        {
+          "match": {
+            "tx.ops.*.op": "timeline.add"
+          },
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "timeline",
+      "identity": [
+        "projectId",
+        "tx.branch",
+        "tx.ops"
+      ],
+      "name": "timeline.set",
+      "rpcs": [
+        {
+          "match": {
+            "tx.ops.*.op": "timeline.set"
+          },
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "timeline",
+      "identity": [
+        "projectId",
+        "tx.branch",
+        "tx.ops"
+      ],
+      "name": "timeline.remove",
+      "rpcs": [
+        {
+          "match": {
+            "tx.ops.*.op": "timeline.remove"
+          },
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "marker",
+      "identity": [
+        "projectId",
+        "tx.branch",
+        "tx.ops"
+      ],
+      "name": "marker.add",
+      "rpcs": [
+        {
+          "match": {
+            "tx.ops.*.op": "marker.add"
+          },
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "marker",
+      "identity": [
+        "projectId",
+        "tx.branch",
+        "tx.ops"
+      ],
+      "name": "marker.set",
+      "rpcs": [
+        {
+          "match": {
+            "tx.ops.*.op": "marker.set"
+          },
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "marker",
+      "identity": [
+        "projectId",
+        "tx.branch",
+        "tx.ops"
+      ],
+      "name": "marker.remove",
+      "rpcs": [
+        {
+          "match": {
+            "tx.ops.*.op": "marker.remove"
+          },
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "bin",
+      "identity": [
+        "projectId",
+        "tx.branch",
+        "tx.ops"
+      ],
+      "name": "bin.add",
+      "rpcs": [
+        {
+          "match": {
+            "tx.ops.*.op": "bin.add"
+          },
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "bin",
+      "identity": [
+        "projectId",
+        "tx.branch",
+        "tx.ops"
+      ],
+      "name": "bin.move",
+      "rpcs": [
+        {
+          "match": {
+            "tx.ops.*.op": "bin.move"
+          },
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "bin",
+      "identity": [
+        "projectId",
+        "tx.branch",
+        "tx.ops"
+      ],
+      "name": "bin.remove",
+      "rpcs": [
+        {
+          "match": {
+            "tx.ops.*.op": "bin.remove"
+          },
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "asset",
+      "identity": [
+        "projectId",
+        "tx.branch",
+        "tx.ops"
+      ],
+      "name": "asset.move",
+      "rpcs": [
+        {
+          "match": {
+            "tx.ops.*.op": "asset.move"
+          },
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "asset",
+      "identity": [
+        "projectId",
+        "tx.branch",
+        "tx.ops"
+      ],
+      "name": "asset.remove",
+      "rpcs": [
+        {
+          "match": {
+            "tx.ops.*.op": "asset.remove"
+          },
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "asset",
+      "identity": [
+        "projectId",
+        "branch",
+        "asset"
+      ],
+      "name": "asset.reprobe",
+      "rpcs": [
+        {
+          "method": "asset.reprobe"
+        },
+        {
+          "match": {
+            "tx.ops.*.op": "asset.reprobe"
+          },
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "param",
+      "identity": [
+        "projectId",
+        "tx.branch",
+        "tx.ops"
+      ],
+      "name": "param.set",
+      "rpcs": [
+        {
+          "match": {
+            "tx.ops.*.op": "param.set"
+          },
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "keyframe",
+      "identity": [
+        "projectId",
+        "tx.branch",
+        "tx.ops"
+      ],
+      "name": "keyframe.set",
+      "rpcs": [
+        {
+          "match": {
+            "tx.ops.*.op": "keyframe.set"
+          },
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "keyframe",
+      "identity": [
+        "projectId",
+        "tx.branch",
+        "tx.ops"
+      ],
+      "name": "keyframe.remove",
+      "rpcs": [
+        {
+          "match": {
+            "tx.ops.*.op": "keyframe.remove"
+          },
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "effect",
+      "identity": [
+        "projectId",
+        "tx.branch",
+        "tx.ops"
+      ],
+      "name": "effect.add",
+      "rpcs": [
+        {
+          "match": {
+            "tx.ops.*.op": "effect.add"
+          },
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "effect",
+      "identity": [
+        "projectId",
+        "tx.branch",
+        "tx.ops"
+      ],
+      "name": "effect.remove",
+      "rpcs": [
+        {
+          "match": {
+            "tx.ops.*.op": "effect.remove"
+          },
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "effect",
+      "identity": [
+        "projectId",
+        "tx.branch",
+        "tx.ops"
+      ],
+      "name": "effect.move",
+      "rpcs": [
+        {
+          "match": {
+            "tx.ops.*.op": "effect.move"
+          },
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {
+        "srt": "path",
+        "words": "path"
+      },
+      "group": "caption",
+      "identity": [
+        "projectId",
+        "tx.branch",
+        "tx.ops"
+      ],
+      "name": "caption.import",
+      "rpcs": [
+        {
+          "match": {
+            "tx.ops.*.kind": "caption",
+            "tx.ops.*.op": "item.insert"
+          },
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "caption",
+      "identity": [
+        "projectId",
+        "tx.branch",
+        "tx.ops"
+      ],
+      "name": "caption.set-text",
+      "rpcs": [
+        {
+          "match": {
+            "tx.ops.*.op": "caption.setText"
+          },
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "caption",
+      "identity": [
+        "projectId",
+        "tx.branch",
+        "tx.ops"
+      ],
+      "name": "caption.split",
+      "rpcs": [
+        {
+          "match": {
+            "tx.ops.*.op": "caption.split"
+          },
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "caption",
+      "identity": [
+        "projectId",
+        "tx.branch",
+        "tx.ops"
+      ],
+      "name": "caption.merge",
+      "rpcs": [
+        {
+          "match": {
+            "tx.ops.*.op": "caption.merge"
+          },
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "caption",
+      "identity": [
+        "projectId",
+        "tx.branch",
+        "tx.ops"
+      ],
+      "name": "caption.style",
+      "rpcs": [
+        {
+          "match": {
+            "tx.ops.*.op": "caption.setStyle"
+          },
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "style",
+      "identity": [
+        "projectId",
+        "tx.branch",
+        "tx.ops"
+      ],
+      "name": "style.add",
+      "rpcs": [
+        {
+          "match": {
+            "tx.ops.*.op": "style.add"
+          },
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "style",
+      "identity": [
+        "projectId",
+        "tx.branch",
+        "tx.ops"
+      ],
+      "name": "style.set",
+      "rpcs": [
+        {
+          "match": {
+            "tx.ops.*.op": "style.set"
+          },
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "style",
+      "identity": [
+        "projectId",
+        "tx.branch",
+        "tx.ops"
+      ],
+      "name": "style.remove",
+      "rpcs": [
+        {
+          "match": {
+            "tx.ops.*.op": "style.remove"
+          },
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "style",
+      "identity": [],
+      "name": "style.ls",
+      "rpcs": [],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "eval",
+      "identity": [
+        "projectId",
+        "branch",
+        "timeline",
+        "at"
+      ],
+      "name": "eval.frame",
+      "rpcs": [
+        {
+          "method": "eval.frame"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "eval",
+      "identity": [
+        "projectId",
+        "branch",
+        "timeline",
+        "from",
+        "to"
+      ],
+      "name": "eval.audio",
+      "rpcs": [
+        {
+          "method": "eval.audio"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "media",
+      "identity": [],
+      "name": "media.caps",
+      "rpcs": [
+        {
+          "method": "media.capabilities"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "cache",
+      "identity": [],
+      "name": "cache.status",
+      "rpcs": [
+        {
+          "method": "media.cache.status"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "cache",
+      "identity": [
+        "toGiB"
+      ],
+      "name": "cache.gc",
+      "rpcs": [
+        {
+          "method": "media.cache.gc"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "media",
+      "identity": [
+        "projectId",
+        "branch",
+        "asset"
+      ],
+      "name": "media.probe",
+      "rpcs": [
+        {
+          "method": "media.probeDeep"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "media",
+      "identity": [
+        "projectId",
+        "branch",
+        "asset",
+        "tier",
+        "codec"
+      ],
+      "name": "media.proxy",
+      "rpcs": [
+        {
+          "method": "media.proxy"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "media",
+      "identity": [
+        "projectId",
+        "branch",
+        "asset"
+      ],
+      "name": "media.status",
+      "rpcs": [
+        {
+          "method": "media.proxy.status"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "media",
+      "identity": [
+        "projectId",
+        "branch",
+        "asset",
+        "at",
+        "strip",
+        "maxSide",
+        "tileHeight"
+      ],
+      "name": "media.thumbs",
+      "rpcs": [
+        {
+          "method": "media.thumbs"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "media",
+      "identity": [
+        "projectId",
+        "branch",
+        "asset",
+        "recipe"
+      ],
+      "name": "media.pcm",
+      "rpcs": [
+        {
+          "method": "media.pcm"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "media",
+      "identity": [
+        "projectId",
+        "branch",
+        "asset"
+      ],
+      "name": "media.wave",
+      "rpcs": [
+        {
+          "method": "media.waveform"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "fonts",
+      "identity": [],
+      "name": "fonts.ls",
+      "rpcs": [
+        {
+          "method": "fonts.catalog"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "fonts",
+      "identity": [
+        "sha256",
+        "entries",
+        "keys",
+        "pinned"
+      ],
+      "name": "fonts.fetch",
+      "rpcs": [
+        {
+          "method": "fonts.fetch"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "fonts",
+      "identity": [],
+      "name": "fonts.status",
+      "rpcs": [
+        {
+          "method": "fonts.status"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "fonts",
+      "identity": [
+        "projectId",
+        "tx.branch",
+        "tx.ops"
+      ],
+      "name": "fonts.pin",
+      "rpcs": [
+        {
+          "match": {
+            "tx.ops.*.op": "font.pin"
+          },
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "fonts",
+      "identity": [
+        "projectId",
+        "tx.branch",
+        "tx.ops"
+      ],
+      "name": "fonts.repin",
+      "rpcs": [
+        {
+          "match": {
+            "tx.ops.*.op": "font.repin"
+          },
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "fonts",
+      "identity": [
+        "projectId",
+        "tx.branch",
+        "tx.ops"
+      ],
+      "name": "fonts.unpin",
+      "rpcs": [
+        {
+          "match": {
+            "tx.ops.*.op": "font.unpin"
+          },
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "diagnostics",
+      "identity": [],
+      "name": "diagnostics.show",
+      "rpcs": [
+        {
+          "method": "diagnostics.status"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "diagnostics",
+      "identity": [],
+      "name": "diagnostics.export",
+      "rpcs": [
+        {
+          "method": "diagnostics.export"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "diagnostics",
+      "identity": [
+        "selector"
+      ],
+      "name": "diagnostics.purge",
+      "rpcs": [
+        {
+          "method": "diagnostics.purge"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "diagnostics",
+      "identity": [
+        "projectId"
+      ],
+      "name": "diagnostics.project",
+      "rpcs": [
+        {
+          "method": "diagnostics.project"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "diagnostics",
+      "identity": [],
+      "name": "diagnostics.consent",
+      "rpcs": [
+        {
+          "method": "diagnostics.consent"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "track",
+      "identity": [
+        "projectId",
+        "branch"
+      ],
+      "name": "track.ls",
+      "rpcs": [],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "asset",
+      "identity": [
+        "projectId",
+        "branch"
+      ],
+      "name": "asset.ls",
+      "rpcs": [],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "bin",
+      "identity": [
+        "projectId",
+        "branch"
+      ],
+      "name": "bin.ls",
+      "rpcs": [],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "effect",
+      "identity": [
+        "projectId",
+        "branch"
+      ],
+      "name": "effect.ls",
+      "rpcs": [],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "history",
+      "identity": [
+        "projectId",
+        "branch"
+      ],
+      "name": "log",
+      "rpcs": [
+        {
+          "method": "history.log"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "plugin",
+      "identity": [
+        "text",
+        "kind",
+        "registry"
+      ],
+      "name": "plugin.search",
+      "rpcs": [
+        {
+          "method": "plugin.search"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "plugin",
+      "identity": [
+        "id"
+      ],
+      "name": "plugin.info",
+      "rpcs": [
+        {
+          "method": "plugin.info"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "plugin",
+      "identity": [],
+      "name": "plugin.ls",
+      "rpcs": [
+        {
+          "method": "plugin.list"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "plugin",
+      "identity": [
+        "id"
+      ],
+      "name": "plugin.suggest",
+      "rpcs": [
+        {
+          "method": "plugin.suggest"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "plugin",
+      "identity": [
+        "id",
+        "version",
+        "registry",
+        "planId",
+        "digest"
+      ],
+      "name": "plugin.install",
+      "rpcs": [
+        {
+          "match": {
+            "update": {
+              "present": false
+            }
+          },
+          "method": "plugin.plan"
+        },
+        {
+          "match": {
+            "update": false
+          },
+          "method": "plugin.plan"
+        },
+        {
+          "method": "plugin.install"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "plugin",
+      "identity": [
+        "id",
+        "version",
+        "registry"
+      ],
+      "name": "plugin.update",
+      "rpcs": [
+        {
+          "match": {
+            "update": true
+          },
+          "method": "plugin.plan"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "plugin",
+      "identity": [
+        "id"
+      ],
+      "name": "plugin.rm",
+      "rpcs": [
+        {
+          "method": "plugin.remove"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "plugin",
+      "identity": [
+        "id"
+      ],
+      "name": "plugin.enable",
+      "rpcs": [
+        {
+          "method": "plugin.enable"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "plugin",
+      "identity": [
+        "id"
+      ],
+      "name": "plugin.disable",
+      "rpcs": [
+        {
+          "method": "plugin.disable"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "plugin",
+      "identity": [],
+      "name": "plugin.commands",
+      "rpcs": [
+        {
+          "method": "plugin.commands"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "registry",
+      "identity": [],
+      "name": "registry.ls",
+      "rpcs": [
+        {
+          "method": "registry.list"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "registry",
+      "identity": [
+        "id"
+      ],
+      "name": "registry.status",
+      "rpcs": [
+        {
+          "method": "registry.status"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "registry",
+      "identity": [
+        "id"
+      ],
+      "name": "registry.refresh",
+      "rpcs": [
+        {
+          "method": "registry.refresh"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {
+        "dir": "path",
+        "root": "path"
+      },
+      "group": "registry",
+      "identity": [
+        "cfg",
+        "root"
+      ],
+      "name": "registry.add",
+      "rpcs": [
+        {
+          "method": "registry.add"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "registry",
+      "identity": [
+        "id"
+      ],
+      "name": "registry.rm",
+      "rpcs": [
+        {
+          "method": "registry.remove"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "registry",
+      "identity": [
+        "rootSha256"
+      ],
+      "name": "registry.forget",
+      "rpcs": [
+        {
+          "method": "registry.forget"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "job",
+      "identity": [
+        "state",
+        "kind",
+        "project",
+        "mine"
+      ],
+      "name": "job.ls",
+      "rpcs": [
+        {
+          "method": "jobs.list"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "job",
+      "identity": [
+        "job"
+      ],
+      "name": "job.show",
+      "rpcs": [
+        {
+          "method": "jobs.get"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "job",
+      "identity": [
+        "job"
+      ],
+      "name": "job.cancel",
+      "rpcs": [
+        {
+          "method": "jobs.cancel"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "job",
+      "identity": [
+        "job"
+      ],
+      "name": "job.pause",
+      "rpcs": [
+        {
+          "method": "jobs.pause"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "job",
+      "identity": [
+        "job"
+      ],
+      "name": "job.resume",
+      "rpcs": [
+        {
+          "method": "jobs.resume"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "job",
+      "identity": [
+        "ids",
+        "any"
+      ],
+      "name": "wait",
+      "rpcs": [
+        {
+          "method": "jobs.wait"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "library",
+      "identity": [],
+      "name": "library.ls",
+      "rpcs": [
+        {
+          "method": "library.list"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "library",
+      "identity": [
+        "id"
+      ],
+      "name": "library.status",
+      "rpcs": [
+        {
+          "method": "library.status"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "library",
+      "identity": [
+        "id",
+        "full",
+        "dirs"
+      ],
+      "name": "library.scan",
+      "rpcs": [
+        {
+          "method": "library.scan"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "library",
+      "identity": [
+        "id",
+        "dir",
+        "state",
+        "kind"
+      ],
+      "name": "library.files",
+      "rpcs": [
+        {
+          "method": "library.files"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "library",
+      "identity": [
+        "id",
+        "path",
+        "fileId"
+      ],
+      "name": "library.show",
+      "rpcs": [
+        {
+          "method": "library.file"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "library",
+      "identity": [
+        "query",
+        "libraries"
+      ],
+      "name": "library.search",
+      "rpcs": [
+        {
+          "method": "library.search"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "library",
+      "identity": [
+        "id"
+      ],
+      "name": "library.set",
+      "rpcs": [
+        {
+          "method": "library.set"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "library",
+      "identity": [
+        "query",
+        "libraries"
+      ],
+      "name": "search",
+      "rpcs": [
+        {
+          "method": "library.search"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "approval",
+      "identity": [
+        "id"
+      ],
+      "name": "approval.wait",
+      "rpcs": [
+        {
+          "method": "agent.approval.wait"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "approval",
+      "identity": [
+        "sessionId",
+        "status"
+      ],
+      "name": "approval.ls",
+      "rpcs": [
+        {
+          "method": "agent.approval.list"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "agent",
+      "identity": [
+        "role"
+      ],
+      "name": "agent.spawn",
+      "rpcs": [
+        {
+          "method": "agent.session.start"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "agent",
+      "identity": [
+        "ids"
+      ],
+      "name": "agent.wait",
+      "rpcs": [
+        {
+          "method": "agent.session.wait"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "agent",
+      "identity": [],
+      "name": "agent.ls",
+      "rpcs": [
+        {
+          "method": "agent.session.list"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "agent",
+      "identity": [
+        "sessionId"
+      ],
+      "name": "agent.send",
+      "rpcs": [
+        {
+          "method": "agent.session.steer"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "agent",
+      "identity": [
+        "sessionId"
+      ],
+      "name": "agent.stop",
+      "rpcs": [
+        {
+          "method": "agent.session.end"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "agent",
+      "identity": [
+        "sessionId"
+      ],
+      "name": "agent.rollback",
+      "rpcs": [
+        {
+          "method": "agent.session.rollback"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "agent",
+      "identity": [
+        "sessionId"
+      ],
+      "name": "agent.resume",
+      "rpcs": [
+        {
+          "method": "agent.session.resume"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "agent",
+      "identity": [
+        "sessionId"
+      ],
+      "name": "agent.interrupt",
+      "rpcs": [
+        {
+          "method": "agent.session.interrupt"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "batch",
+      "identity": [
+        "projectId",
+        "tx.branch",
+        "tx.ops"
+      ],
+      "name": "batch",
+      "rpcs": [
+        {
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "meta",
+      "identity": [],
+      "name": "help",
+      "rpcs": [],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "meta",
+      "identity": [],
+      "name": "whoami",
+      "rpcs": [],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "meta",
+      "identity": [],
+      "name": "schema",
+      "rpcs": [],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "meta",
+      "identity": [],
+      "name": "schema.param",
+      "rpcs": [],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "dynamic": true,
+      "group": "plugin-command",
+      "identity": [
+        "projectId",
+        "branch",
+        "name",
+        "args"
+      ],
+      "name": "plugin:<id>/<command>",
+      "rpcs": [
+        {
+          "method": "plugin.command.run"
+        },
+        {
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    }
+  ],
+  "version": 1
+}

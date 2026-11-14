@@ -6,7 +6,10 @@
 use std::cell::{OnceCell, RefCell};
 use std::path::{Path, PathBuf};
 
-use fin_core::{AudioInfo, CommittedTx, CoreError, Project, Rational, Tx, VideoInfo};
+use fin_core::{
+    AssetKind, AudioInfo, CommittedTx, CoreError, FontFile, ImageInfo, LottieInfo, LutInfo, Op,
+    Project, Rational, Tx, VideoInfo,
+};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -16,41 +19,156 @@ use crate::output::{internal, unavailable};
 use crate::{endpoint, paths};
 
 pub const SNAPSHOT_ENV: &str = "FIN_OFFLINE_SNAPSHOT";
+
+/// A test hook's value (`FIN_OFFLINE_SNAPSHOT`, `FIN_TEST_COMMIT_GATE`): read only in builds
+/// with the `test-hooks` feature (fin's own tests), never in a release build (5A Decision 37).
+pub fn test_hook(name: &str) -> Option<std::ffi::OsString> {
+    read_hook(cfg!(feature = "test-hooks"), name)
+}
+
+fn read_hook(enabled: bool, name: &str) -> Option<std::ffi::OsString> {
+    if !enabled {
+        return None;
+    }
+    std::env::var_os(name).filter(|v| !v.is_empty())
+}
 const PROJECT_FILE: &str = "finisher.project.json";
 
-/// A project at a revision.
+/// A project at a revision. `generation` (`{incarnation, n}`, read together with `rev`) is
+/// sent back with the commit, so a branch rewound or a database rebuilt in between refuses it
+/// with `HISTORY_REWOUND` instead of rebasing it over a history this command never saw.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snapshot {
     pub rev: u64,
     pub project: Project,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation: Option<Value>,
 }
 
-/// What the server's probe reports about a media file (the `asset.add` fields).
+/// What became of a tx id (`tx.get`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum TxLookup {
+    Committed(Box<CommittedTx>),
+    /// Set aside in quarantine: `{txId, branch, reason, origin}`.
+    SetAside(Value),
+    Unknown,
+}
+
+/// What the server's probe reports about a file: its kind and that kind's `asset.add`
+/// fields (`fin-probe`'s `Probe`, less its size).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Probed {
     /// Absolute path as the server resolved it.
+    #[serde(default)]
     pub path: String,
-    pub duration: Rational,
+    pub kind: AssetKind,
+    #[serde(default)]
+    pub duration: Option<Rational>,
+    #[serde(default)]
     pub video: Option<VideoInfo>,
+    #[serde(default)]
     pub audio: Option<AudioInfo>,
+    #[serde(default)]
+    pub image: Option<ImageInfo>,
+    #[serde(default)]
+    pub lottie: Option<LottieInfo>,
+    #[serde(default)]
+    pub font: Option<FontFile>,
+    #[serde(default)]
+    pub lut: Option<LutInfo>,
     pub fingerprint: String,
 }
 
+impl Probed {
+    /// The `asset.add` that registers the probed file as `id`.
+    pub fn into_asset_add(self, id: String) -> fin_core::AssetAdd {
+        fin_core::AssetAdd {
+            id,
+            kind: self.kind,
+            path: self.path,
+            fingerprint: self.fingerprint,
+            duration: self.duration,
+            video: self.video,
+            audio: self.audio,
+            image: self.image,
+            lottie: self.lottie,
+            font: self.font,
+            lut: self.lut,
+            bin: None,
+        }
+    }
+}
+
+/// What `fonts.plan` answers (plan 4C Decision 35): `font.pin` ops for the faces and scripts a
+/// tx needs that the project has no pin for, and notes (`FONT_NOT_IN_CATALOG`, …).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct FontPlan {
+    #[serde(default)]
+    pub ops: Vec<Op>,
+    #[serde(default)]
+    pub notes: Vec<Value>,
+}
+
 pub trait Backend {
-    /// The current project state on `main`.
-    fn snapshot(&self) -> Result<Snapshot, CoreError>;
+    /// The current project state on `branch` (a branch reference; the offline hook has one
+    /// branch and ignores it).
+    fn snapshot(&self, branch: &str) -> Result<Snapshot, CoreError>;
+    /// `(server-data, project id)`: where `fin-config.json` lives and which project's entry
+    /// is ours. `Ok(None)` offline; a project the server cannot be asked about is an error,
+    /// never a silent `main`.
+    fn config_scope(&self) -> Result<Option<(PathBuf, String)>, CoreError> {
+        Ok(None)
+    }
     /// Commits `tx`; the server rebases it over anything newer than `tx.base_rev`.
-    fn commit(&self, tx: &Tx) -> Result<CommittedTx, CoreError>;
+    /// `generation`: the snapshot's (see [`Snapshot`]).
+    fn commit(&self, tx: &Tx, generation: Option<&Value>) -> Result<CommittedTx, CoreError>;
+    /// What became of `tx_id`.
+    fn tx_get(&self, tx_id: &str) -> Result<TxLookup, CoreError>;
+    /// A project-scoped RPC (`project.status`, …): `payload` gains the project's id.
+    fn project_call(&self, tag: &str, payload: Value) -> Result<Value, CoreError>;
+    /// [`Backend::project_call`] for a write keyed by `tx_id`: a reply lost after the request
+    /// was sent carries `details.txId` (as `tx.commit`'s does, [`Client::call_tx`]).
+    fn project_tx(&self, tag: &str, payload: Value, _tx_id: &str) -> Result<Value, CoreError> {
+        self.project_call(tag, payload)
+    }
+    /// Rebuilds the project database: through the server when one runs (it holds the
+    /// database), else in this process. `Ok((report, offline))`.
+    fn rebuild(&self) -> Result<(Value, bool), CoreError>;
     /// Probes a media file for `asset add`.
     fn probe(&self, path: &Path) -> Result<Probed, CoreError>;
-    /// Creates a project folder; returns the server's description of it.
-    fn create_project(&self, dir: &Path, name: &str, rate: Rational) -> Result<Value, CoreError>;
-    /// Opens (registers) an existing project folder.
-    fn open_project(&self, dir: &Path) -> Result<Value, CoreError>;
+    /// Creates a project folder; returns the server's description of it. `idem`: a retry
+    /// with the same key returns the project that create made.
+    fn create_project(
+        &self,
+        dir: &Path,
+        name: &str,
+        rate: Rational,
+        idem: Option<&str>,
+    ) -> Result<Value, CoreError>;
+    /// Opens (registers) an existing project folder; `relocate`: see `fin project open`.
+    fn open_project(&self, dir: &Path, relocate: bool) -> Result<Value, CoreError>;
     /// True when writes can only be dry runs (no server to commit to).
     fn dry_run_only(&self) -> bool {
         false
+    }
+    /// The font pins the server plans for `ops` on `branch` (`fonts.plan`). It never alters
+    /// the tx: the client prepends what it answers.
+    fn fonts_plan(&self, _branch: &str, _ops: &[Op]) -> Result<FontPlan, CoreError> {
+        Ok(FontPlan::default())
+    }
+    /// A server-level RPC (`fonts.catalog`, `fonts.status`): no project needed. Offline it is
+    /// `SERVER_UNAVAILABLE` (plan 4C Decision 40: eval and fonts run on the server).
+    fn server_call(&self, tag: &str, _payload: Value) -> Result<Value, CoreError> {
+        Err(offline_only(tag))
+    }
+    /// The project's id on the server (`fonts.fetch {pinned}`).
+    fn project_id(&self) -> Result<String, CoreError> {
+        Err(offline_only("project.open"))
+    }
+    /// `fonts.fetch`: blocks until done, with progress on stderr (`client_fonts`).
+    fn fonts_fetch(&self, _payload: Value) -> Result<Value, CoreError> {
+        Err(offline_only("fonts.fetch"))
     }
 }
 
@@ -71,7 +189,13 @@ impl Offline {
             ))
         };
         let text = std::fs::read_to_string(path).map_err(|e| bad(e.to_string()))?;
-        let snapshot = serde_json::from_str(&text).map_err(|e| bad(e.to_string()))?;
+        // The project may be of an older schema: it is read as the store reads snapshots.
+        let mut v: Value = serde_json::from_str(&text).map_err(|e| bad(e.to_string()))?;
+        if let Some(project) = v.get_mut("project") {
+            let up = fin_core::upcast_snapshot(project.take()).map_err(|e| bad(e.message))?;
+            *project = serde_json::to_value(up).map_err(|e| bad(e.to_string()))?;
+        }
+        let snapshot = serde_json::from_value(v).map_err(|e| bad(e.to_string()))?;
         Ok(Offline { snapshot })
     }
 }
@@ -81,12 +205,24 @@ fn offline_only(what: &str) -> CoreError {
 }
 
 impl Backend for Offline {
-    fn snapshot(&self) -> Result<Snapshot, CoreError> {
+    fn snapshot(&self, _branch: &str) -> Result<Snapshot, CoreError> {
         Ok(self.snapshot.clone())
     }
 
-    fn commit(&self, _tx: &Tx) -> Result<CommittedTx, CoreError> {
+    fn commit(&self, _tx: &Tx, _generation: Option<&Value>) -> Result<CommittedTx, CoreError> {
         Err(offline_only("commit"))
+    }
+
+    fn tx_get(&self, _tx_id: &str) -> Result<TxLookup, CoreError> {
+        Err(offline_only("tx.get"))
+    }
+
+    fn project_call(&self, tag: &str, _payload: Value) -> Result<Value, CoreError> {
+        Err(offline_only(tag))
+    }
+
+    fn rebuild(&self) -> Result<(Value, bool), CoreError> {
+        Err(offline_only("project.rebuild"))
     }
 
     fn probe(&self, _path: &Path) -> Result<Probed, CoreError> {
@@ -98,11 +234,12 @@ impl Backend for Offline {
         _dir: &Path,
         _name: &str,
         _rate: Rational,
+        _idem: Option<&str>,
     ) -> Result<Value, CoreError> {
         Err(offline_only("project.create"))
     }
 
-    fn open_project(&self, _dir: &Path) -> Result<Value, CoreError> {
+    fn open_project(&self, _dir: &Path, _relocate: bool) -> Result<Value, CoreError> {
         Err(offline_only("project.open"))
     }
 
@@ -181,10 +318,17 @@ impl Online {
             Some(c) => c,
             None => slot.insert(Client::connect(
                 &endpoint::resolve()?,
-                crate::client::TIMEOUT,
+                crate::client::call_timeout(),
             )?),
         };
-        f(client)
+        let result = f(client);
+        // A transport failure leaves the connection unusable: the next call reconnects.
+        if let Err(e) = &result
+            && crate::client::IN_FLIGHT_CODES.contains(&e.code.as_str())
+        {
+            *slot = None;
+        }
+        result
     }
 
     fn call(&self, tag: &str, payload: Value) -> Result<Value, CoreError> {
@@ -196,13 +340,29 @@ impl Online {
         serde_json::from_value(value.clone()).map_err(|e| unexpected(tag, e, &value))
     }
 
-    fn project_id(&self) -> Result<String, CoreError> {
+    fn project_ref(&self) -> Result<String, CoreError> {
         if let Some(id) = self.project_id.get() {
             return Ok(id.clone());
         }
+        // An agent session works on its own project (`project.open` is refused to it).
+        if let Some(session) = crate::agent_session::session_state(self)? {
+            crate::agent_session::check_folder(self.project.as_deref(), &session)?;
+            crate::diag::note_project(&session.project_id);
+            return Ok(self.project_id.get_or_init(|| session.project_id).clone());
+        }
         let dir = self.project.as_ref().ok_or_else(no_project)?;
         let opened: ProjectRef = self.call_as("project.open", json!({ "dir": dir }))?;
+        crate::diag::note_project(&opened.project_id);
         Ok(self.project_id.get_or_init(|| opened.project_id).clone())
+    }
+}
+
+impl Drop for Online {
+    /// The run's connection goes to `diag`, which sends the run's `cli.command` on it.
+    fn drop(&mut self) {
+        if let Some(client) = self.client.get_mut().take() {
+            crate::diag::park(client);
+        }
     }
 }
 
@@ -212,32 +372,79 @@ struct ProjectRef {
     project_id: String,
 }
 
-/// `asset.probe`'s answer; the path is the one fin sent.
-#[derive(Deserialize)]
-struct ProbeResult {
-    duration: Rational,
-    video: Option<VideoInfo>,
-    audio: Option<AudioInfo>,
-    fingerprint: String,
-}
-
 impl Backend for Online {
-    fn snapshot(&self) -> Result<Snapshot, CoreError> {
-        let project_id = self.project_id()?;
+    fn snapshot(&self, branch: &str) -> Result<Snapshot, CoreError> {
+        let project_id = self.project_ref()?;
         self.call_as(
             "snapshot.get",
-            json!({ "projectId": project_id, "branch": "main" }),
+            json!({ "projectId": project_id, "branch": branch }),
         )
     }
 
-    fn commit(&self, tx: &Tx) -> Result<CommittedTx, CoreError> {
-        let project_id = self.project_id()?;
-        if let Some(gate) = std::env::var_os(COMMIT_GATE_ENV).filter(|g| !g.is_empty()) {
+    fn config_scope(&self) -> Result<Option<(PathBuf, String)>, CoreError> {
+        // Under an agent credential `fin-config.json` is neither read nor written (14a).
+        if crate::agent_session::active() {
+            return Ok(None);
+        }
+        let project_id = self.project_ref()?;
+        Ok(endpoint::server_data().map(|sd| (sd, project_id)))
+    }
+
+    fn commit(&self, tx: &Tx, generation: Option<&Value>) -> Result<CommittedTx, CoreError> {
+        let project_id = self.project_ref()?;
+        if let Some(gate) = test_hook(COMMIT_GATE_ENV) {
             commit_gate(Path::new(&gate))?;
         }
-        let payload = json!({ "projectId": project_id, "tx": tx });
+        crate::diag::note_tx(&tx.tx_id);
+        let mut payload = json!({ "projectId": project_id, "tx": tx });
+        if let Some(g) = generation {
+            payload["generation"] = g.clone();
+        }
         let value = self.with_client(|c| c.commit(payload, &tx.tx_id))?;
         serde_json::from_value(value.clone()).map_err(|e| unexpected("tx.commit", e, &value))
+    }
+
+    fn tx_get(&self, tx_id: &str) -> Result<TxLookup, CoreError> {
+        let value = self.project_call("tx.get", json!({ "txId": tx_id }))?;
+        if value.is_null() {
+            return Ok(TxLookup::Unknown);
+        }
+        if let Some(aside) = value.get("setAside") {
+            return Ok(TxLookup::SetAside(aside.clone()));
+        }
+        serde_json::from_value(value.clone())
+            .map(|c| TxLookup::Committed(Box::new(c)))
+            .map_err(|e| unexpected("tx.get", e, &value))
+    }
+
+    fn project_call(&self, tag: &str, mut payload: Value) -> Result<Value, CoreError> {
+        let project_id = self.project_ref()?;
+        payload["projectId"] = json!(project_id);
+        self.call(tag, payload)
+    }
+
+    fn project_tx(&self, tag: &str, mut payload: Value, tx_id: &str) -> Result<Value, CoreError> {
+        let project_id = self.project_ref()?;
+        payload["projectId"] = json!(project_id);
+        self.with_client(|c| c.call_tx(tag, payload, tx_id))
+    }
+
+    fn rebuild(&self) -> Result<(Value, bool), CoreError> {
+        // Only "nobody listens" means no server holds the database; any other failure to
+        // reach one is reported, never answered with a rebuild behind its back.
+        match self.with_client(|_| Ok(())) {
+            Ok(()) => Ok((self.project_call("project.rebuild", json!({}))?, false)),
+            Err(e) if e.code == "SERVER_UNAVAILABLE" => {
+                let dir = self.project.as_ref().ok_or_else(no_project)?;
+                let sd = endpoint::server_data().ok_or(e)?;
+                let report = rebuild_here(&sd, dir)?;
+                let report = serde_json::to_value(report).map_err(|e| {
+                    internal(format!("cannot encode the rebuild report: {e}"), json!({}))
+                })?;
+                Ok((report, true))
+            }
+            Err(e) => Err(e),
+        }
     }
 
     fn probe(&self, path: &Path) -> Result<Probed, CoreError> {
@@ -248,44 +455,144 @@ impl Backend for Online {
                     .with_fix("rename the file to a UTF-8 name"),
             );
         };
-        let p: ProbeResult = self.call_as("asset.probe", json!({ "path": text }))?;
+        // `asset.probe` answers without a path: the path is the one fin sent. Protocol 2: the
+        // probe is for this project (a principal with roots probes only inside its folder).
+        let project_id = self.project_ref()?;
+        let p: Probed = self.call_as(
+            "asset.probe",
+            json!({ "projectId": project_id, "path": text }),
+        )?;
         Ok(Probed {
             path: text.to_string(),
-            duration: p.duration,
-            video: p.video,
-            audio: p.audio,
-            fingerprint: p.fingerprint,
+            ..p
         })
     }
 
-    fn create_project(&self, dir: &Path, name: &str, rate: Rational) -> Result<Value, CoreError> {
-        self.call(
-            "project.create",
-            json!({ "dir": dir, "name": name, "rate": rate }),
-        )
+    fn create_project(
+        &self,
+        dir: &Path,
+        name: &str,
+        rate: Rational,
+        idem: Option<&str>,
+    ) -> Result<Value, CoreError> {
+        let mut payload = json!({ "dir": dir, "name": name, "rate": rate });
+        if let Some(key) = idem {
+            payload["idemKey"] = json!(key);
+        }
+        self.call("project.create", payload)
     }
 
-    fn open_project(&self, dir: &Path) -> Result<Value, CoreError> {
-        self.call("project.open", json!({ "dir": dir }))
+    fn open_project(&self, dir: &Path, relocate: bool) -> Result<Value, CoreError> {
+        let mut payload = json!({ "dir": dir });
+        if relocate {
+            payload["relocate"] = json!(true);
+        }
+        self.call("project.open", payload)
+    }
+
+    fn fonts_plan(&self, branch: &str, ops: &[Op]) -> Result<FontPlan, CoreError> {
+        let value = self.project_call("fonts.plan", json!({ "branch": branch, "ops": ops }))?;
+        serde_json::from_value(value.clone()).map_err(|e| unexpected("fonts.plan", e, &value))
+    }
+
+    fn server_call(&self, tag: &str, payload: Value) -> Result<Value, CoreError> {
+        self.call(tag, payload)
+    }
+
+    fn project_id(&self) -> Result<String, CoreError> {
+        self.project_ref()
+    }
+
+    fn fonts_fetch(&self, payload: Value) -> Result<Value, CoreError> {
+        crate::client_fonts::fetch(&endpoint::resolve()?, payload)
+    }
+}
+
+/// `fin project rebuild` with no server: opened in-process as a server would, so commits the
+/// database holds but never exported are exported first (`Store::rebuild`) rather than set
+/// aside. Only a database that cannot be opened is rebuilt from the folder alone
+/// (`rebuild_project`, which salvages what it can read of the old one).
+fn rebuild_here(sd: &Path, dir: &Path) -> Result<fin_store::RebuildReport, CoreError> {
+    match fin_store::Store::open(sd, dir) {
+        Ok(mut store) => {
+            let report = store.rebuild();
+            let closed = store.close();
+            let report = report?;
+            closed?;
+            Ok(report)
+        }
+        Err(e) if matches!(e.code(), "DB_ERROR" | "DB_CORRUPT" | "REPLAY_FAILED") => {
+            Ok(fin_store::rebuild_project(sd, dir)?)
+        }
+        Err(e) => Err(e.into()),
     }
 }
 
 /// `--project <dir>` (with `~` expanded), else the nearest ancestor of the working directory
 /// that holds `finisher.project.json`.
-pub fn project_dir(explicit: Option<&Path>) -> Option<PathBuf> {
-    if let Some(dir) = explicit {
-        return Some(paths::resolve(dir));
+/// Under an agent credential: the runtime's `FIN_PROJECT_DIR` only (a `--project` must name it).
+pub fn project_dir(explicit: Option<&Path>) -> Result<Option<PathBuf>, CoreError> {
+    if crate::agent_session::active() {
+        crate::agent_paths::check_project(explicit)?;
+        return Ok(crate::agent_paths::session_project_dir());
     }
-    let cwd = std::env::current_dir().ok()?;
-    cwd.ancestors()
+    if let Some(dir) = explicit {
+        return paths::resolve_checked(dir).map(Some);
+    }
+    let Ok(cwd) = std::env::current_dir() else {
+        return Ok(None);
+    };
+    Ok(cwd
+        .ancestors()
         .find(|d| d.join(PROJECT_FILE).is_file())
-        .map(Path::to_path_buf)
+        .map(Path::to_path_buf))
 }
 
-/// The snapshot hook when set, otherwise the server.
+/// The snapshot hook when set (test builds only), otherwise the server.
 pub fn select(project: Option<&Path>) -> Result<Box<dyn Backend>, CoreError> {
-    match std::env::var_os(SNAPSHOT_ENV) {
-        Some(file) if !file.is_empty() => Ok(Box::new(Offline::load(Path::new(&file))?)),
-        _ => Ok(Box::new(Online::new(project_dir(project)))),
+    match test_hook(SNAPSHOT_ENV) {
+        Some(file) => Ok(Box::new(Offline::load(Path::new(&file))?)),
+        None => Ok(Box::new(Online::new(project_dir(project)?))),
+    }
+}
+
+#[cfg(test)]
+mod hook_tests {
+    #[test]
+    fn test_hooks_ignored_without_feature() {
+        // SAFETY: a variable only this test reads.
+        unsafe { std::env::set_var("FIN_TEST_HOOK_PROBE", "x") };
+        assert_eq!(super::read_hook(false, "FIN_TEST_HOOK_PROBE"), None);
+        assert_eq!(
+            super::read_hook(true, "FIN_TEST_HOOK_PROBE"),
+            Some("x".into())
+        );
+        // fin's own tests build with the feature (the self dev-dependency).
+        const { assert!(cfg!(feature = "test-hooks")) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `asset.probe` answers `media` (sub-project 6A Task 8); the `asset.add` built from the
+    /// answer carries the model's fields only.
+    #[test]
+    fn an_asset_add_from_a_probe_never_carries_media() {
+        let answer = json!({
+            "kind": "media",
+            "duration": "2",
+            "video": { "width": 320, "height": 180, "rate": "25" },
+            "media": { "container": "mp4", "duration": "2", "video": { "rotation": 90 } },
+            "fingerprint": "fp1:x",
+            "size": 10,
+        });
+        let probed: Probed = serde_json::from_value(answer).unwrap();
+        let op = serde_json::to_value(Op::AssetAdd(Box::new(probed.into_asset_add("$a".into()))))
+            .unwrap();
+        assert_eq!(op["op"], "asset.add");
+        assert!(op.get("media").is_none(), "{op}");
+        assert_eq!(op["video"]["width"], 320);
     }
 }

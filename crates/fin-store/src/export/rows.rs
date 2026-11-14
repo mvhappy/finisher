@@ -1,0 +1,218 @@
+//! The `txs` and `segments` rows export reads and writes.
+
+use rusqlite::{Connection, OptionalExtension, params};
+use serde_json::json;
+
+use fin_core::CoreError;
+
+use super::Attempt;
+use crate::StoreError;
+use crate::db::{to_i64, to_u64};
+use crate::segment;
+
+/// An unexported `txs` row.
+pub(super) struct Row {
+    pub(super) seq: u64,
+    pub(super) tx_id: String,
+    pub(super) bytes: Vec<u8>,
+    pub(super) tx_hash: String,
+    pub(super) schema_version: u32,
+    /// The lease epoch it was committed at.
+    pub(super) epoch: u64,
+    pub(super) committed_at: i64,
+}
+
+/// Branches with unexported records, parents before children (plan 4B Decision 10): in
+/// index order (depth, then numeric id), then any branch without an index row, by name. A
+/// follower therefore never lists a child's segment before its parent's `branch` record from
+/// the same writer.
+pub(super) fn pending_branches(conn: &Connection) -> Result<Vec<String>, StoreError> {
+    let mut stmt =
+        conn.prepare("SELECT DISTINCT branch FROM txs WHERE exported = 0 ORDER BY branch")?;
+    let rows = stmt.query_map([], |r| r.get(0))?;
+    let mut pending: Vec<String> = rows.collect::<Result<_, _>>()?;
+    let ix = crate::branch::index::load(conn)?;
+    let mut out: Vec<String> = ix
+        .parents_first()
+        .into_iter()
+        .filter(|id| pending.iter().any(|p| p == id))
+        .map(String::from)
+        .collect();
+    pending.retain(|p| !out.contains(p));
+    out.append(&mut pending);
+    Ok(out)
+}
+
+/// The highest unexported seq of `branch` (what a pass that starts now exports at most).
+pub(super) fn last_pending(conn: &Connection, branch: &str) -> Result<Option<u64>, StoreError> {
+    let last: Option<i64> = conn.query_row(
+        "SELECT MAX(seq) FROM txs WHERE branch = ?1 AND exported = 0",
+        params![branch],
+        |r| r.get(0),
+    )?;
+    last.map(to_u64).transpose()
+}
+
+/// The next (at most [`segment::max_records`]) unexported rows of `branch`, in seq order,
+/// after checking that the exported rows are a seq prefix and the rows are consecutive.
+pub(super) fn pending_rows(conn: &Connection, branch: &str) -> Result<Vec<Row>, StoreError> {
+    let (max_exported, min_pending): (Option<i64>, Option<i64>) = conn.query_row(
+        "SELECT (SELECT MAX(seq) FROM txs WHERE branch = ?1 AND exported = 1),
+                (SELECT MIN(seq) FROM txs WHERE branch = ?1 AND exported = 0)",
+        params![branch],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    let Some(min_pending) = min_pending else {
+        return Ok(Vec::new());
+    };
+    if max_exported.is_some_and(|m| m + 1 != min_pending) {
+        return Err(broken(
+            branch,
+            format!(
+                "exported records are not a seq prefix (exported through {max_exported:?}, first unexported {min_pending})"
+            ),
+        ));
+    }
+    let mut stmt = conn.prepare(
+        "SELECT seq, record_bytes, tx_hash, schema_version, epoch, committed_at, tx_id FROM txs
+         WHERE branch = ?1 AND exported = 0 ORDER BY seq LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(params![branch, segment::max_records() as i64], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, Vec<u8>>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, u32>(3)?,
+            r.get::<_, i64>(4)?,
+            r.get::<_, i64>(5)?,
+            r.get::<_, String>(6)?,
+        ))
+    })?;
+    let mut out: Vec<Row> = Vec::new();
+    for row in rows {
+        let (seq, bytes, tx_hash, schema_version, epoch, committed_at, tx_id) = row?;
+        let seq = to_u64(seq)?;
+        if out.last().is_some_and(|p| p.seq + 1 != seq) {
+            return Err(broken(
+                branch,
+                format!("seq {seq} does not follow the one before"),
+            ));
+        }
+        out.push(Row {
+            seq,
+            tx_id,
+            bytes,
+            tx_hash,
+            schema_version,
+            epoch: to_u64(epoch)?,
+            committed_at,
+        });
+    }
+    Ok(out)
+}
+
+pub(super) fn broken(branch: &str, why: String) -> StoreError {
+    CoreError::new(
+        "DB_ERROR",
+        format!("cannot export branch {branch:?}: {why}"),
+    )
+    .with_details(json!({ "branch": branch }))
+    .into()
+}
+
+/// The hash of the segment whose last record is the one before `first`; `None` when no record
+/// precedes it on the branch. An original segment wins over a compaction pack ending there:
+/// it is always a valid predecessor (once deleted, it resolves through the pack's
+/// `replaces`), while a pack makes readers that have not received it yet wait.
+pub(super) fn prev_segment(
+    conn: &Connection,
+    branch: &str,
+    first: u64,
+) -> Result<Option<String>, StoreError> {
+    let before: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM txs WHERE branch = ?1 AND seq < ?2",
+        params![branch, to_i64(first)?],
+        |r| r.get(0),
+    )?;
+    if before == 0 {
+        return Ok(None);
+    }
+    let hash: Option<String> = conn
+        .query_row(
+            "SELECT hash FROM segments WHERE branch = ?1 AND last_seq = ?2
+             AND state IN ('exported', 'imported') ORDER BY pack ASC, hash LIMIT 1",
+            params![branch, to_i64(first - 1)?],
+            |r| r.get(0),
+        )
+        .optional()?;
+    match hash {
+        Some(h) => Ok(Some(h)),
+        None => Err(broken(
+            branch,
+            format!("no known segment ends at seq {}", first - 1),
+        )),
+    }
+}
+
+/// Marks the segment's rows exported and records the segment, in one DB transaction.
+pub(super) fn mark_exported(
+    conn: &mut Connection,
+    branch: &str,
+    a: &Attempt,
+) -> Result<u32, StoreError> {
+    let txn = conn.transaction()?;
+    let expected = a.last_seq - a.first_seq + 1;
+    let changed = txn.execute(
+        "UPDATE txs SET exported = 1 WHERE branch = ?1 AND seq BETWEEN ?2 AND ?3 AND exported = 0",
+        params![branch, to_i64(a.first_seq)?, to_i64(a.last_seq)?],
+    )?;
+    if changed as u64 != expected {
+        return Err(broken(
+            branch,
+            format!(
+                "{changed} of {expected} records at seqs {}..={} were unexported",
+                a.first_seq, a.last_seq
+            ),
+        ));
+    }
+    txn.execute(
+        "INSERT INTO segments (branch, hash, name, epoch, first_seq, last_seq, pack, replaces, state)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, '[]', 'exported') ON CONFLICT(hash) DO NOTHING",
+        params![
+            branch,
+            a.hash,
+            a.name,
+            to_i64(a.epoch)?,
+            to_i64(a.first_seq)?,
+            to_i64(a.last_seq)?
+        ],
+    )?;
+    txn.commit()?;
+    Ok(u32::try_from(expected).unwrap_or(u32::MAX))
+}
+
+/// Whether `a` still describes the next unexported records of `branch`: its seqs unexported
+/// and holding the same records, after the same predecessor. Rechecked under the store lock
+/// before marking, since the segment was written without it (another pass may have exported,
+/// rewound or rebuilt meanwhile).
+pub(super) fn still_pending(
+    conn: &Connection,
+    branch: &str,
+    a: &Attempt,
+) -> Result<bool, StoreError> {
+    let mut stmt = conn.prepare(
+        "SELECT tx_hash FROM txs WHERE branch = ?1 AND seq BETWEEN ?2 AND ?3 AND exported = 0
+         ORDER BY seq",
+    )?;
+    let hashes = stmt
+        .query_map(
+            params![branch, to_i64(a.first_seq)?, to_i64(a.last_seq)?],
+            |r| r.get::<_, String>(0),
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    if hashes != a.tx_hashes {
+        return Ok(false);
+    }
+    // A broken chain is reported by the next pass's plan; here it only means "changed".
+    Ok(prev_segment(conn, branch, a.first_seq).ok().as_ref() == Some(&a.prev))
+}

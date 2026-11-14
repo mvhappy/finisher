@@ -1,63 +1,546 @@
 #!/usr/bin/env node
-// finisherd: serves `FinRpcs` over the local socket/pipe and a bearer-token WebSocket.
-// Usage: node apps/finisherd/src/main.ts [--server-data <dir>]
-// Logs go to stderr only; stdout stays empty.
-import { pathToFileURL } from "node:url";
+// finisherd: serves `FinRpcs` over the local socket/pipe and a ticketed WebSocket.
+// Usage: node apps/finisherd/src/main.ts [serve] [--server-data <dir>] [--plugin-dir <dir>]
+//        node apps/finisherd/src/main.ts <command> …   (the owner's console, `console/main.ts`)
+// Serving logs to stderr only; stdout stays empty. Console commands answer on stdout.
+import { realpathSync } from "node:fs";
+import { join } from "node:path";
 import { runMain } from "@effect/platform-node/NodeRuntime";
-import { Cause, Effect, Exit, Layer, Logger } from "effect";
+import { Cause, Context, Deferred, Effect, Exit, Layer, Logger, Scope } from "effect";
 import {
+  type CliArgs,
   ensureServerData,
-  newToken,
   parseArgs,
+  cachedOrigins,
   removeServerInfo,
-  type ServerInfo,
   startFailure,
   socketPath,
   writeServerInfo,
 } from "./config.ts";
-import { HandlersLive } from "./handlers.ts";
+import { serverIdentity } from "@finisher/fin-node";
+import { canonicalEndpoint } from "./auth/crypto.ts";
+import { isEntry } from "./entry.ts";
+import { Handshake, HandshakeTag } from "./auth/handshake.ts";
+import { Credentials, CredentialsTag } from "./auth/credentials.ts";
+import { sweepEvery } from "./auth/revoke.ts";
+import { authDir, excludeFromBackups, KEY_FILES, KeysTag, rotateKeys, writeKeyFile } from "./auth/keys.ts";
+import { ConnectionRegistry, ConnectionRegistryTag, Connections, type Transport } from "./connections.ts";
+import { AuditTag, layerAudit } from "./control/audit.ts";
+import { makeTickets, TicketsTag } from "./auth/tickets.ts";
+import { ControlStoreTag, layerControlStore } from "./control/db.ts";
+import { DeviceStore } from "./auth/devices.ts";
+import { openSecrets } from "./secrets/vault.ts";
+import { checkMoved } from "./env/moved.ts";
+import { CAPABILITIES } from "./handlers.ts";
+// Registers the `agent` control chain before the store opens (7A-2 Task 3b; 6b wires the runtime).
+import { AgentStore } from "./agent/store.ts";
+import { systemClock, systemIds } from "./agent/clock.ts";
+import { type AgentCore, AgentCoreTag } from "./agent/core.ts";
+import { journalVerdicts, OutcomeTracker } from "./agent/outcomes.ts";
+import { ReviewLink } from "./agent/review-link.ts";
+import { AgentJournal } from "./agent/journal.ts";
+import { SessionCredentials } from "./agent/credentials.ts";
+import { BranchLineage } from "./agent/reach.ts";
+import { sweepHostSandboxes } from "./agent/session-dirs.ts";
+import { layerFonts } from "./fonts.ts";
+import { Diagnostics, makeDiagnostics } from "./diagnostics.ts";
 import { withServerLock } from "./lock.ts";
-import { layerProjectRegistry, type RegistryOptions } from "./projects.ts";
-import { claimSocketPath, makeLocalSocketServer, makeWebSocketServer, portOf, serveRpc } from "./transport.ts";
+// Registers the `jobs` migration chain: imported before the control store opens.
+import "./jobs/store.ts";
+import { ReviewsTag } from "./reviews/service.ts";
+import { JobEventSinkTag } from "./jobs/events.ts";
+import { journalSink } from "./jobs/journal-sink.ts";
+import { JobEngineTag, layerJobEngine } from "./jobs/layer.ts";
+import { LibrariesTag } from "./library/api.ts";
+import { CatalogsTag, layerCatalogs } from "./library/catalog/client.ts";
+import { LibraryServiceTag, librariesHolding, libraryWiring } from "./library/layer.ts";
+import { makeMediaCache, MediaCacheTag, releaseAll } from "./media/cache.ts";
+import { MediaProxyTag } from "./media/proxy.ts";
+import { mediaWiring } from "./media/wiring.ts";
+import { CapTokensTag } from "./media/cap-tokens.ts";
+import { layerPlugins } from "./plugins/registries.ts";
+import { makePluginHost } from "./plugins/host/processes.ts";
+import { PluginCommandsTag, serverPluginCommands } from "./plugins/host/command-rpc.ts";
+import { pluginCallDeps } from "./plugins/host/serve.ts";
+import { PluginTables } from "./plugins/tables.ts";
+import { devPluginForRun } from "./plugins/host/dev.ts";
+import { approveDevPlugin, devRefused } from "./console/dev-plugin.ts";
+import { layerProjectRegistry, ProjectRegistry } from "./projects.ts";
+import { registerMediaKinds } from "./jobs/kinds/media.look.ts";
+import { MAX_FRAME } from "./protocol.ts";
+import { claimSocketPath, makeLocalServer, serveRpc } from "./transport.ts";
+import { makeTicketedWebSocketServer, makeUpgradeCheck, WebSocketSlots } from "./upgrade.ts";
+import { makeFront, refusalAudits, type Route } from "./http/front.ts";
+import { loopbackPolicy } from "./http/policy.ts";
+import { RemoteListener, RemoteListenerTag } from "./net/remote.ts";
+import { readServerSettings } from "./net/server-settings.ts";
+import { EnvironmentTag } from "./env/descriptor.ts";
+import { PairingTag } from "./auth/pairing.ts";
+import { DeviceAccessTag, serverControlOf, startRemote, wireRemoteAccess } from "./net/remote-wiring.ts";
+import { Nonces } from "./auth/nonces.ts";
+import { ServerControlTag } from "./server-admin.ts";
+import { isServeCommand, runConsole } from "./console/main.ts";
+import { aclBroker, sweepAtStart } from "./sandbox/broker.ts";
+import { currentSandboxStatus, reporterFor, sandboxWarnings } from "./sandbox/status.ts";
+import { AgentRuntimeTag, buildAgentRuntime, startAgentReviews } from "./agent/wiring.ts";
+import { type AgentListener, agentConnections, agentEndpoint, makeAgentListener, makeAgentTcpServer, rateLimited } from "./agent/listener.ts";
+import type { ServeOptions } from "./serve-options.ts";
+export type { ServeOptions };
 
-export interface ServeOptions {
-  readonly serverData: string;
-  readonly registry?: RegistryOptions;
-  /** Called once both transports listen and `finisherd.json` is written. */
-  readonly onReady?: (info: ServerInfo) => void;
-}
-
-/** Runs the server until interrupted; finalizers stop the transports, close engines and remove `finisherd.json`. */
-export const serve = ({ serverData, onReady, registry }: ServeOptions) =>
+/**
+ * Runs the server until interrupted or `server.stop`; finalizers stop the transports, close
+ * engines and remove `finisherd.json`.
+ */
+export const serve = ({
+  serverData,
+  onReady,
+  onAgentCore,
+  agents: agentOptions,
+  onAgentRuntime,
+  onAgentListener,
+  agentListener: agentListenerRules,
+  registry,
+  fonts,
+  diagnostics: diagnosticsOptions,
+  credentials: credentialOptions,
+  jobs: jobOptions,
+  remote: remoteOptions,
+  onRemote,
+  dev,
+  plugins: pluginOptions,
+}: ServeOptions) =>
   Effect.scoped(
     Effect.gen(function* () {
       yield* Effect.try({ try: () => ensureServerData(serverData), catch: startFailure });
       // Held until shutdown, before touching the socket: claim + listen is then race-free.
       yield* withServerLock(serverData);
+      // The ACL broker (plan 7C Task 10; Windows, a no-op elsewhere) completes what a crash left
+      // in its log and revokes every session, job and call grant before anything listens or
+      // grants: none of their processes outlives the server that started them. A revoke that
+      // fails stays pending in the log for the next sweep and does not stop the start (review 5):
+      // a broker that cannot open at all makes every later grant fail, so agents fail closed.
+      const acl = aclBroker(serverData);
+      yield* sweepAtStart(acl);
+      // Host sandboxes (plan 7D Task 3b) a crash left: none is alive before anything listens.
+      yield* Effect.promise(() => sweepHostSandboxes(serverData));
+      // The control store (5A Task 1) before any listener: the environment id, the audit log.
+      // The id, and why it was just renewed (a copy, or moved): 5B's moved check reads it below.
+      const identity = yield* Effect.try({ try: () => serverIdentity(serverData), catch: startFailure });
+      const id = identity.id;
+      const control = yield* Layer.build(Layer.provideMerge(layerAudit, layerControlStore(serverData, id)));
+      // `env.reset` (5B) renews the environment's id while the server runs: read it live.
+      const controlStore = Context.get(control, ControlStoreTag);
+      // Paired devices (5B Task 1) and the vault with the identity key (Task 2): after the control
+      // store, before any listener. A lost identity key revokes every device (a rotation).
+      const devices = new DeviceStore(Context.get(control, ControlStoreTag), Context.get(control, AuditTag), credentialOptions?.clock);
+      yield* Effect.addFinalizer(() => Effect.sync(() => devices.dispose()));
+      const secrets = yield* Effect.try({
+        try: () => openSecrets({ serverData, store: Context.get(control, ControlStoreTag), audit: Context.get(control, AuditTag), devices }),
+        catch: startFailure,
+      });
+      // New `local.key` and `console.key` (5A Task 2) before the socket is claimed: a key read
+      // while this server listens is always this server's. `auth/` and `run/` are private.
+      const keys = yield* Effect.try({ try: () => rotateKeys(serverData), catch: startFailure });
+      // `auth/` stays out of Time Machine (review of Tasks 8–9, M3): a backup of
+      // `credential.master` would outlive every rotation. Best effort: a warning if it fails.
+      excludeFromBackups(authDir(serverData));
       const socket = socketPath(serverData);
       yield* claimSocketPath(socket);
-      const token = newToken();
-
-      const local = yield* makeLocalSocketServer(socket);
-      const ws = yield* Effect.mapError(makeWebSocketServer(token), (e) => startFailure(e.reason.cause ?? e));
-      yield* Layer.build(
-        Layer.mergeAll(serveRpc(local), serveRpc(ws)).pipe(
-          Layer.provide(HandlersLive),
-          Layer.provide(layerProjectRegistry(serverData, registry)),
+      const tickets = yield* makeTickets();
+      // The journal opens under the settings already read, before any transport listens.
+      const diagnostics = yield* makeDiagnostics(serverData, diagnosticsOptions);
+      const runLog = Effect.runForkWith(yield* Effect.context<never>()); // the server's (stderr) logger
+      const logSink = (level: "debug" | "warning", message: string) => void runLog(level === "debug" ? Effect.logDebug(message) : Effect.logWarning(message));
+      // 5D's catalog threads before the job engine (library jobs' hooks call the indexer until the
+      // engine stops them), the library service after it, so it closes first.
+      const jobsRoot = join(serverData, "jobs");
+      const catalogs = Context.get(
+        yield* Layer.build(layerCatalogs({ serverData, jobsRoot, onFatal: (e) => logSink("warning", `library catalogs: a thread died (${e.code})`) })),
+        CatalogsTag,
+      );
+      const libraries = libraryWiring({
+        serverData, jobsRoot, catalogs, control: Context.get(control, ControlStoreTag), audit: Context.get(control, AuditTag), journal: diagnostics.journal, log: logSink,
+      });
+      // The media cache (6B-1 Task 13) before the registry: an open project pins its entries (a failed open is logged, CACHE_IO).
+      const mediaCache = yield* makeMediaCache(serverData, { log: (m) => logSink("warning", m) });
+      // The job engine (5C-1) after the control store and the journal, so it closes before them
+      // (its `close` stops every worker); `<server-data>/jobs/` is made private. Its events go
+      // to the journal (D34).
+      // The project registry first: the `media.look` kind reads from it (its engine writes a
+      // job's inputs), and it closes after the job engine. An open project holds the libraries
+      // its assets live in (5D): the library service starts after the engine, so the hook is
+      // bound once it has; a project opened before that holds none.
+      let libraryHold: ((paths: ReadonlyArray<string>) => { release(): void }) | undefined;
+      // The libraries' roots: sandboxed agent sessions read them (plan 7C Decision 6), and so does a
+      // confined warm media worker (Decision 19). Bound once the service runs.
+      let libraryRoots: () => ReadonlyArray<string> = () => [];
+      let onOpened: ((projectId: string) => void) | undefined; // re-derived reviews (5E Decision 22), bound with the reviews
+      const media = mediaWiring(mediaCache, tickets, (m) => logSink("warning", m)); // proxies, media URLs (6B-1 Tasks 14, 17)
+      const registryContext = yield* Layer.build(
+        layerProjectRegistry(serverData, { ...registry, libraryUse: (paths, projectId) => releaseAll([libraryHold?.(paths), mediaCache.holdProject(projectId)]), onOpened: (id) => (onOpened?.(id), media.onOpened(id)), onCommitted: media.onCommitted }),
+      );
+      const projects = Context.get(registryContext, ProjectRegistry);
+      // The code plugins' processes (sp8b Tasks 4, 5): the `plugin` family is registered with
+      // the engine's other families (a restart reconciles jobs against them), then bound to it;
+      // plugin commands (Task 9) are the enabled plugins' `commands`, run as `plugin.command` jobs.
+      const pluginTables = new PluginTables(controlStore);
+      // Developer mode: an earlier run's `@dev` row goes; this run's, if any, until it stops.
+      yield* devPluginForRun(pluginTables, dev, (m) => logSink("warning", m), Context.get(control, AuditTag));
+      const pluginHost = makePluginHost({ serverData: realpathSync(serverData), control: controlStore, tables: pluginTables, audit: Context.get(control, AuditTag), journal: diagnostics.journal, log: (l, m) => logSink(l === "warning" || l === "error" ? "warning" : "debug", m), ...(pluginOptions?.egress === undefined ? {} : { egressHooks: pluginOptions.egress }) });
+      const pluginCommands = serverPluginCommands({ serverData: realpathSync(serverData), tables: pluginTables, host: pluginHost });
+      const register = (r: Parameters<typeof libraries.register>[0]) => {
+        pluginHost.register(r);
+        r.registerKind(pluginCommands.kind);
+        registerMediaKinds(r, { serverData, projects, libraryRoots: () => libraryRoots(), proxy: media.kindDeps });
+        jobOptions?.register?.(r);
+        libraries.register(r);
+      };
+      const jobsContext = yield* Layer.build(
+        // Windows: each job process's grants go through the broker (plan 7C Decision 18).
+        layerJobEngine(serverData, { diagnostics: () => diagnostics.enabled(), acl, ...jobOptions, register }).pipe(
+          Layer.provide(Layer.mergeAll(Layer.succeedContext(control), Layer.succeed(JobEventSinkTag, journalSink(diagnostics.journal, logSink)))),
         ),
       );
-
-      const info = yield* Effect.acquireRelease(
-        Effect.try({
-          try: () => writeServerInfo(serverData, { pid: process.pid, wsPort: portOf(ws), socket, token }),
-          catch: startFailure,
-        }),
-        () => Effect.sync(() => removeServerInfo(serverData)),
+      const engine = Context.get(jobsContext, JobEngineTag);
+      pluginHost.bind(engine);
+      const caps = engine.workers().caps;
+      yield* Effect.logInfo(
+        `finisherd job engine: killTree=${caps.killTree} watchdog=${caps.watchdog} cgroupMemory=${caps.cgroupMemory} leafLimits=${caps.leafLimits} sandbox=${caps.sandbox} sandboxed=${caps.sandboxed}`,
       );
+
+      const library = yield* Effect.acquireRelease(
+        Effect.tryPromise({ try: () => libraries.start(engine), catch: startFailure }),
+        (s) => Effect.sync(() => s.close()),
+      );
+      libraryHold = (paths) => library.use(librariesHolding(library.registry, paths));
+      libraryRoots = () => library.registry.list().map((l) => l.root);
+      const mediaProxy = media.start(engine, library, projects);
+
+      const audit = Context.get(control, AuditTag);
+      // Windows: the native pipe listener (Task 11); a client of another user is refused
+      // before its first byte and audited.
+      // Each project's container SID is allowed on the pipe once its agents get a container.
+      let allowPipe: ((sid: string) => void) | undefined;
+      const allowed = new Set<string>();
+      const local = yield* makeLocalServer(socket, {
+        onAllow: (allow) => {
+          allowPipe = allow;
+        },
+        onRefused: refusalAudits(audit).pipe,
+      });
+      // The WebSocket (Decision 24): a ticket in `Sec-WebSocket-Protocol`, Host and Origin checked first.
+      let wsPort = 0;
+      // `server.*` settings (5B Task 10): a fixed loopback port, the remote listener, project roots.
+      const serverSettings = readServerSettings(serverData);
+      // The loopback listener (5A's lists exactly) and its HTTP front (5B Task 6): the routes are
+      // filled in once the pieces they answer from exist (the environment, below).
+      const loopbackOrigins = cachedOrigins(serverData);
+      const loopback = loopbackPolicy(() => wsPort, loopbackOrigins);
+      const check = makeUpgradeCheck({ policy: loopback, tickets });
+      const httpRoutes: Record<string, Route> = {};
+      // DPoP's server nonces (Task 7): every answer of the front carries the current one.
+      const nonces = new Nonces();
+      // One pool of WebSocket slots for every listener (Decision 12), the reserve included.
+      const slots = new WebSocketSlots();
+      const refusals = refusalAudits(audit);
+      const { server: ws, port } = yield* Effect.mapError(
+        makeTicketedWebSocketServer({
+          check,
+          // A message over the frame cap and its slack is dropped by ws (close 1009); one just over
+          // the cap reaches `protocol.ts`, which answers `FRAME_TOO_LARGE` first.
+          maxPayload: MAX_FRAME + 64 * 1024,
+          slots,
+          policy: loopback,
+          ...(serverSettings.loopbackPort === undefined ? {} : { port: serverSettings.loopbackPort }),
+          onRequest: makeFront(httpRoutes, loopback, nonces, { onRefused: refusals.front }),
+          media: media.http(loopback),
+          onRefused: refusals.upgrade("ws"),
+        }),
+        (e) => startFailure(e.reason.cause ?? e),
+      );
+      wsPort = port;
+      // The endpoints both MACs bind (Decision 7): the socket's real path or the pipe's name.
+      const localEndpoint = canonicalEndpoint(socket);
+      const wsEndpoint = `ws://127.0.0.1:${wsPort}`;
+      const everyConnection = new ConnectionRegistry();
+      const connections = {
+        local: everyConnection.add(new Connections(process.platform === "win32" ? "pipe" : "socket", () => localEndpoint)),
+        // Each WebSocket carries its ticket's principal from its first frame (`upgrade.ts`).
+        ws: everyConnection.add(new Connections("ws", () => wsEndpoint)),
+        // The remote listener's WebSockets (5B Task 10), when it runs.
+        wss: everyConnection.add(new Connections("wss", () => remote.info()?.endpoint ?? "")),
+      };
+      // Agent and MCP credentials (5A Task 9): proved through the handshake while live; every
+      // request re-checks; expired ones are ended by the sweep, revoked ones at once.
+      const credentials = new Credentials(Context.get(control, ControlStoreTag), keys.credentialMaster, audit, credentialOptions?.clock, (key) =>
+        writeKeyFile(join(authDir(serverData), KEY_FILES.credentialMaster), key),
+      );
+      everyConnection.useLiveness((p) => credentials.isLive(p));
+      // Plugin authority keys (sp8 spec §3.3, Decision 28): a credential minted or ended, or a
+      // device revoked, moves its class's policy generation and retires its plugin processes.
+      const unwatchAuthority = pluginHost.watch({ credentials, devices });
+      yield* Effect.addFinalizer(() => Effect.sync(unwatchAuthority));
+      // One last write of ended credentials before the control store closes (it closes after).
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          credentials.persist();
+          credentials.dispose();
+        }),
+      );
+      const handshake = new Handshake({
+        keys,
+        get envId() {
+          return controlStore.envId;
+        },
+        audit,
+        credentials: (ref) => credentials.forHello(ref),
+        revoke: (ref) => credentials.markEnded(ref, "self"),
+      });
+      const revokeDeps = {
+        audit,
+        tickets,
+        connections: everyConnection,
+        revoke: (ref: { kind: "agent" | "mcp"; id: string }) => credentials.markEnded(ref, "expired"),
+        persist: () => credentials.persist(),
+      };
+      yield* sweepEvery(revokeDeps, () => credentials.expired(), credentialOptions?.sweepMs ?? 60_000);
+      // 5B: routes, the environment, pairing, DPoP, device tokens and their HTTP routes.
+      const { routes, environment, pairing, access } = yield* wireRemoteAccess({
+        store: controlStore,
+        audit,
+        devices,
+        secrets,
+        tickets,
+        connections: everyConnection,
+        credentials,
+        revokeDeps,
+        nonces,
+        capabilities: CAPABILITIES,
+        journal: diagnostics.journal,
+        loopbackPort: () => wsPort,
+        httpRoutes,
+        rewriteInfo: () => {
+          if (!removed) publish(diagnostics.enabled());
+        },
+        remoteOrigins: () => remote.originsOf(remote.info()?.port ?? 0),
+      });
+      // The remote listener (Task 10): off unless `FIN_LISTEN`, the settings or a test asks.
+      const remote = new RemoteListener({
+        slots,
+        tickets,
+        audit,
+        secrets,
+        routes,
+        environment,
+        nonces,
+        httpRoutes,
+        maxPayload: MAX_FRAME + 64 * 1024,
+        origins: loopbackOrigins,
+        onRefused: refusals.front,
+        onUpgradeRefused: refusals.upgrade("wss"),
+        remoteOf: remoteOptions?.remoteOf,
+        media: media.http,
+      });
+      onRemote?.(remote);
+      if (checkMoved(environment, controlStore, identity.renewed)) {
+        yield* Effect.logWarning("finisherd: this server data was copied or moved: paired devices wait until its owner adopts or resets it");
+      }
+      // The agent runtime's shared pieces (7A-2): the session store, each session's credential
+      // (minted, refreshed and revoked through the one revoke path) and the branch lineage the
+      // chains read for branch reach. Credential effects a crash left in the outbox are done now.
+      const agentClock = credentialOptions?.clock === undefined ? systemClock : { now: credentialOptions.clock };
+      const agentIds = systemIds(agentClock);
+      const agentStore = new AgentStore(Context.get(control, ControlStoreTag), serverData, agentClock, agentIds);
+      const sessionCredentials = new SessionCredentials({
+        store: agentStore,
+        credentials,
+        revoke: { ...revokeDeps, revoke: (ref) => credentials.markEnded(ref, "owner") },
+      });
+      sessionCredentials.drain();
+      // A revocation lost before it was written (a busy store, then a crash) is done now.
+      sessionCredentials.reconcile();
+      // Owner decision F2 (plan 7C Decision 23): a profile not enforced on this host runs,
+      // warned; `sandbox.unconfined` is recorded once per profile for this start.
+      const sandbox = currentSandboxStatus();
+      reporterFor(diagnostics.journal, (m) => logSink("warning", m)).report(sandbox);
+      for (const w of sandboxWarnings(sandbox)) yield* Effect.logWarning(`finisherd: ${w.code} (${String(w.details.profile)}): ${w.message}`);
+      // The outcome tracker (Task 11) emits 5E's `review.verdict` into this journal once the kind exists.
+      const lineage = new BranchLineage();
+      // Plugin host calls (sp8b Task 7) read live invokers, session branch reach and snapshots.
+      pluginHost.serve(pluginCallDeps({ credentials, devices, sessions: agentStore, lineage, projects }));
+      const outcomes = new OutcomeTracker({ store: agentStore, lineage, clock: agentClock.now, verdicts: journalVerdicts(diagnostics.journal) });
+      // Its journal records metadata to the diagnostics journal and content to the trace store (D34).
+      const agentJournal = new AgentJournal({
+        diagnostics: diagnostics.journal,
+        traces: diagnostics.traces,
+        store: agentStore,
+        ids: agentIds,
+        clock: agentClock,
+        log: (message, fields) => logSink("warning", `${message} ${JSON.stringify(fields ?? {})}`),
+      });
+      const agentCore: AgentCore = {
+        store: agentStore,
+        credentials: sessionCredentials,
+        lineage,
+        outcomes,
+        // Bound to the reviews once they are built, below.
+        reviewLink: new ReviewLink({ store: agentStore }),
+        clock: agentClock,
+        ids: agentIds,
+        journal: agentJournal,
+      };
+      onAgentCore?.(agentCore);
+      // The agent runtime over the project registry (7A Task 12): recovery, the outbox
+      // and the credential reconcile run here, before either transport serves a request.
+      const projectRegistry = projects; // built above, before the job engine
+      let agentListenerRef: AgentListener | undefined;
+      const agentRuntime = yield* buildAgentRuntime({
+        serverData,
+        core: agentCore,
+        registry: projectRegistry,
+        db: Context.get(control, ControlStoreTag).db,
+        control: Context.get(control, ControlStoreTag),
+        audit,
+        endpoint: socket,
+        secretBox: secrets.box,
+        // Built below, after the transports; a session sandbox asks for it only once a run starts.
+        libraryRoots: () => libraryRoots(),
+        agentListener: () => (agentListenerRef === undefined ? Promise.reject(new Error("the agent listener is not built yet")) : agentListenerRef.ensure()),
+        log: (message) => logSink("warning", `finisherd: agent runtime: ${message}`),
+        ...(agentOptions === undefined ? {} : { options: agentOptions }),
+        acl,
+        allowPipe: (sid) => {
+          if (allowed.has(sid)) return;
+          if (allowPipe === undefined) {
+            // The pipe listener gave no `allow` (not Windows' native one): the project's
+            // container cannot reach `fin`.
+            logSink("warning", `finisherd: the pipe listener cannot admit the container ${sid}; its agents cannot reach fin`);
+            return;
+          }
+          allowPipe(sid);
+          allowed.add(sid);
+        },
+      });
+      onAgentRuntime?.(agentRuntime);
+      const started = startAgentReviews({ control: controlStore, projects, audit, journal: diagnostics.journal, core: agentCore, runtime: agentRuntime.runtime, hooks: agentRuntime.hookWiring, jobs: engine, ...(agentOptions?.autoMerge === undefined ? {} : { autoMerge: agentOptions.autoMerge }) });
+      onOpened = started.opened;
+      // One font layer for the handlers and the plugins, which feed it the packs' catalogs.
+      const fontsLayer = layerFonts(serverData, fonts);
+      // `server.stop` (5A Task 8): `serve` returns, and its scope's finalizers stop everything.
+      const stopped = Deferred.makeUnsafe<void>();
+      const listeners: Array<{ readonly transport: Transport; readonly endpoint: string }> = [
+        { transport: connections.local.transport, endpoint: localEndpoint },
+        { transport: connections.ws.transport, endpoint: wsEndpoint },
+      ];
+      const serverControl = serverControlOf({
+        serverData,
+        store: controlStore,
+        environment,
+        routes,
+        listeners,
+        remote,
+        secrets,
+        settings: serverSettings,
+        stop: () => void Deferred.doneUnsafe(stopped, Exit.void),
+      });
+      // What every transport's handlers are served with, built once: the agent listener's
+      // handlers, built later, share it with the two built now.
+      const served = yield* Layer.build(
+        Layer.mergeAll(
+          Layer.succeedContext(registryContext),
+          fontsLayer,
+          layerPlugins(serverData, { host: pluginHost.hooks, suggestions: started.suggestions }).pipe(Layer.provide(Layer.succeedContext(control)), Layer.provide(fontsLayer)),
+          Layer.succeed(Diagnostics, diagnostics),
+          Layer.succeedContext(control),
+          Layer.succeedContext(jobsContext),
+          Layer.succeed(PluginCommandsTag, pluginCommands.service(engine)),
+          Layer.succeed(LibrariesTag, library),
+          Layer.succeed(LibraryServiceTag, library),
+          Layer.succeed(MediaCacheTag, mediaCache),
+          Layer.succeed(MediaProxyTag, mediaProxy),
+          Layer.succeed(CapTokensTag, media.capTokens),
+          Layer.succeed(KeysTag, keys),
+          Layer.succeed(HandshakeTag, handshake),
+          Layer.succeed(CredentialsTag, credentials),
+          Layer.succeed(TicketsTag, tickets),
+          Layer.succeed(ConnectionRegistryTag, everyConnection),
+          Layer.succeed(ServerControlTag, serverControl),
+          Layer.succeed(EnvironmentTag, environment),
+          Layer.succeed(PairingTag, pairing),
+          Layer.succeed(DeviceAccessTag, access),
+          Layer.succeed(RemoteListenerTag, remote),
+          Layer.succeed(AgentCoreTag, agentCore),
+          Layer.succeed(AgentRuntimeTag, agentRuntime),
+          Layer.succeed(ReviewsTag, started.reviews),
+        ),
+      );
+      yield* Layer.build(
+        Layer.mergeAll(serveRpc(local, connections.local), serveRpc(ws, connections.ws), serveRpc(remote.socketServer(), connections.wss)).pipe(
+          Layer.provide(Layer.succeedContext(served)),
+        ),
+      );
+      // The agent listener (plan 7C Task 6): loopback TCP for sandboxed `fin`, started on first
+      // need into this server's scope, so it stops with the server.
+      let agentTcpEndpoint = "";
+      const agentTcp = everyConnection.add(
+        agentConnections(() => agentTcpEndpoint, { ...agentListenerRules, onRefused: rateLimited(60_000, (n) => logSink("warning", `finisherd: agent listener: ${n} connection(s) refused at the cap since the last warning`)) }),
+      );
+      const serverScope = yield* Effect.scope;
+      const runInServer = Effect.runPromiseWith(yield* Effect.context<never>());
+      const agentListener = makeAgentListener(() =>
+        runInServer(
+          Effect.gen(function* () {
+            // A child of the server's scope: a start that fails part-way closes what it opened
+            // (a bound port) instead of leaving it to the server's end.
+            const scope = yield* Scope.fork(serverScope);
+            const started = yield* Effect.exit(
+              Effect.gen(function* () {
+                const { server, port } = yield* Scope.provide(scope)(makeAgentTcpServer());
+                yield* Layer.buildWithScope(serveRpc(server, agentTcp).pipe(Layer.provide(Layer.succeedContext(served))), scope);
+                return agentEndpoint(port);
+              }),
+            );
+            if (Exit.isFailure(started)) {
+              yield* Scope.close(scope, started);
+              return yield* Effect.failCause(started.cause);
+            }
+            agentTcpEndpoint = started.value;
+            listeners.push({ transport: agentTcp.transport, endpoint: agentTcpEndpoint });
+            yield* Effect.logInfo(`finisherd agent listener: ${agentTcpEndpoint}`);
+            return agentTcpEndpoint;
+          }),
+        ),
+      );
+      agentListenerRef = agentListener;
+      onAgentListener?.(agentListener);
+
+      yield* startRemote(remote, serverSettings, environment, remoteOptions);
+
+      const publish = (enabled: boolean) =>
+        writeServerInfo(serverData, { pid: process.pid, wsPort, socket, envId: controlStore.envId, diagnostics: { enabled } });
+      // Set when `finisherd.json` is removed: a late gate change must not bring it back.
+      let removed = false;
+      const info = yield* Effect.acquireRelease(
+        Effect.try({ try: () => publish(diagnostics.enabled()), catch: startFailure }),
+        () =>
+          Effect.sync(() => {
+            removed = true;
+            removeServerInfo(serverData);
+          }),
+      );
+      // `fin` reads `diagnostics.enabled` to decide whether to send anything (Decision 23).
+      diagnostics.onEnabledChange((enabled) => {
+        if (removed) return;
+        try {
+          publish(enabled);
+        } catch (e) {
+          process.stderr.write(`finisherd: warning: cannot update finisherd.json: ${String(e)}\n`);
+        }
+      });
       yield* Effect.logInfo(`finisherd ready: socket=${socket} wsPort=${info.wsPort} serverData=${serverData}`);
       onReady?.(info);
       yield* Effect.addFinalizer(() => Effect.logInfo("finisherd shutting down"));
-      return yield* Effect.never;
+      return yield* Deferred.await(stopped);
     }),
   );
 
@@ -65,21 +548,37 @@ export const serve = ({ serverData, onReady, registry }: ServeOptions) =>
 export const StderrLogger = Logger.layer([Logger.withConsoleError(Logger.formatSimple)]);
 
 function main(argv: ReadonlyArray<string>): void {
-  let serverData: string;
+  // Decision 29: no argument, `serve` or only flags serve; any other first word is a console command.
+  if (!isServeCommand(argv)) {
+    void runConsole(argv).then((code) => {
+      process.exitCode = code;
+    });
+    return;
+  }
+  let args: CliArgs;
   try {
-    ({ serverData } = parseArgs(argv));
+    args = parseArgs(argv[0] === "serve" ? argv.slice(1) : argv);
   } catch (e) {
     process.stderr.write(`finisherd: ${(e as Error).message}\n`);
     process.exitCode = 2;
     return;
   }
-  const program = serve({ serverData }).pipe(
+  // Developer mode: the person approves the plugin's permissions here before anything starts.
+  void approveDevPlugin(args.pluginDir, args.serverData).then(
+    (dev) => start(serve({ serverData: args.serverData, ...(dev === undefined ? {} : { dev }) })),
+    (e: unknown) => void (process.exitCode = devRefused(e)),
+  );
+}
+
+export function start(server: ReturnType<typeof serve>): void {
+  const program = server.pipe(
     Effect.catchCause((cause) =>
       Effect.sync(() => {
         if (Cause.hasInterruptsOnly(cause)) return;
         const error = startFailure(Cause.squash(cause));
         const details = Object.keys(error.details).length > 0 ? ` ${JSON.stringify(error.details)}` : "";
         process.stderr.write(`finisherd: ${error.code}: ${error.message}${details}\n`);
+        if (error.fix !== undefined) process.stderr.write(`finisherd: fix: ${error.fix}\n`);
         process.exitCode = 1;
       }),
     ),
@@ -93,4 +592,4 @@ function main(argv: ReadonlyArray<string>): void {
   });
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) main(process.argv.slice(2));
+if (isEntry(import.meta.url, process.argv[1])) main(process.argv.slice(2));

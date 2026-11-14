@@ -1,0 +1,19 @@
+[package]
+name = "fin-opus-sys"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "libopus 1.6.1 (float) built from the pinned submodule with cc, and the C shim fin-codecs calls (no features: built once)."
+links = "opus"
+
+[build-dependencies]
+# libopus (float, static; no dnn, DRED, OSCE or intrinsics) from the pinned submodule
+# `third_party/opus`, plus the shim over its multistream API (`shim/fin_opus_shim.c`).
+cc = { version = "1", features = ["parallel"] }
+
+[dev-dependencies]
+# `tests/native_gate.rs`: the native gate's libopus entry against the submodule.
+blake3 = "1"
+serde_json = "1"

@@ -1,0 +1,341 @@
+{
+  "argsHashes": [
+    {
+      "args": {
+        "asset": "a1",
+        "at": "end",
+        "dur": "2s",
+        "track": "t1"
+      },
+      "cmd": "clip.insert",
+      "hash": "blake3:86c5192d400d1e40c773636d8529df83f30df5c603f86df0ab9e9b475d4e2b4f"
+    },
+    {
+      "args": {
+        "clip": "c3",
+        "start": "+0.5s"
+      },
+      "cmd": "clip.trim",
+      "hash": "blake3:2e797249afb75e87fdb167a8442f426e084ce816945e55c5e7a3c3365d5bcd62"
+    },
+    {
+      "args": {
+        "clip": "c2"
+      },
+      "cmd": "clip.delete",
+      "hash": "blake3:f914dc443df8df11b4eb98c1f4ca88ae3e346b84b5dd620219a11a3258e9aab7"
+    }
+  ],
+  "branches": {
+    "br1": {
+      "project": {
+        "assets": {
+          "a1": {
+            "audio": {
+              "channels": 2,
+              "sampleRate": 48000
+            },
+            "duration": "600",
+            "fingerprint": "fixture-fingerprint",
+            "id": "a1",
+            "path": "media/clip.mov",
+            "video": {
+              "height": 1080,
+              "rate": "30",
+              "width": 1920
+            }
+          }
+        },
+        "id": "01m6rj42y0bhgvvt305g45s90j",
+        "name": "4B fixture",
+        "rate": "30",
+        "schemaVersion": 1,
+        "timeline": {
+          "id": "tl1",
+          "tracks": [
+            {
+              "id": "t1",
+              "items": [
+                {
+                  "asset": "a1",
+                  "duration": "8",
+                  "id": "c1",
+                  "sourceIn": "0",
+                  "start": "0"
+                },
+                {
+                  "asset": "a1",
+                  "duration": "8",
+                  "id": "c2",
+                  "sourceIn": "0",
+                  "start": "8"
+                },
+                {
+                  "asset": "a1",
+                  "duration": "4",
+                  "id": "c5",
+                  "sourceIn": "0",
+                  "start": "100"
+                },
+                {
+                  "asset": "a1",
+                  "duration": "2",
+                  "id": "c8",
+                  "sourceIn": "0",
+                  "start": "300"
+                }
+              ],
+              "kind": "video"
+            },
+            {
+              "id": "t2",
+              "items": [
+                {
+                  "asset": "a1",
+                  "duration": "11",
+                  "id": "c3",
+                  "sourceIn": "1",
+                  "start": "0"
+                },
+                {
+                  "asset": "a1",
+                  "duration": "5",
+                  "id": "c6",
+                  "sourceIn": "0",
+                  "start": "100"
+                }
+              ],
+              "kind": "audio"
+            }
+          ]
+        }
+      },
+      "rev": 11
+    },
+    "main": {
+      "project": {
+        "assets": {
+          "a1": {
+            "audio": {
+              "channels": 2,
+              "sampleRate": 48000
+            },
+            "duration": "600",
+            "fingerprint": "fixture-fingerprint",
+            "id": "a1",
+            "path": "media/clip.mov",
+            "video": {
+              "height": 1080,
+              "rate": "30",
+              "width": 1920
+            }
+          }
+        },
+        "id": "01m6rj42y0bhgvvt305g45s90j",
+        "name": "4B fixture",
+        "rate": "30",
+        "schemaVersion": 1,
+        "timeline": {
+          "id": "tl1",
+          "tracks": [
+            {
+              "id": "t1",
+              "items": [
+                {
+                  "asset": "a1",
+                  "duration": "8",
+                  "id": "c1",
+                  "sourceIn": "0",
+                  "start": "0"
+                },
+                {
+                  "asset": "a1",
+                  "duration": "8",
+                  "id": "c2",
+                  "sourceIn": "0",
+                  "start": "8"
+                },
+                {
+                  "asset": "a1",
+                  "duration": "4",
+                  "id": "c5",
+                  "sourceIn": "0",
+                  "start": "100"
+                },
+                {
+                  "asset": "a1",
+                  "duration": "3",
+                  "id": "c7",
+                  "sourceIn": "0",
+                  "start": "204"
+                },
+                {
+                  "asset": "a1",
+                  "duration": "2",
+                  "id": "c8",
+                  "sourceIn": "0",
+                  "start": "303"
+                }
+              ],
+              "kind": "video"
+            },
+            {
+              "id": "t2",
+              "items": [
+                {
+                  "asset": "a1",
+                  "duration": "11",
+                  "id": "c3",
+                  "sourceIn": "1",
+                  "start": "0"
+                },
+                {
+                  "asset": "a1",
+                  "duration": "5",
+                  "id": "c6",
+                  "sourceIn": "0",
+                  "start": "100"
+                }
+              ],
+              "kind": "audio"
+            }
+          ]
+        }
+      },
+      "rev": 16
+    }
+  },
+  "stacks": {
+    "br1": {
+      "redo": [],
+      "undo": [
+        {
+          "id": "01JC0000000000000000000017",
+          "lastSeq": 11,
+          "records": [
+            "01JC0000000000000000000017"
+          ],
+          "source": {
+            "kind": "records"
+          }
+        }
+      ]
+    },
+    "main": {
+      "redo": [],
+      "undo": [
+        {
+          "id": "01JC0000000000000000000001",
+          "lastSeq": 1,
+          "records": [
+            "01JC0000000000000000000001"
+          ],
+          "source": {
+            "kind": "records"
+          }
+        },
+        {
+          "id": "01JC0000000000000000000002",
+          "lastSeq": 2,
+          "records": [
+            "01JC0000000000000000000002"
+          ],
+          "source": {
+            "kind": "records"
+          }
+        },
+        {
+          "id": "01JC0000000000000000000003",
+          "lastSeq": 3,
+          "records": [
+            "01JC0000000000000000000003"
+          ],
+          "source": {
+            "kind": "records"
+          }
+        },
+        {
+          "id": "01JC0000000000000000000004",
+          "lastSeq": 4,
+          "records": [
+            "01JC0000000000000000000004"
+          ],
+          "source": {
+            "kind": "records"
+          }
+        },
+        {
+          "id": "01JC0000000000000000000005",
+          "lastSeq": 5,
+          "records": [
+            "01JC0000000000000000000005"
+          ],
+          "source": {
+            "kind": "records"
+          }
+        },
+        {
+          "id": "01JC0000000000000000000006",
+          "lastSeq": 6,
+          "records": [
+            "01JC0000000000000000000006"
+          ],
+          "source": {
+            "kind": "records"
+          }
+        },
+        {
+          "id": "01JC0000000000000000000007",
+          "lastSeq": 7,
+          "records": [
+            "01JC0000000000000000000007"
+          ],
+          "source": {
+            "kind": "records"
+          }
+        },
+        {
+          "id": "01JC0000000000000000000008",
+          "lastSeq": 8,
+          "records": [
+            "01JC0000000000000000000008"
+          ],
+          "source": {
+            "kind": "records"
+          }
+        },
+        {
+          "id": "01JC0000000000000000000013",
+          "lastSeq": 11,
+          "records": [
+            "01JC0000000000000000000013"
+          ],
+          "source": {
+            "kind": "records"
+          }
+        },
+        {
+          "id": "01JC0000000000000000000016",
+          "lastSeq": 15,
+          "records": [
+            "01JC0000000000000000000016"
+          ],
+          "source": {
+            "kind": "redo",
+            "txId": "01JC0000000000000000000016"
+          }
+        },
+        {
+          "id": "01JC0000000000000000000018",
+          "lastSeq": 16,
+          "records": [
+            "01JC0000000000000000000018"
+          ],
+          "source": {
+            "kind": "records"
+          }
+        }
+      ]
+    }
+  }
+}

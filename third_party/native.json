@@ -1,0 +1,114 @@
+{
+  "libraries": [
+    {
+      "name": "SVT-AV1",
+      "package": "fin-svt-sys",
+      "path": "third_party/svt-av1",
+      "tag": "v4.3.0",
+      "commit": "e3d63405f9ba8219913a7276c2c47d10e5d022fe",
+      "license": "BSD-3-Clause-Clear AND BSD-2-Clause AND BSD-3-Clause AND MIT AND ISC",
+      "patents": "AOMedia-Patent-License-1.0",
+      "files": {
+        "LICENSE.md": "c99713c43ae030927d5a42d050d23b71c917cda8553cede8651646c705cacc04",
+        "LICENSE-BSD2.md": "313fc5bdf3d24630a2659822e52cac1df7b6a5f3767ab6043ee4eb73a53afdb5",
+        "PATENTS.md": "c7d92215e5fd2f591ea3e484dc46b14237a31ff063f1d4e236a5c40098a76057",
+        "third_party/fastfeat/LICENSE": "ebddd700de8b68d8bfbd286f297b7df51bd7ee0339814f72b11babde90b0b58d",
+        "third_party/safestringlib/LICENSE": "210f9c2bcfd5437c7eb9de1597e8c91b8b5638ed4571f68ccbb678053e3de2e2",
+        "Source/Lib/Codec/vector.c": "1391bed82373db2e753be8bfbb9fa7ac17a4871c7f4eacb550213d0ffe7bcf8c",
+        "Source/Lib/ASM_SSE2/x86inc.asm": "e122f1a42b60653cfa72f5392a5fb7668b855672c9780a4fe0137d00f7b1955a",
+        "Source/Lib/ASM_NEON/dav1d_asm.S": "babcdd39193e4205f54b8f16ad7bab0b47ae1d3d100f70db483d23bf51fdd783"
+      },
+      "note": "the encoder library only (static, no apps, no tests), built with cmake by crates/fin-svt-sys/build.rs: BSD-3-Clause-Clear, BSD-2-Clause (libaom- and dav1d-derived files), BSD-3-Clause (fastfeat), MIT (safestringlib, Source/Lib/Codec/vector.c), ISC (x264's x86inc.asm); the hashed files carry those texts (THIRD_PARTY_NOTICES.md has them in full). crates/fin-svt-sys/csrc/svt_shim.c is Finisher's own (MIT)"
+    },
+    {
+      "name": "dav1d",
+      "package": "fin-dav1d-sys",
+      "path": "third_party/dav1d",
+      "tag": "1.5.4",
+      "commit": "54706fc6bc0cdecab7e9593974a4039cc038fca7",
+      "license": "BSD-2-Clause AND ISC",
+      "patents": "AOMedia-Patent-License-1.0",
+      "files": {
+        "COPYING": "52ffbd1e6d02b96fc5cf5ad25ae56e0e34a44edb38af53c65b6a6b98277ebb2a",
+        "src/ext/x86/x86inc.asm": "85c26e2a6f5c8f5e5061ed9deea921b0b2a64e4dc7809fa20958dc1659eb4799"
+      },
+      "note": "the decoder library only (static, 8- and 16-bit, no tools), compiled by crates/fin-dav1d-sys/build.rs with cc (no meson): BSD-2-Clause (VideoLAN and dav1d authors, Two Orioles, Martin Storsjo, Janne Grunau, The rav1e contributors and others, all with the COPYING text), ISC (x264's x86inc.asm, %included by the x86_64 assembly); the hashed files carry those texts (THIRD_PARTY_NOTICES.md has them in full). crates/fin-dav1d-sys/csrc/dav1d_shim.c is Finisher's own (MIT)"
+    },
+    {
+      "name": "libopus",
+      "package": "fin-opus-sys",
+      "path": "third_party/opus",
+      "tag": "v1.6.1",
+      "commit": "22244de5a79bd1d6d623c32e72bf1954b56235be",
+      "license": "BSD-3-Clause",
+      "patents": "IETF-Opus-Royalty-Free",
+      "files": {
+        "COPYING": "db46786fe51dc83be258d8e8d7fdd761c309ade5884d1c962511a1b5886d7822"
+      },
+      "note": "the codec library only (float, static; celt_sources.mk CELT_SOURCES, silk_sources.mk SILK_SOURCES + SILK_SOURCES_FLOAT, opus_sources.mk OPUS_SOURCES + OPUS_SOURCES_FLOAT), compiled by crates/fin-opus-sys/build.rs with cc (no meson, cmake or autotools): no dnn/ or lpcnet sources (deep PLC, DRED and OSCE off), no SSE/AVX/NEON intrinsics or assembly files, no run-time CPU detection. BSD-3-Clause (Xiph.Org, Skype Limited, Octasic, Jean-Marc Valin, Timothy B. Terriberry, CSIRO, Gregory Maxwell, Mark Borgerding, Erik de Castro Lopo, Mozilla, Amazon; the COPYING text, which also points to the royalty-free IETF patent licences of Xiph.Org, Microsoft and Broadcom). crates/fin-opus-sys/shim/fin_opus_shim.c is Finisher's own (MIT)"
+    },
+    {
+      "name": "vo-aacenc",
+      "package": "fin-aacenc-sys",
+      "path": "third_party/vo-aacenc",
+      "commit": "a277487e051e92e99a532294eed3c673f4d879f2",
+      "license": "Apache-2.0",
+      "files": {
+        "COPYING": "e061f6e4d36bd814ce3b8169a35a1c11b9dec8947c3da487359aafbb85670555",
+        "NOTICE": "a199740981687116598fac2c5c780528bbe3744de26ffc3ea7d6e1dff5ed2e2b"
+      },
+      "note": "release 0.1.3 (configure.ac) at upstream mstorsjo/vo-aacenc's last commit (2017-06-28, after the v0.1.3 tag), from Finisher's fork (spec §6.4). Linux only: the encoder library (fixed point, static; Makefile.am libvo_aacenc_la_SOURCES: common/cmnMemory.c, aacenc/basic_op, aacenc/src), compiled by crates/fin-aacenc-sys/build.rs with cc (no autotools) for Linux targets only; no ARMv5E/ARMv7 assembly, no example program. Apache-2.0 (VisualOn, Android Open Source Project; the COPYING text and the section 4(d) NOTICE). Its patent grant covers VisualOn's contributions only; AAC patent licensing is counsel item 6.1 (aacenc/patent_disclaimer.txt: no grant of patent rights). crates/fin-aacenc-sys/shim/fin_aacenc_shim.c is Finisher's own (MIT)"
+    },
+    {
+      "name": "SQLite",
+      "package": "libsqlite3-sys",
+      "version": "0.39",
+      "license": "blessing",
+      "note": "the SQLite amalgamation bundled by libsqlite3-sys (rusqlite's `bundled` feature); SQLite 3.54.0, which has the WAL-reset fix (crates/fin-store/tests/sqlite_engine.rs); SQLite is in the public domain"
+    },
+    {
+      "name": "BLAKE3",
+      "package": "blake3",
+      "version": "1",
+      "license": "CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception",
+      "note": "the crate's own C and assembly implementations, compiled by its build script with cc"
+    },
+    {
+      "name": "ring",
+      "package": "ring",
+      "version": "0.17",
+      "license": "Apache-2.0 AND ISC",
+      "note": "the crate's bundled C and assembly (derived from BoringSSL), compiled by its build script"
+    },
+    {
+      "name": "AWS-LC",
+      "package": "aws-lc-sys",
+      "version": "0.47",
+      "license": "ISC AND (Apache-2.0 OR ISC) AND Apache-2.0 AND MIT AND BSD-3-Clause AND (Apache-2.0 OR ISC OR MIT) AND (Apache-2.0 OR ISC OR MIT-0)",
+      "note": "AWS-LC's bundled C and assembly, compiled by the crate's build script with its cc builder (no CMake); on Windows x64 the bundled `prebuilt-nasm` objects. `fin-registry` uses it through `aws-lc-rs` for TUF signatures and the editor's ed25519 keys (8A Decision 8)"
+    },
+    {
+      "name": "aws-lc-rs",
+      "package": "aws-lc-rs",
+      "version": "1.19",
+      "license": "ISC AND (Apache-2.0 OR ISC)",
+      "note": "its `links` key only ties it to one `aws-lc-sys` version; it compiles no C of its own"
+    }
+  ],
+  "allow": [
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSD-3-Clause-Clear",
+    "MIT",
+    "ISC",
+    "Zlib",
+    "Apache-2.0",
+    "CC0-1.0",
+    "blessing"
+  ],
+  "patentLicences": [
+    "AOMedia-Patent-License-1.0",
+    "WebM-Patent-Grant",
+    "IETF-Opus-Royalty-Free"
+  ]
+}

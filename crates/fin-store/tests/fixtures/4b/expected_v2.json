@@ -1,0 +1,216 @@
+{
+  "branches": {
+    "br1": {
+      "project": {
+        "assets": {
+          "a1": {
+            "audio": {
+              "channels": 2,
+              "sampleRate": 48000
+            },
+            "duration": "600",
+            "fingerprint": "fixture-fingerprint",
+            "id": "a1",
+            "kind": "media",
+            "path": "media/clip.mov",
+            "video": {
+              "height": 1080,
+              "rate": "30",
+              "width": 1920
+            }
+          }
+        },
+        "id": "01m6rj42y0bhgvvt305g45s90j",
+        "name": "4B fixture",
+        "rate": "30",
+        "schemaVersion": 2,
+        "timelines": [
+          {
+            "id": "tl1",
+            "name": "Timeline 1",
+            "rate": "30",
+            "resolution": {
+              "height": 1920,
+              "width": 1080
+            },
+            "tracks": [
+              {
+                "id": "t1",
+                "items": [
+                  {
+                    "asset": "a1",
+                    "duration": "8",
+                    "id": "c1",
+                    "kind": "clip",
+                    "sourceIn": "0",
+                    "start": "0"
+                  },
+                  {
+                    "asset": "a1",
+                    "duration": "8",
+                    "id": "c2",
+                    "kind": "clip",
+                    "sourceIn": "0",
+                    "start": "8"
+                  },
+                  {
+                    "asset": "a1",
+                    "duration": "4",
+                    "id": "c5",
+                    "kind": "clip",
+                    "sourceIn": "0",
+                    "start": "100"
+                  },
+                  {
+                    "asset": "a1",
+                    "duration": "2",
+                    "id": "c8",
+                    "kind": "clip",
+                    "sourceIn": "0",
+                    "start": "300"
+                  }
+                ],
+                "kind": "video",
+                "name": "V1"
+              },
+              {
+                "id": "t2",
+                "items": [
+                  {
+                    "asset": "a1",
+                    "duration": "11",
+                    "id": "c3",
+                    "kind": "clip",
+                    "sourceIn": "1",
+                    "start": "0"
+                  },
+                  {
+                    "asset": "a1",
+                    "duration": "5",
+                    "id": "c6",
+                    "kind": "clip",
+                    "sourceIn": "0",
+                    "start": "100"
+                  }
+                ],
+                "kind": "audio",
+                "name": "A1"
+              }
+            ]
+          }
+        ]
+      },
+      "rev": 11
+    },
+    "main": {
+      "project": {
+        "assets": {
+          "a1": {
+            "audio": {
+              "channels": 2,
+              "sampleRate": 48000
+            },
+            "duration": "600",
+            "fingerprint": "fixture-fingerprint",
+            "id": "a1",
+            "kind": "media",
+            "path": "media/clip.mov",
+            "video": {
+              "height": 1080,
+              "rate": "30",
+              "width": 1920
+            }
+          }
+        },
+        "id": "01m6rj42y0bhgvvt305g45s90j",
+        "name": "4B fixture",
+        "rate": "30",
+        "schemaVersion": 2,
+        "timelines": [
+          {
+            "id": "tl1",
+            "name": "Timeline 1",
+            "rate": "30",
+            "resolution": {
+              "height": 1920,
+              "width": 1080
+            },
+            "tracks": [
+              {
+                "id": "t1",
+                "items": [
+                  {
+                    "asset": "a1",
+                    "duration": "8",
+                    "id": "c1",
+                    "kind": "clip",
+                    "sourceIn": "0",
+                    "start": "0"
+                  },
+                  {
+                    "asset": "a1",
+                    "duration": "8",
+                    "id": "c2",
+                    "kind": "clip",
+                    "sourceIn": "0",
+                    "start": "8"
+                  },
+                  {
+                    "asset": "a1",
+                    "duration": "4",
+                    "id": "c5",
+                    "kind": "clip",
+                    "sourceIn": "0",
+                    "start": "100"
+                  },
+                  {
+                    "asset": "a1",
+                    "duration": "3",
+                    "id": "c7",
+                    "kind": "clip",
+                    "sourceIn": "0",
+                    "start": "204"
+                  },
+                  {
+                    "asset": "a1",
+                    "duration": "2",
+                    "id": "c8",
+                    "kind": "clip",
+                    "sourceIn": "0",
+                    "start": "303"
+                  }
+                ],
+                "kind": "video",
+                "name": "V1"
+              },
+              {
+                "id": "t2",
+                "items": [
+                  {
+                    "asset": "a1",
+                    "duration": "11",
+                    "id": "c3",
+                    "kind": "clip",
+                    "sourceIn": "1",
+                    "start": "0"
+                  },
+                  {
+                    "asset": "a1",
+                    "duration": "5",
+                    "id": "c6",
+                    "kind": "clip",
+                    "sourceIn": "0",
+                    "start": "100"
+                  }
+                ],
+                "kind": "audio",
+                "name": "A1"
+              }
+            ]
+          }
+        ]
+      },
+      "rev": 16
+    }
+  }
+}

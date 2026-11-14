@@ -9,28 +9,31 @@ use tempfile::TempDir;
 
 /// Rate 30; asset a1 (60 s, video); t1 holds c1 [0, 5) and c2 [5, 10); t2 (audio) is empty.
 fn snapshot() -> Value {
-    let clip = |id: &str, start: &str| json!({ "id": id, "asset": "a1", "start": start, "sourceIn": "0", "duration": "5" });
+    let clip = |id: &str, start: &str| json!({ "id": id, "kind": "clip", "asset": "a1", "start": start, "sourceIn": "0", "duration": "5" });
     json!({
         "rev": 7,
         "project": {
             "id": "p1",
             "name": "Demo",
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "rate": "30",
-            "timeline": {
+            "timelines": [{
                 "id": "tl1",
+                "name": "Timeline 1",
+                "rate": "30",
+                "resolution": { "width": 1080, "height": 1920 },
                 "tracks": [
-                    { "id": "t1", "kind": "video", "items": [clip("c1", "0"), clip("c2", "5")] },
-                    { "id": "t2", "kind": "audio", "items": [] },
+                    { "id": "t1", "kind": "video", "name": "V1", "items": [clip("c1", "0"), clip("c2", "5")] },
+                    { "id": "t2", "kind": "audio", "name": "A1", "items": [] },
                 ],
-            },
+            }],
             "assets": {
                 "a1": {
                     "id": "a1",
+                    "kind": "media",
                     "path": "/media/a.mp4",
                     "duration": "60",
                     "video": { "width": 1920, "height": 1080, "rate": "30" },
-                    "audio": null,
                     "fingerprint": "f",
                 },
             },
@@ -160,19 +163,43 @@ fn map_is_small_and_lists_every_group() {
         .iter()
         .map(|g| g.as_str().unwrap())
         .collect();
-    for group in ["project", "read", "asset", "clip", "batch", "meta"] {
+    let lines: Vec<&str> = run.json["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l.as_str().unwrap())
+        .collect();
+    assert_eq!(lines.len(), groups.len(), "one line per group");
+    for group in [
+        "project",
+        "read",
+        "asset",
+        "clip",
+        "image",
+        "graphic",
+        "item",
+        "transition",
+        "track",
+        "timeline",
+        "marker",
+        "bin",
+        "batch",
+        "meta",
+    ] {
         assert!(groups.contains(&group), "{group} missing");
         let help = env.run(&["help", group]);
         assert_eq!(help.code, 0, "{}", help.stdout);
         assert_eq!(help.json["group"], group);
+        let line = lines
+            .iter()
+            .find(|l| l.starts_with(&format!("{group}: ")))
+            .unwrap_or_else(|| panic!("map lacks group {group}"));
+        let listed: Vec<&str> = line.split_once(": ").unwrap().1.split(' ').collect();
         for c in help.json["commands"].as_array().unwrap() {
-            let usage = c["usage"].as_str().unwrap();
-            let listed = run.json["commands"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|l| l.as_str().unwrap().starts_with(usage));
-            assert!(listed, "map lacks {usage}");
+            let name = c["name"].as_str().unwrap();
+            let short = name.strip_prefix(&format!("{group}.")).unwrap_or(name);
+            assert!(listed.contains(&short), "map lacks {name} in {line}");
+            assert!(c["usage"].as_str().unwrap().starts_with("fin "));
         }
     }
     assert_eq!(env.run(&["help"]).json, run.json);
@@ -221,7 +248,7 @@ fn insert_echoes_resolved_rationals() {
     assert_eq!(r["bindings"], json!({ "$clip": "c3" }));
     assert_eq!(
         r["diff"]["changes"],
-        json!([{ "kind": "clip", "id": "c3", "change": "added" }])
+        json!([{ "kind": "item", "id": "c3", "change": "added", "op": 0, "track": "t1" }])
     );
     assert_eq!(r["txId"].as_str().unwrap().len(), 26, "ULID txId");
 }
@@ -239,7 +266,7 @@ fn insert_resolves_end_and_after() {
     assert_eq!(after.json["resolved"]["at"], "5", "{}", after.stdout);
     assert_eq!(
         after.json["diff"]["shifts"],
-        json!([{ "track": "t1", "from": "5", "by": "1/2" }])
+        json!([{ "track": "t1", "from": "5", "by": "1/2", "op": 0 }])
     );
     assert_error(
         &env.run(&[
@@ -275,10 +302,13 @@ fn idem_key_becomes_tx_id() {
     let run = env.run(&["clip", "delete", "c1", "--idem-key", "k-1"]);
     assert_eq!(run.code, 0, "{}", run.stdout);
     assert_eq!(run.json["txId"], "k-1");
-    assert_eq!(run.json["resolved"], json!({ "clip": "c1" }));
+    assert_eq!(
+        run.json["resolved"],
+        json!({ "clip": "c1", "mode": "ripple" })
+    );
     assert_eq!(
         run.json["diff"]["shifts"],
-        json!([{ "track": "t1", "from": "5", "by": "-5" }])
+        json!([{ "track": "t1", "from": "5", "by": "-5", "op": 0 }])
     );
 }
 
@@ -289,7 +319,7 @@ fn trim_takes_signed_deltas() {
     assert_eq!(run.code, 0, "{}", run.stdout);
     assert_eq!(
         run.json["resolved"],
-        json!({ "clip": "c1", "edge": "start", "delta": "1/2" })
+        json!({ "clip": "c1", "edge": "start", "delta": "1/2", "mode": "ripple", "edgeAt": "0" })
     );
     let run = env.run(&["clip", "trim", "c2", "--end", "-1s"]);
     assert_eq!(run.json["resolved"]["delta"], "-1", "{}", run.stdout);
@@ -327,17 +357,16 @@ fn reads_come_from_the_snapshot() {
     assert_eq!(status.code, 0);
     assert_eq!(status.json["rev"], 7);
     assert_eq!(
-        status.json["tracks"][0],
-        json!({ "id": "t1", "kind": "video", "clips": 2, "end": "10" })
+        status.json["timelines"][0]["tracks"][0],
+        json!({ "id": "t1", "name": "V1", "kind": "video", "items": 2, "end": "10" })
     );
+    assert_eq!(status.json["server"], false);
     assert_eq!(status.json["assets"], json!(["a1"]));
     let view = env.run(&["view", "--track", "t1", "--range", "6s.."]);
     assert_eq!(view.code, 0, "{}", view.stdout);
     assert_eq!(
-        view.json["tracks"],
-        json!([{ "id": "t1", "kind": "video", "clips": [
-            { "id": "c2", "start": "5", "end": "10", "asset": "a1", "sourceIn": "0" }
-        ] }])
+        view.json["lines"].as_array().unwrap()[1..],
+        [json!("00:05.0–00:10.0  V1  c2 clip a1 [0.0s+5.0s]")]
     );
     assert_eq!(
         view.json["resolved"]["range"],
@@ -409,6 +438,32 @@ fn without_a_server_online_commands_are_unavailable() {
     );
 }
 
+/// Branches and history are planned by the server: with the snapshot hook (no server) every
+/// one of them, `--dry-run` included, is unavailable; reads honour `--branch` by ignoring it.
+#[test]
+fn history_commands_need_a_server() {
+    let offline = Env::offline();
+    for args in [
+        &["branch", "new", "b"][..],
+        &["branch", "ls"],
+        &["branch", "rename", "a", "b", "--dry-run"],
+        &["branch", "archive", "a", "--dry-run"],
+        &["checkpoint", "cp"],
+        &["undo", "--dry-run"],
+        &["redo"],
+        &["merge", "b", "--dry-run"],
+        &["cherry-pick", "t1"],
+        &["revert", "m1"],
+        &["project", "recover"],
+    ] {
+        assert_error(&offline.run(args), 5, "SERVER_UNAVAILABLE");
+    }
+    assert_eq!(offline.run(&["--branch", "b", "status"]).code, 0);
+    assert_error(&offline.run(&["try", "keep"]), 5, "SERVER_UNAVAILABLE");
+    assert_error(&offline.run(&["branch", "new"]), 2, "USAGE");
+    assert_error(&offline.run(&["undo", "--bogus"]), 2, "USAGE");
+}
+
 #[test]
 fn project_create_dry_run_validates_locally() {
     let env = Env::no_server();
@@ -431,7 +486,7 @@ fn project_create_dry_run_validates_locally() {
             .unwrap()
             .ends_with("film")
     );
-    assert_eq!(run.json["project"]["timeline"]["tracks"][1]["id"], "t2");
+    assert_eq!(run.json["project"]["timelines"][0]["tracks"][1]["id"], "t2");
     assert_error(
         &env.run(&[
             "project",
@@ -460,4 +515,27 @@ fn project_create_dry_run_validates_locally() {
         .stderr
         .is_empty()
     );
+}
+
+#[test]
+fn project_create_empty_name_is_invalid_name() {
+    let env = Env::no_server();
+    for name in ["", "  "] {
+        let run = env.run(&["project", "create", "f", "--name", name, "--dry-run"]);
+        assert_error(&run, 3, "INVALID_NAME");
+        assert_eq!(run.json["error"]["details"]["field"], "name");
+    }
+    // A rate that is not in canonical form names the canonical one.
+    let run = env.run(&[
+        "project",
+        "create",
+        "f",
+        "--name",
+        "F",
+        "--rate",
+        "60/2",
+        "--dry-run",
+    ]);
+    assert_error(&run, 3, "INVALID_TIME");
+    assert_eq!(run.json["error"]["details"]["canonical"], "30");
 }

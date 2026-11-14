@@ -1,0 +1,117 @@
+//! Canonical mixer sources (6C plan Decision 3): a decoded interleaved frame becomes mono or
+//! planar stereo, mapped by channel position and downmixed with BS.775 coefficients.
+
+use fin_core::CoreError;
+use fin_media::audio_layout::{ChannelLayout, ChannelPos};
+use serde_json::json;
+
+use crate::Stereo;
+
+/// What the mixer reads: one channel, or two.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Canonical {
+    Mono(Vec<f32>),
+    Stereo(Stereo),
+}
+
+/// −3 dB, the BS.775 coefficient for the centre and the surrounds.
+const M3DB: f32 = 0.70710677;
+
+/// `CODEC_UNAVAILABLE {reason: channels}`.
+fn unavailable(message: String) -> CoreError {
+    CoreError::new("CODEC_UNAVAILABLE", message)
+        .with_details(json!({ "reason": "channels" }))
+        .with_fix("convert the audio to mono, stereo or a standard 5.1 or 7.1 layout")
+}
+
+/// The `(to L, to R)` gains of a position; `None` for LFE (dropped).
+fn gains(pos: ChannelPos) -> Option<(f32, f32)> {
+    use ChannelPos::*;
+    Some(match pos {
+        L => (1.0, 0.0),
+        R => (0.0, 1.0),
+        C => (M3DB, M3DB),
+        Ls | Lb => (M3DB, 0.0),
+        Rs | Rb => (0.0, M3DB),
+        Cb => (0.5, 0.5),
+        Lw => (M3DB, 0.0),
+        Rw => (0.0, M3DB),
+        Lfe | Unknown => return None,
+    })
+}
+
+/// Positions in the fixed order the downmix accumulates them, so the result does not depend
+/// on the source's channel order.
+const ORDER: [ChannelPos; 10] = {
+    use ChannelPos::*;
+    [L, R, C, Ls, Rs, Lb, Rb, Cb, Lw, Rw]
+};
+
+/// Converts interleaved frames in `layout` to the canonical form: 1 channel stays mono (bit
+/// exact); exactly `[L, R]` is stereo (bit exact, also when L = R); anything else with 2 to 8
+/// channels is mapped by position and folded to stereo (C, Ls, Rs, Lb, Rb, Lw, Rw at -3 dB, Cb
+/// at -6 dB to both, LFE dropped), accumulating in a fixed position order so every channel
+/// order of the same positions gives bit-identical output. An `Unknown` position at any
+/// channel count, more than 8 channels, no channels or a ragged buffer is
+/// `CODEC_UNAVAILABLE {reason: channels}`.
+pub fn canonical(interleaved: &[f32], layout: &ChannelLayout) -> Result<Canonical, CoreError> {
+    let n = layout.channels();
+    if n == 0 || n > 8 {
+        return Err(unavailable(format!(
+            "{n} channels are not supported (1 to 8)"
+        )));
+    }
+    if !interleaved.len().is_multiple_of(n) {
+        return Err(unavailable(format!(
+            "{} samples are not a whole number of {n}-channel frames",
+            interleaved.len()
+        )));
+    }
+    if layout.0.contains(&ChannelPos::Unknown) {
+        return Err(unavailable(
+            "a channel has no known position in the room".to_string(),
+        ));
+    }
+    if n == 1 {
+        return Ok(Canonical::Mono(interleaved.to_vec()));
+    }
+    let mut s = Stereo::default();
+    if layout.0 == [ChannelPos::L, ChannelPos::R] {
+        for f in interleaved.as_chunks::<2>().0 {
+            s.push(f[0], f[1]);
+        }
+        return Ok(Canonical::Stereo(s));
+    }
+    // (channel index, gain to L, gain to R) in position order.
+    let mut table: Vec<(usize, f32, f32)> = Vec::new();
+    for pos in ORDER {
+        let (gl, gr) = gains(pos).unwrap_or((0.0, 0.0));
+        for (i, p) in layout.0.iter().enumerate() {
+            if *p == pos {
+                table.push((i, gl, gr));
+            }
+        }
+    }
+    for f in interleaved.chunks_exact(n) {
+        let (mut l, mut r) = (0.0f32, 0.0f32);
+        for &(i, gl, gr) in &table {
+            if gl != 0.0 {
+                l += f[i] * gl;
+            }
+            if gr != 0.0 {
+                r += f[i] * gr;
+            }
+        }
+        s.push(l, r);
+    }
+    Ok(Canonical::Stereo(s))
+}
+
+/// The analysis feed's fold: mono as is, stereo as `0.5·(L + R)`. `out` is cleared first.
+pub fn fold_mono(c: &Canonical, out: &mut Vec<f32>) {
+    out.clear();
+    match c {
+        Canonical::Mono(m) => out.extend_from_slice(m),
+        Canonical::Stereo(s) => out.extend(s.l.iter().zip(&s.r).map(|(l, r)| 0.5 * (l + r))),
+    }
+}

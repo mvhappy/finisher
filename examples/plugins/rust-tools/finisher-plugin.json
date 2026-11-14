@@ -1,0 +1,56 @@
+{
+  "manifestVersion": 1,
+  "id": "@example/rust-tools",
+  "version": "0.1.0",
+  "kind": "code",
+  "hostApi": "^1.1",
+  "license": "MIT",
+  "publisher": { "name": "Finisher examples" },
+  "platforms": ["darwin-arm64", "linux-x64", "linux-arm64", "win32-x64"],
+  "runtime": {
+    "type": "native",
+    "exec": {
+      "darwin-arm64": "bin/darwin-arm64/rust-tools",
+      "linux-x64": "bin/linux-x64/rust-tools",
+      "linux-arm64": "bin/linux-arm64/rust-tools",
+      "win32-x64": "bin/win32-x64/rust-tools.exe"
+    }
+  },
+  "permissions": [
+    { "perm": "project:read" },
+    { "perm": "project:write" },
+    { "perm": "net", "origins": ["https://api.example.org"] }
+  ],
+  "messages": "i18n",
+  "locales": ["en"],
+  "contributes": {
+    "commands": [
+      {
+        "name": "trim-silence",
+        "title": "cmd.trimSilence",
+        "writes": true,
+        "args": {
+          "type": "object",
+          "properties": {
+            "label": { "type": "string", "minLength": 1, "maxLength": 64, "description": "arg.label" },
+            "mode": { "type": "string", "enum": ["lift", "ripple"], "description": "arg.mode" }
+          },
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "fetch-title",
+        "title": "cmd.fetchTitle",
+        "writes": false,
+        "timeoutS": 30,
+        "args": {
+          "type": "object",
+          "properties": {
+            "path": { "type": "string", "pattern": "^/[A-Za-z0-9/_.-]*$", "maxLength": 256, "description": "arg.path" }
+          },
+          "additionalProperties": false
+        }
+      }
+    ]
+  }
+}

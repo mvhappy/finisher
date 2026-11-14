@@ -1,0 +1,50 @@
+{
+  "manifestVersion": 1,
+  "id": "@example/ts-tools",
+  "version": "0.1.0",
+  "kind": "code",
+  "hostApi": "^1.1",
+  "license": "MIT",
+  "publisher": { "name": "Finisher examples" },
+  "platforms": ["darwin-arm64", "linux-x64", "linux-arm64", "win32-x64"],
+  "runtime": { "type": "node", "main": "dist/plugin.mjs", "node": ">=24.22" },
+  "permissions": [
+    { "perm": "project:read" },
+    { "perm": "project:write" },
+    { "perm": "net", "origins": ["https://api.example.org"] },
+    { "perm": "fs", "scope": "pluginData", "access": "readWrite" }
+  ],
+  "messages": "messages",
+  "locales": ["en"],
+  "contributes": {
+    "commands": [
+      {
+        "name": "trim-silence",
+        "title": "commands.trimSilence.title",
+        "writes": true,
+        "args": {
+          "type": "object",
+          "properties": {
+            "thresholdDb": { "type": "number", "minimum": -120, "maximum": 0, "description": "commands.trimSilence.thresholdDb" },
+            "mode": { "type": "string", "enum": ["ripple", "lift"], "description": "commands.trimSilence.mode" }
+          },
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "fetch-title",
+        "title": "commands.fetchTitle.title",
+        "writes": false,
+        "timeoutS": 30,
+        "args": {
+          "type": "object",
+          "properties": {
+            "url": { "type": "string", "pattern": "^https://api\\.example\\.org/", "maxLength": 2048, "description": "commands.fetchTitle.url" }
+          },
+          "required": ["url"],
+          "additionalProperties": false
+        }
+      }
+    ]
+  }
+}

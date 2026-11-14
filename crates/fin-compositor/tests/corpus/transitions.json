@@ -1,0 +1,919 @@
+[
+ {
+  "name": "crossfade-0.0",
+  "out": [
+   320,
+   180
+  ],
+  "plan": {
+   "timeline": "tl1",
+   "t": "0",
+   "resolution": {
+    "width": 320,
+    "height": 180
+   },
+   "layers": [
+    {
+     "item": "c1",
+     "kind": "clip",
+     "track": "V1",
+     "local": "0",
+     "source": {
+      "asset": "a1",
+      "time": "0"
+     },
+     "transform": {
+      "position": [
+       0,
+       0
+      ],
+      "scale": [
+       1,
+       1
+      ],
+      "rotation": 0,
+      "anchor": [
+       0.5,
+       0.5
+      ]
+     },
+     "crop": {
+      "left": 0,
+      "right": 0,
+      "top": 0,
+      "bottom": 0
+     },
+     "opacity": 1.0,
+     "blend": "normal",
+     "transition": {
+      "id": "tr1",
+      "kind": "crossfade",
+      "curve": "linear",
+      "progress": 0.0,
+      "role": "out"
+     }
+    },
+    {
+     "item": "c2",
+     "kind": "clip",
+     "track": "V1",
+     "local": "0",
+     "source": {
+      "asset": "a2",
+      "time": "0"
+     },
+     "transform": {
+      "position": [
+       0,
+       0
+      ],
+      "scale": [
+       1,
+       1
+      ],
+      "rotation": 0,
+      "anchor": [
+       0.5,
+       0.5
+      ]
+     },
+     "crop": {
+      "left": 0,
+      "right": 0,
+      "top": 0,
+      "bottom": 0
+     },
+     "opacity": 1.0,
+     "blend": "normal",
+     "transition": {
+      "id": "tr1",
+      "kind": "crossfade",
+      "curve": "linear",
+      "progress": 0.0,
+      "role": "in"
+     }
+    }
+   ]
+  },
+  "sources": {
+   "a1": {
+    "pattern": {
+     "width": 320,
+     "height": 180,
+     "seed": 1
+    },
+    "rate": "30",
+    "rotation": 0,
+    "colour": {
+     "primaries": "bt709",
+     "transfer": "bt709",
+     "matrix": "bt709",
+     "range": "limited",
+     "siting": "left"
+    }
+   },
+   "a2": {
+    "pattern": {
+     "width": 320,
+     "height": 180,
+     "seed": 6
+    },
+    "rate": "30",
+    "rotation": 0,
+    "colour": {
+     "primaries": "bt709",
+     "transfer": "bt709",
+     "matrix": "bt709",
+     "range": "limited",
+     "siting": "left"
+    }
+   }
+  }
+ },
+ {
+  "name": "crossfade-0.5",
+  "out": [
+   320,
+   180
+  ],
+  "plan": {
+   "timeline": "tl1",
+   "t": "0",
+   "resolution": {
+    "width": 320,
+    "height": 180
+   },
+   "layers": [
+    {
+     "item": "c1",
+     "kind": "clip",
+     "track": "V1",
+     "local": "0",
+     "source": {
+      "asset": "a1",
+      "time": "0"
+     },
+     "transform": {
+      "position": [
+       0,
+       0
+      ],
+      "scale": [
+       1,
+       1
+      ],
+      "rotation": 0,
+      "anchor": [
+       0.5,
+       0.5
+      ]
+     },
+     "crop": {
+      "left": 0,
+      "right": 0,
+      "top": 0,
+      "bottom": 0
+     },
+     "opacity": 1.0,
+     "blend": "normal",
+     "transition": {
+      "id": "tr1",
+      "kind": "crossfade",
+      "curve": "linear",
+      "progress": 0.5,
+      "role": "out"
+     }
+    },
+    {
+     "item": "c2",
+     "kind": "clip",
+     "track": "V1",
+     "local": "0",
+     "source": {
+      "asset": "a2",
+      "time": "0"
+     },
+     "transform": {
+      "position": [
+       0,
+       0
+      ],
+      "scale": [
+       1,
+       1
+      ],
+      "rotation": 0,
+      "anchor": [
+       0.5,
+       0.5
+      ]
+     },
+     "crop": {
+      "left": 0,
+      "right": 0,
+      "top": 0,
+      "bottom": 0
+     },
+     "opacity": 1.0,
+     "blend": "normal",
+     "transition": {
+      "id": "tr1",
+      "kind": "crossfade",
+      "curve": "linear",
+      "progress": 0.5,
+      "role": "in"
+     }
+    }
+   ]
+  },
+  "sources": {
+   "a1": {
+    "pattern": {
+     "width": 320,
+     "height": 180,
+     "seed": 1
+    },
+    "rate": "30",
+    "rotation": 0,
+    "colour": {
+     "primaries": "bt709",
+     "transfer": "bt709",
+     "matrix": "bt709",
+     "range": "limited",
+     "siting": "left"
+    }
+   },
+   "a2": {
+    "pattern": {
+     "width": 320,
+     "height": 180,
+     "seed": 6
+    },
+    "rate": "30",
+    "rotation": 0,
+    "colour": {
+     "primaries": "bt709",
+     "transfer": "bt709",
+     "matrix": "bt709",
+     "range": "limited",
+     "siting": "left"
+    }
+   }
+  }
+ },
+ {
+  "name": "crossfade-1.0",
+  "out": [
+   320,
+   180
+  ],
+  "plan": {
+   "timeline": "tl1",
+   "t": "0",
+   "resolution": {
+    "width": 320,
+    "height": 180
+   },
+   "layers": [
+    {
+     "item": "c1",
+     "kind": "clip",
+     "track": "V1",
+     "local": "0",
+     "source": {
+      "asset": "a1",
+      "time": "0"
+     },
+     "transform": {
+      "position": [
+       0,
+       0
+      ],
+      "scale": [
+       1,
+       1
+      ],
+      "rotation": 0,
+      "anchor": [
+       0.5,
+       0.5
+      ]
+     },
+     "crop": {
+      "left": 0,
+      "right": 0,
+      "top": 0,
+      "bottom": 0
+     },
+     "opacity": 1.0,
+     "blend": "normal",
+     "transition": {
+      "id": "tr1",
+      "kind": "crossfade",
+      "curve": "linear",
+      "progress": 1.0,
+      "role": "out"
+     }
+    },
+    {
+     "item": "c2",
+     "kind": "clip",
+     "track": "V1",
+     "local": "0",
+     "source": {
+      "asset": "a2",
+      "time": "0"
+     },
+     "transform": {
+      "position": [
+       0,
+       0
+      ],
+      "scale": [
+       1,
+       1
+      ],
+      "rotation": 0,
+      "anchor": [
+       0.5,
+       0.5
+      ]
+     },
+     "crop": {
+      "left": 0,
+      "right": 0,
+      "top": 0,
+      "bottom": 0
+     },
+     "opacity": 1.0,
+     "blend": "normal",
+     "transition": {
+      "id": "tr1",
+      "kind": "crossfade",
+      "curve": "linear",
+      "progress": 1.0,
+      "role": "in"
+     }
+    }
+   ]
+  },
+  "sources": {
+   "a1": {
+    "pattern": {
+     "width": 320,
+     "height": 180,
+     "seed": 1
+    },
+    "rate": "30",
+    "rotation": 0,
+    "colour": {
+     "primaries": "bt709",
+     "transfer": "bt709",
+     "matrix": "bt709",
+     "range": "limited",
+     "siting": "left"
+    }
+   },
+   "a2": {
+    "pattern": {
+     "width": 320,
+     "height": 180,
+     "seed": 6
+    },
+    "rate": "30",
+    "rotation": 0,
+    "colour": {
+     "primaries": "bt709",
+     "transfer": "bt709",
+     "matrix": "bt709",
+     "range": "limited",
+     "siting": "left"
+    }
+   }
+  }
+ },
+ {
+  "name": "dissolve-0.0",
+  "out": [
+   320,
+   180
+  ],
+  "plan": {
+   "timeline": "tl1",
+   "t": "0",
+   "resolution": {
+    "width": 320,
+    "height": 180
+   },
+   "layers": [
+    {
+     "item": "c1",
+     "kind": "clip",
+     "track": "V1",
+     "local": "0",
+     "source": {
+      "asset": "a1",
+      "time": "0"
+     },
+     "transform": {
+      "position": [
+       0,
+       0
+      ],
+      "scale": [
+       1,
+       1
+      ],
+      "rotation": 0,
+      "anchor": [
+       0.5,
+       0.5
+      ]
+     },
+     "crop": {
+      "left": 0,
+      "right": 0,
+      "top": 0,
+      "bottom": 0
+     },
+     "opacity": 1.0,
+     "blend": "normal",
+     "transition": {
+      "id": "tr1",
+      "kind": "dissolve",
+      "curve": "linear",
+      "progress": 0.0,
+      "role": "out"
+     }
+    },
+    {
+     "item": "c2",
+     "kind": "clip",
+     "track": "V1",
+     "local": "0",
+     "source": {
+      "asset": "a2",
+      "time": "0"
+     },
+     "transform": {
+      "position": [
+       0,
+       0
+      ],
+      "scale": [
+       1,
+       1
+      ],
+      "rotation": 0,
+      "anchor": [
+       0.5,
+       0.5
+      ]
+     },
+     "crop": {
+      "left": 0,
+      "right": 0,
+      "top": 0,
+      "bottom": 0
+     },
+     "opacity": 1.0,
+     "blend": "normal",
+     "transition": {
+      "id": "tr1",
+      "kind": "dissolve",
+      "curve": "linear",
+      "progress": 0.0,
+      "role": "in"
+     }
+    }
+   ]
+  },
+  "sources": {
+   "a1": {
+    "pattern": {
+     "width": 320,
+     "height": 180,
+     "seed": 1
+    },
+    "rate": "30",
+    "rotation": 0,
+    "colour": {
+     "primaries": "bt709",
+     "transfer": "bt709",
+     "matrix": "bt709",
+     "range": "limited",
+     "siting": "left"
+    }
+   },
+   "a2": {
+    "pattern": {
+     "width": 320,
+     "height": 180,
+     "seed": 6
+    },
+    "rate": "30",
+    "rotation": 0,
+    "colour": {
+     "primaries": "bt709",
+     "transfer": "bt709",
+     "matrix": "bt709",
+     "range": "limited",
+     "siting": "left"
+    }
+   }
+  }
+ },
+ {
+  "name": "dissolve-0.5",
+  "out": [
+   320,
+   180
+  ],
+  "plan": {
+   "timeline": "tl1",
+   "t": "0",
+   "resolution": {
+    "width": 320,
+    "height": 180
+   },
+   "layers": [
+    {
+     "item": "c1",
+     "kind": "clip",
+     "track": "V1",
+     "local": "0",
+     "source": {
+      "asset": "a1",
+      "time": "0"
+     },
+     "transform": {
+      "position": [
+       0,
+       0
+      ],
+      "scale": [
+       1,
+       1
+      ],
+      "rotation": 0,
+      "anchor": [
+       0.5,
+       0.5
+      ]
+     },
+     "crop": {
+      "left": 0,
+      "right": 0,
+      "top": 0,
+      "bottom": 0
+     },
+     "opacity": 1.0,
+     "blend": "normal",
+     "transition": {
+      "id": "tr1",
+      "kind": "dissolve",
+      "curve": "linear",
+      "progress": 0.5,
+      "role": "out"
+     }
+    },
+    {
+     "item": "c2",
+     "kind": "clip",
+     "track": "V1",
+     "local": "0",
+     "source": {
+      "asset": "a2",
+      "time": "0"
+     },
+     "transform": {
+      "position": [
+       0,
+       0
+      ],
+      "scale": [
+       1,
+       1
+      ],
+      "rotation": 0,
+      "anchor": [
+       0.5,
+       0.5
+      ]
+     },
+     "crop": {
+      "left": 0,
+      "right": 0,
+      "top": 0,
+      "bottom": 0
+     },
+     "opacity": 1.0,
+     "blend": "normal",
+     "transition": {
+      "id": "tr1",
+      "kind": "dissolve",
+      "curve": "linear",
+      "progress": 0.5,
+      "role": "in"
+     }
+    }
+   ]
+  },
+  "sources": {
+   "a1": {
+    "pattern": {
+     "width": 320,
+     "height": 180,
+     "seed": 1
+    },
+    "rate": "30",
+    "rotation": 0,
+    "colour": {
+     "primaries": "bt709",
+     "transfer": "bt709",
+     "matrix": "bt709",
+     "range": "limited",
+     "siting": "left"
+    }
+   },
+   "a2": {
+    "pattern": {
+     "width": 320,
+     "height": 180,
+     "seed": 6
+    },
+    "rate": "30",
+    "rotation": 0,
+    "colour": {
+     "primaries": "bt709",
+     "transfer": "bt709",
+     "matrix": "bt709",
+     "range": "limited",
+     "siting": "left"
+    }
+   }
+  }
+ },
+ {
+  "name": "dissolve-1.0",
+  "out": [
+   320,
+   180
+  ],
+  "plan": {
+   "timeline": "tl1",
+   "t": "0",
+   "resolution": {
+    "width": 320,
+    "height": 180
+   },
+   "layers": [
+    {
+     "item": "c1",
+     "kind": "clip",
+     "track": "V1",
+     "local": "0",
+     "source": {
+      "asset": "a1",
+      "time": "0"
+     },
+     "transform": {
+      "position": [
+       0,
+       0
+      ],
+      "scale": [
+       1,
+       1
+      ],
+      "rotation": 0,
+      "anchor": [
+       0.5,
+       0.5
+      ]
+     },
+     "crop": {
+      "left": 0,
+      "right": 0,
+      "top": 0,
+      "bottom": 0
+     },
+     "opacity": 1.0,
+     "blend": "normal",
+     "transition": {
+      "id": "tr1",
+      "kind": "dissolve",
+      "curve": "linear",
+      "progress": 1.0,
+      "role": "out"
+     }
+    },
+    {
+     "item": "c2",
+     "kind": "clip",
+     "track": "V1",
+     "local": "0",
+     "source": {
+      "asset": "a2",
+      "time": "0"
+     },
+     "transform": {
+      "position": [
+       0,
+       0
+      ],
+      "scale": [
+       1,
+       1
+      ],
+      "rotation": 0,
+      "anchor": [
+       0.5,
+       0.5
+      ]
+     },
+     "crop": {
+      "left": 0,
+      "right": 0,
+      "top": 0,
+      "bottom": 0
+     },
+     "opacity": 1.0,
+     "blend": "normal",
+     "transition": {
+      "id": "tr1",
+      "kind": "dissolve",
+      "curve": "linear",
+      "progress": 1.0,
+      "role": "in"
+     }
+    }
+   ]
+  },
+  "sources": {
+   "a1": {
+    "pattern": {
+     "width": 320,
+     "height": 180,
+     "seed": 1
+    },
+    "rate": "30",
+    "rotation": 0,
+    "colour": {
+     "primaries": "bt709",
+     "transfer": "bt709",
+     "matrix": "bt709",
+     "range": "limited",
+     "siting": "left"
+    }
+   },
+   "a2": {
+    "pattern": {
+     "width": 320,
+     "height": 180,
+     "seed": 6
+    },
+    "rate": "30",
+    "rotation": 0,
+    "colour": {
+     "primaries": "bt709",
+     "transfer": "bt709",
+     "matrix": "bt709",
+     "range": "limited",
+     "siting": "left"
+    }
+   }
+  }
+ },
+ {
+  "name": "crossfade-equal-power",
+  "out": [
+   320,
+   180
+  ],
+  "plan": {
+   "timeline": "tl1",
+   "t": "0",
+   "resolution": {
+    "width": 320,
+    "height": 180
+   },
+   "layers": [
+    {
+     "item": "c1",
+     "kind": "clip",
+     "track": "V1",
+     "local": "0",
+     "source": {
+      "asset": "a1",
+      "time": "0"
+     },
+     "transform": {
+      "position": [
+       0,
+       0
+      ],
+      "scale": [
+       1,
+       1
+      ],
+      "rotation": 0,
+      "anchor": [
+       0.5,
+       0.5
+      ]
+     },
+     "crop": {
+      "left": 0,
+      "right": 0,
+      "top": 0,
+      "bottom": 0
+     },
+     "opacity": 1.0,
+     "blend": "normal",
+     "transition": {
+      "id": "tr1",
+      "kind": "crossfade",
+      "curve": "equalPower",
+      "progress": 0.25,
+      "role": "out"
+     }
+    },
+    {
+     "item": "c2",
+     "kind": "clip",
+     "track": "V1",
+     "local": "0",
+     "source": {
+      "asset": "a2",
+      "time": "0"
+     },
+     "transform": {
+      "position": [
+       0,
+       0
+      ],
+      "scale": [
+       1,
+       1
+      ],
+      "rotation": 0,
+      "anchor": [
+       0.5,
+       0.5
+      ]
+     },
+     "crop": {
+      "left": 0,
+      "right": 0,
+      "top": 0,
+      "bottom": 0
+     },
+     "opacity": 1.0,
+     "blend": "normal",
+     "transition": {
+      "id": "tr1",
+      "kind": "crossfade",
+      "curve": "equalPower",
+      "progress": 0.25,
+      "role": "in"
+     }
+    }
+   ]
+  },
+  "sources": {
+   "a1": {
+    "pattern": {
+     "width": 320,
+     "height": 180,
+     "seed": 1
+    },
+    "rate": "30",
+    "rotation": 0,
+    "colour": {
+     "primaries": "bt709",
+     "transfer": "bt709",
+     "matrix": "bt709",
+     "range": "limited",
+     "siting": "left"
+    }
+   },
+   "a2": {
+    "pattern": {
+     "width": 320,
+     "height": 180,
+     "seed": 6
+    },
+    "rate": "30",
+    "rotation": 0,
+    "colour": {
+     "primaries": "bt709",
+     "transfer": "bt709",
+     "matrix": "bt709",
+     "range": "limited",
+     "siting": "left"
+    }
+   }
+  }
+ }
+]

@@ -1,0 +1,11 @@
+{
+  "name": "approval",
+  "capabilities": { "rollback": true },
+  "turns": [
+    [
+      { "emit": [{ "type": "request", "id": "req_1", "kind": "approval", "tool": "fin", "input": { "argv": ["merge"] } }] },
+      { "awaitAnswer": "req_1" },
+      { "emit": [{ "type": "turnCompleted", "stopReason": "endTurn" }] }
+    ]
+  ]
+}

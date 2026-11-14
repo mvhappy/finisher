@@ -1,0 +1,1099 @@
+//! The `media` family and `media.look` (plan 6A Task 11), driven over the envelope as a host
+//! drives it (`fin-workers media --warm`), and without one (`--replay`). GPU tests pick the
+//! adapter with `FIN_GPU` and skip without one unless `FIN_REQUIRE_GPU=1`.
+// Tests build fixtures and read outputs by path (`scripts/clippy-allow.json`).
+#![allow(clippy::disallowed_methods)]
+
+mod media_support;
+mod support;
+
+use std::path::Path;
+use std::time::Instant;
+
+use fin_compositor::compare;
+use fin_core::events::names_jobs::{JOB_KINDS, WORKER_FAMILIES};
+use fin_jobs::{HostMsg, Role};
+use fin_media::jobs::{LookFrame, LookResult, LookSource};
+use fin_media::testing::{Rect, read_id_rgba};
+use media_support::{
+    Fixture, OUT, gpu_or_skip, make_proxy, psnr_rgb, r, read_png, ssim_luma, worker_env,
+    write_params,
+};
+use serde_json::Value;
+use support::{Ev, Job, Proc, Run, no_calls, spawn_with};
+
+fn warm_worker() -> Proc {
+    let mut p = spawn_with(&["media", "--warm"], &worker_env());
+    let h = p.hello();
+    assert!(h.warm);
+    p
+}
+
+fn look(p: &mut Proc, job: &Job, params: &fin_media::jobs::LookParams) -> Run {
+    let start = job.start(
+        "media.look",
+        serde_json::to_value(params).unwrap(),
+        &["in/snapshot.json", "in/manifest.json", "out/"],
+    );
+    p.send(&HostMsg::Start(start));
+    p.drive(no_calls)
+}
+
+fn result(run: &Run) -> LookResult {
+    serde_json::from_value(run.result().clone()).unwrap()
+}
+
+#[test]
+fn hello_lists_the_media_kinds() {
+    let mut p = spawn_with(&["media"], &[]);
+    let h = p.hello();
+    assert_eq!(
+        (h.role, h.family.as_str(), h.warm),
+        (Role::Worker, "media", false)
+    );
+    let kinds: Vec<&str> = h.kinds.iter().map(|k| k.kind.as_ref()).collect();
+    assert_eq!(
+        kinds,
+        [
+            "media.look",
+            "media.capabilities",
+            "media.probeDeep",
+            "media.proxy",
+            "media.thumbs",
+            "media.pcm",
+            "media.waveform",
+            "media.listen"
+        ]
+    );
+    assert!(WORKER_FAMILIES.get("media").is_some());
+    for k in &h.kinds {
+        assert!(
+            JOB_KINDS.get(&k.kind).is_some(),
+            "{} is not in fin-core's kinds",
+            k.kind
+        );
+    }
+    // A trailing `--warm` (the engine appends it) makes the family warm.
+    warm_worker();
+}
+
+/// Five times including a midpoint tie (7/60 s lies halfway between frames 3 and 4) and one
+/// tick either side of it.
+fn times() -> Vec<fin_core::Rational> {
+    vec![r("0"), r("7/60"), r("699/6000"), r("701/6000"), r("1")]
+}
+
+#[test]
+fn frames_match_the_reference_and_the_nearest_frame() {
+    if !gpu_or_skip("frames_match_the_reference_and_the_nearest_frame") {
+        return;
+    }
+    let fx = Fixture::new();
+    let job = fx.job(None);
+    let params = fx.params(&times());
+    let mut p = warm_worker();
+    let run = look(&mut p, &job, &params);
+    let res = result(&run);
+    assert_eq!(run.items(), ["0", "1", "2", "3", "4"]);
+    let begins = run
+        .events
+        .iter()
+        .filter(|e| matches!(e, Ev::Begin(_)))
+        .count();
+    assert_eq!(begins, 5);
+    assert!(res.skipped.is_empty(), "{:?}", res.skipped);
+    assert_eq!(res.frames.len(), 5);
+    let expected: Vec<u32> = times().iter().map(|&t| fx.expected_frame(t)).collect();
+    assert_eq!(
+        expected,
+        [0, 3, 3, 4, 30],
+        "frame_at: ties go to the earlier frame"
+    );
+    for (i, (frame, &t)) in res.frames.iter().zip(times().iter()).enumerate() {
+        assert_eq!(frame.at, t);
+        assert_eq!(frame.file, format!("look-{i}.png"));
+        assert_eq!((frame.width, frame.height), (OUT.width, OUT.height));
+        assert_eq!(frame.plan, params.plan_samples[i].blake3);
+        let (size, rgba) = read_png(&job.out().join(&frame.file));
+        assert_eq!(size, OUT);
+        let whole = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: OUT.width as f64,
+            height: OUT.height as f64,
+        };
+        assert_eq!(
+            read_id_rgba(&rgba, OUT.width, OUT.height, whole),
+            Some(expected[i]),
+            "frame id at {t}"
+        );
+        let t1 = compare::t1(&rgba, &fx.reference(t));
+        assert!(compare::passes(&t1), "T1 at {t}: {t1:?}");
+    }
+    // Each item's value is its frame.
+    let values: Vec<LookFrame> = run
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            Ev::Item(_, Some(v)) => Some(serde_json::from_value(v.clone()).unwrap()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(values, res.frames);
+    assert!(!res.adapter.backend.is_empty());
+    assert_eq!(res.stats.worker_jobs, 1);
+    assert!(!res.stats.device_reused);
+}
+
+#[test]
+fn a_wrong_or_missing_plan_sample_is_plan_mismatch() {
+    if !gpu_or_skip("a_wrong_or_missing_plan_sample_is_plan_mismatch") {
+        return;
+    }
+    let fx = Fixture::new();
+    let job = fx.job(None);
+    let mut p = warm_worker();
+    let mut params = fx.params(&[r("1/2"), r("1")]);
+    params.plan_samples[1].blake3 = "0".repeat(64);
+    let run = look(&mut p, &job, &params);
+    let e = run.error();
+    assert_eq!(e.code, "PLAN_MISMATCH");
+    assert_eq!(e.details["at"], serde_json::to_value(r("1")).unwrap());
+    assert_eq!(e.details["reason"], "hash");
+    // The first frame was done before the second's plan differed.
+    assert_eq!(run.items(), ["0"]);
+    params.plan_samples.pop();
+    let run = look(&mut p, &job, &params);
+    assert_eq!(run.error().code, "PLAN_MISMATCH");
+    assert_eq!(run.error().details["reason"], "noSample");
+}
+
+#[test]
+fn plan_samples_may_arrive_in_the_starts_extra() {
+    if !gpu_or_skip("plan_samples_may_arrive_in_the_starts_extra") {
+        return;
+    }
+    // A kind's `prepare` computes the samples and hands them over as `extra.planSamples`; the
+    // params the submitter wrote carry none.
+    let fx = Fixture::new();
+    let job = fx.job(None);
+    let mut p = warm_worker();
+    let mut params = fx.params(&[r("1"), r("3/2")]);
+    let samples = std::mem::take(&mut params.plan_samples);
+    let mut start = job.start(
+        "media.look",
+        serde_json::to_value(&params).unwrap(),
+        &["in/snapshot.json", "in/manifest.json", "out/"],
+    );
+    start.job.extra = Some(serde_json::json!({ "planSamples": samples, "rev": 1 }));
+    p.send(&HostMsg::Start(start.clone()));
+    assert_eq!(result(&p.drive(no_calls)).frames.len(), 2);
+    // The extra wins over any samples in the params (review L1: a submitter's would only be
+    // ignored; `--replay` has no extra and reads the params'), and a wrong extra is a mismatch.
+    let mut lying = params.clone();
+    lying.plan_samples = samples
+        .iter()
+        .map(|s| fin_media::jobs::PlanSample {
+            at: s.at,
+            blake3: "f".repeat(64),
+        })
+        .collect();
+    let mut with_lies = start.clone();
+    with_lies.job.params = serde_json::to_value(&lying).unwrap();
+    p.send(&HostMsg::Start(with_lies));
+    assert_eq!(result(&p.drive(no_calls)).frames.len(), 2);
+    start.job.extra = Some(
+        serde_json::json!({ "planSamples": [{ "at": "1", "blake3": "0".repeat(64) }, { "at": "3/2", "blake3": "0".repeat(64) }] }),
+    );
+    p.send(&HostMsg::Start(start));
+    let run = p.drive(no_calls);
+    assert_eq!(run.error().code, "PLAN_MISMATCH");
+    let mut kept = fx.params(&[r("1")]);
+    kept.project_id = Some("p1".into());
+    assert_eq!(result(&look(&mut p, &fx.job(None), &kept)).frames.len(), 1);
+}
+
+#[test]
+fn an_h264_asset_is_skipped_as_codec_unavailable() {
+    if !gpu_or_skip("an_h264_asset_is_skipped_as_codec_unavailable") {
+        return;
+    }
+    let fx = Fixture::new();
+    let job = fx.job(None);
+    let mut p = warm_worker();
+    let res = result(&look(&mut p, &job, &fx.params(&[r("5/2")])));
+    assert_eq!(res.frames.len(), 1);
+    assert_eq!(res.skipped.len(), 1, "{:?}", res.skipped);
+    let s = &res.skipped[0];
+    assert_eq!((s.code.as_str(), s.at), ("CODEC_UNAVAILABLE", r("5/2")));
+    assert_eq!(s.details["asset"], fx.h264_id.as_str());
+}
+
+#[test]
+fn a_missing_or_changed_original_is_skipped() {
+    if !gpu_or_skip("a_missing_or_changed_original_is_skipped") {
+        return;
+    }
+    let fx = Fixture::new();
+    let mut m = fx.manifest();
+    m.assets[0].original = None;
+    let mut p = warm_worker();
+    let res = result(&look(&mut p, &fx.job(Some(&m)), &fx.params(&[r("1")])));
+    assert_eq!(res.skipped[0].code, "ORIGINALS_MISSING");
+    assert_eq!(res.skipped[0].details["reason"], "missing");
+    let mut m = fx.manifest();
+    m.assets[0].original.as_mut().unwrap().size += 1;
+    let res = result(&look(&mut p, &fx.job(Some(&m)), &fx.params(&[r("1")])));
+    assert_eq!(res.skipped[0].details["reason"], "changed");
+}
+
+#[test]
+fn a_warm_worker_reuses_its_device_and_sources_and_writes_the_same_bytes() {
+    if !gpu_or_skip("a_warm_worker_reuses_its_device_and_sources_and_writes_the_same_bytes") {
+        return;
+    }
+    let fx = Fixture::new();
+    let params = fx.params(&[r("1/3"), r("3/2")]);
+    let mut warm = warm_worker();
+    let first_job = fx.job(None);
+    let began = Instant::now();
+    let first = result(&look(&mut warm, &first_job, &params));
+    let first_ms = began.elapsed();
+    // The fastest of three reused runs (one slow run under a loaded machine is noise).
+    let mut second_ms = std::time::Duration::MAX;
+    let mut second_job = fx.job(None);
+    let mut second = None;
+    for _ in 0..3 {
+        let job = fx.job(None);
+        let began = Instant::now();
+        let res = result(&look(&mut warm, &job, &params));
+        second_ms = second_ms.min(began.elapsed());
+        if second.is_none() {
+            second = Some(res);
+            second_job = job;
+        }
+    }
+    let second = second.unwrap();
+    eprintln!("media.look of 2 frames: fresh worker {first_ms:?}, reused {second_ms:?}");
+    assert!(!first.stats.device_reused);
+    assert!(second.stats.device_reused, "the device is reused");
+    assert_eq!(
+        (first.stats.sources_opened, second.stats.sources_opened),
+        (1, 0)
+    );
+    assert!(second.stats.sources_reused >= 2, "{:?}", second.stats);
+    assert_eq!(second.stats.worker_jobs, 2);
+    // Reuse itself is what the counters above prove (device, sources, jobs served). That it also
+    // pays is a timing, which a loaded machine can invert: asked only on a quiet one.
+    if std::env::var("FIN_STRICT_TIMING").is_ok_and(|v| v == "1") {
+        assert!(
+            second_ms < first_ms,
+            "a reused worker is faster: {second_ms:?} vs {first_ms:?}"
+        );
+    }
+    // cp §6.3: the same job on a fresh worker writes the same bytes.
+    let mut fresh = warm_worker();
+    let fresh_job = fx.job(None);
+    let on_fresh = result(&look(&mut fresh, &fresh_job, &params));
+    assert!(!on_fresh.stats.device_reused);
+    for f in &second.frames {
+        let reused = std::fs::read(second_job.out().join(&f.file)).unwrap();
+        let fresh = std::fs::read(fresh_job.out().join(&f.file)).unwrap();
+        assert!(
+            reused == fresh,
+            "{} differs between a reused and a fresh worker",
+            f.file
+        );
+    }
+}
+
+#[test]
+fn replay_runs_a_job_directory_without_a_host() {
+    if !gpu_or_skip("replay_runs_a_job_directory_without_a_host") {
+        return;
+    }
+    let fx = Fixture::new();
+    let params = fx.params(&[r("7/60"), r("1")]);
+    let hosted = fx.job(None);
+    let mut p = warm_worker();
+    let want = result(&look(&mut p, &hosted, &params));
+    let job = fx.job(None);
+    write_params(&job, &params);
+    let out = std::process::Command::new(support::BIN)
+        .args([
+            "media",
+            "--replay",
+            job.dir.path().to_str().unwrap(),
+            "--originals-anywhere",
+        ])
+        .env_clear()
+        .envs(worker_env())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let answer: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let got: LookResult = serde_json::from_value(answer["result"].clone()).unwrap();
+    assert_eq!(got.frames, want.frames);
+    for f in &got.frames {
+        assert_eq!(
+            std::fs::read(job.out().join(&f.file)).unwrap(),
+            std::fs::read(hosted.out().join(&f.file)).unwrap()
+        );
+    }
+    // A broken plan sample is the job's error, exit 1.
+    let mut bad = params.clone();
+    bad.plan_samples[0].blake3 = "f".repeat(64);
+    write_params(&job, &bad);
+    let out = std::process::Command::new(support::BIN)
+        .args([
+            "media",
+            "--replay",
+            job.dir.path().to_str().unwrap(),
+            "--originals-anywhere",
+        ])
+        .env_clear()
+        .envs(worker_env())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let answer: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(answer["error"]["code"], "PLAN_MISMATCH");
+}
+
+#[test]
+fn bad_inputs_are_typed_errors() {
+    let fx = Fixture::new();
+    let mut p = spawn_with(&["media", "--warm"], &worker_env());
+    p.hello();
+    let job = fx.job(None);
+    let mut params = serde_json::to_value(fx.params(&[r("1")])).unwrap();
+    params["outName"] = "../x".into();
+    let start = job.start(
+        "media.look",
+        params,
+        &["in/snapshot.json", "in/manifest.json", "out/"],
+    );
+    p.send(&HostMsg::Start(start));
+    assert_eq!(p.drive(no_calls).error().code, "JOB_PARAMS_INVALID");
+    // A symlinked input is refused, and the refusal names the file relative to the job.
+    #[cfg(unix)]
+    {
+        let real = job.path("in/real.json");
+        std::fs::rename(job.path("in/manifest.json"), &real).unwrap();
+        std::os::unix::fs::symlink(&real, job.path("in/manifest.json")).unwrap();
+        let params = serde_json::to_value(fx.params(&[r("1")])).unwrap();
+        let start = job.start(
+            "media.look",
+            params,
+            &["in/snapshot.json", "in/manifest.json", "out/"],
+        );
+        p.send(&HostMsg::Start(start));
+        let run = p.drive(no_calls);
+        assert_eq!(run.error().code, "SHM_REFUSED");
+        assert_eq!(run.error().details["file"], "in/manifest.json");
+    }
+    // No `in/manifest.json` grant.
+    let params = serde_json::to_value(fx.params(&[r("1")])).unwrap();
+    let start = job.start("media.look", params, &["in/snapshot.json", "out/"]);
+    p.send(&HostMsg::Start(start));
+    assert_eq!(p.drive(no_calls).error().code, "JOB_INPUT_INVALID");
+}
+
+/// Every `.rs` file below `dir`.
+fn sources(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+    for e in std::fs::read_dir(dir).unwrap() {
+        let p = e.unwrap().path();
+        if p.is_dir() {
+            sources(&p, out);
+        } else if p.extension().is_some_and(|x| x == "rs") {
+            out.push(p);
+        }
+    }
+}
+
+#[test]
+fn the_family_starts_no_process() {
+    // Spec §2.9: the media family's sources never build a `Command`.
+    let mut files = Vec::new();
+    sources(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("src/media"),
+        &mut files,
+    );
+    assert!(files.len() >= 6, "{files:?}");
+    for f in files {
+        let text = std::fs::read_to_string(&f).unwrap();
+        for (i, line) in text.lines().enumerate() {
+            let code = line.split("//").next().unwrap();
+            assert!(
+                !code.contains("Command") && !code.contains("process::Child"),
+                "{}:{} starts a process: {line}",
+                f.display(),
+                i + 1
+            );
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_running_look_has_no_children_and_holds_nothing_under_the_job_directory() {
+    if !gpu_or_skip("a_running_look_has_no_children_and_holds_nothing_under_the_job_directory") {
+        return;
+    }
+    let fx = Fixture::new();
+    let job = fx.job(None);
+    let mut p = warm_worker();
+    let pid = p.pid();
+    let watcher = std::thread::spawn(move || {
+        let mut seen = 0;
+        for _ in 0..200 {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) else {
+                break;
+            };
+            for t in tasks.flatten() {
+                let children =
+                    std::fs::read_to_string(t.path().join("children")).unwrap_or_default();
+                assert!(children.trim().is_empty(), "children of {pid}: {children}");
+                seen += 1;
+            }
+        }
+        seen
+    });
+    let times: Vec<_> = (0..8).map(|i| r(&format!("{i}/4"))).collect();
+    result(&look(&mut p, &job, &fx.params(&times)));
+    assert!(watcher.join().unwrap() > 0, "the worker was observed");
+    // After the job (and its `ready`) nothing under the job directory is open or mapped.
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    let root = job.dir.path().canonicalize().unwrap();
+    for fd in std::fs::read_dir(format!("/proc/{pid}/fd"))
+        .unwrap()
+        .flatten()
+    {
+        if let Ok(target) = std::fs::read_link(fd.path()) {
+            assert!(
+                !target.starts_with(&root),
+                "fd {:?} → {}",
+                fd.file_name(),
+                target.display()
+            );
+        }
+    }
+    let maps = std::fs::read_to_string(format!("/proc/{pid}/maps")).unwrap();
+    assert!(
+        !maps.contains(root.to_str().unwrap()),
+        "a mapping under the job directory"
+    );
+}
+
+/// Review M3: the limit on a frame's side applies to the size actually drawn, so a timeline
+/// larger than it needs a `size`.
+#[test]
+fn no_size_on_a_timeline_larger_than_the_limit_is_refused() {
+    if !gpu_or_skip("no_size_on_a_timeline_larger_than_the_limit_is_refused") {
+        return;
+    }
+    let mut fx = Fixture::new();
+    fx.project.timelines[0].resolution = fin_core::Resolution {
+        width: fin_media::jobs::LOOK_MAX_SIDE + 8,
+        height: 64,
+    };
+    let mut params = fx.params(&[r("0")]);
+    params.size = None;
+    let job = fx.job(None);
+    let mut p = warm_worker();
+    let run = look(&mut p, &job, &params);
+    let e = run.error();
+    assert_eq!(e.code, "JOB_PARAMS_INVALID", "{e:?}");
+    assert_eq!(e.details["field"], "size");
+    assert!(
+        std::fs::read_dir(job.out()).unwrap().next().is_none(),
+        "no frame was drawn"
+    );
+    // With a size named, the same job renders.
+    params.size = Some(OUT);
+    let run = look(&mut p, &fx.job(None), &params);
+    assert_eq!(result(&run).frames.len(), 1);
+}
+
+/// Review B3: a worker that finds `out/` replaced by a link writes nothing through it.
+#[cfg(unix)]
+#[test]
+fn an_out_dir_that_is_a_link_is_refused() {
+    if !gpu_or_skip("an_out_dir_that_is_a_link_is_refused") {
+        return;
+    }
+    let fx = Fixture::new();
+    let job = fx.job(None);
+    let params = fx.params(&[r("0")]);
+    let elsewhere = tempfile::tempdir().unwrap();
+    std::fs::remove_dir(job.out()).unwrap();
+    std::os::unix::fs::symlink(elsewhere.path(), job.out()).unwrap();
+    let mut p = warm_worker();
+    let run = look(&mut p, &job, &params);
+    let e = run.error();
+    assert_eq!(e.code, "SHM_REFUSED", "{e:?}");
+    assert_eq!(e.details["reason"], "link");
+    assert!(
+        std::fs::read_dir(elsewhere.path())
+            .unwrap()
+            .next()
+            .is_none(),
+        "nothing was written through the link"
+    );
+}
+
+/// Review B3: a retried attempt's earlier output, or a link planted at an output's name, is
+/// replaced, never written through.
+#[cfg(unix)]
+#[test]
+fn an_output_name_that_is_a_link_is_replaced_not_followed() {
+    if !gpu_or_skip("an_output_name_that_is_a_link_is_replaced_not_followed") {
+        return;
+    }
+    let fx = Fixture::new();
+    let job = fx.job(None);
+    let params = fx.params(&[r("0")]);
+    let victim = tempfile::tempdir().unwrap().keep().join("victim");
+    std::fs::write(&victim, b"keep me").unwrap();
+    std::os::unix::fs::symlink(&victim, job.out().join("look-0.png")).unwrap();
+    let mut p = warm_worker();
+    let run = look(&mut p, &job, &params);
+    assert_eq!(result(&run).frames.len(), 1);
+    assert_eq!(std::fs::read(&victim).unwrap(), b"keep me");
+    let (size, _) = read_png(&job.out().join("look-0.png"));
+    assert_eq!(size, OUT);
+}
+
+#[cfg(unix)] // its callers make symlinks
+fn replay(job: &Job, extra: &[&str]) -> std::process::Output {
+    std::process::Command::new(support::BIN)
+        .args(["media", "--replay", job.dir.path().to_str().unwrap()])
+        .args(extra)
+        .env_clear()
+        .envs(worker_env())
+        .output()
+        .unwrap()
+}
+
+/// Review B3: `--replay` trusts nothing in the directory: a linked `out/`, an existing output
+/// and originals outside the directory are refused.
+#[cfg(unix)]
+#[test]
+fn replay_refuses_links_leftovers_and_outside_originals() {
+    if !gpu_or_skip("replay_refuses_links_leftovers_and_outside_originals") {
+        return;
+    }
+    let fx = Fixture::new();
+    let params = fx.params(&[r("0")]);
+    let error_of = |out: &std::process::Output| -> Value {
+        assert_eq!(
+            out.status.code(),
+            Some(1),
+            "{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        serde_json::from_slice::<Value>(&out.stdout).unwrap()["error"].clone()
+    };
+
+    // Originals elsewhere on the machine (the fixture's are in its own temp dir): refused as
+    // missing, the frame still drawn and the skip reported, unless the flag allows them.
+    let job = fx.job(None);
+    write_params(&job, &params);
+    let out = replay(&job, &[]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let answer: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let skipped = answer["result"]["skipped"].as_array().unwrap();
+    assert!(
+        skipped
+            .iter()
+            .any(|s| s["details"]["reason"] == "outsideReplay"),
+        "{answer}"
+    );
+    let job = fx.job(None);
+    write_params(&job, &params);
+    let out = replay(&job, &["--originals-anywhere"]);
+    let answer: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(
+        answer["result"]["skipped"].as_array().unwrap().is_empty(),
+        "{answer}"
+    );
+
+    // An output already there is never overwritten.
+    let job = fx.job(None);
+    write_params(&job, &params);
+    std::fs::write(job.out().join("look-0.png"), b"mine").unwrap();
+    let e = error_of(&replay(&job, &["--originals-anywhere"]));
+    assert_eq!(
+        (e["code"].as_str(), e["details"]["reason"].as_str()),
+        (Some("SHM_REFUSED"), Some("exists"))
+    );
+    assert_eq!(
+        std::fs::read(job.out().join("look-0.png")).unwrap(),
+        b"mine"
+    );
+
+    // A linked `out/`: nothing is written through it.
+    let job = fx.job(None);
+    write_params(&job, &params);
+    let elsewhere = tempfile::tempdir().unwrap();
+    std::fs::remove_dir(job.out()).unwrap();
+    std::os::unix::fs::symlink(elsewhere.path(), job.out()).unwrap();
+    let e = error_of(&replay(&job, &["--originals-anywhere"]));
+    assert_eq!(
+        (e["code"].as_str(), e["details"]["reason"].as_str()),
+        (Some("SHM_REFUSED"), Some("link"))
+    );
+    assert!(
+        std::fs::read_dir(elsewhere.path())
+            .unwrap()
+            .next()
+            .is_none()
+    );
+}
+
+/// Looks at `times()` with `manifest` (and `originals`), through a fresh warm worker: the
+/// result and each frame's pixels.
+fn look_with(
+    fx: &Fixture,
+    manifest: &fin_media::jobs::RenderManifest,
+    originals: bool,
+) -> (LookResult, Vec<Vec<u8>>) {
+    look_at(fx, manifest, originals, &times())
+}
+
+/// [`look_with`] at `at`.
+fn look_at(
+    fx: &Fixture,
+    manifest: &fin_media::jobs::RenderManifest,
+    originals: bool,
+    at: &[fin_core::Rational],
+) -> (LookResult, Vec<Vec<u8>>) {
+    let job = fx.job(Some(manifest));
+    let mut params = fx.params(at);
+    params.originals = originals;
+    let mut p = warm_worker();
+    let run = look(&mut p, &job, &params);
+    let res = result(&run);
+    let pixels = res
+        .frames
+        .iter()
+        .map(|f| read_png(&job.out().join(&f.file)).1)
+        .collect();
+    (res, pixels)
+}
+
+fn frame_id(rgba: &[u8]) -> Option<u32> {
+    let whole = Rect {
+        x: 0.0,
+        y: 0.0,
+        width: OUT.width as f64,
+        height: OUT.height as f64,
+    };
+    read_id_rgba(rgba, OUT.width, OUT.height, whole)
+}
+
+#[test]
+fn look_from_proxy_same_frame_ids() {
+    if !gpu_or_skip("look_from_proxy_same_frame_ids") {
+        return;
+    }
+    let fx = Fixture::new();
+    let proxy = make_proxy(&fx);
+    let (res, pixels) = look_with(&fx, &fx.manifest_with(&proxy), false);
+    assert!(res.skipped.is_empty(), "{:?}", res.skipped);
+    let expected: Vec<u32> = times().iter().map(|&t| fx.expected_frame(t)).collect();
+    // The midpoint tie and the ticks either side of it pick the original's frames.
+    assert_eq!(expected, [0, 3, 3, 4, 30]);
+    for (i, f) in res.frames.iter().enumerate() {
+        assert_eq!(f.source, LookSource::Proxy, "frame {i}");
+        assert!(f.proxy_fallbacks.is_empty());
+        assert_eq!(frame_id(&pixels[i]), Some(expected[i]), "frame id at {i}");
+    }
+}
+
+/// T5 (spec §13.2) is exact frame ids, PSNR ≥ 38 dB and SSIM ≥ 0.97 for an export "at the
+/// template bitrate". A `1080` proxy of this fixture (a hard-edged id pattern, the worst case for
+/// a lossy codec) does not reach 38 dB at any CRF: measured on Linux x86_64 (lavapipe), the
+/// lowest frame's PSNR / mean luma SSIM against the original's look is 35.48 dB / 0.9927 at the
+/// tier's CRF 32 (107 KB), 35.67 / 0.9934 at 28, 35.91 / 0.9938 at 24, 36.06 / 0.9946 at 20,
+/// 37.03 / 0.9954 at 8 (2.2× the size) and 37.60 / 0.9967 at 1 (6.1×). The gap barely closes as
+/// the CRF falls: it comes from re-encoding the decoded original (a second 4:2:0 pass over hard
+/// edges), not from the tier's quality. So the proxy keeps
+/// CRF 32 and is held to T5's SSIM and to a PSNR floor half a dB under the lowest measured
+/// frame (the owner's question, a proxy-specific tolerance below T5, is in TASKS.md).
+const PROXY_FLOOR_DB: f64 = 35.0;
+const PROXY_FLOOR_SSIM: f64 = 0.97;
+
+#[test]
+fn look_from_proxy_within_t5_of_original() {
+    if !gpu_or_skip("look_from_proxy_within_t5_of_original") {
+        return;
+    }
+    let fx = Fixture::new();
+    let proxy = make_proxy(&fx);
+    let (from_proxy, a) = look_with(&fx, &fx.manifest_with(&proxy), false);
+    let (from_original, b) = look_with(&fx, &fx.manifest(), false);
+    for (i, (pf, of)) in from_proxy
+        .frames
+        .iter()
+        .zip(&from_original.frames)
+        .enumerate()
+    {
+        assert_eq!(
+            (pf.source, of.source),
+            (LookSource::Proxy, LookSource::Original)
+        );
+        // The same plan, so the same frame ids (T5: frame ids exact), and the pictures agree
+        // within T5's SSIM and the proxy's PSNR floor.
+        assert_eq!(pf.plan, of.plan);
+        assert_eq!(frame_id(&a[i]), frame_id(&b[i]), "frame {i}");
+        let db = psnr_rgb(&a[i], &b[i]);
+        assert!(db >= PROXY_FLOOR_DB, "frame {i}: {db:.2} dB");
+        let ssim = ssim_luma(&a[i], &b[i], OUT.width);
+        assert!(ssim >= PROXY_FLOOR_SSIM, "frame {i}: SSIM {ssim:.4}");
+    }
+}
+
+#[test]
+fn originals_flag_bypasses_proxies() {
+    if !gpu_or_skip("originals_flag_bypasses_proxies") {
+        return;
+    }
+    let fx = Fixture::new();
+    let proxy = make_proxy(&fx);
+    // A proxy that could not be read would be a fallback: `--originals` never looks.
+    std::fs::remove_dir_all(&proxy.dir).unwrap();
+    let (res, pixels) = look_with(&fx, &fx.manifest_with(&proxy), true);
+    let (plain, expected) = look_with(&fx, &fx.manifest(), false);
+    for (f, g) in res.frames.iter().zip(&plain.frames) {
+        assert_eq!(f.source, LookSource::Original);
+        assert!(f.proxy_fallbacks.is_empty(), "never asked for");
+        assert_eq!(f.plan, g.plan);
+    }
+    assert_eq!(pixels, expected, "the originals' pixels, bit for bit");
+}
+
+#[test]
+fn missing_proxy_dir_falls_back_to_original() {
+    if !gpu_or_skip("missing_proxy_dir_falls_back_to_original") {
+        return;
+    }
+    let fx = Fixture::new();
+    let proxy = make_proxy(&fx);
+    let manifest = fx.manifest_with(&proxy);
+    // The entry vanished between the manifest and the open (evicted, or the volume went).
+    std::fs::remove_dir_all(&proxy.dir).unwrap();
+    let (res, pixels) = look_with(&fx, &manifest, false);
+    let (_, expected) = look_with(&fx, &fx.manifest(), false);
+    assert_eq!(pixels, expected, "the original's pixels");
+    assert!(res.skipped.is_empty(), "{:?}", res.skipped);
+    for f in &res.frames {
+        assert_eq!(f.source, LookSource::Original);
+        assert_eq!(
+            serde_json::to_value(&f.proxy_fallbacks).unwrap(),
+            serde_json::json!([{ "asset": fx.av1_id, "reason": "missing" }]),
+        );
+    }
+    // No absolute path in what the worker answers.
+    let text = serde_json::to_string(&res).unwrap();
+    assert!(!text.contains(proxy.dir.to_str().unwrap()), "{text}");
+}
+
+#[test]
+fn a_proxy_that_does_not_belong_falls_back_with_its_reason() {
+    if !gpu_or_skip("a_proxy_that_does_not_belong_falls_back_with_its_reason") {
+        return;
+    }
+    let fx = Fixture::new();
+    let (_, expected) = look_with(&fx, &fx.manifest(), false);
+    let reason_of = |proxy: &media_support::ProxyEntry| {
+        let (res, pixels) = look_with(&fx, &fx.manifest_with(proxy), false);
+        assert_eq!(pixels, expected, "the original's pixels");
+        let f = &res.frames[0];
+        assert_eq!(f.source, LookSource::Original);
+        f.proxy_fallbacks[0].reason.clone()
+    };
+    // A proxy file that was rewritten after the entry was committed (its size differs).
+    let p = make_proxy(&fx);
+    let mut bytes = std::fs::read(p.dir.join("proxy.mp4")).unwrap();
+    bytes.push(0);
+    std::fs::write(p.dir.join("proxy.mp4"), bytes).unwrap();
+    assert_eq!(reason_of(&p), "changed");
+    // A sample table that is not the one the entry lists.
+    let p = make_proxy(&fx);
+    let mut table = std::fs::read(p.dir.join("table.bin")).unwrap();
+    let last = table.len() - 1;
+    table[last] ^= 1;
+    std::fs::write(p.dir.join("table.bin"), table).unwrap();
+    assert_eq!(reason_of(&p), "changed");
+    // An entry of another asset (its fingerprint is not the manifest's).
+    let p = make_proxy(&fx);
+    let meta = std::fs::read_to_string(p.dir.join("meta.json")).unwrap();
+    std::fs::write(p.dir.join("meta.json"), meta.replace("fp-av1", "fp-other")).unwrap();
+    assert_eq!(reason_of(&p), "invalid");
+    // A directory that is not `<key[0..2]>/<key>`.
+    let p = make_proxy(&fx);
+    let mut listed = fx.manifest_with(&p);
+    listed.assets[0].proxies[0].dir = p.dir.parent().unwrap().to_str().unwrap().into();
+    let (res, _) = look_with(&fx, &listed, false);
+    assert_eq!(res.frames[0].proxy_fallbacks[0].reason, "invalid");
+}
+
+#[test]
+fn a_listed_proxy_serves_a_layer_whose_original_is_gone() {
+    if !gpu_or_skip("a_listed_proxy_serves_a_layer_whose_original_is_gone") {
+        return;
+    }
+    let fx = Fixture::new();
+    let proxy = make_proxy(&fx);
+    let mut manifest = fx.manifest_with(&proxy);
+    manifest.assets[0].original = None;
+    // The proxy and its table are enough: the look still draws the clip.
+    let (res, pixels) = look_with(&fx, &manifest, false);
+    assert!(res.skipped.is_empty(), "{:?}", res.skipped);
+    assert_eq!(frame_id(&pixels[3]), Some(4));
+    assert!(res.frames.iter().all(|f| f.source == LookSource::Proxy));
+    // `--originals` has nothing to read: the layer is skipped as before.
+    let (res, _) = look_with(&fx, &manifest, true);
+    assert!(res.skipped.iter().any(|s| s.code == "ORIGINALS_MISSING"));
+}
+
+#[test]
+fn a_warm_worker_reuses_a_proxy_and_notices_it_gone() {
+    if !gpu_or_skip("a_warm_worker_reuses_a_proxy_and_notices_it_gone") {
+        return;
+    }
+    let fx = Fixture::new();
+    let proxy = make_proxy(&fx);
+    let manifest = fx.manifest_with(&proxy);
+    let params = fx.params(&[r("1/2")]);
+    let mut p = warm_worker();
+    let mut again = || {
+        let job = fx.job(Some(&manifest));
+        result(&look(&mut p, &job, &params))
+    };
+    let first = again();
+    assert_eq!(first.frames[0].source, LookSource::Proxy);
+    assert_eq!(first.stats.sources_opened, 1);
+    // The next job of the same worker reads through the open entry.
+    let second = again();
+    assert_eq!(second.frames[0].source, LookSource::Proxy);
+    assert_eq!(
+        (second.stats.sources_opened, second.stats.sources_reused),
+        (0, 1)
+    );
+    // Evicted meanwhile: the reuse check opens the path again and finds nothing.
+    std::fs::remove_dir_all(&proxy.dir).unwrap();
+    let third = again();
+    assert_eq!(third.frames[0].source, LookSource::Original);
+    assert_eq!(third.frames[0].proxy_fallbacks[0].reason, "missing");
+    // The entry made again (another file at the same path) is opened afresh, not read through
+    // the old handle.
+    let remade = make_proxy(&fx);
+    let mut listed = manifest.clone();
+    listed.assets[0].proxies = vec![remade.listed()];
+    let job = fx.job(Some(&listed));
+    let fourth = result(&look(&mut p, &job, &params));
+    assert_eq!(fourth.frames[0].source, LookSource::Proxy);
+}
+
+/// The frame ids a look at `at` reads through the proxy of `fx`'s AV1 clip and through the clip
+/// itself, after checking every frame came from the source it was meant to.
+fn ids_both_ways(fx: &Fixture, at: &[fin_core::Rational]) -> (Vec<Option<u32>>, Vec<Option<u32>>) {
+    let proxy = make_proxy(fx);
+    let (via_proxy, a) = look_at(fx, &fx.manifest_with(&proxy), false, at);
+    let (via_original, b) = look_at(fx, &fx.manifest(), false, at);
+    for (pf, of) in via_proxy.frames.iter().zip(&via_original.frames) {
+        assert_eq!(
+            (pf.source, of.source),
+            (LookSource::Proxy, LookSource::Original)
+        );
+        assert!(pf.proxy_fallbacks.is_empty(), "{:?}", pf.proxy_fallbacks);
+        assert_eq!(pf.plan, of.plan);
+    }
+    (
+        a.iter().map(|p| frame_id(p)).collect(),
+        b.iter().map(|p| frame_id(p)).collect(),
+    )
+}
+
+/// Plan Decision 7: a proxy frame is found through the original's table, never the proxy's own
+/// CFR one. VFR durations cycle 1, 1, 2, 1, 3 ticks of 1/30 s (frames at ticks 0, 1, 2, 4, 5,
+/// 8, …): tick 3 is the midpoint of frames 2 and 4 (the earlier wins), tick 6.5 of frames 4 and
+/// 5, and a tick's hundredth past 3 picks frame 3. A CFR table would give 3, 6 and 3.
+#[test]
+fn look_from_proxy_at_vfr_midpoints() {
+    if !gpu_or_skip("look_from_proxy_at_vfr_midpoints") {
+        return;
+    }
+    let fx = Fixture::with_clip(fin_codecs::fixture::ClipSpec {
+        vfr: true,
+        ..Default::default()
+    });
+    let at = [r("1/10"), r("13/60"), r("301/3000")];
+    let (via_proxy, via_original) = ids_both_ways(&fx, &at);
+    assert_eq!(
+        via_original,
+        [Some(2), Some(4), Some(3)],
+        "the originals' frames"
+    );
+    assert_eq!(
+        via_proxy, via_original,
+        "the proxy shows the originals' frames"
+    );
+}
+
+/// An edit list: 5 ticks of nothing, media frames 5–14, then 0–9 again (a cut at presented
+/// frame 10, tick 15, and media frame 7 shown twice, at ticks 7 and 22). The proxy holds one
+/// frame per presented frame from tick 0, so its own table is 5 ticks early everywhere.
+#[test]
+fn look_from_proxy_across_edit_list_cuts_and_repeats() {
+    if !gpu_or_skip("look_from_proxy_across_edit_list_cuts_and_repeats") {
+        return;
+    }
+    let tick = 1000;
+    let fx = Fixture::with_clip(fin_codecs::fixture::ClipSpec {
+        edits: Some(vec![
+            (5 * tick, None),
+            (10 * tick, Some(5 * tick)),
+            (10 * tick, Some(0)),
+        ]),
+        ..Default::default()
+    });
+    // Either side of the cut (and its midpoint), then the repeated frame twice.
+    let at = [r("29/60"), r("1/2"), r("31/60"), r("7/30"), r("11/15")];
+    let (via_proxy, via_original) = ids_both_ways(&fx, &at);
+    assert_eq!(
+        via_original,
+        [Some(14), Some(0), Some(0), Some(7), Some(7)],
+        "the originals' frames"
+    );
+    assert_eq!(
+        via_proxy, via_original,
+        "the proxy shows the originals' frames"
+    );
+}
+
+/// The byte at the middle of `proxy.mp4`'s `mdat` payload, flipped in place (same file, same size).
+fn flip_payload_byte(path: &Path) {
+    use std::io::{Seek, SeekFrom, Write};
+    let bytes = std::fs::read(path).unwrap();
+    let at = bytes.windows(4).position(|w| w == b"mdat").unwrap() - 4;
+    let (header, size) = match u32::from_be_bytes(bytes[at..at + 4].try_into().unwrap()) {
+        // A 64-bit size follows the type.
+        1 => (
+            16,
+            u64::from_be_bytes(bytes[at + 8..at + 16].try_into().unwrap()) as usize,
+        ),
+        // To the end of the file.
+        0 => (8, bytes.len() - at),
+        n => (8, n as usize),
+    };
+    let mid = at + header + (size - header) / 2;
+    let mut f = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+    f.seek(SeekFrom::Start(mid as u64)).unwrap();
+    f.write_all(&[bytes[mid] ^ 0x5a]).unwrap();
+}
+
+#[test]
+fn a_same_size_proxy_payload_falls_back() {
+    if !gpu_or_skip("a_same_size_proxy_payload_falls_back") {
+        return;
+    }
+    let fx = Fixture::new();
+    let p = make_proxy(&fx);
+    let before = std::fs::metadata(p.dir.join("proxy.mp4")).unwrap().len();
+    flip_payload_byte(&p.dir.join("proxy.mp4"));
+    assert_eq!(
+        std::fs::metadata(p.dir.join("proxy.mp4")).unwrap().len(),
+        before
+    );
+    // Still a valid container with the original's frame count: only its digest tells.
+    let (res, pixels) = look_with(&fx, &fx.manifest_with(&p), false);
+    let (_, expected) = look_with(&fx, &fx.manifest(), false);
+    assert_eq!(pixels, expected, "the original's pixels");
+    for f in &res.frames {
+        assert_eq!(f.source, LookSource::Original);
+        assert_eq!(f.proxy_fallbacks[0].reason, "changed");
+    }
+}
+
+/// A change made to an entry's directory: its name, the change, and the fallback reason it gives.
+type Case = (&'static str, fn(&Path), &'static str);
+
+/// A warm worker reuses an open proxy only while its three files are as they were verified:
+/// any change sends it back through the full checks (the digest too), here to a fallback.
+#[test]
+fn a_warm_worker_revalidates_a_changed_proxy_entry() {
+    if !gpu_or_skip("a_warm_worker_revalidates_a_changed_proxy_entry") {
+        return;
+    }
+    let fx = Fixture::new();
+    let params = fx.params(&[r("1/2")]);
+    let cases: [Case; 4] = [
+        (
+            "proxy.mp4 rewritten in place",
+            |d| flip_payload_byte(&d.join("proxy.mp4")),
+            "changed",
+        ),
+        (
+            "proxy.mp4 truncated",
+            |d| {
+                let f = std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(d.join("proxy.mp4"))
+                    .unwrap();
+                let len = f.metadata().unwrap().len();
+                f.set_len(len - 1000).unwrap();
+            },
+            "changed",
+        ),
+        (
+            "table.bin replaced",
+            |d| {
+                let mut table = std::fs::read(d.join("table.bin")).unwrap();
+                let last = table.len() - 1;
+                table[last] ^= 1;
+                std::fs::write(d.join("table.new"), table).unwrap();
+                std::fs::rename(d.join("table.new"), d.join("table.bin")).unwrap();
+            },
+            "changed",
+        ),
+        (
+            "meta.json removed",
+            |d| std::fs::remove_file(d.join("meta.json")).unwrap(),
+            "missing",
+        ),
+    ];
+    for (name, change, reason) in cases {
+        let proxy = make_proxy(&fx);
+        let manifest = fx.manifest_with(&proxy);
+        let mut p = warm_worker();
+        let mut again = || {
+            let job = fx.job(Some(&manifest));
+            result(&look(&mut p, &job, &params))
+        };
+        let first = again();
+        assert_eq!(first.frames[0].source, LookSource::Proxy, "{name}");
+        let second = again();
+        assert_eq!(second.frames[0].source, LookSource::Proxy, "{name}");
+        assert_eq!(
+            (second.stats.sources_opened, second.stats.sources_reused),
+            (0, 1),
+            "{name}: reused"
+        );
+        change(&proxy.dir);
+        let third = again();
+        assert_eq!(third.frames[0].source, LookSource::Original, "{name}");
+        assert_eq!(third.frames[0].proxy_fallbacks[0].reason, reason, "{name}");
+    }
+}

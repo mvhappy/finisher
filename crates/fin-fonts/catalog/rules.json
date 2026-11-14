@@ -1,0 +1,28 @@
+{
+  "note": "The font catalog gate's shared rule list (4C Decision 31), read by FontCatalog::validate (Rust) and scripts/check-font-catalog.mjs (JS). Every violation is reported as one of `rules`.",
+  "licences": ["OFL-1.1", "Apache-2.0", "MIT", "BSD-3-Clause", "CC0-1.0"],
+  "formats": ["ttf", "otf", "ttc"],
+  "archiveFormats": ["zip"],
+  "maxSize": 67108864,
+  "sourceHosts": ["github.com", "raw.githubusercontent.com", "cdn.jsdelivr.net"],
+  "rules": {
+    "schema": "the catalog's shape: fields, types, no unknown fields",
+    "version": "catalogVersion is YYYY.MM.N",
+    "id": "entry and style ids are [a-z0-9][a-z0-9-]*",
+    "licence": "licence.spdx is in `licences` (no NC, ND, share-alike or GPL font exceptions)",
+    "https": "every URL (sources, licence, homepage) is https",
+    "immutableUrl": "every source URL names a 40-hex commit (a path segment, or after @) or a /releases/download/<tag>/ path",
+    "sourceHost": "every source URL's host is in `sourceHosts` (GitHub release downloads, raw files at a commit, jsDelivr at a commit), with no user info",
+    "sha256": "every sha256 is 64 lowercase hex",
+    "size": "every size is between 1 byte and maxSize",
+    "format": "file formats are in `formats`, archive formats in `archiveFormats`",
+    "weight": "weights are 1 to 1000",
+    "scripts": "scripts are ISO 15924 codes (Xxxx); an entry has at least one",
+    "unique": "entry ids, style ids within an entry, file sha256s (except a variable file, see `variable`), face indexes within a file and face keys (family|weight|italic) are unique",
+    "variable": "a file's variable.wght is [min, max] with min <= max and covers its style's weight; a file listed under several styles is variable and declared identically each time",
+    "faces": "a file has faces; defaultFace is one of them and matches its style's italic, and its weight unless the file is variable",
+    "sources": "a style has at least one source",
+    "archive": "an archive source states the archive's sha256 and size and a relative member path; a plain source states neither",
+    "fallback": "fallback ids are unique and name entries"
+  }
+}

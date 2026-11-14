@@ -1,0 +1,641 @@
+{
+  "cases": [
+    {
+      "id": "latin",
+      "what": "Latin words on one line",
+      "fonts": [
+        "sans"
+      ],
+      "words": [
+        "Hello",
+        "world"
+      ],
+      "style": {
+        "family": "TestSans",
+        "weight": 400,
+        "italic": false,
+        "size": 64,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.0,
+        "align": "left"
+      }
+    },
+    {
+      "id": "cyrillic",
+      "what": "Cyrillic words",
+      "fonts": [
+        "sans"
+      ],
+      "words": [
+        "Привет",
+        "мир"
+      ],
+      "style": {
+        "family": "TestSans",
+        "weight": 400,
+        "italic": false,
+        "size": 64,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.0,
+        "align": "left"
+      }
+    },
+    {
+      "id": "hebrew-rtl",
+      "what": "a right-to-left paragraph",
+      "fonts": [
+        "rtl"
+      ],
+      "words": [
+        "שלום",
+        "עולם"
+      ],
+      "style": {
+        "family": "TestRtl",
+        "weight": 400,
+        "italic": false,
+        "size": 64,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.0,
+        "align": "left"
+      }
+    },
+    {
+      "id": "mixed-bidi",
+      "what": "Latin with a Hebrew run (bidi)",
+      "fonts": [
+        "sans",
+        "rtl"
+      ],
+      "words": [
+        "Hello",
+        "שלום",
+        "עולם",
+        "end"
+      ],
+      "style": {
+        "family": "TestSans",
+        "weight": 400,
+        "italic": false,
+        "size": 64,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.0,
+        "align": "left"
+      }
+    },
+    {
+      "id": "han-fallback",
+      "what": "Han falls back to TestHan",
+      "fonts": [
+        "sans",
+        "han"
+      ],
+      "words": [
+        "Hi",
+        "中文",
+        "字"
+      ],
+      "style": {
+        "family": "TestSans",
+        "weight": 400,
+        "italic": false,
+        "size": 64,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.0,
+        "align": "left"
+      }
+    },
+    {
+      "id": "han-first",
+      "what": "TestHan first: its abc wins",
+      "fonts": [
+        "han",
+        "sans"
+      ],
+      "words": [
+        "abc",
+        "中文",
+        "xyz"
+      ],
+      "style": {
+        "family": "TestHan",
+        "weight": 400,
+        "italic": false,
+        "size": 64,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.0,
+        "align": "left"
+      }
+    },
+    {
+      "id": "wrap",
+      "what": "word wrap in a 400 px box",
+      "fonts": [
+        "sans"
+      ],
+      "words": [
+        "The",
+        "quick",
+        "brown",
+        "fox",
+        "jumps",
+        "over",
+        "the",
+        "lazy",
+        "dog"
+      ],
+      "style": {
+        "family": "TestSans",
+        "weight": 400,
+        "italic": false,
+        "size": 64,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.0,
+        "align": "left"
+      },
+      "maxWidth": 400.0
+    },
+    {
+      "id": "max-lines",
+      "what": "three lines into max two: overflow",
+      "fonts": [
+        "sans"
+      ],
+      "words": [
+        "The",
+        "quick",
+        "brown",
+        "fox",
+        "jumps",
+        "over",
+        "the",
+        "lazy",
+        "dog"
+      ],
+      "style": {
+        "family": "TestSans",
+        "weight": 400,
+        "italic": false,
+        "size": 64,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.0,
+        "align": "left"
+      },
+      "maxWidth": 400.0,
+      "maxLines": 2
+    },
+    {
+      "id": "long-word",
+      "what": "a word wider than the box overflows",
+      "fonts": [
+        "sans"
+      ],
+      "words": [
+        "Wwwwwwwwwwwwwwww"
+      ],
+      "style": {
+        "family": "TestSans",
+        "weight": 400,
+        "italic": false,
+        "size": 64,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.0,
+        "align": "left"
+      },
+      "maxWidth": 300.0
+    },
+    {
+      "id": "center",
+      "what": "centered lines",
+      "fonts": [
+        "sans"
+      ],
+      "words": [
+        "one",
+        "two",
+        "three",
+        "four",
+        "five",
+        "six"
+      ],
+      "style": {
+        "family": "TestSans",
+        "weight": 400,
+        "italic": false,
+        "size": 64,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.0,
+        "align": "center"
+      },
+      "maxWidth": 500.0
+    },
+    {
+      "id": "right",
+      "what": "right-aligned lines",
+      "fonts": [
+        "sans"
+      ],
+      "words": [
+        "one",
+        "two",
+        "three",
+        "four",
+        "five",
+        "six"
+      ],
+      "style": {
+        "family": "TestSans",
+        "weight": 400,
+        "italic": false,
+        "size": 64,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.0,
+        "align": "right"
+      },
+      "maxWidth": 500.0
+    },
+    {
+      "id": "letter-spacing",
+      "what": "0.05 em tracking, odd size",
+      "fonts": [
+        "sans"
+      ],
+      "words": [
+        "Spacing",
+        "test"
+      ],
+      "style": {
+        "family": "TestSans",
+        "weight": 400,
+        "italic": false,
+        "size": 37.5,
+        "lineHeight": 1.1,
+        "letterSpacing": 0.05,
+        "align": "left"
+      }
+    },
+    {
+      "id": "missing",
+      "what": "a code point no face maps",
+      "fonts": [
+        "sans"
+      ],
+      "words": [
+        "price",
+        "5€"
+      ],
+      "style": {
+        "family": "TestSans",
+        "weight": 400,
+        "italic": false,
+        "size": 64,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.0,
+        "align": "left"
+      }
+    },
+    {
+      "id": "bold",
+      "what": "the bold face of a collection",
+      "fonts": [
+        "ttc#1"
+      ],
+      "words": [
+        "Bold",
+        "Latin"
+      ],
+      "style": {
+        "family": "TestLatin",
+        "weight": 700,
+        "italic": false,
+        "size": 64,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.0,
+        "align": "left"
+      }
+    },
+    {
+      "id": "collection-regular",
+      "what": "face 0 of the same collection",
+      "fonts": [
+        "ttc#0"
+      ],
+      "words": [
+        "Bold",
+        "Latin"
+      ],
+      "style": {
+        "family": "TestSans",
+        "weight": 400,
+        "italic": false,
+        "size": 64,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.0,
+        "align": "left"
+      }
+    },
+    {
+      "id": "empty",
+      "what": "no words",
+      "fonts": [
+        "sans"
+      ],
+      "words": [],
+      "style": {
+        "family": "TestSans",
+        "weight": 400,
+        "italic": false,
+        "size": 64,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.0,
+        "align": "left"
+      }
+    },
+    {
+      "id": "hyphen-word",
+      "what": "a hyphenated word is never split",
+      "fonts": [
+        "sans"
+      ],
+      "words": [
+        "aaaa-bbbb",
+        "c"
+      ],
+      "style": {
+        "family": "TestSans",
+        "weight": 400,
+        "italic": false,
+        "size": 50,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.0,
+        "align": "left"
+      },
+      "maxWidth": 150.0
+    },
+    {
+      "id": "url-word",
+      "what": "a URL is one word",
+      "fonts": [
+        "sans"
+      ],
+      "words": [
+        "see",
+        "https://example.com/a-b?c=d",
+        "now"
+      ],
+      "style": {
+        "family": "TestSans",
+        "weight": 400,
+        "italic": false,
+        "size": 50,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.0,
+        "align": "left"
+      },
+      "maxWidth": 200.0
+    },
+    {
+      "id": "cjk-long-word",
+      "what": "a long Han word takes its own overflowing line",
+      "fonts": [
+        "sans",
+        "han"
+      ],
+      "words": [
+        "中文中文中文中文",
+        "字"
+      ],
+      "style": {
+        "family": "TestSans",
+        "weight": 400,
+        "italic": false,
+        "size": 50,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.0,
+        "align": "left"
+      },
+      "maxWidth": 120.0
+    },
+    {
+      "id": "rtl-lines",
+      "what": "an RTL paragraph over two lines, right-aligned",
+      "fonts": [
+        "rtl",
+        "sans"
+      ],
+      "words": [
+        "אבג",
+        "דהו",
+        "זחט",
+        "יכל"
+      ],
+      "style": {
+        "family": "TestRtl",
+        "weight": 400,
+        "italic": false,
+        "size": 50,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.0,
+        "align": "right"
+      },
+      "maxWidth": 200.0
+    },
+    {
+      "id": "rtl-latin-line",
+      "what": "an RTL paragraph whose second line starts with Latin",
+      "fonts": [
+        "rtl",
+        "sans"
+      ],
+      "words": [
+        "שלום",
+        "עולם",
+        "abc",
+        "דהו"
+      ],
+      "style": {
+        "family": "TestRtl",
+        "weight": 400,
+        "italic": false,
+        "size": 50,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.0,
+        "align": "left"
+      },
+      "maxWidth": 260.0
+    },
+    {
+      "id": "bidi-lines",
+      "what": "an LTR paragraph whose second line starts with Hebrew",
+      "fonts": [
+        "sans",
+        "rtl"
+      ],
+      "words": [
+        "Hello",
+        "שלום",
+        "עולם",
+        "end"
+      ],
+      "style": {
+        "family": "TestSans",
+        "weight": 400,
+        "italic": false,
+        "size": 50,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.0,
+        "align": "left"
+      },
+      "maxWidth": 250.0
+    },
+    {
+      "id": "variable-600",
+      "what": "a variable face at wght 600",
+      "fonts": [
+        "var"
+      ],
+      "words": [
+        "Variable",
+        "weight"
+      ],
+      "style": {
+        "family": "TestVar",
+        "weight": 600,
+        "italic": false,
+        "size": 50,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.0,
+        "align": "left"
+      }
+    },
+    {
+      "id": "overhang",
+      "what": "outlines past their advances: left (J) and right (W) overhangs, overflowing the box",
+      "fonts": [
+        "overhang"
+      ],
+      "words": [
+        "Ja",
+        "W",
+        "aW"
+      ],
+      "style": {
+        "family": "TestOverhang",
+        "weight": 400,
+        "italic": false,
+        "size": 100,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.0,
+        "align": "left"
+      },
+      "maxWidth": 300.0
+    },
+    {
+      "id": "combining-mark",
+      "what": "zero-advance combining marks placed by the shaper's fallback positioning",
+      "fonts": [
+        "overhang"
+      ],
+      "words": [
+        "a\u0301",
+        "W\u0301"
+      ],
+      "style": {
+        "family": "TestOverhang",
+        "weight": 400,
+        "italic": false,
+        "size": 100,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.0,
+        "align": "center"
+      },
+      "maxWidth": 400.0
+    },
+    {
+      "id": "tracking-right",
+      "what": "negative tracking, right-aligned: none after each line's last glyph",
+      "fonts": [
+        "sans"
+      ],
+      "words": [
+        "WW",
+        "Wa",
+        "W"
+      ],
+      "style": {
+        "family": "TestSans",
+        "weight": 400,
+        "italic": false,
+        "size": 100,
+        "lineHeight": 1.25,
+        "letterSpacing": -0.1,
+        "align": "right"
+      },
+      "maxWidth": 400.0
+    },
+    {
+      "id": "tracking-rtl-center",
+      "what": "positive tracking on right-to-left lines, centred",
+      "fonts": [
+        "rtl"
+      ],
+      "words": [
+        "אבג",
+        "דהו",
+        "זחט"
+      ],
+      "style": {
+        "family": "TestRtl",
+        "weight": 400,
+        "italic": false,
+        "size": 100,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.1,
+        "align": "center"
+      },
+      "maxWidth": 400.0
+    },
+    {
+      "id": "tracking-marks",
+      "what": "tracking between clusters only: combining marks take none (Latin and Hebrew)",
+      "fonts": [
+        "overhang"
+      ],
+      "words": [
+        "a\u0301a",
+        "א\u05b8א"
+      ],
+      "style": {
+        "family": "TestOverhang",
+        "weight": 400,
+        "italic": false,
+        "size": 100,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.3,
+        "align": "center"
+      },
+      "maxWidth": 400.0
+    },
+    {
+      "id": "color-tracking",
+      "what": "colour glyphs inked over advances that exclude tracking",
+      "fonts": [
+        "color"
+      ],
+      "words": [
+        "WW",
+        "W"
+      ],
+      "style": {
+        "family": "TestColor",
+        "weight": 400,
+        "italic": false,
+        "size": 100,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.1,
+        "align": "right"
+      },
+      "maxWidth": 400.0
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+[package]
+name = "fin-dav1d-sys"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "dav1d's AV1 decoder built from the pinned submodule with cc (no meson), and the C shim fin-codecs calls (no features: built once)."
+links = "dav1d"
+
+[build-dependencies]
+# dav1d (decoder library, static, 8- and 16-bit) from the pinned submodule `third_party/dav1d`,
+# plus the shim over its API (`csrc/dav1d_shim.c`). nasm assembles the x86_64 assembly.
+cc = { version = "1", features = ["parallel"] }

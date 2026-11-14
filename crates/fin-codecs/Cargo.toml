@@ -1,0 +1,65 @@
+[package]
+name = "fin-codecs"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Video and audio codec traits and backends (software AV1 in 6A) and the capability probe."
+
+[dependencies]
+fin-container = { path = "../fin-container" }
+fin-core = { path = "../fin-core" }
+fin-media = { path = "../fin-media" }
+# SVT-AV1 (encoder) and the shim, built once (no features).
+fin-svt-sys = { path = "../fin-svt-sys" }
+# dav1d (AV1 decode, spec §6.4) and the shim, built once (no features) from the pinned
+# submodule `third_party/dav1d` with cc: assembly on x86_64 (nasm) and aarch64.
+fin-dav1d-sys = { path = "../fin-dav1d-sys" }
+# libopus 1.6.1 (Opus decode and encode, 6C Decision 11) and the shim, built once (no features)
+# from the pinned submodule `third_party/opus` with cc: float, no dnn, intrinsics or assembly.
+fin-opus-sys = { path = "../fin-opus-sys" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Audio containers and codecs (6C Decision 9 and the tech stack): MPL-2.0, unmodified, no
+# default features; never `opt-simd*` (the only path to rustfft). `aac` is Linux-only (below).
+symphonia = { workspace = true, features = ["wav", "aiff", "flac", "ogg", "vorbis", "mp3", "alac", "caf", "pcm"] }
+
+# Finisher's own AAC code (6C Decision 9, spec §16.4), Linux only: symphonia's AAC-LC decoder
+# and vo-aacenc (Decision 12, built from the pinned submodule `third_party/vo-aacenc`). macOS
+# and Windows use the OS codec; neither crate is in their graphs (scripts/check-crate-deps.mjs).
+[target.'cfg(target_os = "linux")'.dependencies]
+symphonia = { workspace = true, features = ["aac"] }
+fin-aacenc-sys = { path = "../fin-aacenc-sys" }
+
+# Platform codecs (6B-1), target-gated (scripts/check-crate-deps.mjs): VideoToolbox on macOS
+# (Tasks 4–5), Media Foundation on Windows 11 (Tasks 6–7). No other target links them.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { workspace = true }
+objc2-core-foundation = { workspace = true }
+objc2-core-media = { workspace = true }
+objc2-core-video = { workspace = true }
+objc2-video-toolbox = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true }
+
+[dev-dependencies]
+blake3 = "1"
+# Test signals and analysis only: `fin-codecs` never links `fin-audio` (6C Global Constraints).
+fin-audio = { path = "../fin-audio", features = ["testing"] }
+fin-codecs = { path = ".", features = ["testing"] }
+fin-container = { path = "../fin-container", features = ["testing"] }
+fin-media = { path = "../fin-media", features = ["testing"] }
+
+[features]
+# `make_fixture`-style helpers for other crates' tests (pattern clips as AV1 in MP4).
+testing = ["fin-media/testing", "fin-container/testing"]
+
+[[example]]
+name = "make_fixture"
+required-features = ["testing"]
+
+[[example]]
+name = "make_audio_fixture"
+required-features = ["testing"]

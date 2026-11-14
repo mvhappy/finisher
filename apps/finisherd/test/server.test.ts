@@ -1,12 +1,12 @@
-import { request } from "node:http";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { lockExclusive } from "@finisher/fin-node";
 import { socketPath } from "../src/config.ts";
 import { childEnv } from "../src/env.ts";
-import { addAsset, insert, NdjsonClient, ok, type RunningServer, startServer, tx } from "./support/ndjson-client.ts";
+import { until } from "./support/jobs.ts";
+import { commit, generationOf, addAsset, connectProved, insert, NdjsonClient, ok, type RunningServer, startServer, tx } from "./support/ndjson-client.ts";
 
 /**
  * Windows has no SIGTERM: `stop()` is TerminateProcess, so there is no graceful shutdown (no
@@ -41,7 +41,7 @@ async function start(): Promise<RunningServer> {
 }
 
 async function client(): Promise<NdjsonClient> {
-  const c = await NdjsonClient.connect(server!.info.socket);
+  const c = await connectProved(server!);
   clients.push(c);
   return c;
 }
@@ -55,11 +55,31 @@ async function createProject(c: NdjsonClient, name = "Demo"): Promise<string> {
 }
 
 describe("finisherd", () => {
-  test("hello returns protocol 1; finisherd.json and fin.sock are 0600", async () => {
+  test("server_starts_with_the_job_engine", async () => {
+    const { stderr } = await start();
+    // One start line with the host's capabilities: the sandbox spawner, applying no profile
+    // until one is ready on this OS (plan 7C Tasks 7 and 16).
+    await until(() => /finisherd job engine: killTree=\w+ .*sandboxed=false/.test(stderr()));
+    const line = stderr().split("\n").find((l) => l.includes("finisherd job engine:")) ?? "";
+    // Job Objects on Windows; a delegated cgroup or process groups on Linux; process groups on macOS.
+    expect(line).toMatch(WIN ? /killTree=jobObject/ : process.platform === "linux" ? /killTree=(cgroup|processGroup)/ : /killTree=processGroup/);
+    expect(line).toContain("sandbox=fin-sandbox");
+    // The engine's start ran: an empty jobs root, and the store's chain is in control.db.
+    expect(readdirSync(join(serverData, "jobs"))).toEqual([]);
+  });
+
+  test.skipIf(WIN)("jobs_dir_is_private", async () => {
+    await start();
+    expect(statSync(join(serverData, "jobs")).mode & 0o777).toBe(0o700);
+  });
+
+  test("hello returns protocol 2; finisherd.json and run/fin.sock are 0600; finisherd_json_has_no_token", async () => {
     const { info } = await start();
-    expect(info.protocolVersion).toBe(1);
-    expect(info.socket).toBe(WIN ? socketPath(serverData) : join(serverData, "fin.sock"));
-    expect(info.token.length).toBeGreaterThanOrEqual(32);
+    expect(info.protocolVersion).toBe(2);
+    expect(info.socket).toBe(WIN ? socketPath(serverData) : join(serverData, "run", "fin.sock"));
+    expect(Object.keys(JSON.parse(readFileSync(join(serverData, "finisherd.json"), "utf8"))).sort()).toEqual(
+      ["diagnostics", "envId", "pid", "protocolVersion", "socket", "wsPort"],
+    );
     if (!WIN) {
       expect(statSync(join(serverData, "finisherd.json")).mode & 0o777).toBe(0o600);
       expect(statSync(info.socket).mode & 0o777).toBe(0o600);
@@ -67,7 +87,7 @@ describe("finisherd", () => {
 
     const c = await client();
     const hello = ok<{ protocolVersion: number; capabilities: string[] }>(await c.call("server.hello", {}));
-    expect(hello.protocolVersion).toBe(1);
+    expect(hello.protocolVersion).toBe(2);
     expect(hello.capabilities).toContain("ops.subscribe");
     c.send({ _tag: "Ping" });
     expect((await c.nextFrame())._tag).toBe("Pong");
@@ -78,16 +98,16 @@ describe("finisherd", () => {
     const c = await client();
     const projectId = await createProject(c);
     const c1 = ok<{ rev: number; bindings: Record<string, string> }>(
-      await c.call("tx.commit", { projectId, tx: tx("tx-1", 0, [addAsset()]) }),
+      await commit(c, projectId, tx("tx-1", 0, [addAsset()])),
     );
     expect(c1).toMatchObject({ rev: 1, bindings: { $a: "a1" } });
-    ok(await c.call("tx.commit", { projectId, tx: tx("tx-2", 1, [insert(0, 5)]) }));
+    ok(await commit(c, projectId, tx("tx-2", 1, [insert(0, 5)])));
 
-    const snap = ok<{ rev: number; project: { timeline: { tracks: Array<{ items: unknown[] }> } } }>(
+    const snap = ok<{ rev: number; project: { timelines: Array<{ tracks: Array<{ items: unknown[] }> }> } }>(
       await c.call("snapshot.get", { projectId, branch: "main" }),
     );
     expect(snap.rev).toBe(2);
-    expect(snap.project.timeline.tracks[0]!.items).toMatchObject([{ id: "c1", start: "0", duration: "5" }]);
+    expect(snap.project.timelines[0]!.tracks[0]!.items).toMatchObject([{ id: "c1", start: "0", duration: "5" }]);
 
     const again = ok<{ projectId: string; rev: number }>(await c.call("project.open", { dir: join(tmp, "My Проєкт") }));
     expect(again).toEqual({ projectId, rev: 2 });
@@ -97,11 +117,11 @@ describe("finisherd", () => {
     await start();
     const c = await client();
     const projectId = await createProject(c);
-    ok(await c.call("tx.commit", { projectId, tx: tx("tx-asset", 0, [addAsset()]) }));
-    ok(await c.call("tx.commit", { projectId, tx: tx("tx-base", 1, [insert(0, 5)]) }));
-    ok(await c.call("tx.commit", { projectId, tx: tx("tx-del", 2, [{ op: "clip.delete", clip: "c1" }]) }));
+    ok(await commit(c, projectId, tx("tx-asset", 0, [addAsset()])));
+    ok(await commit(c, projectId, tx("tx-base", 1, [insert(0, 5)])));
+    ok(await commit(c, projectId, tx("tx-del", 2, [{ op: "clip.delete", clip: "c1" }])));
 
-    const conflict = await c.call("tx.commit", { projectId, tx: tx("tx-late", 2, [{ op: "clip.delete", clip: "c1" }]) });
+    const conflict = await commit(c, projectId, tx("tx-late", 2, [{ op: "clip.delete", clip: "c1" }]));
     expect(conflict.ok).toBe(false);
     if (conflict.ok) return;
     expect(conflict.error).toMatchObject({ _tag: "FinError", code: "CONFLICT", details: { againstTx: "tx-del", txId: "tx-late" } });
@@ -114,7 +134,7 @@ describe("finisherd", () => {
     expect(!notDir.ok && notDir.error.code).toBe("PROJECT_NOT_FOUND");
 
     // A failing subscription fails inside the stream, with the same error shape.
-    const sub = c.stream("ops.subscribe", { projectId: "nope", branch: "main", fromRev: 0 }, () => undefined);
+    const sub = c.stream("ops.subscribe", { projectId: "nope", branch: "main", fromRev: 0, generation: { incarnation: "i", n: 0 } }, () => undefined);
     const subExit = await sub.done;
     expect(!subExit.ok && subExit.error.code).toBe("PROJECT_NOT_FOUND");
   });
@@ -124,13 +144,13 @@ describe("finisherd", () => {
     const writer = await client();
     const reader = await client();
     const projectId = await createProject(writer);
-    ok(await writer.call("tx.commit", { projectId, tx: tx("tx-1", 0, [addAsset()]) }));
-    ok(await writer.call("tx.commit", { projectId, tx: tx("tx-2", 1, [insert(0, 5)]) }));
-    ok(await writer.call("tx.commit", { projectId, tx: tx("tx-3", 2, [insert(5, 5)]) }));
+    ok(await commit(writer, projectId, tx("tx-1", 0, [addAsset()])));
+    ok(await commit(writer, projectId, tx("tx-2", 1, [insert(0, 5)])));
+    ok(await commit(writer, projectId, tx("tx-3", 2, [insert(5, 5)])));
 
     // 50 concurrent commits, all against base rev 3 (asset.add never conflicts).
     const commits = Array.from({ length: 50 }, (_, i) =>
-      writer.call("tx.commit", { projectId, tx: tx(`tx-c${i}`, 3, [addAsset(`$a${i}`)]) }),
+      commit(writer, projectId, tx(`tx-c${i}`, 3, [addAsset(`$a${i}`)])),
     );
     // Join once the first of them has landed, so part arrives as backlog and part live.
     await Promise.race(commits);
@@ -138,7 +158,8 @@ describe("finisherd", () => {
     const revs: number[] = [];
     let resolveAll!: () => void;
     const all = new Promise<void>((r) => (resolveAll = r));
-    const sub = reader.stream("ops.subscribe", { projectId, branch: "main", fromRev: 3 }, (v) => {
+    const generation = await generationOf(reader, projectId);
+    const sub = reader.stream("ops.subscribe", { projectId, branch: "main", fromRev: 3, generation }, (v) => {
       revs.push((v as { rev: number }).rev);
       if (revs.length >= 50) resolveAll();
     });
@@ -149,7 +170,7 @@ describe("finisherd", () => {
     expect(revs).toEqual(Array.from({ length: 50 }, (_, i) => i + 4));
 
     // A commit after the burst still arrives live.
-    ok(await writer.call("tx.commit", { projectId, tx: tx("tx-after", 53, [addAsset("$z")]) }));
+    ok(await commit(writer, projectId, tx("tx-after", 53, [addAsset("$z")])));
     await expect.poll(() => revs.at(-1)).toBe(54);
     reader.interrupt(sub.id);
     await sub.done;
@@ -159,13 +180,13 @@ describe("finisherd", () => {
     await start();
     let c = await client();
     const projectId = await createProject(c);
-    ok(await c.call("tx.commit", { projectId, tx: tx("tx-1", 0, [addAsset()]) }));
+    ok(await commit(c, projectId, tx("tx-1", 0, [addAsset()])));
     await clients.splice(0)[0]!.close();
     const code = await server!.stop();
     server = undefined;
     if (!WIN) {
       expect(code).toBe(0);
-      for (const f of ["finisherd.json", "fin.sock"]) expect(existsSync(join(serverData, f)), f).toBe(false);
+      for (const f of ["finisherd.json", join("run", "fin.sock")]) expect(existsSync(join(serverData, f)), f).toBe(false);
     }
     // The lock file stays (never unlinked) but is released: this process can take it.
     lockExclusive(join(serverData, "finisherd.lock")).release();
@@ -183,7 +204,7 @@ describe("finisherd", () => {
     await start();
     await expect(startServer(serverData, 5_000)).rejects.toThrow(/SERVER_RUNNING/);
     const c = await client();
-    expect(ok<{ protocolVersion: number }>(await c.call("server.hello", {})).protocolVersion).toBe(1);
+    expect(ok<{ protocolVersion: number }>(await c.call("server.hello", {})).protocolVersion).toBe(2);
   });
 
   test("servers on two server-data dirs run side by side (distinct sockets/pipes)", async () => {
@@ -193,7 +214,7 @@ describe("finisherd", () => {
       expect(other.info.socket).not.toBe(info.socket);
       for (const socket of [info.socket, other.info.socket]) {
         const c = await NdjsonClient.connect(socket);
-        expect(ok<{ protocolVersion: number }>(await c.call("server.hello", {})).protocolVersion).toBe(1);
+        expect(ok<{ protocolVersion: number }>(await c.call("server.hello", {})).protocolVersion).toBe(2);
         await c.close();
       }
     } finally {
@@ -202,8 +223,8 @@ describe("finisherd", () => {
   });
 
   test("two servers racing over a stale socket: exactly one wins", async () => {
-    mkdirSync(serverData, { recursive: true, mode: 0o700 });
-    writeFileSync(join(serverData, "fin.sock"), ""); // stale leftover, nothing listening
+    mkdirSync(join(serverData, "run"), { recursive: true, mode: 0o700 });
+    writeFileSync(join(serverData, "run", "fin.sock"), ""); // stale leftover, nothing listening
     const results = await Promise.allSettled([startServer(serverData, 10_000), startServer(serverData, 10_000)]);
     const winners = results.filter((r): r is PromiseFulfilledResult<RunningServer> => r.status === "fulfilled");
     const losers = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
@@ -240,48 +261,13 @@ describe("finisherd", () => {
     symlinkSync(serverData, link, WIN ? "junction" : "dir");
     await expect(startServer(link, 5_000)).rejects.toThrow(/SERVER_DATA_UNSAFE/);
   });
-
-  test("WebSocket requires the bearer token", async () => {
-    const { info } = await start();
-    const status = (headers: Record<string, string>) =>
-      new Promise<number>((resolve, reject) => {
-        const req = request({
-          host: "127.0.0.1",
-          port: info.wsPort,
-          headers: { Connection: "Upgrade", Upgrade: "websocket", "Sec-WebSocket-Version": "13", "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==", ...headers },
-        });
-        req.on("response", (res) => resolve(res.statusCode ?? 0));
-        req.on("upgrade", (res, socket) => {
-          socket.destroy();
-          resolve(res.statusCode ?? 0);
-        });
-        req.on("error", reject);
-        req.end();
-      });
-    expect(await status({})).toBe(401);
-    expect(await status({ Authorization: "Bearer wrong" })).toBe(401);
-    expect(await status({ Authorization: `Basic ${info.token}` })).toBe(401);
-    expect(await status({ Authorization: `Bearer ${info.token}` })).toBe(101);
-
-    // A full RPC round-trip over the authenticated WebSocket.
-    const ws = new WebSocket(`ws://127.0.0.1:${info.wsPort}`, {
-      headers: { Authorization: `Bearer ${info.token}` },
-    } as unknown as string[]);
-    const reply = await new Promise<string>((resolve, reject) => {
-      ws.onopen = () => ws.send(`${JSON.stringify({ _tag: "Request", id: "1", tag: "server.hello", payload: {}, headers: [] })}\n`);
-      ws.onmessage = (e) => resolve(String(e.data));
-      ws.onerror = () => reject(new Error("websocket error"));
-    });
-    ws.close();
-    expect(JSON.parse(reply.trim())).toMatchObject({ _tag: "Exit", requestId: "1", exit: { _tag: "Success", value: { protocolVersion: 1 } } });
-  });
 });
 
 describe("socketPath", () => {
   const appData = "C:\\Users\\ann\\AppData\\Local\\Finisher";
 
-  test("Unix: fin.sock inside server-data", () => {
-    expect(socketPath("/srv/sd", "linux", "/home/ann/.local/share/finisher", "ann")).toBe(join("/srv/sd", "fin.sock"));
+  test("Unix: run/fin.sock inside server-data", () => {
+    expect(socketPath("/srv/sd", "linux", "/home/ann/.local/share/finisher", "ann")).toBe(join("/srv/sd", "run", "fin.sock"));
   });
 
   test("Windows: the default server-data owns finisher-<username>, others get a hashed pipe", () => {
