@@ -10,9 +10,9 @@
 //!    count: another class or layout than the host planned is `PLAN_MISMATCH {reason: cacheKey}`,
 //!    before anything is written.
 //! 3. **The feed** (`audio_src::DecodedSource`): decoded, canonical, resampled, written as
-//!    `out/<key>/chunk-NNNNNN.f32` (1 MiB each, the last short), each chunk complete and synced
-//!    before the next is started, then `out/<key>/meta.json` (the `EntryMeta` the host's commit
-//!    checks: every listed size and BLAKE3). Progress after each chunk, in output frames of the
+//!    `out/<key>/chunk-NNNNNN.f32` (8 MiB each, the last short), each chunk complete and synced
+//!    before the next is started, then `out/<key>/meta.json` (the compact `EntryMeta` the host's
+//!    commit checks: every listed size and BLAKE3). Progress after each chunk, in output frames of the
 //!    container's stated length when it states one; cancel between chunks.
 //!
 //! **Retries restart from sample 0** (Decision 23): nothing is checkpointed, and the item is
@@ -46,11 +46,12 @@ pub fn run(job: &StartJob, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<Valu
     p.check().map_err(job_error)?;
     let fp = p.fingerprint.clone();
     ctx.begin(&fp);
-    match make(&p, ctx, warm) {
+    match make(&p, ctx, warm, job.attempt) {
         Ok(result) => {
             let value = serde_json::to_value(&result)
                 .map_err(|e| job_error(CoreError::new("INTERNAL", e.to_string())))?;
             ctx.item(&fp, Some(value));
+            test_item_answered(&fp, job.attempt);
             Ok(json!({ "made": 1 }))
         }
         Err(Fail::Item(e)) => {
@@ -90,12 +91,19 @@ fn open_library(f: &ProxyLibraryFile) -> Result<File, Fail> {
 }
 
 /// Test builds only, after each chunk: `FIN_TEST_PCM_ABORT_AFTER=<n>` aborts the worker once `n`
-/// chunks are written (a worker death mid-entry, Decision 23's test); a fingerprint starting
-/// `test-slow-` waits 300 ms (a host that dies mid-job: hosts clear a worker's environment).
+/// chunks are written (a worker death mid-entry, Decision 23's test). Hosts clear a worker's
+/// environment, so their tests name the fault in the fingerprint: `test-slow-` waits 300 ms (a
+/// host that dies mid-job), `test-crashonce-` aborts after chunk 2 of the first attempt,
+/// `test-crashalways-` after chunk 1 of every attempt.
 #[cfg(feature = "test-hooks")]
-fn test_chunk_written(written: usize, fingerprint: &str) {
+fn test_chunk_written(written: usize, fingerprint: &str, attempt: u32) {
     if fingerprint.starts_with("test-slow-") {
         std::thread::sleep(std::time::Duration::from_millis(300));
+    }
+    if (fingerprint.starts_with("test-crashonce-") && attempt == 1 && written == 2)
+        || (fingerprint.starts_with("test-crashalways-") && written == 1)
+    {
+        std::process::abort();
     }
     if std::env::var("FIN_TEST_PCM_ABORT_AFTER")
         .ok()
@@ -107,7 +115,20 @@ fn test_chunk_written(written: usize, fingerprint: &str) {
 }
 
 #[cfg(not(feature = "test-hooks"))]
-fn test_chunk_written(_: usize, _: &str) {}
+fn test_chunk_written(_: usize, _: &str, _: u32) {}
+
+/// Test builds only: `test-crashack-` aborts right after the first attempt answered its item.
+#[cfg(feature = "test-hooks")]
+fn test_item_answered(fingerprint: &str, attempt: u32) {
+    if fingerprint.starts_with("test-crashack-") && attempt == 1 {
+        // Let the item's line reach the host first.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        std::process::abort();
+    }
+}
+
+#[cfg(not(feature = "test-hooks"))]
+fn test_item_answered(_: &str, _: u32) {}
 
 /// Writes the chunks of the feed into `out`, each complete and synced before the next.
 struct Chunks<'a> {
@@ -117,6 +138,7 @@ struct Chunks<'a> {
     buf: Vec<u8>,
     cap: usize,
     fingerprint: &'a str,
+    attempt: u32,
 }
 
 impl Chunks<'_> {
@@ -135,7 +157,7 @@ impl Chunks<'_> {
             blake3: blake3::hash(&self.buf).to_hex().to_string(),
         });
         self.buf.clear();
-        test_chunk_written(self.files.len(), self.fingerprint);
+        test_chunk_written(self.files.len(), self.fingerprint, self.attempt);
         Ok(())
     }
 
@@ -153,7 +175,12 @@ impl Chunks<'_> {
     }
 }
 
-fn make(p: &PcmParams, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<PcmResult, Fail> {
+fn make(
+    p: &PcmParams,
+    ctx: &mut JobCtx<'_>,
+    warm: &mut Warm,
+    attempt: u32,
+) -> Result<PcmResult, Fail> {
     let dir = inputs::job_dir(ctx).map_err(Fail::Job)?;
     inputs::out_dir(ctx, &dir).map_err(Fail::Job)?;
     let file = match &p.file {
@@ -191,6 +218,7 @@ fn make(p: &PcmParams, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<PcmResul
         buf: Vec::with_capacity(fin_media::jobs::CHUNK_BYTES as usize),
         cap: fin_media::jobs::CHUNK_BYTES as usize,
         fingerprint: &p.fingerprint,
+        attempt,
     };
     let channels = layout.channels() as u64;
     let mut samples = 0u64;
@@ -231,8 +259,7 @@ fn make(p: &PcmParams, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<PcmResul
         created_at: now_ms(),
     };
     let bytes = meta.bytes()?;
-    let text =
-        serde_json::to_vec_pretty(&meta).map_err(|e| CoreError::new("INTERNAL", e.to_string()))?;
+    let text = serde_json::to_vec(&meta).map_err(|e| CoreError::new("INTERNAL", e.to_string()))?;
     super::proxy::write_file(&dir, &out.join(META_FILE), &text)?;
     Ok(PcmResult {
         key: key.to_string(),

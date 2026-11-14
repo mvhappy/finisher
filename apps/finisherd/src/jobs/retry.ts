@@ -9,7 +9,7 @@ import { Effect } from "effect";
 import { finError, toFinError } from "../errors.ts";
 import { data, type Engine } from "./engine.ts";
 import { DEFAULT_HOOK_TIMEOUT_S, runHook } from "./hooks.ts";
-import { afterRun, classify, type IsolationState, nextRun, nextStep, startIsolation, withoutDone } from "./isolation.ts";
+import { afterRun, backoffMs, classify, type IsolationState, nextRun, nextStep, startIsolation, withoutDone } from "./isolation.ts";
 import type { ItemOutcome, KindSpec } from "./kinds.ts";
 import type { AttemptOutcome } from "./runner.ts";
 import { type JobRow, viewOf } from "./store.ts";
@@ -148,6 +148,16 @@ export async function afterFailure(e: Engine, row: JobRow, kind: KindSpec, outco
   // Only cold batch jobs are isolated: a warm job never is (Decision 31).
   const batch = kind.batch !== undefined && !interactive && cur.warm !== true;
   const ctx = { attempts: row.attempts, maxAttempts: row.maxAttempts, interactive, batch, inFlight: outcome.inFlight.length, freshUsed: memo.fresh === true };
+  // `crashRestarts` (6C Task 18): a crashed one-item run restarts from zero while attempts remain;
+  // a crash after its item was acknowledged ends the job with it (its output was complete).
+  if (batch && c.cls === "crash" && kind.crashRestarts === true && memo.isolation === undefined) {
+    if (e.crashed) return;
+    if ((itemsLeft(e, cur, kind) ?? []).length === 0) return finish(e, cur, kind, memo.results ?? []);
+    if (row.attempts < row.maxAttempts) {
+      requeue(e, cur, kind, { error: c.error, delayMs: backoffMs(row.attempts), memo, spent: true });
+      return;
+    }
+  }
   let step = nextStep(c.cls, ctx);
   // Asked before any POISON_ITEM verdict: an unhealthy resource makes the crash a resource fault.
   if (step.do === "isolate" && !(await healthy(e, cur, kind))) {

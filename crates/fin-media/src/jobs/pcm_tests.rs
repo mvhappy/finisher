@@ -1,5 +1,6 @@
 use super::*;
-use crate::cache::{EntryFile, RECIPES, recipe};
+use crate::cache::{EntryFile, MAX_ENTRY_FILES, MAX_META_BYTES, RECIPES, recipe};
+use fin_core::Rational;
 
 fn meta(recipe: PcmRecipe, layout: PcmLayout, files: &[(String, u64)]) -> EntryMeta {
     let input = pcm_key_input("fp", recipe, layout, VendorClass::Software);
@@ -36,8 +37,8 @@ fn recipes_are_registered() {
 
 #[test]
 fn chunk_constants() {
-    assert_eq!(PcmLayout::Stereo.chunk_frames(), 131_072);
-    assert_eq!(PcmLayout::Mono.chunk_frames(), 262_144);
+    assert_eq!(PcmLayout::Stereo.chunk_frames(), 1_048_576);
+    assert_eq!(PcmLayout::Mono.chunk_frames(), 2_097_152);
     assert_eq!(chunk_name(0), "chunk-000000.f32");
     assert_eq!(chunk_name(123_456), "chunk-123456.f32");
     assert_eq!(PcmRecipe::Pcm48.layout(1), PcmLayout::Mono);
@@ -174,19 +175,19 @@ fn entry_shape_from_meta() {
             .map(|(i, b)| (chunk_name(i), *b))
             .collect()
     };
-    // A 10 s stereo source: 3 full chunks and 86,784 frames.
+    // 50 s of stereo: 2 full chunks and 302,848 frames.
     let m = meta(
         PcmRecipe::Pcm48,
         PcmLayout::Stereo,
-        &files(&[full, full, full, 86_784 * 8]),
+        &files(&[full, full, 302_848 * 8]),
     );
     m.check().unwrap();
     let e = PcmEntry::of(&m).unwrap();
     assert_eq!(
         (e.frames, e.rate, e.layout),
-        (480_000, 48_000, PcmLayout::Stereo)
+        (2_400_000, 48_000, PcmLayout::Stereo)
     );
-    assert_eq!(e.chunks.len(), 4);
+    assert_eq!(e.chunks.len(), 3);
     // A short chunk before the last, a misnamed chunk, a ragged last chunk: refused.
     for bad in [
         files(&[full, 8, full]),
@@ -199,8 +200,50 @@ fn entry_shape_from_meta() {
     }
     // Mono chunks hold whole 4-byte frames; another audio version is not this build's entry.
     let m = meta(PcmRecipe::Pcm16m, PcmLayout::Mono, &files(&[full, 4]));
-    assert_eq!(PcmEntry::of(&m).unwrap().frames, 262_145);
+    assert_eq!(PcmEntry::of(&m).unwrap().frames, 2_097_153);
     let mut old = meta(PcmRecipe::Pcm16m, PcmLayout::Mono, &files(&[4]));
     old.params["audioVersion"] = json!(0);
     assert_eq!(PcmEntry::of(&old).unwrap_err().code, "PLAN_MISMATCH");
+}
+
+#[test]
+fn the_longest_feed_fits_the_cache_caps() {
+    // 24 h of 48 kHz stereo: the most `AudioReader` hands out, and the largest entry list.
+    let frames = MAX_PCM_SECONDS * u64::from(PCM48_RATE);
+    let bytes = frames * 8;
+    let n = bytes.div_ceil(CHUNK_BYTES);
+    let files: Vec<(String, u64)> = (0..n)
+        .map(|i| {
+            let b = if i + 1 < n {
+                CHUNK_BYTES
+            } else {
+                bytes - CHUNK_BYTES * (n - 1)
+            };
+            (chunk_name(i as usize), b)
+        })
+        .collect();
+    let m = meta(PcmRecipe::Pcm48, PcmLayout::Stereo, &files);
+    m.check().unwrap();
+    assert_eq!(PcmEntry::of(&m).unwrap().frames, frames);
+    // Both of the cache's caps, with at least half of each to spare.
+    assert!(
+        m.files.len() * 2 <= MAX_ENTRY_FILES,
+        "{} files",
+        m.files.len()
+    );
+    let text = serde_json::to_vec(&m).unwrap();
+    assert!(
+        text.len() as u64 * 2 <= MAX_META_BYTES,
+        "{} bytes",
+        text.len()
+    );
+}
+
+#[test]
+fn durations_past_the_limit_are_refused() {
+    let max = MAX_PCM_SECONDS as i64;
+    check_pcm_duration(Rational::new(max, 1).unwrap()).unwrap();
+    let e = check_pcm_duration(Rational::new(max * 1000 + 1, 1000).unwrap()).unwrap_err();
+    assert_eq!(e.code, "MEDIA_LIMIT");
+    assert_eq!(e.details["limit"], "maxSeconds");
 }

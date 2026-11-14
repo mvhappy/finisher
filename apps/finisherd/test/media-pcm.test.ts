@@ -29,7 +29,7 @@ import { closeTestEngines, testEngine, until } from "./support/jobs.ts";
 const OWNER = { kind: "local", id: "local" } as const;
 
 let work: string;
-/** 10 s at 48 kHz stereo: 3 chunks of 131,072 frames and one of 86,784. */
+/** 50 s at 48 kHz stereo: 2 chunks of 1,048,576 frames and one of 302,848. */
 let stereo: string;
 /** 1 s at 44.1 kHz mono. */
 let mono: string;
@@ -64,7 +64,7 @@ function writeWav(path: string, frames: number, rate: number, channels: number):
 beforeAll(() => {
   work = realpathSync(mkdtempSync(join(tmpdir(), "fin-pcm-")));
   stereo = join(work, "stereo.wav");
-  writeWav(stereo, 480_000, 48_000, 2);
+  writeWav(stereo, 2_400_000, 48_000, 2);
   mono = join(work, "mono.wav");
   writeWav(mono, 44_100, 44_100, 1);
 });
@@ -152,17 +152,17 @@ describe("the kind and the plan", () => {
 const tx = (txId: string, baseRev: number, ops: unknown[]) => JSON.stringify({ txId, author: "test", branch: "main", baseRev, schemaVersion: 2, ops });
 
 /** A project with asset `a1` (fingerprint `fp`) on `path`. */
-async function project(serverData: string, fp: string, path = stereo): Promise<Engine> {
+async function project(serverData: string, fp: string, path = stereo, duration = "50"): Promise<Engine> {
   const dir = join(mkdtempSync(join(work, "proj-")), "p");
   const engine = await Engine.create(serverData, dir, "Pcm", "30");
   engines.push(engine);
-  await engine.commit(tx("t1", 0, [{ op: "asset.add", id: "$a1", path, duration: "10", audio: { sampleRate: 48000, channels: 2 }, fingerprint: fp }]));
+  await engine.commit(tx("t1", 0, [{ op: "asset.add", id: "$a1", path, duration, audio: { sampleRate: 48000, channels: 2 }, fingerprint: fp }]));
   return engine;
 }
 
 /** A real engine with the media kinds, the cache and the PCM service over one project. */
-async function setup(fp = "fp-a1", serverData = realpathSync(mkdtempSync(join(work, "sd-"))), cache?: MediaCache) {
-  const engine = await project(serverData, fp);
+async function setup(fp = "fp-a1", serverData = realpathSync(mkdtempSync(join(work, "sd-"))), cache?: MediaCache, duration = "50") {
+  const engine = await project(serverData, fp, stereo, duration);
   const c = cache ?? (await MediaCache.open(serverData));
   const t = await engineOver(serverData, engine, c);
   const registry = {
@@ -195,17 +195,16 @@ describe("the job and the RPC", () => {
     const a = await run(pcm.request(OWNER, { projectId: pid, asset }));
     expect(a).toMatchObject({ asset, recipe: "pcm48", state: "ready", key: plan("fp-a1").key });
     const r = a.result as PcmResult;
-    expect(r).toMatchObject({ key: a.key, recipe: "pcm48", layout: "stereo", frames: 480_000, chunks: 4, sourceRate: 48_000, sourceChannels: 2, decoder: { backend: "symphonia", class: "software" } });
+    expect(r).toMatchObject({ key: a.key, recipe: "pcm48", layout: "stereo", frames: 2_400_000, chunks: 3, sourceRate: 48_000, sourceChannels: 2, decoder: { backend: "symphonia", class: "software" } });
     const meta = (await cache.lookup(a.key)) as EntryMeta;
     expect(meta).toMatchObject({ recipe: "pcm48", fingerprint: "fp-a1", decoderClass: "software", params: { rate: 48000, layout: "stereo", audioVersion: mediaVersions().audioVersion } });
     expect(meta.files.map((f) => [f.name, f.bytes])).toEqual([
-      ["chunk-000000.f32", 1 << 20],
-      ["chunk-000001.f32", 1 << 20],
-      ["chunk-000002.f32", 1 << 20],
-      ["chunk-000003.f32", 86_784 * 8],
+      ["chunk-000000.f32", 8 << 20],
+      ["chunk-000001.f32", 8 << 20],
+      ["chunk-000002.f32", 302_848 * 8],
     ]);
     expect(await cache.projectsOf(a.key)).toEqual([pid]);
-    expect(statSync(join(cache.entryDir(a.key)!, "chunk-000003.f32")).size).toBe(86_784 * 8);
+    expect(statSync(join(cache.entryDir(a.key)!, "chunk-000002.f32")).size).toBe(302_848 * 8);
     expect(await run(pcm.request(OWNER, { projectId: pid, asset }))).toEqual({ asset, recipe: "pcm48", key: a.key, state: "ready", cached: true });
     // An unknown asset, and a fingerprint that moved since the ask, are refused.
     expect((await Effect.runPromise(Effect.flip(pcm.request(OWNER, { projectId: pid, asset: "a404" })))).code).toBe("ASSET_NOT_FOUND");
@@ -222,7 +221,7 @@ describe("the job and the RPC", () => {
     expect((await t.wait(a.id, 120_000)).state).toBe("succeeded");
     const done = await t.wait(c.id, 120_000);
     expect(done.state, JSON.stringify(done.error)).toBe("succeeded");
-    expect(((done.result as { items: Record<string, PcmResult> }).items["fp-a1"])).toMatchObject({ recipe: "pcm16m", layout: "mono", frames: 160_000 });
+    expect(((done.result as { items: Record<string, PcmResult> }).items["fp-a1"])).toMatchObject({ recipe: "pcm16m", layout: "mono", frames: 800_000 });
   }, 180_000);
 
   test("daemon_death_retry_is_byte_identical", async () => {
@@ -252,6 +251,68 @@ describe("the job and the RPC", () => {
     expect(meta.files).toEqual(wantMeta.files);
     expect({ ...meta, createdAt: 0 }).toEqual({ ...wantMeta, createdAt: 0 });
   }, 240_000);
+});
+
+describe("a worker that dies", () => {
+  /** The entry's files of a clean run (another fingerprint: the chunks do not depend on it). */
+  async function cleanFiles(): Promise<EntryMeta["files"]> {
+    const clean = await setup("fp-clean");
+    const a = await run(clean.pcm.request(OWNER, { projectId: clean.pid, asset: clean.asset }));
+    return ((await clean.cache.lookup(a.key)) as EntryMeta).files;
+  }
+
+  test("worker_death_retry_is_byte_identical: a crash mid-decode is retried from sample 0, not poisoned", async () => {
+    const want = await cleanFiles();
+    // Test builds of the worker abort after chunk 2 on the first attempt of `test-crashonce-…`.
+    const fp = "test-crashonce-a1";
+    const { t, cache, pid, asset } = await setup(fp);
+    const p = params({ fingerprint: fp, asset, projectId: pid, branch: "main" });
+    const v = await t.runJob(MEDIA_PCM, p, { project: pid });
+    expect(v.state, JSON.stringify(v.error)).toBe("succeeded");
+    expect(v.attempts).toBe(2);
+    expect((v.result as { itemErrors?: unknown[] }).itemErrors ?? []).toEqual([]);
+    expect(((await cache.lookup(p.key)) as EntryMeta).files).toEqual(want);
+    // No poison is left: the same key is a cache hit.
+    expect(await cache.lookup(p.key)).not.toBeNull();
+  }, 240_000);
+
+  test("an item acknowledged before the worker died is committed, not run again or poisoned", async () => {
+    const want = await cleanFiles();
+    // Aborts right after answering the item, on the first attempt.
+    const fp = "test-crashack-a1";
+    const { t, cache, pid, asset } = await setup(fp);
+    const p = params({ fingerprint: fp, asset, projectId: pid, branch: "main" });
+    const v = await t.runJob(MEDIA_PCM, p, { project: pid });
+    expect(v.state, JSON.stringify(v.error)).toBe("succeeded");
+    expect(((await cache.lookup(p.key)) as EntryMeta).files).toEqual(want);
+  }, 240_000);
+
+  test("a source that crashes every attempt is poisoned once the attempts are spent", async () => {
+    const fp = "test-crashalways-a1";
+    const { t, pid, asset } = await setup(fp);
+    const p = params({ fingerprint: fp, asset, projectId: pid, branch: "main" });
+    const v = await t.runJob(MEDIA_PCM, p, { project: pid });
+    expect(v.state).toBe("failed");
+    expect(v.error?.code).toBe("POISON_ITEM");
+    expect(v.attempts).toBe(2);
+  }, 240_000);
+});
+
+describe("sources past the limit", () => {
+  test("an asset longer than 24 h is MEDIA_LIMIT before any job", async () => {
+    const { t, pcm, pid, asset } = await setup("fp-long", undefined, undefined, "86401");
+    const e = await Effect.runPromise(Effect.flip(pcm.request(OWNER, { projectId: pid, asset })));
+    expect(e).toMatchObject({ code: "MEDIA_LIMIT", details: { limit: "maxSeconds" } });
+    expect(t.engine.list({}).jobs.filter((j) => j.kind === MEDIA_PCM)).toEqual([]);
+    // Exactly 24 h is planned.
+    expect(mediaPcmPlan({ fingerprint: "fp", recipe: "pcm48", channels: 2, duration: "86400" }).key).toBe(plan("fp").key);
+  }, 60_000);
+
+  test("the stage skips a library file whose probe says it is longer than 24 h", () => {
+    const s = pcm16mStage({ cache: () => undefined });
+    expect(s.appliesTo(stageFile(mono, { kind: "media", duration: "86401", audio: { sampleRate: 44100, channels: 1 } }))).toBe(false);
+    expect(s.appliesTo(stageFile(mono, { kind: "media", duration: "86400", audio: { sampleRate: 44100, channels: 1 } }))).toBe(true);
+  });
 });
 
 /** A WAV as a library catalogue would hand it to the stage. */
@@ -341,7 +402,7 @@ describe("first use", () => {
       const timeline = snap.project.timelines[0]!.id;
       const commit = (txId: string, baseRev: number, ops: unknown[]) => Effect.runPromise(r.commit(projectId, { txId, author: "test", branch: "main", baseRev, schemaVersion: 2, ops }));
       // An asset that is in the project but on no audio track: nothing yet.
-      await commit("t1", snap.rev, [{ op: "asset.add", id: "$s1", path: stereo, duration: "10", audio: { sampleRate: 48000, channels: 2 }, fingerprint: "fp-s1" }]);
+      await commit("t1", snap.rev, [{ op: "asset.add", id: "$s1", path: stereo, duration: "50", audio: { sampleRate: 48000, channels: 2 }, fingerprint: "fp-s1" }]);
       await new Promise((res) => setTimeout(res, 100));
       expect(submitted).toHaveLength(0);
       const s1 = Object.keys(((await Effect.runPromise(r.snapshot(projectId, "main"))) as { project: { assets: object } }).project.assets)[0]!;

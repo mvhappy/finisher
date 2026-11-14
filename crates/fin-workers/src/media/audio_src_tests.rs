@@ -149,8 +149,8 @@ fn mono_source_keeps_one_channel() {
 #[test]
 fn cached_entry_reads_equal_the_decode() {
     let tmp = tempfile::tempdir().unwrap();
-    // 3 s at 48 kHz stereo: two chunks (131,072 frames, then 12,928).
-    let path = wav_file(tmp.path(), 144_000, 48_000, 2);
+    // 25 s at 48 kHz stereo: two chunks (1,048,576 frames, then 151,424).
+    let path = wav_file(tmp.path(), 1_200_000, 48_000, 2);
     let all = stream(open(&path, PcmRecipe::Pcm48));
     let entry = std::fs::canonicalize(tmp.path()).unwrap().join("entry");
     std::fs::create_dir(&entry).unwrap();
@@ -163,12 +163,12 @@ fn cached_entry_reads_equal_the_decode() {
     write_entry(&entry, &input, &all);
     let key = CacheKey::compute(&input).to_string();
     let mut cached = CachedSource::open(&entry, &key).unwrap();
-    assert_eq!(cached.entry().frames, 144_000);
+    assert_eq!(cached.entry().frames, 1_200_000);
     assert_eq!(cached.entry().chunks.len(), 2);
     let mut decoded = open(&path, PcmRecipe::Pcm48);
     let (mut a, mut b) = (Canonical::Mono(Vec::new()), Canonical::Mono(Vec::new()));
     // Across the chunk boundary and past the end.
-    for at in [-10i64, 131_000, 143_990] {
+    for at in [-10i64, 1_048_500, 1_199_990] {
         cached.read(at, 200, &mut a).unwrap();
         decoded.read(at, 200, &mut b).unwrap();
         assert_eq!(a, b, "at {at}");
@@ -192,7 +192,7 @@ fn cached_entry_reads_equal_the_decode() {
     std::fs::write(entry.join(chunk_name(1)), bytes).unwrap();
     let mut c = CachedSource::open(&entry, &key).unwrap();
     assert_eq!(
-        c.read(140_000, 10, &mut a).unwrap_err().code,
+        c.read(1_100_000, 10, &mut a).unwrap_err().code,
         "PLAN_MISMATCH"
     );
 }

@@ -8,6 +8,8 @@ export interface MediaPcmPlanRequest {
   readonly sourceCodec?: string | undefined;
   /** The source's channel count (`audio.channels`). */
   readonly channels: number;
+  /** The source's duration (rational seconds) when the probe gives one: past 24 h is `MEDIA_LIMIT`. */
+  readonly duration?: string | undefined;
 }
 
 /**
